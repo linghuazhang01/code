@@ -1,0 +1,524 @@
+#!/usr/bin/env python3
+"""Patch a G-OPD checkout so verl calls the local MOPD audit helpers."""
+
+from __future__ import annotations
+
+import argparse
+import re
+from pathlib import Path
+
+
+def _replace_once(path: Path, old: str, new: str, required: bool = False) -> bool:
+    text = path.read_text(encoding="utf-8")
+    if new in text:
+        return False
+    if old not in text:
+        if not required:
+            return False
+        raise RuntimeError(f"Patch anchor not found in {path}: {old[:120]!r}")
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+    return True
+
+
+def _migrate_old_audit_logger_name(path: Path) -> bool:
+    text = path.read_text(encoding="utf-8")
+    new_text = re.sub(r'(?<![."])\bmopd_audit_logger\b', "self.mopd_audit_logger", text)
+    while "self.self." in new_text:
+        new_text = new_text.replace("self.self.", "self.")
+    if new_text == text:
+        return False
+    path.write_text(new_text, encoding="utf-8")
+    return True
+
+
+def _strip_trainer_audit_blocks(text: str) -> str:
+    text = re.sub(
+        r"\n {20}paper_eval_default_model_path = self\.config\.actor_rollout_ref\.model\.path\n"
+        r".*?"
+        r"\n {20}val_metrics\.update\(\n"
+        r" {24}run_paper_eval_from_config\(\n"
+        r" {28}self\.config,\n"
+        r" {28}step=self\.global_steps,\n"
+        r" {28}default_model_path=paper_eval_default_model_path,\n"
+        r" {24}\)\n"
+        r" {20}\)",
+        "",
+        text,
+        flags=re.DOTALL,
+    )
+    text = re.sub(
+        r"\n {12}paper_eval_default_model_path = self\.config\.actor_rollout_ref\.model\.path\n"
+        r".*?"
+        r"\n {12}val_metrics\.update\(\n"
+        r" {16}run_paper_eval_from_config\(\n"
+        r" {20}self\.config,\n"
+        r" {20}step=self\.global_steps,\n"
+        r" {20}default_model_path=paper_eval_default_model_path,\n"
+        r" {16}\)\n"
+        r" {12}\)",
+        "",
+        text,
+        flags=re.DOTALL,
+    )
+    text = re.sub(
+        r"\n {20}val_metrics\.update\(\n"
+        r" {24}run_paper_eval_from_config\(\n"
+        r" {28}self\.config,\n"
+        r" {28}step=self\.global_steps,\n"
+        r" {28}default_model_path=self\.config\.actor_rollout_ref\.model\.path,\n"
+        r" {24}\)\n"
+        r" {20}\)",
+        "",
+        text,
+    )
+    text = re.sub(
+        r"\n {12}val_metrics\.update\(\n"
+        r" {16}run_paper_eval_from_config\(\n"
+        r" {20}self\.config,\n"
+        r" {20}step=self\.global_steps,\n"
+        r" {20}default_model_path=self\.config\.actor_rollout_ref\.model\.path,\n"
+        r" {16}\)\n"
+        r" {12}\)",
+        "",
+        text,
+    )
+    text = re.sub(
+        r"\n {20}if self\.mopd_audit_logger\.enabled:\n"
+        r" {24}audit_lr = self\.config\.actor_rollout_ref\.actor\.optim\.lr\n"
+        r" {24}audit_metrics = self\.mopd_audit_logger\.log_training_step\(\n"
+        r" {28}batch=batch,\n"
+        r" {28}step=self\.global_steps,\n"
+        r" {28}lr=audit_lr,\n"
+        r" {24}\)\n"
+        r" {24}metrics\.update\(audit_metrics\)\n"
+        r"(?: {24}if self\.mopd_audit_logger\.should_compute_full_gradient\(self\.global_steps\):\n"
+        r" {28}batch\.meta_info\.update\(self\.mopd_audit_logger\.full_gradient_meta\(\"train\", self\.global_steps\)\)\n"
+        r" {28}full_gradient_output = self\.actor_rollout_wg\.compute_mopd_full_gradient_metrics\(batch\)\n"
+        r" {28}metrics\.update\(reduce_metrics\(full_gradient_output\.meta_info\[\"metrics\"\]\)\)\n)?",
+        "",
+        text,
+    )
+    text = re.sub(
+        r"\n {20}metrics\.update\(self\.mopd_audit_logger\.log_validation_metrics\(val_metrics, self\.global_steps\)\)",
+        "",
+        text,
+    )
+    text = re.sub(
+        r"\n {12}audit_val_metrics = self\.mopd_audit_logger\.log_validation_metrics\(val_metrics, self\.global_steps\)\n"
+        r" {12}logger\.log\(data=(?:self\.mopd_audit_logger\.filter_tensorboard_metrics\()?(\{\*\*val_metrics, \*\*audit_val_metrics\})(?:\))?, step=self\.global_steps\)",
+        "\n            logger.log(data=val_metrics, step=self.global_steps)",
+        text,
+    )
+    text = re.sub(
+        r"\n {16}logger\.log\(data=self\.mopd_audit_logger\.filter_tensorboard_metrics\(metrics\), step=self\.global_steps\)",
+        "\n                logger.log(data=metrics, step=self.global_steps)",
+        text,
+    )
+    text = re.sub(
+        r"\n {12}# MOPD audit: validation anchor begin\n.*?\n {12}# MOPD audit: validation anchor end\n",
+        "\n",
+        text,
+        flags=re.DOTALL,
+    )
+    text = re.sub(
+        r"\n {12}if \(\n"
+        r" {16}getattr\(self, \"mopd_audit_logger\", None\) is not None\n"
+        r" {16}and self\.mopd_audit_logger\.should_update_validation_anchor\(self\.global_steps\)\n"
+        r" {12}\):\n.*?\n {12}# evaluate using reward_function",
+        "\n            # evaluate using reward_function",
+        text,
+        flags=re.DOTALL,
+    )
+    text = text.replace(
+        'test_batch.meta_info["validate"] = True\n\n\n            # evaluate using reward_function',
+        'test_batch.meta_info["validate"] = True\n\n            # evaluate using reward_function',
+    )
+    return text
+
+
+def _strip_fsdp_worker_audit_blocks(text: str) -> str:
+    return re.sub(
+        r"\n {4}# MOPD audit: full-parameter gradient helpers begin\n.*?"
+        r"\n {4}# MOPD audit: full-parameter gradient helpers end\n",
+        "\n",
+        text,
+        flags=re.DOTALL,
+    )
+
+
+def patch_dataset(gopd_dir: Path) -> bool:
+    path = gopd_dir / "verl" / "verl" / "utils" / "dataset" / "rl_dataset.py"
+    old = '''        if "opd_teacher" in row_dict.get("extra_info", {}):
+            row_dict["opd_teacher"] = row_dict.get("extra_info", {}).get("opd_teacher")
+            
+        return row_dict
+'''
+    new = '''        if "opd_teacher" in row_dict.get("extra_info", {}):
+            row_dict["opd_teacher"] = row_dict.get("extra_info", {}).get("opd_teacher")
+        if "domain" in row_dict.get("extra_info", {}):
+            row_dict["domain"] = row_dict.get("extra_info", {}).get("domain")
+        if "sample_id" in row_dict.get("extra_info", {}):
+            row_dict["sample_id"] = row_dict.get("extra_info", {}).get("sample_id")
+        if "source_domain" in row_dict.get("extra_info", {}):
+            row_dict["source_domain"] = row_dict.get("extra_info", {}).get("source_domain")
+        if "validation_dataset" in row_dict.get("extra_info", {}):
+            row_dict["validation_dataset"] = row_dict.get("extra_info", {}).get("validation_dataset")
+            
+        return row_dict
+'''
+    changed = _replace_once(path, old, new)
+    changed |= _replace_once(
+        path,
+        '''        if "source_domain" in row_dict.get("extra_info", {}):
+            row_dict["source_domain"] = row_dict.get("extra_info", {}).get("source_domain")
+            
+        return row_dict
+''',
+        '''        if "source_domain" in row_dict.get("extra_info", {}):
+            row_dict["source_domain"] = row_dict.get("extra_info", {}).get("source_domain")
+        if "validation_dataset" in row_dict.get("extra_info", {}):
+            row_dict["validation_dataset"] = row_dict.get("extra_info", {}).get("validation_dataset")
+            
+        return row_dict
+''',
+    )
+    return changed
+
+
+def patch_reward_score(gopd_dir: Path) -> bool:
+    path = gopd_dir / "verl" / "verl" / "utils" / "reward_score" / "__init__.py"
+    text = path.read_text(encoding="utf-8")
+    if "HMMT25Feb" in text and "HMMT25Nov" in text:
+        return False
+    old = '"AIME2024", "AIME2025", "MMLUPro"'
+    new = '"AIME2024", "AIME2025", "HMMT25Feb", "HMMT25Nov", "HMMT", "MMLUPro"'
+    if old not in text:
+        raise RuntimeError(f"Reward score patch anchor not found in {path}: {old!r}")
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+    return True
+
+
+def patch_trainer(gopd_dir: Path) -> bool:
+    path = gopd_dir / "verl" / "verl" / "trainer" / "ppo" / "ray_trainer.py"
+    changed = False
+    original = path.read_text(encoding="utf-8")
+    normalized = _strip_trainer_audit_blocks(original)
+    normalized = re.sub(r'(?<![."])\bmopd_audit_logger\b', "self.mopd_audit_logger", normalized)
+    while "self.self." in normalized:
+        normalized = normalized.replace("self.self.", "self.")
+    if normalized != original:
+        path.write_text(normalized, encoding="utf-8")
+        changed = True
+    changed |= _replace_once(
+        path,
+        "from verl import DataProto\nfrom mopd_verl.verl_audit import MOPDAuditLogger\n",
+        "from verl import DataProto\nfrom mopd_verl.paper_eval import run_paper_eval_from_config\nfrom mopd_verl.verl_audit import MOPDAuditLogger\n",
+    )
+    changed |= _replace_once(
+        path,
+        "from verl import DataProto\n",
+        "from verl import DataProto\nfrom mopd_verl.paper_eval import run_paper_eval_from_config\nfrom mopd_verl.verl_audit import MOPDAuditLogger\n",
+    )
+    changed |= _replace_once(
+        path,
+        '''        logger = Tracking(
+            project_name=self.config.trainer.project_name,
+            experiment_name=self.config.trainer.experiment_name,
+            default_backend=self.config.trainer.logger,
+            config=OmegaConf.to_container(self.config, resolve=True),
+        )
+
+        self.global_steps = 0
+''',
+        '''        logger = Tracking(
+            project_name=self.config.trainer.project_name,
+            experiment_name=self.config.trainer.experiment_name,
+            default_backend=self.config.trainer.logger,
+            config=OmegaConf.to_container(self.config, resolve=True),
+        )
+        self.mopd_audit_logger = MOPDAuditLogger(self.config)
+
+        self.global_steps = 0
+''',
+    )
+    changed |= _replace_once(
+        path,
+        '''                    # update critic
+                    if self.use_critic:
+''',
+        '''                    if self.mopd_audit_logger.enabled:
+                        audit_lr = self.config.actor_rollout_ref.actor.optim.lr
+                        audit_metrics = self.mopd_audit_logger.log_training_step(
+                            batch=batch,
+                            step=self.global_steps,
+                            lr=audit_lr,
+                        )
+                        metrics.update(audit_metrics)
+                        if self.mopd_audit_logger.should_compute_full_gradient(self.global_steps):
+                            batch.meta_info.update(self.mopd_audit_logger.full_gradient_meta("train", self.global_steps))
+                            full_gradient_output = self.actor_rollout_wg.compute_mopd_full_gradient_metrics(batch)
+                            metrics.update(reduce_metrics(full_gradient_output.meta_info["metrics"]))
+
+                    # update critic
+                    if self.use_critic:
+''',
+    )
+    changed |= _replace_once(
+        path,
+        '''                        val_metrics: dict = self._validate()
+                        if is_last_step:
+                            last_val_metrics = val_metrics
+                    metrics.update(val_metrics)
+''',
+        '''                        val_metrics: dict = self._validate()
+                        if is_last_step:
+                            last_val_metrics = val_metrics
+                    paper_eval_default_model_path = self.config.actor_rollout_ref.model.path
+                    paper_eval_cfg = self.config.get("paper_eval", {})
+                    if (
+                        paper_eval_cfg.get("enabled", False)
+                        and paper_eval_cfg.get("evaluate_current_checkpoint", True)
+                        and self.global_steps > 0
+                    ):
+                        paper_eval_checkpoint_root = self.config.trainer.default_local_dir
+                        if not os.path.isabs(paper_eval_checkpoint_root):
+                            paper_eval_checkpoint_root = os.path.join(os.getcwd(), paper_eval_checkpoint_root)
+                        self._save_checkpoint()
+                        paper_eval_default_model_path = os.path.join(
+                            paper_eval_checkpoint_root, f"global_step_{self.global_steps}", "actor"
+                        )
+                    val_metrics.update(
+                        run_paper_eval_from_config(
+                            self.config,
+                            step=self.global_steps,
+                            default_model_path=paper_eval_default_model_path,
+                        )
+                    )
+                    metrics.update(val_metrics)
+                    metrics.update(self.mopd_audit_logger.log_validation_metrics(val_metrics, self.global_steps))
+''',
+    )
+    changed |= _replace_once(
+        path,
+        '''            pprint(f"Initial validation metrics: {val_metrics}")
+            logger.log(data=val_metrics, step=self.global_steps)
+            if self.config.trainer.get("val_only", False):
+                return
+''',
+        '''            paper_eval_default_model_path = self.config.actor_rollout_ref.model.path
+            val_metrics.update(
+                run_paper_eval_from_config(
+                    self.config,
+                    step=self.global_steps,
+                    default_model_path=paper_eval_default_model_path,
+                )
+            )
+            pprint(f"Initial validation metrics: {val_metrics}")
+            audit_val_metrics = self.mopd_audit_logger.log_validation_metrics(val_metrics, self.global_steps)
+            logger.log(
+                data=self.mopd_audit_logger.filter_tensorboard_metrics({**val_metrics, **audit_val_metrics}),
+                step=self.global_steps,
+            )
+            if self.config.trainer.get("val_only", False):
+                return
+''',
+    )
+    changed |= _replace_once(
+        path,
+        '''            val_metrics = self._validate()
+            assert val_metrics, f"{val_metrics=}"
+            pprint(f"Initial validation metrics: {val_metrics}")
+            audit_val_metrics = self.mopd_audit_logger.log_validation_metrics(val_metrics, self.global_steps)
+            logger.log(
+                data=self.mopd_audit_logger.filter_tensorboard_metrics({**val_metrics, **audit_val_metrics}),
+                step=self.global_steps,
+            )
+            if self.config.trainer.get("val_only", False):
+                return
+''',
+        '''            val_metrics = self._validate()
+            assert val_metrics, f"{val_metrics=}"
+            paper_eval_default_model_path = self.config.actor_rollout_ref.model.path
+            val_metrics.update(
+                run_paper_eval_from_config(
+                    self.config,
+                    step=self.global_steps,
+                    default_model_path=paper_eval_default_model_path,
+                )
+            )
+            pprint(f"Initial validation metrics: {val_metrics}")
+            audit_val_metrics = self.mopd_audit_logger.log_validation_metrics(val_metrics, self.global_steps)
+            logger.log(
+                data=self.mopd_audit_logger.filter_tensorboard_metrics({**val_metrics, **audit_val_metrics}),
+                step=self.global_steps,
+            )
+            if self.config.trainer.get("val_only", False):
+                return
+''',
+    )
+    changed |= _replace_once(
+        path,
+        '''                logger.log(data=metrics, step=self.global_steps)
+''',
+        '''                logger.log(data=self.mopd_audit_logger.filter_tensorboard_metrics(metrics), step=self.global_steps)
+''',
+    )
+    changed |= _replace_once(
+        path,
+        '''        sample_uids = []
+''',
+        '''        sample_uids = []
+        audit_validation_metrics = {}
+''',
+    )
+    changed |= _replace_once(
+        path,
+        '''                metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
+                # TODO: implement actual tflpo and theoretical tflpo
+                n_gpus = self.resource_pool_manager.get_n_gpus()
+                metrics.update(compute_throughout_metrics(batch=batch, timing_raw=timing_raw, n_gpus=n_gpus))
+                # Note: mismatch metrics (KL, PPL, etc.) are collected at line 1179 after advantage computation
+''',
+        '''                metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
+                # TODO: implement actual tflpo and theoretical tflpo
+                n_gpus = self.resource_pool_manager.get_n_gpus()
+                metrics.update(compute_throughout_metrics(batch=batch, timing_raw=timing_raw, n_gpus=n_gpus))
+                if self.mopd_audit_logger.enabled:
+                    metrics.update(
+                        self.mopd_audit_logger.log_training_cost(metrics=metrics, step=self.global_steps, n_gpus=n_gpus)
+                    )
+                # Note: mismatch metrics (KL, PPL, etc.) are collected at line 1179 after advantage computation
+''',
+    )
+    changed |= _replace_once(
+        path,
+        '''            test_batch = test_batch.union(test_output_gen_batch)
+            test_batch.meta_info["validate"] = True
+
+            # evaluate using reward_function
+''',
+        '''            test_batch = test_batch.union(test_output_gen_batch)
+            test_batch.meta_info["validate"] = True
+
+            # MOPD audit: validation anchor begin
+            if (
+                getattr(self, "mopd_audit_logger", None) is not None
+                and self.mopd_audit_logger.should_update_validation_anchor(self.global_steps)
+            ):
+                anchor_batch = test_batch
+                anchor_batch, anchor_pad_size = pad_dataproto_to_divisor(anchor_batch, size_divisor)
+                old_log_prob = self.actor_rollout_wg.compute_log_prob(anchor_batch)
+                if "entropys" in old_log_prob.batch:
+                    old_log_prob.batch.pop("entropys")
+                anchor_batch = anchor_batch.union(old_log_prob)
+                if self.use_reference_policy:
+                    if not self.ref_in_actor:
+                        ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(anchor_batch)
+                    else:
+                        ref_log_prob = self.actor_rollout_wg.compute_ref_log_prob(anchor_batch)
+                    anchor_batch = anchor_batch.union(ref_log_prob)
+                if self.use_base_models:
+                    if self.ref_base_model_path is not None:
+                        if not self.ref_in_actor:
+                            base_ref_log_prob = self.ref_policy_wg.compute_base_ref_log_prob(anchor_batch)
+                        else:
+                            base_ref_log_prob = self.actor_rollout_wg.compute_base_ref_log_prob(anchor_batch)
+                        anchor_batch = anchor_batch.union(base_ref_log_prob)
+                    if self.base_model_path is not None:
+                        ref_input_tensors = {}
+                        for tensor_key in ("ref_input_ids", "ref_attention_mask", "ref_position_ids"):
+                            if tensor_key in anchor_batch.batch:
+                                ref_input_tensors[tensor_key] = anchor_batch.batch.pop(tensor_key)
+                        base_log_prob = self.actor_rollout_wg.compute_base_log_prob(anchor_batch)
+                        anchor_batch = anchor_batch.union(base_log_prob)
+                        for tensor_key, tensor_value in ref_input_tensors.items():
+                            anchor_batch.batch[tensor_key] = tensor_value
+                anchor_batch = unpad_dataproto(anchor_batch, pad_size=anchor_pad_size)
+                audit_validation_metrics.update(
+                    self.mopd_audit_logger.log_validation_anchor_batch(anchor_batch, self.global_steps)
+                )
+                if self.mopd_audit_logger.should_compute_full_gradient(self.global_steps):
+                    anchor_batch.meta_info.update(
+                        self.mopd_audit_logger.full_gradient_meta("validation_anchor", self.global_steps)
+                    )
+                    full_gradient_output = self.actor_rollout_wg.compute_mopd_full_gradient_metrics(anchor_batch)
+                    audit_validation_metrics.update(reduce_metrics(full_gradient_output.meta_info["metrics"]))
+            # MOPD audit: validation anchor end
+
+            # evaluate using reward_function
+''',
+    )
+    changed |= _replace_once(
+        path,
+        '''        if len(sample_turns) > 0:
+            sample_turns = np.concatenate(sample_turns)
+            metric_dict["val-aux/num_turns/min"] = sample_turns.min()
+            metric_dict["val-aux/num_turns/max"] = sample_turns.max()
+            metric_dict["val-aux/num_turns/mean"] = sample_turns.mean()
+
+        return metric_dict
+''',
+        '''        if len(sample_turns) > 0:
+            sample_turns = np.concatenate(sample_turns)
+            metric_dict["val-aux/num_turns/min"] = sample_turns.min()
+            metric_dict["val-aux/num_turns/max"] = sample_turns.max()
+            metric_dict["val-aux/num_turns/mean"] = sample_turns.mean()
+
+        metric_dict.update(audit_validation_metrics)
+        return metric_dict
+''',
+    )
+    changed |= _migrate_old_audit_logger_name(path)
+    return changed
+
+
+def patch_fsdp_worker(gopd_dir: Path) -> bool:
+    path = gopd_dir / "verl" / "verl" / "workers" / "fsdp_workers.py"
+    changed = False
+    original = path.read_text(encoding="utf-8")
+    normalized = _strip_fsdp_worker_audit_blocks(original)
+    if normalized != original:
+        path.write_text(normalized, encoding="utf-8")
+        changed = True
+    changed |= _replace_once(
+        path,
+        '''    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
+    @DistProfiler.annotate(color="red", role="actor_update")
+    def update_actor(self, data: DataProto):
+''',
+        '''    # MOPD audit: full-parameter gradient helpers begin
+    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
+    @DistProfiler.annotate(color="cyan", role="mopd_full_gradient")
+    def compute_mopd_full_gradient_metrics(self, data: DataProto):
+        from mopd_verl.full_gradient_worker import compute_mopd_full_gradient_metrics
+
+        return compute_mopd_full_gradient_metrics(self, data)
+    # MOPD audit: full-parameter gradient helpers end
+
+    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
+    @DistProfiler.annotate(color="red", role="actor_update")
+    def update_actor(self, data: DataProto):
+''',
+    )
+    return changed
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("gopd_dir", help="Path to the G-OPD checkout root.")
+    args = parser.parse_args()
+
+    gopd_dir = Path(args.gopd_dir).resolve()
+    changed = {
+        "dataset": patch_dataset(gopd_dir),
+        "reward_score": patch_reward_score(gopd_dir),
+        "trainer": patch_trainer(gopd_dir),
+        "fsdp_worker": patch_fsdp_worker(gopd_dir),
+    }
+    for name, was_changed in changed.items():
+        print(f"{name}: {'patched' if was_changed else 'already patched'}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

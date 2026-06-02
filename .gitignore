@@ -1,0 +1,52 @@
+# Secrets / local connection files
+ssh.sh
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+settings.json
+*_secret*
+*_token*
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Experiment outputs
+audit/
+mopd_audit/
+checkpoints/
+tensorboard_log/
+paper_eval/
+eval_outputs/
+logs/
+outputs/
+runs/
+wandb/
+*.log
+*.jsonl
+events.out.tfevents*
+
+# Large model/data artifacts
+*.parquet
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.ckpt
+*.onnx
+models/
+hf_home/
+G-OPD/
+G-OPD-Training-Data/
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/

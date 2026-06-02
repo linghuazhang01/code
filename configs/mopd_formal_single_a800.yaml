@@ -1,0 +1,144 @@
+# Formal-data MOPD/ExOPD run adapted for the current single-A800 remote.
+# This is not the paper-exact 8-GPU setting. It uses the official G-OPD
+# math+code data, a 0.6B student/training model, and 4B teacher models, while
+# reducing parallelism and batch sizes so the job can launch on one 80GB GPU.
+
+runtime:
+  python_bin: /root/miniconda3/envs/mopd-verl/bin/python
+  verl_module: verl.trainer.main_ppo
+  wandb_mode: disabled
+  used_model: no_api
+
+data:
+  train_files:
+    - /root/autodl-tmp/opd_mopd/G-OPD/G-OPD-Training-Data/math_and_code/train.parquet
+  val_files:
+    - /root/autodl-tmp/opd_mopd/G-OPD/G-OPD-Training-Data/PaperEval/AIME24/test.parquet
+    - /root/autodl-tmp/opd_mopd/G-OPD/G-OPD-Training-Data/PaperEval/AIME25/test.parquet
+    - /root/autodl-tmp/opd_mopd/G-OPD/G-OPD-Training-Data/PaperEval/HMMT25Feb/test.parquet
+    - /root/autodl-tmp/opd_mopd/G-OPD/G-OPD-Training-Data/PaperEval/HMMT25Nov/test.parquet
+    - /root/autodl-tmp/opd_mopd/G-OPD/G-OPD-Training-Data/Eurus/code_validation_with_metadata.parquet
+  train_batch_size: 1024
+  val_batch_size: 1024
+  max_prompt_length: 2048
+  max_response_length: 1024
+  filter_overlong_prompts: true
+  truncation: error
+  shuffle: true
+  validation_shuffle: false
+  seed: 42
+  return_raw_chat: true
+  enable_thinking: false
+
+model:
+  student_path: /root/autodl-tmp/opd_mopd/models/Qwen3-0.6B
+  student_base_path: null
+  math_teacher_path: /root/autodl-tmp/opd_mopd/models/Qwen3-4B-Non-Thinking-RL-Math-Step500
+  code_teacher_path: /root/autodl-tmp/opd_mopd/models/Qwen3-4B-Non-Thinking-RL-Code-Step300
+
+actor:
+  learning_rate: "1e-5"
+  lr_warmup_steps_ratio: 0.0
+  only_reverse_kl_advantages: true
+  lambda_vals: 1.0
+  multi_teacher_distill: true
+  ppo_mini_batch_size: 16
+  ppo_micro_batch_size_per_gpu: 1
+  use_kl_loss: true
+  kl_loss_coef: 0
+  kl_loss_type: low_var_kl
+  entropy_coeff: 0
+  ppo_max_token_len_per_gpu: 4096
+  gradient_checkpointing: true
+  param_offload: true
+  optimizer_offload: true
+
+rollout:
+  calculate_log_probs: true
+  log_prob_micro_batch_size_per_gpu: 1
+  tensor_model_parallel_size: 1
+  name: vllm
+  gpu_memory_utilization: 0.5
+  enforce_eager: true
+  enable_chunked_prefill: false
+  n: 1
+  max_num_batched_tokens: 32768
+  max_num_seqs: 8
+  temperature: 1.0
+  top_p: 1.0
+  val_n: 1
+  val_do_sample: false
+  val_temperature: 1.0
+  val_top_p: 1.0
+  seed: 42
+
+rollout_correction:
+  rollout_is: token
+  rollout_is_threshold: 5.0
+  rollout_rs: null
+  bypass_mode: false
+
+audit:
+  enabled: true
+  output_dir: /root/autodl-tmp/opd_mopd/audit/formal_single_a800
+  domains:
+    - math
+    - code
+  tensorboard_prefix: mopd
+  tensorboard_layout: domain_category
+  tensorboard_prune_mode: core
+  loss_variance_signal: opd_loss_token
+  max_samples_per_domain: 16
+  high_variance_cv_threshold: 1.0
+  log_sample_level: true
+  log_validation_metrics: true
+  tier2_window_size: 20
+  calibration_bins: 10
+  validation_anchor_enabled: true
+  validation_anchor_refresh_steps: 0
+  full_gradient_enabled: true
+  full_gradient_freq_steps: 1
+  full_gradient_train_max_samples_per_domain: null
+  full_gradient_validation_max_samples_per_domain: null
+  full_gradient_micro_batch_size_per_gpu: 1
+  full_gradient_storage_dtype: float32
+
+paper_eval:
+  enabled: true
+  script_path: /root/autodl-tmp/opd_mopd/OPD-code/scripts/run_paper_eval_suite.sh
+  model_path: null
+  output_dir: /root/autodl-tmp/opd_mopd/eval_outputs/paper_suite/formal_single_a800
+  datasets:
+    - aime24
+    - aime25
+    - hmmt25_feb
+    - hmmt25_nov
+    - humaneval_plus
+    - mbpp_plus
+    - lcb
+  run_on_initial_validation: true
+  evaluate_current_checkpoint: true
+  fail_on_error: false
+  timeout_seconds: 0
+
+trainer:
+  project_name: on-policy-distillation
+  experiment_name: Qwen3-4B-Multi-Teacher-ExOPD-formal-single-a800
+  logger: '["console","tensorboard"]'
+  n_gpus_per_node: 1
+  nnodes: 1
+  save_freq: 50
+  default_local_dir: /root/autodl-tmp/opd_mopd/checkpoints/formal_single_a800
+  test_freq: 1
+  total_epochs: 3
+  total_training_steps: null
+  max_actor_ckpt_to_keep: 2
+  max_critic_ckpt_to_keep: 1
+  critic_warmup: 0
+  val_before_train: true
+  log_val_generations: 10
+
+ray_kwargs:
+  ray_init:
+    include_dashboard: false
+    num_cpus: 8
