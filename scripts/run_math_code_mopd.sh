@@ -7,6 +7,7 @@ CONFIG_PATH="${MOPD_CONFIG:-${CODE_DIR}/configs/mopd_math_code.yaml}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 export PYTHONPATH="${CODE_DIR}:${PYTHONPATH:-}"
+export PYTHONINTMAXSTRDIGITS="${PYTHONINTMAXSTRDIGITS:-0}"
 
 ARGS=(--config "${CONFIG_PATH}")
 if [[ "${DRY_RUN:-0}" == "1" ]]; then

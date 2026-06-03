@@ -117,6 +117,10 @@ class MOPDAuditLogger:
         self.full_gradient_validation_max_samples_per_domain = _optional_positive_int(
             _cfg_get(audit_config, "full_gradient_validation_max_samples_per_domain", None)
         )
+        self.full_gradient_validation_files = list(_cfg_get(audit_config, "full_gradient_validation_files", []) or [])
+        self.full_gradient_validation_batch_size = _optional_positive_int(
+            _cfg_get(audit_config, "full_gradient_validation_batch_size", None)
+        )
         self.full_gradient_micro_batch_size_per_gpu = max(
             1,
             int(_cfg_get(audit_config, "full_gradient_micro_batch_size_per_gpu", 1)),

@@ -16,7 +16,9 @@ data:
     - ../G-OPD-Training-Data/PaperEval/AIME25/test.parquet
     - ../G-OPD-Training-Data/PaperEval/HMMT25Feb/test.parquet
     - ../G-OPD-Training-Data/PaperEval/HMMT25Nov/test.parquet
-    - ../G-OPD-Training-Data/Eurus/code_validation.parquet
+    - ../G-OPD-Training-Data/PaperEval/HumanEvalPlus/test.parquet
+    - ../G-OPD-Training-Data/PaperEval/MBPPPlus/test.parquet
+    - ../G-OPD-Training-Data/PaperEval/LiveCodeBench/test.parquet
   train_batch_size: 1024
   max_prompt_length: 2048
   max_response_length: 16384
@@ -92,6 +94,10 @@ audit:
   calibration_bins: 10
   validation_anchor_enabled: true
   validation_anchor_refresh_steps: 0
+  full_gradient_validation_files:
+    - ../G-OPD-Training-Data/PaperEval/AIME25/test.parquet
+    - ../G-OPD-Training-Data/PaperEval/HumanEvalPlus/test.parquet
+  full_gradient_validation_batch_size: 16
 
 paper_eval:
   enabled: false

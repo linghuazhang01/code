@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,6 +10,8 @@ import pandas as pd
 from mopd_verl.audit_proxy import extract_teacher_domains, extract_validation_datasets
 from mopd_verl.launch import build_command, format_command
 from mopd_verl.prepare_data import (
+    evalplus_jsonl_to_verl_parquet,
+    lcb_jsonl_to_verl_parquet,
     math_eval_jsonl_to_verl_parquet,
     merge_teacher_data,
     prepare_paper_eval_data,
@@ -44,6 +47,9 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("actor_rollout_ref.actor.policy_loss.lambda_vals=1.25", rendered)
         self.assertIn("../G-OPD-Training-Data/PaperEval/HMMT25Feb/test.parquet", rendered)
         self.assertIn("../G-OPD-Training-Data/PaperEval/HMMT25Nov/test.parquet", rendered)
+        self.assertIn("../G-OPD-Training-Data/PaperEval/HumanEvalPlus/test.parquet", rendered)
+        self.assertIn("../G-OPD-Training-Data/PaperEval/MBPPPlus/test.parquet", rendered)
+        self.assertIn("../G-OPD-Training-Data/PaperEval/LiveCodeBench/test.parquet", rendered)
 
     def test_audit_smoke_command_contains_tensorboard_and_audit_settings(self) -> None:
         config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_audit_smoke.yaml"
@@ -72,12 +78,18 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("+mopd_audit.full_gradient_freq_steps=1", rendered)
         self.assertIn("+mopd_audit.full_gradient_train_max_samples_per_domain=null", rendered)
         self.assertIn("+mopd_audit.full_gradient_validation_max_samples_per_domain=null", rendered)
+        self.assertIn("+mopd_audit.full_gradient_validation_files=", rendered)
+        self.assertIn("PaperEval/AIME25/test.parquet", rendered)
+        self.assertIn("PaperEval/HumanEvalPlus/test.parquet", rendered)
+        self.assertIn("+mopd_audit.full_gradient_validation_batch_size=16", rendered)
         self.assertIn("+mopd_audit.full_gradient_micro_batch_size_per_gpu=1", rendered)
         self.assertIn("+mopd_audit.tensorboard_prune_mode=core", rendered)
         self.assertIn("PaperEval/AIME24/test.parquet", rendered)
         self.assertIn("PaperEval/AIME25/test.parquet", rendered)
         self.assertIn("PaperEval/HMMT25Feb/test.parquet", rendered)
         self.assertIn("PaperEval/HMMT25Nov/test.parquet", rendered)
+        self.assertIn("PaperEval/MBPPPlus/test.parquet", rendered)
+        self.assertIn("PaperEval/LiveCodeBench/test.parquet", rendered)
         self.assertIn("+paper_eval.enabled=true", rendered)
         self.assertIn("run_paper_eval_suite.sh", rendered)
         self.assertIn("+paper_eval.datasets=", rendered)
@@ -372,7 +384,65 @@ class MOPDVerlTests(unittest.TestCase):
             self.assertEqual(frame.iloc[0]["extra_info"]["validation_dataset"], "HMMT25Feb")
             self.assertEqual(frame.iloc[0]["extra_info"]["sample_id"], "validation:HMMT25Feb:p0")
 
-    def test_prepare_paper_eval_data_writes_four_math_eval_parquets(self) -> None:
+    def test_evalplus_jsonl_to_verl_parquet_adds_code_validation_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            jsonl_path = temp_path / "HumanEvalPlus.jsonl"
+            parquet_path = temp_path / "test.parquet"
+            evalplus_record = {
+                "task_id": "HumanEval/0",
+                "prompt": "def add(a, b):\n",
+                "entry_point": "add",
+                "canonical_solution": "    return a + b\n",
+                "base_input": [[1, 2]],
+                "plus_input": [[3, 4]],
+                "test": "def check(candidate):\n    assert candidate(1, 2) == 3\n",
+            }
+            jsonl_path.write_text(json.dumps(evalplus_record) + "\n", encoding="utf-8")
+
+            row_count = evalplus_jsonl_to_verl_parquet(jsonl_path, parquet_path, "HumanEvalPlus")
+            frame = pd.read_parquet(parquet_path)
+            ground_truth = frame.iloc[0]["reward_model"]["ground_truth"]
+
+            self.assertEqual(row_count, 1)
+            self.assertEqual(frame.iloc[0]["data_source"], "HumanEvalPlus")
+            self.assertEqual(frame.iloc[0]["ability"], "code")
+            self.assertEqual(frame.iloc[0]["extra_info"]["opd_teacher"], "code")
+            self.assertEqual(frame.iloc[0]["extra_info"]["validation_dataset"], "HumanEvalPlus")
+            self.assertIn('"entry_point": "add"', ground_truth)
+            self.assertIn('"assert_case"', ground_truth)
+            self.assertIn("check(add)", ground_truth)
+
+    def test_lcb_jsonl_to_verl_parquet_adds_code_validation_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            jsonl_path = temp_path / "test.jsonl"
+            parquet_path = temp_path / "test.parquet"
+            record = {
+                "question_title": "Add numbers",
+                "question_content": "Implement add.",
+                "platform": "leetcode",
+                "question_id": "q0",
+                "contest_id": "c0",
+                "contest_date": "2025-01-01T00:00:00",
+                "starter_code": "def add(a, b):",
+                "difficulty": "easy",
+                "public_test_cases": '[{"input":"1\\n2","output":"3","testtype":"stdin"}]',
+                "private_test_cases": '[{"input":"3\\n4","output":"7","testtype":"stdin"}]',
+                "metadata": "{}",
+            }
+            jsonl_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            row_count = lcb_jsonl_to_verl_parquet([jsonl_path], parquet_path)
+            frame = pd.read_parquet(parquet_path)
+
+            self.assertEqual(row_count, 1)
+            self.assertEqual(frame.iloc[0]["data_source"], "LiveCodeBench")
+            self.assertEqual(frame.iloc[0]["ability"], "code")
+            self.assertEqual(frame.iloc[0]["extra_info"]["validation_dataset"], "LiveCodeBench")
+            self.assertIn('"outputs": ["3"]', frame.iloc[0]["reward_model"]["ground_truth"])
+
+    def test_prepare_paper_eval_data_writes_all_validation_parquets(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "G-OPD"
             for relative in ["aime24", "aime25", "hmmt25_feb", "hmmt25_nov"]:
@@ -382,15 +452,64 @@ class MOPDVerlTests(unittest.TestCase):
                     '{"id":"0","problem":"Compute 1+1.","answer":"2"}\n',
                     encoding="utf-8",
                 )
+            code_data_dir = root / "code_eval" / "data"
+            code_data_dir.mkdir(parents=True, exist_ok=True)
+            evalplus_record = {
+                "task_id": "HumanEval/0",
+                "prompt": "def add(a, b):\n",
+                "entry_point": "add",
+                "canonical_solution": "    return a + b\n",
+                "base_input": [[1, 2]],
+                "plus_input": [[3, 4]],
+                "test": "def check(candidate):\n    assert candidate(1, 2) == 3\n",
+            }
+            evalplus_row = json.dumps(evalplus_record) + "\n"
+            (code_data_dir / "HumanEvalPlus.jsonl").write_text(evalplus_row, encoding="utf-8")
+            mbpp_record = {
+                **evalplus_record,
+                "task_id": "Mbpp/0",
+                "assertion": "assert add(1, 2) == 3",
+            }
+            (code_data_dir / "MbppPlus.jsonl").write_text(json.dumps(mbpp_record) + "\n", encoding="utf-8")
+            lcb_dir = root / "code_eval" / "coding" / "LiveCodeBench" / "code_generation_lite"
+            lcb_dir.mkdir(parents=True, exist_ok=True)
+            lcb_record = {
+                "question_title": "Add numbers",
+                "question_content": "Implement add.",
+                "platform": "leetcode",
+                "question_id": "q0",
+                "contest_id": "c0",
+                "contest_date": "2025-01-01T00:00:00",
+                "starter_code": "def add(a, b):",
+                "difficulty": "easy",
+                "public_test_cases": '[{"input":"1\\n2","output":"3","testtype":"stdin"}]',
+                "private_test_cases": "[]",
+                "metadata": "{}",
+            }
+            (lcb_dir / "test.jsonl").write_text(json.dumps(lcb_record) + "\n", encoding="utf-8")
 
             counts = prepare_paper_eval_data(root)
             output_root = root / "G-OPD-Training-Data" / "PaperEval"
 
-            self.assertEqual(counts, {"aime24": 1, "aime25": 1, "hmmt25_feb": 1, "hmmt25_nov": 1})
+            self.assertEqual(
+                counts,
+                {
+                    "aime24": 1,
+                    "aime25": 1,
+                    "hmmt25_feb": 1,
+                    "hmmt25_nov": 1,
+                    "humaneval_plus": 1,
+                    "mbpp_plus": 1,
+                    "lcb": 1,
+                },
+            )
             self.assertTrue((output_root / "AIME24" / "test.parquet").exists())
             self.assertTrue((output_root / "AIME25" / "test.parquet").exists())
             self.assertTrue((output_root / "HMMT25Feb" / "test.parquet").exists())
             self.assertTrue((output_root / "HMMT25Nov" / "test.parquet").exists())
+            self.assertTrue((output_root / "HumanEvalPlus" / "test.parquet").exists())
+            self.assertTrue((output_root / "MBPPPlus" / "test.parquet").exists())
+            self.assertTrue((output_root / "LiveCodeBench" / "test.parquet").exists())
 
     def test_validate_teacher_labels_rejects_missing_or_invalid_labels(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

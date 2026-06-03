@@ -12,6 +12,9 @@ from typing import Any
 
 import pandas as pd
 
+if hasattr(sys, "set_int_max_str_digits"):
+    sys.set_int_max_str_digits(0)
+
 VALID_TEACHERS = {"math", "code"}
 PAPER_MATH_EVAL_PROMPT = (
     "Please reason step by step, and put your final answer within \\boxed{}."
@@ -22,6 +25,26 @@ PAPER_MATH_EVAL_SPECS = {
     "hmmt25_feb": ("HMMT25Feb", "data/hmmt25_feb/test.jsonl", "PaperEval/HMMT25Feb/test.parquet"),
     "hmmt25_nov": ("HMMT25Nov", "data/hmmt25_nov/test.jsonl", "PaperEval/HMMT25Nov/test.parquet"),
 }
+PAPER_CODE_EVAL_SPECS = {
+    "humaneval_plus": ("HumanEvalPlus", "code_eval/data/HumanEvalPlus.jsonl", "PaperEval/HumanEvalPlus/test.parquet"),
+    "mbpp_plus": ("MBPPPlus", "code_eval/data/MbppPlus.jsonl", "PaperEval/MBPPPlus/test.parquet"),
+}
+LCB_RELEASE_FILES = {
+    "release_v1": ["test.jsonl"],
+    "release_v2": ["test.jsonl", "test2.jsonl"],
+    "release_v3": ["test.jsonl", "test2.jsonl", "test3.jsonl"],
+    "release_v4": ["test.jsonl", "test2.jsonl", "test3.jsonl", "test4.jsonl"],
+    "release_v5": ["test.jsonl", "test2.jsonl", "test3.jsonl", "test4.jsonl", "test5.jsonl"],
+    "release_v6": ["test.jsonl", "test2.jsonl", "test3.jsonl", "test4.jsonl", "test5.jsonl", "test6.jsonl"],
+    "release_latest": ["test.jsonl", "test2.jsonl", "test3.jsonl", "test4.jsonl", "test5.jsonl", "test6.jsonl"],
+}
+for _lcb_idx in range(1, 7):
+    LCB_RELEASE_FILES[f"v{_lcb_idx}"] = ["test.jsonl" if _lcb_idx == 1 else f"test{_lcb_idx}.jsonl"]
+
+CODE_EVAL_PROMPT_PREFIX = (
+    "Write a Python solution for the following programming problem. "
+    "Return only the code, without explanations.\n\n"
+)
 
 
 @dataclass(frozen=True)
@@ -154,8 +177,137 @@ def math_eval_jsonl_to_verl_parquet(input_path: str | Path, output_path: str | P
     return len(rows)
 
 
+def _evalplus_ground_truth(record: Mapping[str, Any], data_source: str) -> str:
+    entry_point = str(record["entry_point"])
+    if data_source == "HumanEvalPlus":
+        assert_case = str(record.get("test", "")).strip()
+        if "check(" in assert_case:
+            assert_case = f"{assert_case}\ncheck({entry_point})"
+    else:
+        assert_case = str(record.get("assertion", "")).strip()
+    return json.dumps(
+        {
+            "prompt": str(record.get("prompt", "")),
+            "entry_point": entry_point,
+            "assert_case": assert_case,
+            "dataset": data_source,
+        },
+        ensure_ascii=False,
+    )
+
+
+def evalplus_jsonl_to_verl_parquet(input_path: str | Path, output_path: str | Path, data_source: str) -> int:
+    """Convert HumanEval+/MBPP+ JSONL files into verl validation parquet format."""
+
+    source = Path(input_path)
+    output = Path(output_path)
+    rows: list[dict[str, Any]] = []
+    for row_position, record in enumerate(_load_jsonl(source)):
+        task_id = str(record.get("task_id", row_position))
+        prompt = str(record.get("prompt", "")).strip()
+        if not prompt:
+            raise ValueError(f"{source}:{row_position + 1} must contain a non-empty prompt.")
+        rows.append(
+            {
+                "id": f"{data_source}:{task_id}",
+                "data_source": data_source,
+                "prompt": [
+                    {
+                        "role": "user",
+                        "content": CODE_EVAL_PROMPT_PREFIX + prompt,
+                    }
+                ],
+                "ability": "code",
+                "reward_model": {"style": "rule", "ground_truth": _evalplus_ground_truth(record, data_source)},
+                "extra_info": {
+                    "index": row_position,
+                    "split": "test",
+                    "sample_id": f"validation:{data_source}:{task_id}",
+                    "opd_teacher": "code",
+                    "domain": "code",
+                    "source_domain": "code",
+                    "validation_dataset": data_source,
+                    "entry_point": record.get("entry_point"),
+                    "task_id": task_id,
+                },
+            }
+        )
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_parquet(output, index=False)
+    return len(rows)
+
+
+def _json_loads_if_needed(value: Any) -> Any:
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
+def _lcb_ground_truth(record: Mapping[str, Any]) -> str:
+    metadata = _json_loads_if_needed(record.get("metadata", "{}")) or {}
+    public_tests = _json_loads_if_needed(record.get("public_test_cases", "[]")) or []
+    return json.dumps(
+        {
+            "inputs": [str(test.get("input", "")) for test in public_tests],
+            "outputs": [str(test.get("output", "")) for test in public_tests],
+            "fn_name": metadata.get("func_name"),
+        },
+        ensure_ascii=False,
+    )
+
+
+def lcb_jsonl_to_verl_parquet(input_paths: Sequence[str | Path], output_path: str | Path) -> int:
+    """Convert LiveCodeBench code-generation-lite JSONL shards into verl validation parquet format."""
+
+    output = Path(output_path)
+    rows: list[dict[str, Any]] = []
+    for input_path in input_paths:
+        source = Path(input_path)
+        if not source.exists():
+            continue
+        for record in _load_jsonl(source):
+            row_position = len(rows)
+            question_id = str(record.get("question_id", row_position))
+            title = str(record.get("question_title", "")).strip()
+            question = str(record.get("question_content", "")).strip()
+            starter_code = str(record.get("starter_code", "") or "").strip()
+            prompt_parts = [part for part in [title, question, starter_code] if part]
+            if not prompt_parts:
+                raise ValueError(f"{source}:{row_position + 1} must contain question text or starter code.")
+            rows.append(
+                {
+                    "id": f"LiveCodeBench:{question_id}",
+                    "data_source": "LiveCodeBench",
+                    "prompt": [
+                        {
+                            "role": "user",
+                            "content": CODE_EVAL_PROMPT_PREFIX + "\n\n".join(prompt_parts),
+                        }
+                    ],
+                    "ability": "code",
+                    "reward_model": {"style": "rule", "ground_truth": _lcb_ground_truth(record)},
+                    "extra_info": {
+                        "index": row_position,
+                        "split": "test",
+                        "sample_id": f"validation:LiveCodeBench:{question_id}",
+                        "opd_teacher": "code",
+                        "domain": "code",
+                        "source_domain": "code",
+                        "validation_dataset": "LiveCodeBench",
+                        "question_id": question_id,
+                        "platform": record.get("platform"),
+                    },
+                }
+            )
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_parquet(output, index=False)
+    return len(rows)
+
+
 def prepare_paper_eval_data(gopd_dir: str | Path, output_root: str | Path | None = None) -> dict[str, int]:
-    """Prepare AIME/HMMT paper-eval validation parquets under a G-OPD checkout."""
+    """Prepare paper-eval validation parquets under a G-OPD checkout."""
 
     root = Path(gopd_dir)
     target_root = Path(output_root) if output_root is not None else root / "G-OPD-Training-Data"
@@ -166,6 +318,18 @@ def prepare_paper_eval_data(gopd_dir: str | Path, output_root: str | Path | None
             output_path=target_root / parquet_relative,
             data_source=data_source,
         )
+    for dataset_name, (data_source, jsonl_relative, parquet_relative) in PAPER_CODE_EVAL_SPECS.items():
+        counts[dataset_name] = evalplus_jsonl_to_verl_parquet(
+            input_path=root / jsonl_relative,
+            output_path=target_root / parquet_relative,
+            data_source=data_source,
+        )
+    lcb_root = root / "code_eval/coding/LiveCodeBench/code_generation_lite"
+    lcb_files = [lcb_root / name for name in LCB_RELEASE_FILES["release_v6"]]
+    counts["lcb"] = lcb_jsonl_to_verl_parquet(
+        input_paths=lcb_files,
+        output_path=target_root / "PaperEval/LiveCodeBench/test.parquet",
+    )
     return counts
 
 

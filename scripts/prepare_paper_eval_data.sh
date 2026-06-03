@@ -22,11 +22,21 @@ export HF_HOME="${HF_HOME}"
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 export HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-1}"
 export PYTHONPATH="${CODE_DIR}:${G_OPD_DIR}/verl:${PYTHONPATH:-}"
+export PYTHONINTMAXSTRDIGITS="${PYTHONINTMAXSTRDIGITS:-0}"
 
 source "${CONDA_ROOT}/etc/profile.d/conda.sh"
 conda activate "${ENV_NAME}"
 
 python "${CODE_DIR}/scripts/apply_gopd_audit_patch.py" "${G_OPD_DIR}"
+
+if [[ "${DOWNLOAD_LCB}" == "1" ]]; then
+  mkdir -p "${LCB_DIR}"
+  huggingface-cli download livecodebench/code_generation_lite \
+    --repo-type dataset \
+    --local-dir "${LCB_DIR}" \
+    --include "test*.jsonl"
+fi
+
 python -m mopd_verl.prepare_data prepare-paper-eval --gopd-dir "${G_OPD_DIR}"
 
 python - <<'PY'
@@ -40,19 +50,13 @@ paths = {
     "AIME25": root / "PaperEval/AIME25/test.parquet",
     "HMMT25Feb": root / "PaperEval/HMMT25Feb/test.parquet",
     "HMMT25Nov": root / "PaperEval/HMMT25Nov/test.parquet",
-    "EurusCodeValidation": root / "Eurus/code_validation.parquet",
+    "HumanEvalPlus": root / "PaperEval/HumanEvalPlus/test.parquet",
+    "MBPPPlus": root / "PaperEval/MBPPPlus/test.parquet",
+    "LiveCodeBench": root / "PaperEval/LiveCodeBench/test.parquet",
 }
 for name, path in paths.items():
     print(f"{name}\t{len(pd.read_parquet(path))}\t{path}")
 PY
-
-if [[ "${DOWNLOAD_LCB}" == "1" ]]; then
-  mkdir -p "${LCB_DIR}"
-  huggingface-cli download livecodebench/code_generation_lite \
-    --repo-type dataset \
-    --local-dir "${LCB_DIR}" \
-    --include "test*.jsonl"
-fi
 
 python - <<'PY'
 import os

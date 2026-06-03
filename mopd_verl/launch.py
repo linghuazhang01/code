@@ -55,6 +55,9 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"{_hydra_scalar(audit.full_gradient_train_max_samples_per_domain)}",
         "+mopd_audit.full_gradient_validation_max_samples_per_domain="
         f"{_hydra_scalar(audit.full_gradient_validation_max_samples_per_domain)}",
+        f"+mopd_audit.full_gradient_validation_files={_hydra_list(audit.full_gradient_validation_files)}",
+        "+mopd_audit.full_gradient_validation_batch_size="
+        f"{_hydra_scalar(audit.full_gradient_validation_batch_size)}",
         f"+mopd_audit.full_gradient_micro_batch_size_per_gpu={audit.full_gradient_micro_batch_size_per_gpu}",
         f"+mopd_audit.full_gradient_storage_dtype={audit.full_gradient_storage_dtype}",
     ]
@@ -198,6 +201,7 @@ def format_command(command: Sequence[str]) -> str:
 def run_command(command: Sequence[str], config: MOPDConfig) -> int:
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
+    env.setdefault("PYTHONINTMAXSTRDIGITS", "0")
     env.setdefault("WANDB_MODE", config.runtime.wandb_mode)
     env.setdefault("USED_MODEL", config.runtime.used_model)
     return subprocess.call(list(command), env=env)

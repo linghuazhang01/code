@@ -114,6 +114,8 @@ class AuditConfig:
     full_gradient_freq_steps: int = 1
     full_gradient_train_max_samples_per_domain: int | None = None
     full_gradient_validation_max_samples_per_domain: int | None = None
+    full_gradient_validation_files: list[str] = field(default_factory=list)
+    full_gradient_validation_batch_size: int | None = None
     full_gradient_micro_batch_size_per_gpu: int = 1
     full_gradient_storage_dtype: str = "float32"
 
