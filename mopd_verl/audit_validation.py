@@ -8,6 +8,8 @@ from typing import Any
 def should_update_validation_anchor(logger: Any, step: int) -> bool:
     if not logger.enabled or not logger.validation_anchor_enabled or not logger.full_gradient_enabled:
         return False
+    if step <= 0 and not logger.validation_anchor_on_step0:
+        return False
     if logger._validation_anchor_step is None:
         return True
     if step == logger._validation_anchor_step:

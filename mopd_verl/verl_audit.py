@@ -72,6 +72,10 @@ def _var(values: list[float]) -> float | None:
     return float(np.var(values)) if values else None
 
 
+def _std(values: list[float]) -> float | None:
+    return float(np.std(values)) if values else None
+
+
 def _optional_positive_int(value: Any) -> int | None:
     if value is None or str(value).lower() in {"", "none", "null"}:
         return None
@@ -85,8 +89,46 @@ def _mask_mean(matrix: Any, mask: Any) -> Any:
     return (matrix * mask).sum(dim=-1) / denom
 
 
+def _masked_token_stats(matrix: Any, mask: Any) -> dict[str, float | None]:
+    import torch
+
+    denom = mask.sum()
+    if float(denom.detach().cpu().item()) <= 0:
+        return {"mean": None, "std": None, "variance": None}
+    mean = (matrix * mask).sum() / denom
+    sq_mean = (matrix.square() * mask).sum() / denom
+    variance = torch.clamp(sq_mean - mean.square(), min=0.0)
+    std = torch.sqrt(variance)
+    return {
+        "mean": float(mean.detach().cpu().item()),
+        "std": float(std.detach().cpu().item()),
+        "variance": float(variance.detach().cpu().item()),
+    }
+
+
+def _sample_value_stats(values: list[float]) -> dict[str, float | None]:
+    return {
+        "mean": _mean(values),
+        "std": _std(values),
+        "variance": _var(values),
+    }
+
+
 def _tensor_to_float_list(tensor: Any) -> list[float]:
     return [float(x) for x in tensor.detach().float().cpu().tolist()]
+
+
+def _scalar_float(value: Any) -> float | None:
+    converted = _to_builtin(value)
+    if isinstance(converted, dict):
+        for key in ("lr", "learning_rate"):
+            numeric = _scalar_float(converted.get(key))
+            if numeric is not None:
+                return numeric
+        return None
+    if isinstance(converted, (list, tuple)):
+        return _scalar_float(converted[0]) if converted else None
+    return finite_float(converted)
 
 
 class MOPDAuditLogger:
@@ -108,6 +150,7 @@ class MOPDAuditLogger:
         self.tier2_window_size = max(2, int(_cfg_get(audit_config, "tier2_window_size", 20)))
         self.calibration_bins = max(1, int(_cfg_get(audit_config, "calibration_bins", 10)))
         self.validation_anchor_enabled = bool(_cfg_get(audit_config, "validation_anchor_enabled", True))
+        self.validation_anchor_on_step0 = bool(_cfg_get(audit_config, "validation_anchor_on_step0", False))
         self.validation_anchor_refresh_steps = int(_cfg_get(audit_config, "validation_anchor_refresh_steps", 0))
         self.full_gradient_enabled = bool(_cfg_get(audit_config, "full_gradient_enabled", False))
         self.full_gradient_freq_steps = max(1, int(_cfg_get(audit_config, "full_gradient_freq_steps", 1)))
@@ -215,7 +258,11 @@ class MOPDAuditLogger:
             policy_lr = _cfg_get(policy_lr, "lr", policy_lr)
         except Exception:
             policy_lr = None
-        return finite_float(policy_lr) or 0.0
+        return _scalar_float(policy_lr) or 0.0
+
+    def _learning_rate_value(self, lr: Any) -> float:
+        numeric = _scalar_float(lr)
+        return numeric if numeric is not None else self._current_learning_rate_value()
 
     def _write_jsonl(self, filename: str, rows: list[dict[str, Any]]) -> None:
         if not self.enabled or not rows:
@@ -286,11 +333,12 @@ class MOPDAuditLogger:
                     - (teacher_log_prob - base_log_prob[idx]) * self.lambda_vals
                 )
 
-        sample_loss_mean = _mask_mean(reverse_kl, response_mask)
+        sample_token_opd_loss_mean = _mask_mean(reverse_kl, response_mask)
+        sample_opd_loss = (reverse_kl * response_mask).sum(dim=-1)
         sample_loss_sq_mean = _mask_mean(reverse_kl.square(), response_mask)
-        sample_loss_var = torch.clamp(sample_loss_sq_mean - sample_loss_mean.square(), min=0.0)
+        sample_loss_var = torch.clamp(sample_loss_sq_mean - sample_token_opd_loss_mean.square(), min=0.0)
         sample_loss_std = torch.sqrt(sample_loss_var)
-        sample_loss_cv = sample_loss_std / (sample_loss_mean.abs() + 1e-8)
+        sample_loss_cv = sample_loss_std / (sample_token_opd_loss_mean.abs() + 1e-8)
         effective_tokens = response_mask.sum(dim=-1).detach().cpu().tolist()
         teacher_student_gap = _mask_mean(teacher_log_probs - old_log_probs, response_mask)
         teacher_logprob_mean = _mask_mean(teacher_log_probs, response_mask)
@@ -298,25 +346,31 @@ class MOPDAuditLogger:
         sample_advantage_mean = _mask_mean(advantages, response_mask)
 
         token_scores = tensor_batch["token_level_scores"].detach().float() if "token_level_scores" in batch_keys else None
+        sample_reward = None
         sample_correctness = None
         if token_scores is not None:
-            sample_correctness = (token_scores * response_mask).sum(dim=-1).gt(0).detach().float()
+            sample_reward = (token_scores * response_mask).sum(dim=-1)
+            sample_correctness = sample_reward.gt(0).detach().float()
 
         configured_domains = list(dict.fromkeys(self.domains + sorted(set(labels))))
         total_tokens = float(response_mask.sum().item())
         total_samples = float(batch_size)
+        learning_rate = self._learning_rate_value(lr)
         metrics: dict[str, float] = {}
+        metrics[self._global_tag("optimization", "learning_rate")] = learning_rate
         domain_rows: list[dict[str, Any]] = []
         variance_rows: list[dict[str, Any]] = []
         sample_rows: list[dict[str, Any]] = []
 
-        loss_means = _tensor_to_float_list(sample_loss_mean)
+        opd_losses = _tensor_to_float_list(sample_opd_loss)
+        sample_token_opd_loss_means = _tensor_to_float_list(sample_token_opd_loss_mean)
         sample_loss_vars = _tensor_to_float_list(sample_loss_var)
         loss_cvs = _tensor_to_float_list(sample_loss_cv)
         token_counts = [float(x) for x in effective_tokens]
         gap_means = _tensor_to_float_list(teacher_student_gap)
         teacher_logprob_means = _tensor_to_float_list(teacher_logprob_mean)
         advantage_means = _tensor_to_float_list(sample_advantage_mean)
+        reward_values = _tensor_to_float_list(sample_reward) if sample_reward is not None else None
         correctness_values = _tensor_to_float_list(sample_correctness) if sample_correctness is not None else None
 
         indices_by_domain = {
@@ -332,13 +386,20 @@ class MOPDAuditLogger:
             safe_domain = safe_name(domain)
             domain_token_count = token_count_by_domain[domain]
             domain_sample_count = sample_count_by_domain[domain]
-            domain_losses = [loss_means[idx] for idx in indices]
             domain_loss_vars = [sample_loss_vars[idx] for idx in indices]
             domain_cvs = [loss_cvs[idx] for idx in indices]
             domain_gaps = [gap_means[idx] for idx in indices]
             domain_teacher_logprobs = [teacher_logprob_means[idx] for idx in indices]
             domain_advantages = [advantage_means[idx] for idx in indices]
+            domain_rewards = [reward_values[idx] for idx in indices] if reward_values is not None else []
             domain_sample_ids = [sample_ids[idx] for idx in indices]
+            domain_token_stats = (
+                _masked_token_stats(reverse_kl[indices], response_mask[indices])
+                if indices
+                else {"mean": None, "std": None, "variance": None}
+            )
+            domain_sample_losses = [opd_losses[idx] for idx in indices]
+            domain_sample_stats = _sample_value_stats(domain_sample_losses)
 
             confidence_values = [float(np.clip(math.exp(value), 0.0, 1.0)) for value in domain_teacher_logprobs]
             correctness_for_domain = [correctness_values[idx] for idx in indices] if correctness_values is not None else []
@@ -353,16 +414,22 @@ class MOPDAuditLogger:
             row = {
                 "step": step,
                 "domain": domain,
+                "learning_rate": learning_rate,
                 "domain_sample_count": domain_sample_count,
                 "domain_token_count": domain_token_count,
                 "domain_token_frac": domain_token_count / total_tokens if total_tokens else 0.0,
-                "opd_loss_mean": _mean(domain_losses),
-                "opd_loss_variance": _var(domain_losses),
-                "sample_loss_variance_mean": _mean(domain_loss_vars),
+                "token_opd_loss_mean": domain_token_stats["mean"],
+                "token_opd_loss_std": domain_token_stats["std"],
+                "token_opd_loss_variance": domain_token_stats["variance"],
+                "sample_opd_loss_mean": domain_sample_stats["mean"],
+                "sample_opd_loss_std": domain_sample_stats["std"],
+                "sample_opd_loss_variance": domain_sample_stats["variance"],
                 "high_variance_sample_rate": None
                 if not domain_cvs
                 else float(np.mean([cv > self.high_variance_cv_threshold for cv in domain_cvs])),
                 "advantage_mean": _mean(domain_advantages),
+                "training_reward_mean": _mean(domain_rewards),
+                "training_accuracy": _mean(correctness_for_domain),
                 "teacher_student_gap_mean": _mean(domain_gaps),
                 "teacher_confidence_mean": _mean(confidence_values),
                 "calibration_error": calibration_error,
@@ -373,13 +440,17 @@ class MOPDAuditLogger:
                 {
                     "step": step,
                     "domain": domain,
+                    "learning_rate": learning_rate,
                     "metric_scope": "domain_step",
                     "loss_name": "opd_loss_token",
                     "domain_sample_count": domain_sample_count,
                     "domain_token_count": domain_token_count,
-                    "opd_loss_mean": row["opd_loss_mean"],
-                    "opd_loss_variance": row["opd_loss_variance"],
-                    "sample_loss_variance_mean": row["sample_loss_variance_mean"],
+                    "token_opd_loss_mean": row["token_opd_loss_mean"],
+                    "token_opd_loss_std": row["token_opd_loss_std"],
+                    "token_opd_loss_variance": row["token_opd_loss_variance"],
+                    "sample_opd_loss_mean": row["sample_opd_loss_mean"],
+                    "sample_opd_loss_std": row["sample_opd_loss_std"],
+                    "sample_opd_loss_variance": row["sample_opd_loss_variance"],
                     "high_variance_sample_rate": row["high_variance_sample_rate"],
                 }
             )
@@ -388,11 +459,16 @@ class MOPDAuditLogger:
                 "domain_sample_count",
                 "domain_token_count",
                 "domain_token_frac",
-                "opd_loss_mean",
-                "opd_loss_variance",
-                "sample_loss_variance_mean",
+                "token_opd_loss_mean",
+                "token_opd_loss_std",
+                "token_opd_loss_variance",
+                "sample_opd_loss_mean",
+                "sample_opd_loss_std",
+                "sample_opd_loss_variance",
                 "high_variance_sample_rate",
                 "advantage_mean",
+                "training_reward_mean",
+                "training_accuracy",
                 "teacher_student_gap_mean",
                 "teacher_confidence_mean",
                 "calibration_error",
@@ -410,15 +486,33 @@ class MOPDAuditLogger:
                             "step": step,
                             "domain": domain,
                             "sample_id": sample_ids[idx],
+                            "learning_rate": learning_rate,
                             "metric_scope": "sample_token",
                             "loss_name": "opd_loss_token",
                             "effective_tokens": token_counts[idx],
-                            "sample_loss_mean": loss_means[idx],
-                            "sample_loss_variance": float(sample_loss_var[idx].detach().cpu().item()),
+                            "opd_loss": opd_losses[idx],
+                            "sample_token_opd_loss_mean": sample_token_opd_loss_means[idx],
+                            "sample_token_opd_loss_variance": float(sample_loss_var[idx].detach().cpu().item()),
+                            "training_reward": None if reward_values is None else reward_values[idx],
+                            "training_correctness": None if correctness_values is None else correctness_values[idx],
                         }
                     )
 
         if total_tokens:
+            global_token_stats = _masked_token_stats(reverse_kl, response_mask)
+            global_sample_stats = _sample_value_stats(opd_losses)
+            global_loss_metrics = {
+                "token_opd_loss_mean": global_token_stats["mean"],
+                "token_opd_loss_std": global_token_stats["std"],
+                "token_opd_loss_variance": global_token_stats["variance"],
+                "sample_opd_loss_mean": global_sample_stats["mean"],
+                "sample_opd_loss_std": global_sample_stats["std"],
+                "sample_opd_loss_variance": global_sample_stats["variance"],
+            }
+            for key, value in global_loss_metrics.items():
+                numeric = finite_float(value)
+                if numeric is not None:
+                    metrics[self._global_tag("loss", key)] = numeric
             mix = [row["domain_token_frac"] for row in domain_rows if row["domain_token_frac"]]
             entropy = -sum(frac * math.log(frac) for frac in mix)
             metrics[self._global_tag("data", "domain_mix_entropy")] = entropy

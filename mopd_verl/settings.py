@@ -109,6 +109,7 @@ class AuditConfig:
     tier2_window_size: int = 20
     calibration_bins: int = 10
     validation_anchor_enabled: bool = True
+    validation_anchor_on_step0: bool = False
     validation_anchor_refresh_steps: int = 0
     full_gradient_enabled: bool = False
     full_gradient_freq_steps: int = 1

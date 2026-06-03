@@ -81,6 +81,58 @@ even if the training update itself is stable.
 it will substantially lengthen each validation on a single A800. Disable it with
 `+paper_eval.enabled=false` for smoke-only runs.
 
+## Start Training
+
+Run the formal single-A800 training from the remote `OPD-code` checkout:
+
+```bash
+cd /root/autodl-tmp/opd_mopd/OPD-code
+source /root/miniconda3/etc/profile.d/conda.sh
+conda activate mopd-verl
+
+MOPD_CONFIG=configs/mopd_formal_single_a800.yaml \
+PYTHON_BIN=python \
+bash scripts/run_math_code_mopd.sh
+```
+
+To print the generated Hydra command without starting training:
+
+```bash
+cd /root/autodl-tmp/opd_mopd/OPD-code
+source /root/miniconda3/etc/profile.d/conda.sh
+conda activate mopd-verl
+
+DRY_RUN=1 \
+MOPD_CONFIG=configs/mopd_formal_single_a800.yaml \
+PYTHON_BIN=python \
+bash scripts/run_math_code_mopd.sh
+```
+
+To run in a detached `screen` and save logs:
+
+```bash
+mkdir -p /root/autodl-tmp/opd_mopd/logs
+screen -dmS mopd_formal bash -lc '
+cd /root/autodl-tmp/opd_mopd/OPD-code &&
+source /root/miniconda3/etc/profile.d/conda.sh &&
+conda activate mopd-verl &&
+MOPD_CONFIG=configs/mopd_formal_single_a800.yaml PYTHON_BIN=python \
+bash scripts/run_math_code_mopd.sh 2>&1 | tee /root/autodl-tmp/opd_mopd/logs/formal_$(date +%Y%m%d_%H%M%S).log
+'
+```
+
+Temporary Hydra overrides can be appended after `--`. For example, this keeps the
+formal config but disables external paper eval for a faster sanity run:
+
+```bash
+MOPD_CONFIG=configs/mopd_formal_single_a800.yaml \
+PYTHON_BIN=python \
+bash scripts/run_math_code_mopd.sh -- +paper_eval.enabled=false
+```
+
+For a one-step smoke test, use `scripts/run_remote_one_step_smoke.sh` instead of
+the formal config.
+
 ## Training Data
 
 Production data:
@@ -220,7 +272,7 @@ TensorBoard layout:
 - Event dir: `/root/autodl-tmp/opd_mopd/tensorboard/audit_smoke`
 - Scalar tag count: `134`
 - Audit tags use the `domain/category/metric` layout by default. The first
-  TensorBoard level is the domain name, for example `math/loss/opd_loss_variance`,
+  TensorBoard level is the domain name, for example `math/loss/token_opd_loss_variance`,
   `math/full_grad/grad_norm`, `math/full_grad_anchor/AIME2024/full_grad_cosine_i_j`,
   `math/validation/score`, and `math/validation_gain/score`.
 - Non-domain metrics use `global/category/metric`, for example
@@ -231,7 +283,7 @@ Audit JSONL files:
 
 - `domain_step_metrics.jsonl`: per-step, per-domain core metrics.
 - `loss_variance_domain_step.jsonl`: per-step, per-domain OPD loss variance summaries.
-- `loss_variance_sample.jsonl`: sample-level `sample_loss_mean` and `sample_loss_variance`; these are not emitted as TensorBoard scalars to avoid tag explosion.
+- `loss_variance_sample.jsonl`: sample-level `opd_loss`, `sample_token_opd_loss_mean`, and `sample_token_opd_loss_variance`; these are not emitted as TensorBoard scalars to avoid tag explosion.
 - `validation_probe.jsonl`: raw validation values and adjacent validation gain.
 - `validation_gain_variance.jsonl`: rolling validation-gain mean and variance.
 - `training_cost.jsonl`: step time, GPU seconds, throughput, and memory.

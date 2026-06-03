@@ -48,6 +48,7 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"+mopd_audit.tier2_window_size={audit.tier2_window_size}",
         f"+mopd_audit.calibration_bins={audit.calibration_bins}",
         f"+mopd_audit.validation_anchor_enabled={str(audit.validation_anchor_enabled).lower()}",
+        f"+mopd_audit.validation_anchor_on_step0={str(audit.validation_anchor_on_step0).lower()}",
         f"+mopd_audit.validation_anchor_refresh_steps={audit.validation_anchor_refresh_steps}",
         f"+mopd_audit.full_gradient_enabled={str(audit.full_gradient_enabled).lower()}",
         f"+mopd_audit.full_gradient_freq_steps={audit.full_gradient_freq_steps}",

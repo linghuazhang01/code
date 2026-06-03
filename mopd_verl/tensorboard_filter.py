@@ -15,6 +15,8 @@ DIRECT_AUDIT_CATEGORIES = {
     "full_grad_conflict",
     "full_grad_cost",
     "loss",
+    "optimization",
+    "reward",
     "teacher",
     "calibration",
     "coverage",
@@ -24,11 +26,24 @@ CORE_DOMAIN_DATA = {"domain_sample_count", "domain_token_count", "domain_token_f
 CORE_DOMAIN_LOSS = {
     "advantage_mean",
     "high_variance_sample_rate",
-    "opd_loss_mean",
-    "opd_loss_variance",
-    "sample_loss_variance_mean",
+    "sample_opd_loss_mean",
+    "sample_opd_loss_std",
+    "sample_opd_loss_variance",
+    "token_opd_loss_mean",
+    "token_opd_loss_std",
+    "token_opd_loss_variance",
 }
+CORE_GLOBAL_LOSS = {
+    "sample_opd_loss_mean",
+    "sample_opd_loss_std",
+    "sample_opd_loss_variance",
+    "token_opd_loss_mean",
+    "token_opd_loss_std",
+    "token_opd_loss_variance",
+}
+CORE_GLOBAL_OPTIMIZATION = {"learning_rate"}
 CORE_DOMAIN_TEACHER = {"teacher_confidence_mean", "teacher_student_gap_mean"}
+CORE_DOMAIN_REWARD = {"training_accuracy", "training_reward_mean"}
 CORE_DOMAIN_COVERAGE = {"duplicate_rate"}
 CORE_FULL_GRAD = {"grad_norm", "sample_count"}
 CORE_FULL_GRAD_ANCHOR = {
@@ -139,6 +154,10 @@ def _keep_global(category: str, metric: str, parts: list[str]) -> bool:
         return metric in CORE_GLOBAL_DATA
     if category == "full_grad_conflict":
         return metric in CORE_CONFLICT
+    if category == "loss":
+        return metric in CORE_GLOBAL_LOSS
+    if category == "optimization":
+        return metric in CORE_GLOBAL_OPTIMIZATION
     if category == "validation":
         return False
     if category == "validation_gain":
@@ -159,6 +178,8 @@ def _keep_domain(category: str, metric: str, parts: list[str]) -> bool:
         return metric in CORE_FULL_GRAD_ANCHOR
     if category == "teacher":
         return metric in CORE_DOMAIN_TEACHER
+    if category == "reward":
+        return metric in CORE_DOMAIN_REWARD
     if category == "calibration":
         return metric == "calibration_error"
     if category == "coverage":

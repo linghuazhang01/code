@@ -22,9 +22,12 @@ def _is_domain_loss_metric(key: str) -> bool:
     return key in {
         "advantage_mean",
         "high_variance_sample_rate",
-        "opd_loss_mean",
-        "opd_loss_variance",
-        "sample_loss_variance_mean",
+        "sample_opd_loss_mean",
+        "sample_opd_loss_std",
+        "sample_opd_loss_variance",
+        "token_opd_loss_mean",
+        "token_opd_loss_std",
+        "token_opd_loss_variance",
     }
 
 
@@ -32,11 +35,17 @@ def _is_domain_teacher_metric(key: str) -> bool:
     return key in {"teacher_confidence_mean", "teacher_student_gap_mean"}
 
 
+def _is_domain_reward_metric(key: str) -> bool:
+    return key in {"training_accuracy", "training_reward_mean"}
+
+
 def domain_metric_category(key: str) -> str:
     if _is_domain_data_metric(key):
         return "data"
     if _is_domain_loss_metric(key):
         return "loss"
+    if _is_domain_reward_metric(key):
+        return "reward"
     if _is_domain_teacher_metric(key):
         return "teacher"
     if key.startswith("calibration"):

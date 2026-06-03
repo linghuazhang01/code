@@ -76,6 +76,7 @@ class MOPDVerlTests(unittest.TestCase):
 
         self.assertIn("+mopd_audit.full_gradient_enabled=true", rendered)
         self.assertIn("+mopd_audit.full_gradient_freq_steps=1", rendered)
+        self.assertIn("+mopd_audit.validation_anchor_on_step0=false", rendered)
         self.assertIn("+mopd_audit.full_gradient_train_max_samples_per_domain=null", rendered)
         self.assertIn("+mopd_audit.full_gradient_validation_max_samples_per_domain=null", rendered)
         self.assertIn("+mopd_audit.full_gradient_validation_files=", rendered)
@@ -108,7 +109,14 @@ class MOPDVerlTests(unittest.TestCase):
             }
         )
         metrics = {
-            "math/loss/opd_loss_mean": 0.1,
+            "math/loss/token_opd_loss_mean": 0.1,
+            "math/loss/token_opd_loss_std": 0.2,
+            "math/loss/token_opd_loss_variance": 0.04,
+            "math/loss/sample_opd_loss_mean": 0.3,
+            "math/loss/sample_opd_loss_std": 0.4,
+            "math/loss/sample_opd_loss_variance": 0.16,
+            "global/loss/token_opd_loss_mean": 0.05,
+            "global/loss/sample_opd_loss_variance": 0.1,
             "math/loss/opd_loss_p95": 0.9,
             "math/loss/kl_spike_rate": 0.2,
             "math/full_grad_anchor/code/full_grad_cosine_i_j": 0.2,
@@ -124,6 +132,8 @@ class MOPDVerlTests(unittest.TestCase):
             "math/grad/grad_norm": 1.0,
             "math/teacher/teacher_logprob_mean": -0.5,
             "math/teacher/teacher_student_gap_mean": 0.1,
+            "math/reward/training_reward_mean": 0.5,
+            "math/reward/training_accuracy": 0.5,
             "math/coverage/duplicate_rate": 0.0,
             "math/coverage/new_sample_rate": 1.0,
             "global/cost/gpu_count": 1.0,
@@ -141,13 +151,22 @@ class MOPDVerlTests(unittest.TestCase):
 
         filtered = logger.filter_tensorboard_metrics(metrics)
 
-        self.assertIn("math/loss/opd_loss_mean", filtered)
+        self.assertIn("math/loss/token_opd_loss_mean", filtered)
+        self.assertIn("math/loss/token_opd_loss_std", filtered)
+        self.assertIn("math/loss/token_opd_loss_variance", filtered)
+        self.assertIn("math/loss/sample_opd_loss_mean", filtered)
+        self.assertIn("math/loss/sample_opd_loss_std", filtered)
+        self.assertIn("math/loss/sample_opd_loss_variance", filtered)
+        self.assertIn("global/loss/token_opd_loss_mean", filtered)
+        self.assertIn("global/loss/sample_opd_loss_variance", filtered)
         self.assertIn("math/full_grad_anchor/code/full_grad_cosine_i_j", filtered)
         self.assertIn("math/full_grad_anchor/code/predicted_val_opd_loss_delta_i_j", filtered)
         self.assertIn("code/full_grad_anchor/validation_anchor_token_count", filtered)
         self.assertIn("global/full_grad_conflict/math_vs_code/full_grad_cosine_train_i_k", filtered)
         self.assertIn("global/audit/full_gradient_anchor_token_count", filtered)
         self.assertIn("math/teacher/teacher_student_gap_mean", filtered)
+        self.assertIn("math/reward/training_reward_mean", filtered)
+        self.assertIn("math/reward/training_accuracy", filtered)
         self.assertIn("math/coverage/duplicate_rate", filtered)
         self.assertIn("global/cost/step_seconds", filtered)
         self.assertIn("global/validation_gain/val-core_AIME2024_reward_mean_1", filtered)
@@ -277,13 +296,30 @@ class MOPDVerlTests(unittest.TestCase):
             )
 
             expected_metric_keys = [
-                "math/loss/sample_loss_variance_mean",
+                "math/loss/token_opd_loss_mean",
+                "math/loss/token_opd_loss_std",
+                "math/loss/token_opd_loss_variance",
+                "math/loss/sample_opd_loss_mean",
+                "math/loss/sample_opd_loss_std",
+                "math/loss/sample_opd_loss_variance",
+                "global/loss/token_opd_loss_mean",
+                "global/loss/sample_opd_loss_variance",
                 "math/calibration/calibration_error",
                 "global/cost/gpu_seconds_step",
                 "math/validation_gain_stats/score/variance",
             ]
             for key in expected_metric_keys:
                 self.assertIn(key, metrics)
+            self.assertAlmostEqual(metrics["math/loss/token_opd_loss_mean"], 0.06, places=6)
+            self.assertAlmostEqual(metrics["math/loss/token_opd_loss_variance"], 0.0034, places=6)
+            self.assertAlmostEqual(metrics["math/loss/token_opd_loss_std"], 0.0583095, places=6)
+            self.assertAlmostEqual(metrics["math/loss/sample_opd_loss_mean"], 0.15, places=6)
+            self.assertAlmostEqual(metrics["math/loss/sample_opd_loss_variance"], 0.01, places=6)
+            self.assertAlmostEqual(metrics["math/loss/sample_opd_loss_std"], 0.1, places=6)
+            self.assertAlmostEqual(metrics["global/loss/sample_opd_loss_mean"], -0.075, places=6)
+            self.assertAlmostEqual(metrics["global/loss/sample_opd_loss_variance"], 0.056875, places=6)
+            self.assertAlmostEqual(metrics["math/reward/training_reward_mean"], 0.5, places=6)
+            self.assertAlmostEqual(metrics["math/reward/training_accuracy"], 0.5, places=6)
             removed_metric_keys = [
                 "math/grad_conflict/code/grad_cosine_train_i_k",
                 "math/grad/gradient_signal",
@@ -332,6 +368,7 @@ class MOPDVerlTests(unittest.TestCase):
                     "domains": ["math", "code"],
                     "full_gradient_enabled": True,
                     "validation_anchor_enabled": True,
+                    "validation_anchor_on_step0": True,
                     "validation_anchor_refresh_steps": 0,
                 }
             }
@@ -341,6 +378,26 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertEqual(logger.log_validation_anchor_batch(batch=object(), step=0), {})
         self.assertTrue(logger.should_update_validation_anchor(0))
         self.assertFalse(logger.should_update_validation_anchor(1))
+
+    def test_validation_anchor_scheduler_can_skip_step0(self) -> None:
+        logger = MOPDAuditLogger(
+            {
+                "mopd_audit": {
+                    "enabled": True,
+                    "domains": ["math", "code"],
+                    "full_gradient_enabled": True,
+                    "validation_anchor_enabled": True,
+                    "validation_anchor_on_step0": False,
+                    "validation_anchor_refresh_steps": 0,
+                }
+            }
+        )
+
+        self.assertFalse(logger.should_update_validation_anchor(0))
+        self.assertEqual(logger.log_validation_anchor_batch(batch=object(), step=0), {})
+        self.assertTrue(logger.should_update_validation_anchor(1))
+        self.assertEqual(logger.log_validation_anchor_batch(batch=object(), step=1), {})
+        self.assertFalse(logger.should_update_validation_anchor(2))
 
     def test_merge_teacher_data_adds_extra_info_labels(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

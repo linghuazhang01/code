@@ -51,6 +51,56 @@
 
 `paper_eval.enabled=true` 会在每次 `_validate()` 之后启动 full paper eval suite。这个配置严格覆盖 paper 中报告的 7 个 dataset，但在 single-A800 上会显著拉长每次 validation 时间；如果只做 smoke test，应通过 Hydra override 临时设为 `+paper_eval.enabled=false`。
 
+## 启动训练
+
+在远端 `OPD-code` checkout 中启动正式 single-A800 训练：
+
+```bash
+cd /root/autodl-tmp/opd_mopd/OPD-code
+source /root/miniconda3/etc/profile.d/conda.sh
+conda activate mopd-verl
+
+MOPD_CONFIG=configs/mopd_formal_single_a800.yaml \
+PYTHON_BIN=python \
+bash scripts/run_math_code_mopd.sh
+```
+
+只打印生成的 Hydra command，不真正启动训练：
+
+```bash
+cd /root/autodl-tmp/opd_mopd/OPD-code
+source /root/miniconda3/etc/profile.d/conda.sh
+conda activate mopd-verl
+
+DRY_RUN=1 \
+MOPD_CONFIG=configs/mopd_formal_single_a800.yaml \
+PYTHON_BIN=python \
+bash scripts/run_math_code_mopd.sh
+```
+
+使用 `screen` 后台运行并保存日志：
+
+```bash
+mkdir -p /root/autodl-tmp/opd_mopd/logs
+screen -dmS mopd_formal bash -lc '
+cd /root/autodl-tmp/opd_mopd/OPD-code &&
+source /root/miniconda3/etc/profile.d/conda.sh &&
+conda activate mopd-verl &&
+MOPD_CONFIG=configs/mopd_formal_single_a800.yaml PYTHON_BIN=python \
+bash scripts/run_math_code_mopd.sh 2>&1 | tee /root/autodl-tmp/opd_mopd/logs/formal_$(date +%Y%m%d_%H%M%S).log
+'
+```
+
+临时 Hydra override 可以追加在 `--` 后。例如保留正式配置但关闭外部 paper eval，用于更快 sanity run：
+
+```bash
+MOPD_CONFIG=configs/mopd_formal_single_a800.yaml \
+PYTHON_BIN=python \
+bash scripts/run_math_code_mopd.sh -- +paper_eval.enabled=false
+```
+
+如果只做 one-step smoke test，用 `scripts/run_remote_one_step_smoke.sh`，不要用正式配置。
+
 ## 训练数据
 
 Production 数据：
@@ -189,7 +239,7 @@ TensorBoard 层级：
 - Event dir：`/root/autodl-tmp/opd_mopd/tensorboard/audit_smoke`
 - Scalar tag count：`134`
 - audit scalar 默认使用 `domain/category/metric` 层级，一级就是 domain 名字。例如
-  `math/loss/opd_loss_variance`、`math/full_grad/grad_norm`、
+  `math/loss/token_opd_loss_variance`、`math/full_grad/grad_norm`、
   `math/full_grad_anchor/AIME2024/full_grad_cosine_i_j`、`math/validation/score`、
   `math/validation_gain/score`。
 - 非 domain 专属指标统一放在 `global/category/metric`，例如
