@@ -2,8 +2,8 @@
 set -euo pipefail
 
 REMOTE_ROOT="${REMOTE_ROOT:-/root/autodl-tmp/opd_mopd}"
-CONDA_ROOT="${CONDA_ROOT:-/root/miniconda3}"
-ENV_NAME="${ENV_NAME:-mopd-verl}"
+CONDA_ROOT="${PAPER_EVAL_CONDA_ROOT:-/root/miniconda3}"
+ENV_NAME="${PAPER_EVAL_ENV_NAME:-mopd-verl}"
 G_OPD_DIR="${G_OPD_DIR:-${REMOTE_ROOT}/G-OPD}"
 OPD_CODE_DIR="${OPD_CODE_DIR:-${REMOTE_ROOT}/OPD-code}"
 
@@ -47,6 +47,11 @@ export PAPER_EVAL_DATASETS
 
 source "${CONDA_ROOT}/etc/profile.d/conda.sh"
 conda activate "${ENV_NAME}"
+PYTHON_BIN="${CONDA_ROOT}/envs/${ENV_NAME}/bin/python"
+if [[ ! -x "${PYTHON_BIN}" ]]; then
+  PYTHON_BIN="$(command -v python)"
+fi
+export PATH="$(dirname "${PYTHON_BIN}"):${CONDA_ROOT}/bin:${PATH}"
 
 mkdir -p "${EVAL_OUTPUT_DIR}"
 cd "${G_OPD_DIR}"
@@ -61,7 +66,7 @@ run_math_eval() {
   local input_file="$2"
   local output_file="${EVAL_OUTPUT_DIR}/${dataset_key}_${SAFE_MODEL_NAME}.jsonl"
   echo "[paper-eval] math ${dataset_key}: ${input_file}"
-  python math_eval/eval_math.py \
+  "${PYTHON_BIN}" math_eval/eval_math.py \
     --input_file "${input_file}" \
     --model_path "${MODEL_PATH}" \
     --output_file "${output_file}" \
@@ -95,7 +100,7 @@ run_lcb() {
     --trust_remote_code \
     --scenario codegeneration \
     --release_version "${LCB_RELEASE_VERSION}" \
-    --tensor_parallel_size "$(python - <<'PY'
+    --tensor_parallel_size "$("${PYTHON_BIN}" - <<'PY'
 import torch
 print(max(torch.cuda.device_count(), 1))
 PY
@@ -134,7 +139,7 @@ if contains_dataset "lcb"; then
   run_lcb
 fi
 
-python - <<'PY'
+"${PYTHON_BIN}" - <<'PY'
 import json
 import os
 from pathlib import Path
