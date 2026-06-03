@@ -105,7 +105,7 @@ audit:
   full_gradient_validation_files:
     - /root/autodl-tmp/opd_mopd/G-OPD/G-OPD-Training-Data/PaperEval/AIME25/test.parquet
     - /root/autodl-tmp/opd_mopd/G-OPD/G-OPD-Training-Data/PaperEval/HumanEvalPlus/test.parquet
-  full_gradient_validation_batch_size: 16
+  full_gradient_validation_batch_size: 128
   full_gradient_micro_batch_size_per_gpu: 1
   full_gradient_storage_dtype: float32
 

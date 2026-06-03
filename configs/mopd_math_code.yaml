@@ -97,7 +97,7 @@ audit:
   full_gradient_validation_files:
     - ../G-OPD-Training-Data/PaperEval/AIME25/test.parquet
     - ../G-OPD-Training-Data/PaperEval/HumanEvalPlus/test.parquet
-  full_gradient_validation_batch_size: 16
+  full_gradient_validation_batch_size: 128
 
 paper_eval:
   enabled: false

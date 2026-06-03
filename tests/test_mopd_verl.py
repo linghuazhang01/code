@@ -81,7 +81,7 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("+mopd_audit.full_gradient_validation_files=", rendered)
         self.assertIn("PaperEval/AIME25/test.parquet", rendered)
         self.assertIn("PaperEval/HumanEvalPlus/test.parquet", rendered)
-        self.assertIn("+mopd_audit.full_gradient_validation_batch_size=16", rendered)
+        self.assertIn("+mopd_audit.full_gradient_validation_batch_size=128", rendered)
         self.assertIn("+mopd_audit.full_gradient_micro_batch_size_per_gpu=1", rendered)
         self.assertIn("+mopd_audit.tensorboard_prune_mode=core", rendered)
         self.assertIn("PaperEval/AIME24/test.parquet", rendered)
