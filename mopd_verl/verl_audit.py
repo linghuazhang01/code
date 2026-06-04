@@ -68,6 +68,10 @@ def _mean(values: list[float]) -> float | None:
     return float(np.mean(values)) if values else None
 
 
+def _percentile(values: list[float], percentile: float) -> float | None:
+    return float(np.percentile(values, percentile)) if values else None
+
+
 def _var(values: list[float]) -> float | None:
     return float(np.var(values)) if values else None
 
@@ -169,6 +173,23 @@ class MOPDAuditLogger:
             int(_cfg_get(audit_config, "full_gradient_micro_batch_size_per_gpu", 1)),
         )
         self.full_gradient_storage_dtype = str(_cfg_get(audit_config, "full_gradient_storage_dtype", "float32"))
+        self.sample_gradient_enabled = bool(_cfg_get(audit_config, "sample_gradient_enabled", False))
+        self.sample_gradient_norm_enabled = bool(_cfg_get(audit_config, "sample_gradient_norm_enabled", True))
+        self.sample_gradient_cos_enabled = bool(_cfg_get(audit_config, "sample_gradient_cos_enabled", False))
+        self.sample_gradient_cos_freq_steps = max(
+            1,
+            int(_cfg_get(audit_config, "sample_gradient_cos_freq_steps", 1)),
+        )
+        self.sample_gradient_cos_max_samples_per_domain = _optional_positive_int(
+            _cfg_get(audit_config, "sample_gradient_cos_max_samples_per_domain", 8)
+        )
+        self.sample_gradient_cos_selection = str(
+            _cfg_get(audit_config, "sample_gradient_cos_selection", "top_norm_plus_random")
+        )
+        self.sample_gradient_log_sample_level = bool(
+            _cfg_get(audit_config, "sample_gradient_log_sample_level", True)
+        )
+        self.sample_gradient_seed = int(_cfg_get(audit_config, "sample_gradient_seed", 17))
         policy_loss = _cfg_get(_cfg_get(_cfg_get(config, "actor_rollout_ref", {}), "actor", {}), "policy_loss", {})
         self.lambda_vals = float(_cfg_get(policy_loss, "lambda_vals", 1.0))
         self._last_validation_metrics: dict[str, float] = {}
@@ -221,7 +242,15 @@ class MOPDAuditLogger:
         return _filter_tensorboard_metrics(metrics, self.tensorboard_prune_mode)
 
     def should_compute_full_gradient(self, step: int) -> bool:
-        return self.enabled and self.full_gradient_enabled and step % self.full_gradient_freq_steps == 0
+        full_gradient_active = self.full_gradient_enabled and step % self.full_gradient_freq_steps == 0
+        sample_gradient_active = self.sample_gradient_enabled and (
+            self.sample_gradient_norm_enabled
+            or (
+                self.sample_gradient_cos_enabled
+                and step % self.sample_gradient_cos_freq_steps == 0
+            )
+        )
+        return self.enabled and (full_gradient_active or sample_gradient_active)
 
     def full_gradient_meta(self, mode: str, step: int) -> dict[str, Any]:
         max_samples = (
@@ -232,14 +261,26 @@ class MOPDAuditLogger:
         return {
             "mopd_full_gradient": {
                 "enabled": self.should_compute_full_gradient(step),
+                "domain_gradient_enabled": self.full_gradient_enabled and step % self.full_gradient_freq_steps == 0,
                 "mode": mode,
                 "step": step,
                 "domains": self.domains,
+                "output_dir": str(self.output_dir),
                 "max_samples_per_domain": max_samples,
                 "micro_batch_size_per_gpu": self.full_gradient_micro_batch_size_per_gpu,
                 "storage_dtype": self.full_gradient_storage_dtype,
                 "learning_rate": self._current_learning_rate_value(),
                 "validation_anchor_refresh_steps": self.validation_anchor_refresh_steps,
+                "sample_gradient_enabled": self.sample_gradient_enabled and mode == "train",
+                "sample_gradient_norm_enabled": self.sample_gradient_norm_enabled,
+                "sample_gradient_cos_enabled": self.sample_gradient_cos_enabled
+                and mode == "train"
+                and step % self.sample_gradient_cos_freq_steps == 0,
+                "sample_gradient_cos_freq_steps": self.sample_gradient_cos_freq_steps,
+                "sample_gradient_cos_max_samples_per_domain": self.sample_gradient_cos_max_samples_per_domain,
+                "sample_gradient_cos_selection": self.sample_gradient_cos_selection,
+                "sample_gradient_log_sample_level": self.sample_gradient_log_sample_level,
+                "sample_gradient_seed": self.sample_gradient_seed,
             }
         }
 
@@ -393,6 +434,7 @@ class MOPDAuditLogger:
             domain_advantages = [advantage_means[idx] for idx in indices]
             domain_rewards = [reward_values[idx] for idx in indices] if reward_values is not None else []
             domain_sample_ids = [sample_ids[idx] for idx in indices]
+            domain_token_counts = [token_counts[idx] for idx in indices]
             domain_token_stats = (
                 _masked_token_stats(reverse_kl[indices], response_mask[indices])
                 if indices
@@ -428,6 +470,14 @@ class MOPDAuditLogger:
                 if not domain_cvs
                 else float(np.mean([cv > self.high_variance_cv_threshold for cv in domain_cvs])),
                 "advantage_mean": _mean(domain_advantages),
+                "positive_frac": None
+                if not domain_advantages
+                else float(np.mean([value > 0.0 for value in domain_advantages])),
+                "response_mean": _mean(domain_token_counts),
+                "response_p95": _percentile(domain_token_counts, 95.0),
+                "response_clip_ratio": None
+                if not domain_token_counts
+                else float(np.mean([count >= response_mask.shape[-1] for count in domain_token_counts])),
                 "training_reward_mean": _mean(domain_rewards),
                 "training_accuracy": _mean(correctness_for_domain),
                 "teacher_student_gap_mean": _mean(domain_gaps),
@@ -467,6 +517,10 @@ class MOPDAuditLogger:
                 "sample_opd_loss_variance",
                 "high_variance_sample_rate",
                 "advantage_mean",
+                "positive_frac",
+                "response_mean",
+                "response_p95",
+                "response_clip_ratio",
                 "training_reward_mean",
                 "training_accuracy",
                 "teacher_student_gap_mean",

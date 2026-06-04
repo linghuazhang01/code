@@ -48,12 +48,17 @@ def extract_validation_datasets(non_tensor: dict[str, Any], batch_size: int) -> 
 def extract_sample_ids(non_tensor: dict[str, Any], batch_size: int, step: int) -> list[str]:
     sample_ids = _non_tensor_list(non_tensor.get("sample_id"), batch_size)
     fallback_ids = _non_tensor_list(non_tensor.get("id"), batch_size)
+    extra_infos = _non_tensor_list(non_tensor.get("extra_info"), batch_size)
     resolved = []
     for idx, sample_id in enumerate(sample_ids):
         if sample_id is not None:
             resolved.append(str(sample_id))
         elif fallback_ids[idx] is not None:
             resolved.append(str(fallback_ids[idx]))
+        elif isinstance(extra_infos[idx], dict) and extra_infos[idx].get("sample_id") is not None:
+            resolved.append(str(extra_infos[idx]["sample_id"]))
+        elif isinstance(extra_infos[idx], dict) and extra_infos[idx].get("id") is not None:
+            resolved.append(str(extra_infos[idx]["id"]))
         else:
             resolved.append(f"step{step}:row{idx}")
     return resolved

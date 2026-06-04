@@ -1,29 +1,72 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+usage() {
+  cat <<'USAGE'
+Usage:
+  scripts/setup_remote_training_env.sh
+
+Run this on the remote host from the synced OPD-code checkout.
+
+Environment knobs:
+  CONDA_ROOT=<auto-detected, usually $HOME/miniconda3>
+  ENV_NAME=mopd-verl
+  VERL_RUNTIME_DIR=$CODE_DIR/third_party/verl
+  HF_HOME=$CODE_DIR/hf_home
+  HF_XET_HIGH_PERFORMANCE=1
+  INSTALL_VERL_DEPS=1
+  FORCE_REINSTALL=0
+  INSTALL_SGLANG=0
+  USE_MEGATRON=0
+
+The script does not clone G-OPD. Training imports verl from third_party/verl.
+USAGE
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-REMOTE_ROOT="${REMOTE_ROOT:-/root/autodl-tmp/opd_mopd}"
-CONDA_ROOT="${CONDA_ROOT:-/root/miniconda3}"
+if [[ -z "${CONDA_ROOT:-}" ]]; then
+  for candidate in "${HOME}/miniconda3" "/root/miniconda3" "/opt/conda"; do
+    if [[ -x "${candidate}/bin/conda" ]]; then
+      CONDA_ROOT="${candidate}"
+      break
+    fi
+  done
+fi
+
+CONDA_ROOT="${CONDA_ROOT:-${HOME}/miniconda3}"
 ENV_NAME="${ENV_NAME:-mopd-verl}"
-G_OPD_REPO="${G_OPD_REPO:-https://github.com/RUCBM/G-OPD.git}"
-G_OPD_DIR="${G_OPD_DIR:-${REMOTE_ROOT}/G-OPD}"
-SMOKE_DATA_DIR="${SMOKE_DATA_DIR:-${REMOTE_ROOT}/smoke_data}"
-LOG_DIR="${LOG_DIR:-${REMOTE_ROOT}/logs}"
-HF_HOME="${HF_HOME:-${REMOTE_ROOT}/hf_home}"
-INSTALL_SGLANG="${INSTALL_SGLANG:-0}"
+VERL_RUNTIME_DIR="${VERL_RUNTIME_DIR:-${CODE_DIR}/third_party/verl}"
+SMOKE_DATA_DIR="${SMOKE_DATA_DIR:-${CODE_DIR}/smoke_data}"
+LOG_DIR="${LOG_DIR:-${CODE_DIR}/logs}"
+HF_HOME="${HF_HOME:-${CODE_DIR}/hf_home}"
+INSTALL_VERL_DEPS="${INSTALL_VERL_DEPS:-1}"
 FORCE_REINSTALL="${FORCE_REINSTALL:-0}"
-UPDATE_GOPD="${UPDATE_GOPD:-0}"
-SKIP_FLASHINFER="${SKIP_FLASHINFER:-1}"
+INSTALL_SGLANG="${INSTALL_SGLANG:-0}"
+USE_MEGATRON="${USE_MEGATRON:-0}"
+INSTALL_STAMP="${LOG_DIR}/.mopd_vendored_verl_install_done"
 
 if [[ ! -x "${CONDA_ROOT}/bin/conda" ]]; then
   echo "Missing conda at ${CONDA_ROOT}/bin/conda" >&2
+  echo "Set CONDA_ROOT to the conda installation directory." >&2
   exit 1
 fi
 
-mkdir -p "${REMOTE_ROOT}" "${LOG_DIR}" "${HF_HOME}"
+if [[ ! -f "${VERL_RUNTIME_DIR}/verl/trainer/main_ppo.py" ]]; then
+  echo "Vendored verl runtime not found: ${VERL_RUNTIME_DIR}" >&2
+  echo "Expected ${VERL_RUNTIME_DIR}/verl/trainer/main_ppo.py" >&2
+  exit 1
+fi
+
+mkdir -p "${LOG_DIR}" "${HF_HOME}" "${SMOKE_DATA_DIR}"
 export PATH="${CONDA_ROOT}/bin:${PATH}"
+# shellcheck disable=SC1090
 source "${CONDA_ROOT}/etc/profile.d/conda.sh"
 
 if ! conda env list | awk '{print $1}' | grep -qx "${ENV_NAME}"; then
@@ -33,93 +76,68 @@ fi
 conda activate "${ENV_NAME}"
 python -m pip install --upgrade pip setuptools wheel
 
-if [[ ! -d "${G_OPD_DIR}/verl" ]]; then
-  git clone --depth 1 "${G_OPD_REPO}" "${G_OPD_DIR}"
-elif [[ "${UPDATE_GOPD}" == "1" && -d "${G_OPD_DIR}/.git" ]]; then
-  git -C "${G_OPD_DIR}" pull --ff-only
-else
-  echo "Using existing G-OPD checkout at ${G_OPD_DIR}"
-fi
+export PYTHONPATH="${CODE_DIR}:${VERL_RUNTIME_DIR}:${PYTHONPATH:-}"
+export HF_HOME
+export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
+export HF_XET_HIGH_PERFORMANCE="${HF_XET_HIGH_PERFORMANCE:-1}"
+export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-${HF_HOME}/datasets}"
+export WANDB_MODE="${WANDB_MODE:-disabled}"
+export PYTHONINTMAXSTRDIGITS="${PYTHONINTMAXSTRDIGITS:-0}"
+export PIP_ROOT_USER_ACTION="${PIP_ROOT_USER_ACTION:-ignore}"
 
-export PYTHONPATH="${CODE_DIR}:${G_OPD_DIR}/verl:${PYTHONPATH:-}"
-python "${CODE_DIR}/scripts/apply_gopd_audit_patch.py" "${G_OPD_DIR}"
-
-INSTALL_SCRIPT="${G_OPD_DIR}/verl/scripts/install_vllm_sglang_mcore.sh"
-if [[ "${SKIP_FLASHINFER}" == "1" && -f "${INSTALL_SCRIPT}" ]]; then
-  python - "${INSTALL_SCRIPT}" <<'PY'
-from pathlib import Path
-import sys
-
-path = Path(sys.argv[1])
-text = path.read_text()
-old = """# Install flashinfer-0.2.2.post1+cu124 (cxx11abi=False)
-# vllm-0.8.3 does not support flashinfer>=0.2.3
-# see https://github.com/vllm-project/vllm/pull/15777
-wget -nv https://github.com/flashinfer-ai/flashinfer/releases/download/v0.2.2.post1/flashinfer_python-0.2.2.post1+cu124torch2.6-cp38-abi3-linux_x86_64.whl && \\
-    pip install --no-cache-dir flashinfer_python-0.2.2.post1+cu124torch2.6-cp38-abi3-linux_x86_64.whl"""
-new = """# FlashInfer is optional for the single-step smoke path. GitHub wheel
-# downloads are often slow on rented instances, so skip it by default.
-echo "Skipping FlashInfer wheel download; set SKIP_FLASHINFER=0 and rerun if production rollout requires it" """
-if old in text and "Skipping FlashInfer wheel download" not in text:
-    path.write_text(text.replace(old, new))
-PY
-fi
-
-INSTALL_STAMP="${REMOTE_ROOT}/.gopd_verl_install_done"
-if [[ "${FORCE_REINSTALL}" == "1" || ! -f "${INSTALL_STAMP}" ]]; then
-  cd "${G_OPD_DIR}/verl"
-  USE_MEGATRON=0 USE_SGLANG="${INSTALL_SGLANG}" bash scripts/install_vllm_sglang_mcore.sh
-  touch "${INSTALL_STAMP}"
+if [[ "${INSTALL_VERL_DEPS}" == "1" ]]; then
+  if [[ "${FORCE_REINSTALL}" == "1" || ! -f "${INSTALL_STAMP}" ]]; then
+    cd "${VERL_RUNTIME_DIR}"
+    USE_MEGATRON="${USE_MEGATRON}" USE_SGLANG="${INSTALL_SGLANG}" bash scripts/install_vllm_sglang_mcore.sh
+    touch "${INSTALL_STAMP}"
+    cd "${CODE_DIR}"
+  else
+    echo "Using existing verl dependency install stamp: ${INSTALL_STAMP}"
+  fi
 fi
 
 python -m pip install --upgrade \
   "transformers[hf_xet]==4.51.3" \
   "tokenizers>=0.21.1,<0.22" \
-  "huggingface-hub>=0.30.0,<1.0" \
-  "ray[default]==2.46.0" \
-  "numpy<2.0.0" \
-  "opentelemetry-api==1.26.0" \
-  "opentelemetry-sdk==1.26.0" \
-  "opentelemetry-exporter-otlp==1.26.0" \
-  "opentelemetry-exporter-otlp-proto-grpc==1.26.0" \
-  "opentelemetry-exporter-otlp-proto-http==1.26.0" \
-  "click<8.2" \
-  math-verify \
+  "huggingface_hub>=0.30.0,<1.0" \
   pyyaml \
   pandas \
   pyarrow \
   tensorboard \
-  huggingface_hub \
-  hf-transfer
+  hf_xet \
+  modelscope
 
 python -m mopd_verl.smoke_data "${SMOKE_DATA_DIR}"
 python -m mopd_verl.prepare_data inspect "${SMOKE_DATA_DIR}/train.parquet"
 
-cat > "${REMOTE_ROOT}/env.sh" <<EOF
-export REMOTE_ROOT="${REMOTE_ROOT}"
+cat > "${LOG_DIR}/env.sh" <<EOF
+export CODE_DIR="${CODE_DIR}"
 export CONDA_ROOT="${CONDA_ROOT}"
 export ENV_NAME="${ENV_NAME}"
-export G_OPD_DIR="${G_OPD_DIR}"
-export OPD_CODE_DIR="${CODE_DIR}"
+export VERL_RUNTIME_DIR="${VERL_RUNTIME_DIR}"
 export SMOKE_DATA_DIR="${SMOKE_DATA_DIR}"
 export LOG_DIR="${LOG_DIR}"
 export HF_HOME="${HF_HOME}"
 export HF_ENDPOINT="\${HF_ENDPOINT:-https://hf-mirror.com}"
-export TRANSFORMERS_CACHE="${HF_HOME}/transformers"
-export HF_DATASETS_CACHE="${HF_HOME}/datasets"
+export HF_XET_HIGH_PERFORMANCE="\${HF_XET_HIGH_PERFORMANCE:-1}"
+export HF_DATASETS_CACHE="\${HF_DATASETS_CACHE:-${HF_HOME}/datasets}"
 export WANDB_MODE="\${WANDB_MODE:-disabled}"
-export PYTHONPATH="${CODE_DIR}:${G_OPD_DIR}/verl:\${PYTHONPATH:-}"
+export PYTHONPATH="${CODE_DIR}:${VERL_RUNTIME_DIR}:\${PYTHONPATH:-}"
 EOF
 
 python - <<'PY'
 import importlib
 import sys
 
-packages = ["torch", "transformers", "vllm", "ray", "click", "pandas", "pyarrow"]
+packages = ["yaml", "torch", "transformers", "vllm", "ray", "click", "pandas", "pyarrow", "verl"]
 print("python", sys.version.split()[0], sys.executable)
 for package in packages:
     module = importlib.import_module(package)
     print(package, getattr(module, "__version__", "unknown"))
 PY
 
-echo "Environment ready: ${REMOTE_ROOT}"
+echo "Environment ready."
+echo "CODE_DIR=${CODE_DIR}"
+echo "CONDA_ENV=${ENV_NAME}"
+echo "VERL_RUNTIME_DIR=${VERL_RUNTIME_DIR}"
+echo "ENV_FILE=${LOG_DIR}/env.sh"

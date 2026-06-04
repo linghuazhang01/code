@@ -4,15 +4,26 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-REMOTE_ROOT="${REMOTE_ROOT:-/root/autodl-tmp/opd_mopd}"
-CONDA_ROOT="${CONDA_ROOT:-/root/miniconda3}"
+REMOTE_ROOT="${REMOTE_ROOT:-$(cd "${CODE_DIR}/.." && pwd)}"
+if [[ -z "${CONDA_ROOT:-}" ]]; then
+  if [[ -x "${HOME}/miniconda3/bin/conda" ]]; then
+    CONDA_ROOT="${HOME}/miniconda3"
+  elif [[ -x "/root/miniconda3/bin/conda" ]]; then
+    CONDA_ROOT="/root/miniconda3"
+  else
+    CONDA_ROOT="${HOME}/miniconda3"
+  fi
+fi
 ENV_NAME="${ENV_NAME:-mopd-verl}"
 G_OPD_DIR="${G_OPD_DIR:-${REMOTE_ROOT}/G-OPD}"
-HF_HOME="${HF_HOME:-${REMOTE_ROOT}/hf_home}"
+HF_HOME="${HF_HOME:-${CODE_DIR}/hf_home}"
 LCB_DIR="${LCB_DIR:-${G_OPD_DIR}/code_eval/coding/LiveCodeBench/code_generation_lite}"
 DOWNLOAD_LCB="${DOWNLOAD_LCB:-1}"
 
-if [[ -f "${REMOTE_ROOT}/env.sh" ]]; then
+if [[ -f "${CODE_DIR}/logs/env.sh" ]]; then
+  # shellcheck disable=SC1090
+  source "${CODE_DIR}/logs/env.sh"
+elif [[ -f "${REMOTE_ROOT}/env.sh" ]]; then
   # shellcheck disable=SC1090
   source "${REMOTE_ROOT}/env.sh"
 fi
@@ -20,21 +31,43 @@ fi
 export PATH="${CONDA_ROOT}/bin:${PATH}"
 export HF_HOME="${HF_HOME}"
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
-export HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-1}"
+export HF_XET_HIGH_PERFORMANCE="${HF_XET_HIGH_PERFORMANCE:-1}"
 export PYTHONPATH="${CODE_DIR}:${G_OPD_DIR}/verl:${PYTHONPATH:-}"
 export PYTHONINTMAXSTRDIGITS="${PYTHONINTMAXSTRDIGITS:-0}"
+export PIP_ROOT_USER_ACTION="${PIP_ROOT_USER_ACTION:-ignore}"
 
 source "${CONDA_ROOT}/etc/profile.d/conda.sh"
 conda activate "${ENV_NAME}"
 
 python "${CODE_DIR}/scripts/apply_gopd_audit_patch.py" "${G_OPD_DIR}"
 
+ensure_huggingface_hub() {
+  python - <<'PY' >/dev/null 2>&1 || python -m pip install --upgrade "huggingface_hub>=0.30.0,<1.0" hf_xet
+import importlib.metadata as metadata
+
+version = metadata.version("huggingface_hub")
+parts = [int(part) for part in version.split(".")[:2]]
+major, minor = parts[0], parts[1] if len(parts) > 1 else 0
+if major >= 1 or (major == 0 and minor < 30):
+    raise SystemExit(1)
+PY
+}
+
 if [[ "${DOWNLOAD_LCB}" == "1" ]]; then
   mkdir -p "${LCB_DIR}"
-  huggingface-cli download livecodebench/code_generation_lite \
-    --repo-type dataset \
-    --local-dir "${LCB_DIR}" \
-    --include "test*.jsonl"
+  ensure_huggingface_hub
+  LCB_DIR="${LCB_DIR}" python - <<'PY'
+import os
+
+from huggingface_hub import snapshot_download
+
+snapshot_download(
+    repo_id="livecodebench/code_generation_lite",
+    repo_type="dataset",
+    local_dir=os.environ["LCB_DIR"],
+    allow_patterns=["test*.jsonl"],
+)
+PY
 fi
 
 python -m mopd_verl.prepare_data prepare-paper-eval --gopd-dir "${G_OPD_DIR}"

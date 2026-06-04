@@ -8,6 +8,12 @@ from pathlib import Path
 import pandas as pd
 
 from mopd_verl.audit_proxy import extract_teacher_domains, extract_validation_datasets
+from mopd_verl.domain_sampling import (
+    DomainBatchSampler,
+    allocate_domain_batch_counts,
+    domain_sample_weights,
+    normalize_domain_sampling_weights,
+)
 from mopd_verl.launch import build_command, format_command
 from mopd_verl.prepare_data import (
     evalplus_jsonl_to_verl_parquet,
@@ -45,11 +51,17 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("+actor_rollout_ref.ref.model.base_model_path=Qwen3-4B-Non-Thinking-RL-Code", rendered)
         self.assertIn("actor_rollout_ref.actor.policy_loss.multi_teacher_distill=true", rendered)
         self.assertIn("actor_rollout_ref.actor.policy_loss.lambda_vals=1.25", rendered)
-        self.assertIn("../G-OPD-Training-Data/PaperEval/HMMT25Feb/test.parquet", rendered)
-        self.assertIn("../G-OPD-Training-Data/PaperEval/HMMT25Nov/test.parquet", rendered)
-        self.assertIn("../G-OPD-Training-Data/PaperEval/HumanEvalPlus/test.parquet", rendered)
-        self.assertIn("../G-OPD-Training-Data/PaperEval/MBPPPlus/test.parquet", rendered)
-        self.assertIn("../G-OPD-Training-Data/PaperEval/LiveCodeBench/test.parquet", rendered)
+        self.assertIn("+data.domain_sampling_weights={math: 0.5, code: 0.5}", rendered)
+        self.assertIn("+data.domain_sampling_replacement=true", rendered)
+        self.assertIn("+data.domain_train_files=", rendered)
+        self.assertIn("data/G-OPD-Training-Data/DeepMath-103K/train_filtered_level6.parquet", rendered)
+        self.assertIn("data/G-OPD-Training-Data/Eurus/code_train.parquet", rendered)
+        self.assertNotIn("math_and_code/train.parquet", rendered)
+        self.assertIn("data/G-OPD-Training-Data/PaperEval/HMMT25Feb/test.parquet", rendered)
+        self.assertIn("data/G-OPD-Training-Data/PaperEval/HMMT25Nov/test.parquet", rendered)
+        self.assertIn("data/G-OPD-Training-Data/PaperEval/HumanEvalPlus/test.parquet", rendered)
+        self.assertIn("data/G-OPD-Training-Data/PaperEval/MBPPPlus/test.parquet", rendered)
+        self.assertIn("data/G-OPD-Training-Data/PaperEval/LiveCodeBench/test.parquet", rendered)
 
     def test_audit_smoke_command_contains_tensorboard_and_audit_settings(self) -> None:
         config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_audit_smoke.yaml"
@@ -62,10 +74,11 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("actor_rollout_ref.rollout.enable_chunked_prefill=False", rendered)
         self.assertIn("actor_rollout_ref.rollout.val_kwargs.do_sample=False", rendered)
         self.assertIn("+mopd_audit.enabled=true", rendered)
-        self.assertIn("+mopd_audit.output_dir=/root/autodl-tmp/opd_mopd/audit/smoke", rendered)
+        self.assertIn("+mopd_audit.output_dir=audit/smoke", rendered)
         self.assertIn("+mopd_audit.tensorboard_layout=domain_category", rendered)
         self.assertIn("+mopd_audit.tensorboard_prune_mode=core", rendered)
         self.assertIn("+mopd_audit.max_samples_per_domain=8", rendered)
+        self.assertIn("+data.domain_sampling_weights={math: 0.5, code: 0.5}", rendered)
         self.assertIn("+mopd_audit.full_gradient_enabled=false", rendered)
         self.assertIn("+mopd_audit.full_gradient_train_max_samples_per_domain=null", rendered)
 
@@ -84,19 +97,74 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("PaperEval/HumanEvalPlus/test.parquet", rendered)
         self.assertIn("+mopd_audit.full_gradient_validation_batch_size=128", rendered)
         self.assertIn("+mopd_audit.full_gradient_micro_batch_size_per_gpu=1", rendered)
+        self.assertIn("+mopd_audit.full_gradient_storage_dtype=float32", rendered)
+        self.assertIn("+mopd_audit.sample_gradient_enabled=true", rendered)
+        self.assertIn("+mopd_audit.sample_gradient_norm_enabled=true", rendered)
+        self.assertIn("+mopd_audit.sample_gradient_cos_enabled=true", rendered)
+        self.assertIn("+mopd_audit.sample_gradient_cos_freq_steps=1", rendered)
+        self.assertIn("+mopd_audit.sample_gradient_cos_max_samples_per_domain=8", rendered)
+        self.assertIn("+mopd_audit.sample_gradient_cos_selection=top_norm_plus_random", rendered)
         self.assertIn("+mopd_audit.tensorboard_prune_mode=core", rendered)
+        self.assertIn("+data.domain_sampling_weights={math: 0.5, code: 0.5}", rendered)
+        self.assertIn("+data.domain_train_files=", rendered)
+        self.assertIn("DeepMath-103K/train_filtered_level6.parquet", rendered)
+        self.assertIn("Eurus/code_train.parquet", rendered)
         self.assertIn("PaperEval/AIME24/test.parquet", rendered)
         self.assertIn("PaperEval/AIME25/test.parquet", rendered)
         self.assertIn("PaperEval/HMMT25Feb/test.parquet", rendered)
         self.assertIn("PaperEval/HMMT25Nov/test.parquet", rendered)
         self.assertIn("PaperEval/MBPPPlus/test.parquet", rendered)
         self.assertIn("PaperEval/LiveCodeBench/test.parquet", rendered)
-        self.assertIn("+paper_eval.enabled=true", rendered)
-        self.assertIn("run_paper_eval_suite.sh", rendered)
-        self.assertIn("+paper_eval.datasets=", rendered)
-        self.assertIn("humaneval_plus", rendered)
-        self.assertIn("mbpp_plus", rendered)
-        self.assertIn("lcb", rendered)
+        self.assertIn("trainer.default_local_dir=checkpoints/formal_single_a800", rendered)
+        self.assertNotIn("/root/autodl-tmp/opd_mopd/G-OPD/G-OPD-Training-Data", rendered)
+        self.assertNotIn("/root/autodl-tmp/opd_mopd/OPD-code", rendered)
+        self.assertNotIn("+paper_eval.enabled=true", rendered)
+        self.assertNotIn("run_paper_eval_suite.sh", rendered)
+
+    def test_domain_sampling_weights_target_domain_mass(self) -> None:
+        rows = [
+            {"extra_info": {"opd_teacher": "math"}},
+            {"extra_info": {"opd_teacher": "math"}},
+            {"extra_info": {"opd_teacher": "math"}},
+            {"extra_info": {"opd_teacher": "code"}},
+        ]
+        weights = domain_sample_weights(rows, {"math": 0.25, "code": 0.75})
+
+        self.assertAlmostEqual(sum(weights[:3]), 0.25, places=6)
+        self.assertAlmostEqual(weights[3], 0.75, places=6)
+        self.assertAlmostEqual(sum(weights), 1.0, places=6)
+
+    def test_domain_sampling_weights_are_normalized(self) -> None:
+        self.assertEqual(normalize_domain_sampling_weights({"math": 2, "code": 1}), {"math": 2 / 3, "code": 1 / 3})
+
+    def test_domain_batch_allocation_uses_largest_remainder(self) -> None:
+        self.assertEqual(
+            allocate_domain_batch_counts(1024, {"math": 0.7, "code": 0.3}),
+            {"math": 717, "code": 307},
+        )
+        self.assertEqual(
+            allocate_domain_batch_counts(10, {"a": 0.5, "b": 0.3, "c": 0.2}),
+            {"a": 5, "b": 3, "c": 2},
+        )
+
+    def test_domain_batch_sampler_emits_exact_domain_counts(self) -> None:
+        try:
+            import torch  # noqa: F401
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"torch is not installed: {exc}")
+
+        labels = ["math"] * 6 + ["code"] * 2
+        sampler = DomainBatchSampler(
+            labels,
+            {"math": 0.5, "code": 0.5},
+            batch_size=4,
+            replacement=True,
+            seed=123,
+        )
+        first_batch = next(iter(sampler))
+        domains = [labels[idx] for idx in first_batch]
+        self.assertEqual(domains.count("math"), 2)
+        self.assertEqual(domains.count("code"), 2)
 
     def test_tensorboard_core_filter_keeps_high_signal_metrics(self) -> None:
         logger = MOPDAuditLogger(
@@ -124,14 +192,29 @@ class MOPDVerlTests(unittest.TestCase):
             "math/full_grad_anchor/code/predicted_val_opd_loss_delta_i_j": -0.001,
             "math/full_grad_anchor/code/alignment_sign_i_j": 1.0,
             "code/full_grad_anchor/validation_anchor_token_count": 64.0,
+            "global/full_grad/total_grad_norm": 2.0,
             "global/full_grad_conflict/math_vs_code/full_grad_cosine_train_i_k": -0.3,
             "global/full_grad_conflict/math_vs_code/full_grad_dot_train_i_k": -10.0,
+            "global/full_grad_alignment/math_vs_total/full_grad_cosine_domain_total": 0.7,
+            "global/full_grad_contribution/math_to_total/signed_projection_share": 0.6,
+            "global/audit/full_gradient_domain_sequential_available": 1.0,
+            "global/audit/full_gradient_domain_sequential_unsupported": 0.0,
             "global/audit/full_gradient_anchor_token_count": 128.0,
             "math/grad_conflict/code/grad_cosine_train_i_k": -0.4,
             "global/grad_conflict/math_vs_code/grad_cosine_train_i_k": -0.4,
             "math/grad/grad_norm": 1.0,
             "math/teacher/teacher_logprob_mean": -0.5,
             "math/teacher/teacher_student_gap_mean": 0.1,
+            "math/advantage/positive_frac": 0.5,
+            "math/length/response_mean": 1024.0,
+            "math/length/response_p95": 2048.0,
+            "math/length/response_clip_ratio": 0.25,
+            "math/sample_grad/norm_mean": 1.2,
+            "math/sample_grad/norm_p95": 2.4,
+            "math/sample_grad_cos/domain_cos_mean": 0.3,
+            "math/sample_grad_cos/domain_cos_negative_frac": 0.25,
+            "math/sample_grad_contribution/projection_share_mean": 0.05,
+            "math/sample_grad_contribution/top1_abs_share": 0.2,
             "math/reward/training_reward_mean": 0.5,
             "math/reward/training_accuracy": 0.5,
             "math/coverage/duplicate_rate": 0.0,
@@ -162,9 +245,24 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("math/full_grad_anchor/code/full_grad_cosine_i_j", filtered)
         self.assertIn("math/full_grad_anchor/code/predicted_val_opd_loss_delta_i_j", filtered)
         self.assertIn("code/full_grad_anchor/validation_anchor_token_count", filtered)
+        self.assertIn("global/full_grad/total_grad_norm", filtered)
         self.assertIn("global/full_grad_conflict/math_vs_code/full_grad_cosine_train_i_k", filtered)
+        self.assertIn("global/full_grad_alignment/math_vs_total/full_grad_cosine_domain_total", filtered)
+        self.assertIn("global/full_grad_contribution/math_to_total/signed_projection_share", filtered)
+        self.assertIn("global/audit/full_gradient_domain_sequential_available", filtered)
+        self.assertIn("global/audit/full_gradient_domain_sequential_unsupported", filtered)
         self.assertIn("global/audit/full_gradient_anchor_token_count", filtered)
         self.assertIn("math/teacher/teacher_student_gap_mean", filtered)
+        self.assertIn("math/advantage/positive_frac", filtered)
+        self.assertIn("math/length/response_mean", filtered)
+        self.assertIn("math/length/response_p95", filtered)
+        self.assertIn("math/length/response_clip_ratio", filtered)
+        self.assertIn("math/sample_grad/norm_mean", filtered)
+        self.assertIn("math/sample_grad/norm_p95", filtered)
+        self.assertIn("math/sample_grad_cos/domain_cos_mean", filtered)
+        self.assertIn("math/sample_grad_cos/domain_cos_negative_frac", filtered)
+        self.assertIn("math/sample_grad_contribution/projection_share_mean", filtered)
+        self.assertIn("math/sample_grad_contribution/top1_abs_share", filtered)
         self.assertIn("math/reward/training_reward_mean", filtered)
         self.assertIn("math/reward/training_accuracy", filtered)
         self.assertIn("math/coverage/duplicate_rate", filtered)
@@ -221,6 +319,193 @@ class MOPDVerlTests(unittest.TestCase):
             self.assertNotIn("math/validation/score", metrics)
             self.assertNotIn("code/validation/pass_k", metrics)
             self.assertNotIn("mopd/validation/val_math_score", metrics)
+
+    def test_same_forward_domain_probe_sums_to_full_gradient(self) -> None:
+        try:
+            import torch
+            from torch import nn
+
+            from mopd_verl.full_gradient_worker import SameForwardDomainGradientProbe
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient probe dependencies are not installed: {exc}")
+
+        class ToyActor:
+            def __init__(self) -> None:
+                self.actor_module = nn.Linear(1, 1, bias=False)
+                self.actor_module.weight.data.fill_(2.0)
+                self.config = {"entropy_coeff": 0.0, "use_kl_loss": False}
+
+        def policy_loss_fn(
+            old_log_prob: torch.Tensor,
+            log_prob: torch.Tensor,
+            advantages: torch.Tensor,
+            response_mask: torch.Tensor,
+            loss_agg_mode: str,
+            config: object,
+            rollout_is_weights: torch.Tensor | None = None,
+        ) -> tuple[torch.Tensor, dict[str, float]]:
+            del old_log_prob, loss_agg_mode, config, rollout_is_weights
+            loss_mat = -advantages * log_prob
+            return (loss_mat * response_mask).sum() / response_mask.sum(), {}
+
+        actor = ToyActor()
+        inputs = torch.tensor([[1.0], [2.0], [3.0], [4.0]])
+        log_prob = actor.actor_module(inputs)
+        old_log_prob = torch.zeros_like(log_prob)
+        advantages = torch.tensor([[1.0], [2.0], [-1.0], [3.0]])
+        response_mask = torch.ones_like(log_prob)
+        model_inputs = {"opd_teacher": ["math", "math", "code", "code"]}
+        probe = SameForwardDomainGradientProbe(
+            actor,
+            {"enabled": True, "domains": ["math", "code"], "storage_dtype": "float32", "learning_rate": 1e-5},
+        )
+
+        probe.start_mini_batch()
+        probe.capture_micro_batch(
+            model_inputs=model_inputs,
+            old_log_prob=old_log_prob,
+            log_prob=log_prob,
+            advantages=advantages,
+            response_mask=response_mask,
+            entropy=None,
+            policy_loss_fn=policy_loss_fn,
+            loss_agg_mode="token-mean",
+            loss_scale_factor=1.0,
+            rollout_is_weights=None,
+        )
+        full_loss, _ = policy_loss_fn(
+            old_log_prob=old_log_prob,
+            log_prob=log_prob,
+            advantages=advantages,
+            response_mask=response_mask,
+            loss_agg_mode="token-mean",
+            config=actor.config,
+        )
+        full_grad = torch.autograd.grad(full_loss, tuple(actor.actor_module.parameters()))[0].detach().flatten().cpu()
+        summed_domain_grad = probe._vectors["math"] + probe._vectors["code"]
+        self.assertTrue(torch.allclose(summed_domain_grad, full_grad, atol=1e-6))
+
+        metrics = probe.finish_mini_batch()
+        self.assertIn("math/full_grad/grad_norm", metrics)
+        self.assertIn("code/full_grad/grad_norm", metrics)
+        self.assertIn("global/full_grad_conflict/code_vs_math/full_grad_cosine_train_i_k", metrics)
+
+    def test_sequential_backward_domain_tracker_computes_total_cosine_and_contribution(self) -> None:
+        try:
+            import math
+
+            import torch
+            from torch import nn
+
+            from mopd_verl.full_gradient_worker import SequentialBackwardDomainGradientTracker
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ToyActor:
+            def __init__(self) -> None:
+                self.actor_module = nn.Linear(2, 1, bias=False)
+                self.actor_optimizer = torch.optim.SGD(self.actor_module.parameters(), lr=0.1)
+
+        actor = ToyActor()
+        tracker = SequentialBackwardDomainGradientTracker(
+            actor,
+            {"enabled": True, "domains": ["math", "code"], "storage_dtype": "float32", "learning_rate": 0.1},
+        )
+
+        actor.actor_optimizer.zero_grad()
+        tracker.start_mini_batch()
+        actor.actor_module(torch.tensor([[1.0, 0.0]])).sum().backward()
+        tracker.after_backward("math", 1)
+        actor.actor_module(torch.tensor([[0.0, 1.0]])).sum().backward()
+        tracker.after_backward("code", 1)
+        metrics = tracker.finish_mini_batch()
+
+        expected_total_norm = math.sqrt(2.0)
+        expected_domain_total_cosine = 1.0 / expected_total_norm
+        self.assertAlmostEqual(metrics["math/full_grad/grad_norm"], 1.0, places=6)
+        self.assertAlmostEqual(metrics["code/full_grad/grad_norm"], 1.0, places=6)
+        self.assertAlmostEqual(metrics["global/full_grad/total_grad_norm"], expected_total_norm, places=6)
+        self.assertAlmostEqual(
+            metrics["global/full_grad_conflict/math_vs_code/full_grad_cosine_train_i_k"],
+            0.0,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            metrics["global/full_grad_alignment/math_vs_total/full_grad_cosine_domain_total"],
+            expected_domain_total_cosine,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            metrics["global/full_grad_alignment/code_vs_total/full_grad_cosine_domain_total"],
+            expected_domain_total_cosine,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            metrics["global/full_grad_contribution/math_to_total/signed_projection_share"],
+            0.5,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            metrics["global/full_grad_contribution/code_to_total/signed_projection_share"],
+            0.5,
+            places=6,
+        )
+
+    def test_sequential_backward_tracker_snapshots_after_first_domain_block(self) -> None:
+        try:
+            import math
+
+            import torch
+            from torch import nn
+
+            from mopd_verl.full_gradient_worker import SequentialBackwardDomainGradientTracker
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ToyActor:
+            def __init__(self) -> None:
+                self.actor_module = nn.Linear(2, 1, bias=False)
+                self.actor_optimizer = torch.optim.SGD(self.actor_module.parameters(), lr=0.1)
+
+        class ToyMicroBatch:
+            def __init__(self, domain: str) -> None:
+                self.non_tensor_batch = {"opd_teacher": [domain]}
+
+            def __len__(self) -> int:
+                return 1
+
+        actor = ToyActor()
+        tracker = SequentialBackwardDomainGradientTracker(
+            actor,
+            {"enabled": True, "domains": ["math", "code"], "storage_dtype": "float32", "learning_rate": 0.1},
+        )
+        tracked = tracker.prepare_micro_batches(
+            [ToyMicroBatch("code"), ToyMicroBatch("math"), ToyMicroBatch("math"), ToyMicroBatch("code")]
+        )
+        self.assertEqual([domain for domain, _ in tracked], ["math", "math", "code", "code"])
+
+        inputs = {
+            "math": [torch.tensor([[1.0, 0.0]]), torch.tensor([[0.0, 2.0]])],
+            "code": [torch.tensor([[3.0, 0.0]]), torch.tensor([[0.0, 4.0]])],
+        }
+        offsets = {"math": 0, "code": 0}
+        actor.actor_optimizer.zero_grad()
+        tracker.start_mini_batch()
+        for domain, _ in tracked:
+            actor.actor_module(inputs[domain][offsets[domain]]).sum().backward()
+            offsets[domain] += 1
+            tracker.after_backward(domain, 1)
+
+        metrics = tracker.finish_mini_batch()
+
+        self.assertAlmostEqual(metrics["math/full_grad/grad_norm"], math.sqrt(5.0), places=6)
+        self.assertAlmostEqual(metrics["code/full_grad/grad_norm"], 5.0, places=6)
+        self.assertAlmostEqual(metrics["global/full_grad/total_grad_norm"], math.sqrt(52.0), places=6)
+        self.assertAlmostEqual(
+            metrics["global/full_grad_conflict/math_vs_code/full_grad_cosine_train_i_k"],
+            11.0 / (math.sqrt(5.0) * 5.0),
+            places=6,
+        )
 
     def test_audit_logger_emits_domain_category_metrics_on_synthetic_batch(self) -> None:
         try:
@@ -304,6 +589,10 @@ class MOPDVerlTests(unittest.TestCase):
                 "math/loss/sample_opd_loss_variance",
                 "global/loss/token_opd_loss_mean",
                 "global/loss/sample_opd_loss_variance",
+                "math/advantage/positive_frac",
+                "math/length/response_mean",
+                "math/length/response_p95",
+                "math/length/response_clip_ratio",
                 "math/calibration/calibration_error",
                 "global/cost/gpu_seconds_step",
                 "math/validation_gain_stats/score/variance",
@@ -316,8 +605,12 @@ class MOPDVerlTests(unittest.TestCase):
             self.assertAlmostEqual(metrics["math/loss/sample_opd_loss_mean"], 0.15, places=6)
             self.assertAlmostEqual(metrics["math/loss/sample_opd_loss_variance"], 0.01, places=6)
             self.assertAlmostEqual(metrics["math/loss/sample_opd_loss_std"], 0.1, places=6)
-            self.assertAlmostEqual(metrics["global/loss/sample_opd_loss_mean"], -0.075, places=6)
-            self.assertAlmostEqual(metrics["global/loss/sample_opd_loss_variance"], 0.056875, places=6)
+            self.assertAlmostEqual(metrics["math/advantage/positive_frac"], 1.0, places=6)
+            self.assertAlmostEqual(metrics["math/length/response_mean"], 2.5, places=6)
+            self.assertAlmostEqual(metrics["math/length/response_p95"], 2.95, places=6)
+            self.assertAlmostEqual(metrics["math/length/response_clip_ratio"], 0.5, places=6)
+            self.assertAlmostEqual(metrics["global/loss/sample_opd_loss_mean"], -0.05, places=6)
+            self.assertAlmostEqual(metrics["global/loss/sample_opd_loss_variance"], 0.05625, places=6)
             self.assertAlmostEqual(metrics["math/reward/training_reward_mean"], 0.5, places=6)
             self.assertAlmostEqual(metrics["math/reward/training_accuracy"], 0.5, places=6)
             removed_metric_keys = [

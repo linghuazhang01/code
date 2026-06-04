@@ -7,7 +7,7 @@ import os
 import shlex
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from mopd_verl.settings import MOPDConfig, load_config
@@ -20,6 +20,16 @@ def _bool(value: bool) -> str:
 def _hydra_list(values: Sequence[str]) -> str:
     quoted = ", ".join(f"'{value}'" for value in values)
     return f"[{quoted}]"
+
+
+def _hydra_float_dict(values: Mapping[str, float]) -> str:
+    items = ", ".join(f"{key}: {float(value):g}" for key, value in values.items())
+    return "{" + items + "}"
+
+
+def _hydra_list_dict(values: Mapping[str, Sequence[str]]) -> str:
+    items = ", ".join(f"{key}: {_hydra_list(file_paths)}" for key, file_paths in values.items())
+    return "{" + items + "}"
 
 
 def _hydra_scalar(value: object) -> str:
@@ -61,6 +71,15 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"{_hydra_scalar(audit.full_gradient_validation_batch_size)}",
         f"+mopd_audit.full_gradient_micro_batch_size_per_gpu={audit.full_gradient_micro_batch_size_per_gpu}",
         f"+mopd_audit.full_gradient_storage_dtype={audit.full_gradient_storage_dtype}",
+        f"+mopd_audit.sample_gradient_enabled={str(audit.sample_gradient_enabled).lower()}",
+        f"+mopd_audit.sample_gradient_norm_enabled={str(audit.sample_gradient_norm_enabled).lower()}",
+        f"+mopd_audit.sample_gradient_cos_enabled={str(audit.sample_gradient_cos_enabled).lower()}",
+        f"+mopd_audit.sample_gradient_cos_freq_steps={audit.sample_gradient_cos_freq_steps}",
+        "+mopd_audit.sample_gradient_cos_max_samples_per_domain="
+        f"{_hydra_scalar(audit.sample_gradient_cos_max_samples_per_domain)}",
+        f"+mopd_audit.sample_gradient_cos_selection={audit.sample_gradient_cos_selection}",
+        f"+mopd_audit.sample_gradient_log_sample_level={str(audit.sample_gradient_log_sample_level).lower()}",
+        f"+mopd_audit.sample_gradient_seed={audit.sample_gradient_seed}",
     ]
 
 
@@ -102,6 +121,17 @@ def build_overrides(config: MOPDConfig) -> list[str]:
         vllm_engine_overrides.append(
             "+actor_rollout_ref.rollout.engine_kwargs.vllm.num_gpu_blocks_override="
             f"{rollout.num_gpu_blocks_override}"
+        )
+
+    domain_sampling_overrides = []
+    if data.domain_train_files:
+        domain_sampling_overrides.append(f"+data.domain_train_files={_hydra_list_dict(data.domain_train_files)}")
+        domain_sampling_overrides.append(
+            f"+data.domain_sampling_replacement={str(data.domain_sampling_replacement).lower()}"
+        )
+    if data.domain_sampling_weights:
+        domain_sampling_overrides.append(
+            f"+data.domain_sampling_weights={_hydra_float_dict(data.domain_sampling_weights)}"
         )
 
     model_overrides = [f"actor_rollout_ref.model.path={model.student_path}"]
@@ -185,7 +215,7 @@ def build_overrides(config: MOPDConfig) -> list[str]:
         f"trainer.total_training_steps={_hydra_scalar(trainer.total_training_steps)}",
         f"+trainer.max_actor_ckpt_to_keep={_hydra_scalar(trainer.max_actor_ckpt_to_keep)}",
         f"+trainer.max_critic_ckpt_to_keep={_hydra_scalar(trainer.max_critic_ckpt_to_keep)}",
-    ] + ray_overrides + vllm_engine_overrides + _audit_overrides(config) + _paper_eval_overrides(config)
+    ] + ray_overrides + vllm_engine_overrides + domain_sampling_overrides + _audit_overrides(config) + _paper_eval_overrides(config)
 
 
 def build_command(config: MOPDConfig, extra_args: Sequence[str] | None = None) -> list[str]:

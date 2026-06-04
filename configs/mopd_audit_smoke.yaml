@@ -9,9 +9,12 @@ runtime:
 
 data:
   train_files:
-    - ../smoke_data/train.parquet
+    - smoke_data/train.parquet
+  domain_sampling_weights:
+    math: 0.5
+    code: 0.5
   val_files:
-    - ../smoke_data/val.parquet
+    - smoke_data/val.parquet
   train_batch_size: 1
   max_prompt_length: 256
   max_response_length: 64
@@ -72,7 +75,7 @@ rollout_correction:
 
 audit:
   enabled: true
-  output_dir: /root/autodl-tmp/opd_mopd/audit/smoke
+  output_dir: audit/smoke
   domains:
     - math
     - code
@@ -97,7 +100,7 @@ trainer:
   n_gpus_per_node: 1
   nnodes: 1
   save_freq: -1
-  default_local_dir: /root/autodl-tmp/opd_mopd/checkpoints/audit_smoke
+  default_local_dir: checkpoints/audit_smoke
   test_freq: 1
   total_epochs: 1
   total_training_steps: 1

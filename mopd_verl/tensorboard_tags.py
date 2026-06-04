@@ -21,14 +21,34 @@ def _is_domain_data_metric(key: str) -> bool:
 def _is_domain_loss_metric(key: str) -> bool:
     return key in {
         "advantage_mean",
-        "high_variance_sample_rate",
         "sample_opd_loss_mean",
         "sample_opd_loss_std",
         "sample_opd_loss_variance",
         "token_opd_loss_mean",
         "token_opd_loss_std",
         "token_opd_loss_variance",
+        "high_variance_sample_rate",
     }
+
+
+def _is_domain_advantage_metric(key: str) -> bool:
+    return key in {"positive_frac"}
+
+
+def _is_domain_length_metric(key: str) -> bool:
+    return key in {"response_mean", "response_p95", "response_clip_ratio"}
+
+
+def _is_domain_sample_grad_metric(key: str) -> bool:
+    return key.startswith("norm_") or key in {"sample_count"}
+
+
+def _is_domain_sample_grad_cos_metric(key: str) -> bool:
+    return key.startswith("domain_cos_") or key in {"sample_count"}
+
+
+def _is_domain_sample_grad_contribution_metric(key: str) -> bool:
+    return key.startswith("projection_share_") or key == "top1_abs_share"
 
 
 def _is_domain_teacher_metric(key: str) -> bool:
@@ -44,6 +64,16 @@ def domain_metric_category(key: str) -> str:
         return "data"
     if _is_domain_loss_metric(key):
         return "loss"
+    if _is_domain_advantage_metric(key):
+        return "advantage"
+    if _is_domain_length_metric(key):
+        return "length"
+    if _is_domain_sample_grad_metric(key):
+        return "sample_grad"
+    if _is_domain_sample_grad_cos_metric(key):
+        return "sample_grad_cos"
+    if _is_domain_sample_grad_contribution_metric(key):
+        return "sample_grad_contribution"
     if _is_domain_reward_metric(key):
         return "reward"
     if _is_domain_teacher_metric(key):

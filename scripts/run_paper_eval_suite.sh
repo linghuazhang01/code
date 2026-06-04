@@ -1,13 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REMOTE_ROOT="${REMOTE_ROOT:-/root/autodl-tmp/opd_mopd}"
-CONDA_ROOT="${PAPER_EVAL_CONDA_ROOT:-/root/miniconda3}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CODE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+REMOTE_ROOT="${REMOTE_ROOT:-$(cd "${CODE_DIR}/.." && pwd)}"
+if [[ -z "${PAPER_EVAL_CONDA_ROOT:-}" ]]; then
+  if [[ -x "${HOME}/miniconda3/bin/conda" ]]; then
+    PAPER_EVAL_CONDA_ROOT="${HOME}/miniconda3"
+  elif [[ -x "/root/miniconda3/bin/conda" ]]; then
+    PAPER_EVAL_CONDA_ROOT="/root/miniconda3"
+  fi
+fi
+CONDA_ROOT="${PAPER_EVAL_CONDA_ROOT:-${HOME}/miniconda3}"
 ENV_NAME="${PAPER_EVAL_ENV_NAME:-mopd-verl}"
 G_OPD_DIR="${G_OPD_DIR:-${REMOTE_ROOT}/G-OPD}"
-OPD_CODE_DIR="${OPD_CODE_DIR:-${REMOTE_ROOT}/OPD-code}"
+OPD_CODE_DIR="${OPD_CODE_DIR:-${CODE_DIR}}"
 
-if [[ -f "${REMOTE_ROOT}/env.sh" ]]; then
+if [[ -f "${OPD_CODE_DIR}/logs/env.sh" ]]; then
+  # shellcheck disable=SC1090
+  source "${OPD_CODE_DIR}/logs/env.sh"
+elif [[ -f "${REMOTE_ROOT}/env.sh" ]]; then
   # shellcheck disable=SC1090
   source "${REMOTE_ROOT}/env.sh"
 fi

@@ -1,24 +1,31 @@
 # Default two-domain MOPD/ExOPD setting from G-OPD (arXiv:2602.12125).
-# This config expects the G-OPD verl fork or an equivalent verl checkout with
-# policy_loss.multi_teacher_distill and extra_info.opd_teacher support.
+# This config expects the vendored third_party/verl runtime or an equivalent
+# verl checkout with policy_loss.multi_teacher_distill and extra_info.opd_teacher support.
 
 runtime:
-  python_bin: python3
+  python_bin: python
   verl_module: verl.trainer.main_ppo
   wandb_mode: online
   used_model: no_api
 
 data:
-  train_files:
-    - ../G-OPD-Training-Data/math_and_code/train.parquet
+  domain_train_files:
+    math:
+      - data/G-OPD-Training-Data/DeepMath-103K/train_filtered_level6.parquet
+    code:
+      - data/G-OPD-Training-Data/Eurus/code_train.parquet
+  domain_sampling_weights:
+    math: 0.5
+    code: 0.5
+  domain_sampling_replacement: true
   val_files:
-    - ../G-OPD-Training-Data/PaperEval/AIME24/test.parquet
-    - ../G-OPD-Training-Data/PaperEval/AIME25/test.parquet
-    - ../G-OPD-Training-Data/PaperEval/HMMT25Feb/test.parquet
-    - ../G-OPD-Training-Data/PaperEval/HMMT25Nov/test.parquet
-    - ../G-OPD-Training-Data/PaperEval/HumanEvalPlus/test.parquet
-    - ../G-OPD-Training-Data/PaperEval/MBPPPlus/test.parquet
-    - ../G-OPD-Training-Data/PaperEval/LiveCodeBench/test.parquet
+    - data/G-OPD-Training-Data/PaperEval/AIME24/test.parquet
+    - data/G-OPD-Training-Data/PaperEval/AIME25/test.parquet
+    - data/G-OPD-Training-Data/PaperEval/HMMT25Feb/test.parquet
+    - data/G-OPD-Training-Data/PaperEval/HMMT25Nov/test.parquet
+    - data/G-OPD-Training-Data/PaperEval/HumanEvalPlus/test.parquet
+    - data/G-OPD-Training-Data/PaperEval/MBPPPlus/test.parquet
+    - data/G-OPD-Training-Data/PaperEval/LiveCodeBench/test.parquet
   train_batch_size: 1024
   max_prompt_length: 2048
   max_response_length: 16384
@@ -96,8 +103,8 @@ audit:
   validation_anchor_on_step0: false
   validation_anchor_refresh_steps: 0
   full_gradient_validation_files:
-    - ../G-OPD-Training-Data/PaperEval/AIME25/test.parquet
-    - ../G-OPD-Training-Data/PaperEval/HumanEvalPlus/test.parquet
+    - data/G-OPD-Training-Data/PaperEval/AIME25/test.parquet
+    - data/G-OPD-Training-Data/PaperEval/HumanEvalPlus/test.parquet
   full_gradient_validation_batch_size: 128
 
 paper_eval:
@@ -125,7 +132,7 @@ trainer:
   n_gpus_per_node: 8
   nnodes: 1
   save_freq: 50
-  default_local_dir: /G-OPD-checkpoints/Qwen3-4B-Non-Thinking-Multi-Teacher-Distill-ExOPD
+  default_local_dir: checkpoints/Qwen3-4B-Non-Thinking-Multi-Teacher-Distill-ExOPD
   test_freq: 10
   total_epochs: 3
   max_actor_ckpt_to_keep: null

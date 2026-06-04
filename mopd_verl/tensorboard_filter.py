@@ -9,14 +9,21 @@ from mopd_verl.audit_math import finite_float
 UNPRUNED_MODES = {"", "none", "off", "false", "0", "full", "all"}
 DIRECT_AUDIT_CATEGORIES = {
     "audit",
+    "advantage",
     "cost",
     "full_grad",
+    "full_grad_alignment",
     "full_grad_anchor",
+    "full_grad_contribution",
     "full_grad_conflict",
     "full_grad_cost",
     "loss",
+    "length",
     "optimization",
     "reward",
+    "sample_grad",
+    "sample_grad_contribution",
+    "sample_grad_cos",
     "teacher",
     "calibration",
     "coverage",
@@ -33,6 +40,17 @@ CORE_DOMAIN_LOSS = {
     "token_opd_loss_std",
     "token_opd_loss_variance",
 }
+CORE_DOMAIN_ADVANTAGE = {"positive_frac"}
+CORE_DOMAIN_LENGTH = {"response_mean", "response_p95", "response_clip_ratio"}
+CORE_SAMPLE_GRAD = {"norm_mean", "norm_p50", "norm_p95", "norm_max", "norm_cv", "sample_count"}
+CORE_SAMPLE_GRAD_COS = {"domain_cos_mean", "domain_cos_p05", "domain_cos_negative_frac", "sample_count"}
+CORE_SAMPLE_GRAD_CONTRIBUTION = {
+    "projection_share_mean",
+    "projection_share_min",
+    "projection_share_max",
+    "projection_share_negative_frac",
+    "top1_abs_share",
+}
 CORE_GLOBAL_LOSS = {
     "sample_opd_loss_mean",
     "sample_opd_loss_std",
@@ -46,6 +64,8 @@ CORE_DOMAIN_TEACHER = {"teacher_confidence_mean", "teacher_student_gap_mean"}
 CORE_DOMAIN_REWARD = {"training_accuracy", "training_reward_mean"}
 CORE_DOMAIN_COVERAGE = {"duplicate_rate"}
 CORE_FULL_GRAD = {"grad_norm", "sample_count"}
+CORE_GLOBAL_FULL_GRAD = {"total_grad_norm"}
+CORE_FULL_GRAD_ALIGNMENT = {"full_grad_cosine_domain_total"}
 CORE_FULL_GRAD_ANCHOR = {
     "full_grad_cosine_i_j",
     "predicted_val_opd_loss_delta_i_j",
@@ -53,6 +73,7 @@ CORE_FULL_GRAD_ANCHOR = {
     "validation_anchor_sample_count",
     "validation_anchor_token_count",
 }
+CORE_FULL_GRAD_CONTRIBUTION = {"signed_projection_share"}
 CORE_CONFLICT = {
     "conflict_magnitude_i_k",
     "full_grad_cosine_train_i_k",
@@ -62,6 +83,10 @@ CORE_AUDIT = {
     "full_gradient_anchor_available",
     "full_gradient_anchor_count",
     "full_gradient_anchor_token_count",
+    "full_gradient_autograd_unavailable",
+    "full_gradient_domain_sequential_available",
+    "full_gradient_domain_sequential_unsupported",
+    "full_gradient_true_backward_fallback",
     "wall_time_step",
 }
 CORE_GLOBAL_DATA = {"domain_mix_entropy", "total_samples", "total_tokens"}
@@ -150,6 +175,12 @@ def _keep_global(category: str, metric: str, parts: list[str]) -> bool:
         return metric in CORE_GLOBAL_COST
     if category == "full_grad_cost":
         return metric in {"backward_seconds", "max_memory_allocated_gb"}
+    if category == "full_grad":
+        return metric in CORE_GLOBAL_FULL_GRAD
+    if category == "full_grad_alignment":
+        return metric in CORE_FULL_GRAD_ALIGNMENT
+    if category == "full_grad_contribution":
+        return metric in CORE_FULL_GRAD_CONTRIBUTION
     if category == "data":
         return metric in CORE_GLOBAL_DATA
     if category == "full_grad_conflict":
@@ -172,6 +203,16 @@ def _keep_domain(category: str, metric: str, parts: list[str]) -> bool:
         return metric in CORE_DOMAIN_DATA
     if category == "loss":
         return metric in CORE_DOMAIN_LOSS
+    if category == "advantage":
+        return metric in CORE_DOMAIN_ADVANTAGE
+    if category == "length":
+        return metric in CORE_DOMAIN_LENGTH
+    if category == "sample_grad":
+        return metric in CORE_SAMPLE_GRAD
+    if category == "sample_grad_cos":
+        return metric in CORE_SAMPLE_GRAD_COS
+    if category == "sample_grad_contribution":
+        return metric in CORE_SAMPLE_GRAD_CONTRIBUTION
     if category == "full_grad":
         return metric in CORE_FULL_GRAD
     if category == "full_grad_anchor":
@@ -194,11 +235,7 @@ def _keep_domain(category: str, metric: str, parts: list[str]) -> bool:
 
 
 def _contains_audit_category(parts: list[str]) -> bool:
-    return any(
-        part in DIRECT_AUDIT_CATEGORIES
-        or any(f"{category}_" in part or f"_{category}" in part for category in DIRECT_AUDIT_CATEGORIES)
-        for part in parts
-    )
+    return any(part in DIRECT_AUDIT_CATEGORIES for part in parts)
 
 
 def _parts(key: str) -> list[str]:

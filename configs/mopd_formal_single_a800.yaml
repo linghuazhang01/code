@@ -4,26 +4,33 @@
 # reducing parallelism and batch sizes so the job can launch on one 80GB GPU.
 
 runtime:
-  python_bin: /root/miniconda3/envs/mopd-verl/bin/python
+  python_bin: python
   verl_module: verl.trainer.main_ppo
   wandb_mode: disabled
   used_model: no_api
 
 data:
-  train_files:
-    - /root/autodl-tmp/opd_mopd/G-OPD/G-OPD-Training-Data/math_and_code/train.parquet
+  domain_train_files:
+    math:
+      - data/G-OPD-Training-Data/DeepMath-103K/train_filtered_level6.parquet
+    code:
+      - data/G-OPD-Training-Data/Eurus/code_train.parquet
+  domain_sampling_weights:
+    math: 0.5
+    code: 0.5
+  domain_sampling_replacement: true
   val_files:
-    - /root/autodl-tmp/opd_mopd/G-OPD/G-OPD-Training-Data/PaperEval/AIME24/test.parquet
-    - /root/autodl-tmp/opd_mopd/G-OPD/G-OPD-Training-Data/PaperEval/AIME25/test.parquet
-    - /root/autodl-tmp/opd_mopd/G-OPD/G-OPD-Training-Data/PaperEval/HMMT25Feb/test.parquet
-    - /root/autodl-tmp/opd_mopd/G-OPD/G-OPD-Training-Data/PaperEval/HMMT25Nov/test.parquet
-    - /root/autodl-tmp/opd_mopd/G-OPD/G-OPD-Training-Data/PaperEval/HumanEvalPlus/test.parquet
-    - /root/autodl-tmp/opd_mopd/G-OPD/G-OPD-Training-Data/PaperEval/MBPPPlus/test.parquet
-    - /root/autodl-tmp/opd_mopd/G-OPD/G-OPD-Training-Data/PaperEval/LiveCodeBench/test.parquet
-  train_batch_size: 1024
-  val_batch_size: 1024
+    - data/G-OPD-Training-Data/PaperEval/AIME24/test.parquet
+    - data/G-OPD-Training-Data/PaperEval/AIME25/test.parquet
+    - data/G-OPD-Training-Data/PaperEval/HMMT25Feb/test.parquet
+    - data/G-OPD-Training-Data/PaperEval/HMMT25Nov/test.parquet
+    - data/G-OPD-Training-Data/PaperEval/HumanEvalPlus/test.parquet
+    - data/G-OPD-Training-Data/PaperEval/MBPPPlus/test.parquet
+    - data/G-OPD-Training-Data/PaperEval/LiveCodeBench/test.parquet
+  train_batch_size: 128
   max_prompt_length: 2048
-  max_response_length: 1024
+  max_response_length: 16384
+  val_batch_size: 1024
   filter_overlong_prompts: true
   truncation: error
   shuffle: true
@@ -33,10 +40,10 @@ data:
   enable_thinking: false
 
 model:
-  student_path: /root/autodl-tmp/opd_mopd/models/Qwen3-0.6B
+  student_path: ../models/Qwen3-4B
   student_base_path: null
-  math_teacher_path: /root/autodl-tmp/opd_mopd/models/Qwen3-4B-Non-Thinking-RL-Math-Step500
-  code_teacher_path: /root/autodl-tmp/opd_mopd/models/Qwen3-4B-Non-Thinking-RL-Code-Step300
+  math_teacher_path: ../models/Qwen3-4B-Non-Thinking-RL-Math-Step500
+  code_teacher_path: ../models/Qwen3-4B-Non-Thinking-RL-Code-Step300
 
 actor:
   learning_rate: "1e-5"
@@ -44,15 +51,15 @@ actor:
   only_reverse_kl_advantages: true
   lambda_vals: 1.0
   multi_teacher_distill: true
-  ppo_mini_batch_size: 16
+  ppo_mini_batch_size: 128
   ppo_micro_batch_size_per_gpu: 1
   use_kl_loss: true
   kl_loss_coef: 0
   kl_loss_type: low_var_kl
   entropy_coeff: 0
-  ppo_max_token_len_per_gpu: 4096
+  ppo_max_token_len_per_gpu: 32768
   gradient_checkpointing: true
-  param_offload: true
+  param_offload: false
   optimizer_offload: true
 
 rollout:
@@ -60,7 +67,7 @@ rollout:
   log_prob_micro_batch_size_per_gpu: 1
   tensor_model_parallel_size: 1
   name: vllm
-  gpu_memory_utilization: 0.5
+  gpu_memory_utilization: 0.8
   enforce_eager: true
   enable_chunked_prefill: false
   n: 1
@@ -82,7 +89,7 @@ rollout_correction:
 
 audit:
   enabled: true
-  output_dir: /root/autodl-tmp/opd_mopd/audit/formal_single_a800
+  output_dir: audit/formal_single_a800
   domains:
     - math
     - code
@@ -104,17 +111,25 @@ audit:
   full_gradient_train_max_samples_per_domain: null
   full_gradient_validation_max_samples_per_domain: null
   full_gradient_validation_files:
-    - /root/autodl-tmp/opd_mopd/G-OPD/G-OPD-Training-Data/PaperEval/AIME25/test.parquet
-    - /root/autodl-tmp/opd_mopd/G-OPD/G-OPD-Training-Data/PaperEval/HumanEvalPlus/test.parquet
+    - data/G-OPD-Training-Data/PaperEval/AIME25/test.parquet
+    - data/G-OPD-Training-Data/PaperEval/HumanEvalPlus/test.parquet
   full_gradient_validation_batch_size: 128
   full_gradient_micro_batch_size_per_gpu: 1
   full_gradient_storage_dtype: float32
+  sample_gradient_enabled: true
+  sample_gradient_norm_enabled: true
+  sample_gradient_cos_enabled: true
+  sample_gradient_cos_freq_steps: 1
+  sample_gradient_cos_max_samples_per_domain: 8
+  sample_gradient_cos_selection: top_norm_plus_random
+  sample_gradient_log_sample_level: true
+  sample_gradient_seed: 17
 
 paper_eval:
-  enabled: true
-  script_path: /root/autodl-tmp/opd_mopd/OPD-code/scripts/run_paper_eval_suite.sh
+  enabled: false
+  script_path: scripts/run_paper_eval_suite.sh
   model_path: null
-  output_dir: /root/autodl-tmp/opd_mopd/eval_outputs/paper_suite/formal_single_a800
+  output_dir: eval_outputs/paper_suite/formal_single_a800
   datasets:
     - aime24
     - aime25
@@ -135,14 +150,14 @@ trainer:
   n_gpus_per_node: 1
   nnodes: 1
   save_freq: 50
-  default_local_dir: /root/autodl-tmp/opd_mopd/checkpoints/formal_single_a800
-  test_freq: 1
+  default_local_dir: checkpoints/formal_single_a800
+  test_freq: -1
   total_epochs: 3
   total_training_steps: null
   max_actor_ckpt_to_keep: 2
   max_critic_ckpt_to_keep: 1
   critic_warmup: 0
-  val_before_train: true
+  val_before_train: false
   log_val_generations: 10
 
 ray_kwargs:

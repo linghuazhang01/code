@@ -23,6 +23,9 @@ DEFAULT_PAPER_EVAL_DATASETS = [
 class DataConfig:
     train_files: list[str]
     val_files: list[str]
+    domain_train_files: dict[str, list[str]] = field(default_factory=dict)
+    domain_sampling_weights: dict[str, float] = field(default_factory=dict)
+    domain_sampling_replacement: bool = True
     train_batch_size: int = 1024
     val_batch_size: int | None = None
     max_prompt_length: int = 2048
@@ -119,6 +122,14 @@ class AuditConfig:
     full_gradient_validation_batch_size: int | None = None
     full_gradient_micro_batch_size_per_gpu: int = 1
     full_gradient_storage_dtype: str = "float32"
+    sample_gradient_enabled: bool = False
+    sample_gradient_norm_enabled: bool = True
+    sample_gradient_cos_enabled: bool = False
+    sample_gradient_cos_freq_steps: int = 1
+    sample_gradient_cos_max_samples_per_domain: int | None = 8
+    sample_gradient_cos_selection: str = "top_norm_plus_random"
+    sample_gradient_log_sample_level: bool = True
+    sample_gradient_seed: int = 17
 
 
 @dataclass(frozen=True)
@@ -142,7 +153,7 @@ class TrainerConfig:
     n_gpus_per_node: int = 8
     nnodes: int = 1
     save_freq: int = 50
-    default_local_dir: str = "/G-OPD-checkpoints/Qwen3-4B-Non-Thinking-Multi-Teacher-Distill-ExOPD"
+    default_local_dir: str = "checkpoints/Qwen3-4B-Non-Thinking-Multi-Teacher-Distill-ExOPD"
     test_freq: int = 10
     total_epochs: int = 3
     total_training_steps: int | None = None
@@ -200,6 +211,31 @@ def _string_list(value: Any, key: str) -> list[str]:
     raise ValueError(f"Expected '{key}' to be a string or a list of strings.")
 
 
+def _float_mapping(value: Any, key: str) -> dict[str, float]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"Expected '{key}' to be a mapping.")
+    output: dict[str, float] = {}
+    for item_key, item_value in value.items():
+        numeric = float(item_value)
+        if numeric <= 0:
+            raise ValueError(f"Expected '{key}.{item_key}' to be positive.")
+        output[str(item_key)] = numeric
+    return output
+
+
+def _string_list_mapping(value: Any, key: str) -> dict[str, list[str]]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"Expected '{key}' to be a mapping.")
+    output: dict[str, list[str]] = {}
+    for item_key, item_value in value.items():
+        output[str(item_key)] = _string_list(item_value, f"{key}.{item_key}")
+    return output
+
+
 def _optional_string(value: Any, key: str) -> str | None:
     if value is None:
         return None
@@ -216,10 +252,25 @@ def load_config(path: str | Path) -> MOPDConfig:
     data_raw = _expect_mapping(root.get("data", {}), "data")
     model_raw = _expect_mapping(root.get("model", {}), "model")
     paper_eval_raw = _expect_mapping(root.get("paper_eval", {}), "paper_eval")
+    domain_train_files = _string_list_mapping(data_raw.get("domain_train_files"), "data.domain_train_files")
+    train_files = (
+        _string_list(data_raw.get("train_files"), "data.train_files")
+        if data_raw.get("train_files") is not None
+        else [file_path for files in domain_train_files.values() for file_path in files]
+    )
+    if not train_files:
+        raise ValueError("Expected 'data.train_files' or 'data.domain_train_files' to contain at least one file.")
 
     data = DataConfig(
-        train_files=_string_list(data_raw.get("train_files"), "data.train_files"),
+        train_files=train_files,
         val_files=_string_list(data_raw.get("val_files"), "data.val_files"),
+        domain_train_files=domain_train_files,
+        domain_sampling_weights=_float_mapping(
+            data_raw.get("domain_sampling_weights"), "data.domain_sampling_weights"
+        ),
+        domain_sampling_replacement=bool(
+            data_raw.get("domain_sampling_replacement", DataConfig.domain_sampling_replacement)
+        ),
         train_batch_size=int(data_raw.get("train_batch_size", DataConfig.train_batch_size)),
         val_batch_size=(
             None if data_raw.get("val_batch_size") is None else int(data_raw["val_batch_size"])

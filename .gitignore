@@ -17,6 +17,10 @@ __pycache__/
 .ruff_cache/
 .venv/
 venv/
+*.whl
+*.egg-info/
+build/
+dist/
 
 # Experiment outputs
 audit/
@@ -29,6 +33,7 @@ logs/
 outputs/
 runs/
 wandb/
+temp/
 *.log
 *.jsonl
 events.out.tfevents*
@@ -45,6 +50,11 @@ models/
 hf_home/
 G-OPD/
 G-OPD-Training-Data/
+data/agentic_benchmarks/sources/
+data/agentic_benchmarks/cache/
+data/agentic_benchmarks/processed/
+!data/agentic_benchmarks/
+!data/agentic_benchmarks/README.md
 
 # OS/editor
 .DS_Store

@@ -93,8 +93,8 @@ def _strip_trainer_audit_blocks(text: str) -> str:
         r" {24}metrics\.update\(audit_metrics\)\n"
         r"(?: {24}if self\.mopd_audit_logger\.should_compute_full_gradient\(self\.global_steps\):\n"
         r" {28}batch\.meta_info\.update\(self\.mopd_audit_logger\.full_gradient_meta\(\"train\", self\.global_steps\)\)\n"
-        r" {28}full_gradient_output = self\.actor_rollout_wg\.compute_mopd_full_gradient_metrics\(batch\)\n"
-        r" {28}metrics\.update\(reduce_metrics\(full_gradient_output\.meta_info\[\"metrics\"\]\)\)\n)?",
+        r"(?: {28}full_gradient_output = self\.actor_rollout_wg\.compute_mopd_full_gradient_metrics\(batch\)\n"
+        r" {28}metrics\.update\(reduce_metrics\(full_gradient_output\.meta_info\[\"metrics\"\]\)\)\n)?)?",
         "",
         text,
     )
@@ -146,27 +146,98 @@ def _strip_fsdp_worker_audit_blocks(text: str) -> str:
     )
 
 
+def _strip_dp_actor_audit_blocks(text: str) -> str:
+    text = re.sub(
+        r"\n {8,24}# MOPD audit: (?:same-forward domain-gradient probe|domain-gradient tracker) begin\n.*?"
+        r"\n {8,24}# MOPD audit: (?:same-forward domain-gradient probe|domain-gradient tracker) end\n",
+        "\n",
+        text,
+        flags=re.DOTALL,
+    )
+    text = re.sub(
+        r"\n {16}micro_batches = list\(micro_batches\)\n"
+        r" {16}if mopd_gradient_tracker is not None:\n"
+        r" {20}tracked_micro_batches = mopd_gradient_tracker\.prepare_micro_batches\(micro_batches\)\n"
+        r" {16}else:\n"
+        r" {20}tracked_micro_batches = \[\(None, micro_batch\) for micro_batch in micro_batches\]\n",
+        "\n",
+        text,
+    )
+    return text.replace(
+        "                for mopd_domain, micro_batch in tracked_micro_batches:\n",
+        "                for micro_batch in micro_batches:\n",
+    )
+
+
+def _strip_main_ppo_domain_sampler_blocks(text: str) -> str:
+    text = re.sub(
+        r"\n {4}# MOPD audit: domain weighted sampler begin\n"
+        r" {4}from mopd_verl\.domain_sampling import "
+        r"create_domain_weighted_sampler as create_mopd_domain_weighted_sampler\n\n"
+        r" {4}domain_sampler = create_mopd_domain_weighted_sampler\(data_config, dataset\)\n"
+        r" {4}if domain_sampler is not None:\n"
+        r" {8}sampler = domain_sampler\n"
+        r" {4}# MOPD audit: domain weighted sampler end\n"
+        r" {4}elif data_config\.sampler",
+        "\n    if data_config.sampler",
+        text,
+    )
+    return re.sub(
+        r"\n {4}# MOPD audit: domain sampler begin\n.*?"
+        r"\n {4}# MOPD audit: domain sampler end\n"
+        r" {4}elif data_config\.sampler",
+        "\n    if data_config.sampler",
+        text,
+        flags=re.DOTALL,
+    )
+
+
 def patch_dataset(gopd_dir: Path) -> bool:
     path = gopd_dir / "verl" / "verl" / "utils" / "dataset" / "rl_dataset.py"
+    changed = False
+    changed |= _replace_once(
+        path,
+        '''        for parquet_file in self.data_files:
+            # read parquet files and cache
+            dataframe = datasets.load_dataset("parquet", data_files=parquet_file)["train"]
+            dataframes.append(dataframe)
+        self.dataframe: datasets.Dataset = datasets.concatenate_datasets(dataframes)
+''',
+        '''        for file_idx, parquet_file in enumerate(self.data_files):
+            # read parquet files and cache
+            dataframe = datasets.load_dataset("parquet", data_files=parquet_file)["train"]
+            original_file = self.original_data_files[file_idx] if file_idx < len(self.original_data_files) else parquet_file
+            try:
+                from mopd_verl.domain_sampling import annotate_hf_dataset_domain, domain_for_data_file
+
+                domain = domain_for_data_file(self.config, original_file)
+                if domain is not None:
+                    dataframe = annotate_hf_dataset_domain(dataframe, domain)
+            except ImportError:
+                pass
+            dataframes.append(dataframe)
+        self.dataframe: datasets.Dataset = datasets.concatenate_datasets(dataframes)
+''',
+    )
     old = '''        if "opd_teacher" in row_dict.get("extra_info", {}):
             row_dict["opd_teacher"] = row_dict.get("extra_info", {}).get("opd_teacher")
             
         return row_dict
 '''
-    new = '''        if "opd_teacher" in row_dict.get("extra_info", {}):
+    new = '''        if "opd_teacher" in row_dict.get("extra_info", {}) and "opd_teacher" not in row_dict:
             row_dict["opd_teacher"] = row_dict.get("extra_info", {}).get("opd_teacher")
-        if "domain" in row_dict.get("extra_info", {}):
+        if "domain" in row_dict.get("extra_info", {}) and "domain" not in row_dict:
             row_dict["domain"] = row_dict.get("extra_info", {}).get("domain")
         if "sample_id" in row_dict.get("extra_info", {}):
             row_dict["sample_id"] = row_dict.get("extra_info", {}).get("sample_id")
-        if "source_domain" in row_dict.get("extra_info", {}):
+        if "source_domain" in row_dict.get("extra_info", {}) and "source_domain" not in row_dict:
             row_dict["source_domain"] = row_dict.get("extra_info", {}).get("source_domain")
         if "validation_dataset" in row_dict.get("extra_info", {}):
             row_dict["validation_dataset"] = row_dict.get("extra_info", {}).get("validation_dataset")
             
         return row_dict
 '''
-    changed = _replace_once(path, old, new)
+    changed |= _replace_once(path, old, new)
     changed |= _replace_once(
         path,
         '''        if "source_domain" in row_dict.get("extra_info", {}):
@@ -174,13 +245,42 @@ def patch_dataset(gopd_dir: Path) -> bool:
             
         return row_dict
 ''',
-        '''        if "source_domain" in row_dict.get("extra_info", {}):
+        '''        if "source_domain" in row_dict.get("extra_info", {}) and "source_domain" not in row_dict:
             row_dict["source_domain"] = row_dict.get("extra_info", {}).get("source_domain")
         if "validation_dataset" in row_dict.get("extra_info", {}):
             row_dict["validation_dataset"] = row_dict.get("extra_info", {}).get("validation_dataset")
             
         return row_dict
 ''',
+    )
+    return changed
+
+
+def patch_main_ppo(gopd_dir: Path) -> bool:
+    path = gopd_dir / "verl" / "verl" / "trainer" / "main_ppo.py"
+    changed = False
+    original = path.read_text(encoding="utf-8")
+    normalized = _strip_main_ppo_domain_sampler_blocks(original)
+    if normalized != original:
+        path.write_text(normalized, encoding="utf-8")
+        changed = True
+    changed |= _replace_once(
+        path,
+        '''    if data_config.sampler is not None and data_config.sampler.get("class_path", None) is not None:
+''',
+        '''    # MOPD audit: domain sampler begin
+    if data_config.get("domain_train_files", None):
+        return None
+
+    from mopd_verl.domain_sampling import create_domain_weighted_sampler as create_mopd_domain_weighted_sampler
+
+    domain_sampler = create_mopd_domain_weighted_sampler(data_config, dataset)
+    if domain_sampler is not None:
+        sampler = domain_sampler
+    # MOPD audit: domain sampler end
+    elif data_config.sampler is not None and data_config.sampler.get("class_path", None) is not None:
+''',
+        required=True,
     )
     return changed
 
@@ -270,6 +370,68 @@ def patch_trainer(gopd_dir: Path) -> bool:
         self.mopd_audit_logger = MOPDAuditLogger(self.config)
 
         self.global_steps = 0
+''',
+    )
+    changed |= _replace_once(
+        path,
+        '''        train_batch_size = self.config.data.get("gen_batch_size", self.config.data.train_batch_size)
+        if collate_fn is None:
+            from verl.utils.dataset.rl_dataset import collate_fn as default_collate_fn
+
+            collate_fn = default_collate_fn
+
+        num_workers = self.config.data["dataloader_num_workers"]
+
+        self.train_dataloader = StatefulDataLoader(
+            dataset=self.train_dataset,
+            batch_size=train_batch_size,
+            num_workers=num_workers,
+            drop_last=True,
+            collate_fn=collate_fn,
+            sampler=train_sampler,
+        )
+
+        val_batch_size = self.config.data.val_batch_size  # Prefer config value if set
+''',
+        '''        train_batch_size = self.config.data.get("gen_batch_size", self.config.data.train_batch_size)
+        # MOPD audit: exact domain batch sampler begin
+        train_batch_sampler = None
+        if train_sampler is None:
+            from mopd_verl.domain_sampling import create_domain_batch_sampler as create_mopd_domain_batch_sampler
+
+            train_batch_sampler = create_mopd_domain_batch_sampler(
+                self.config.data,
+                self.train_dataset,
+                int(train_batch_size),
+            )
+            if train_batch_sampler is None:
+                train_sampler = create_rl_sampler(self.config.data, self.train_dataset)
+        # MOPD audit: exact domain batch sampler end
+        if collate_fn is None:
+            from verl.utils.dataset.rl_dataset import collate_fn as default_collate_fn
+
+            collate_fn = default_collate_fn
+
+        num_workers = self.config.data["dataloader_num_workers"]
+
+        if train_batch_sampler is not None:
+            self.train_dataloader = StatefulDataLoader(
+                dataset=self.train_dataset,
+                batch_sampler=train_batch_sampler,
+                num_workers=num_workers,
+                collate_fn=collate_fn,
+            )
+        else:
+            self.train_dataloader = StatefulDataLoader(
+                dataset=self.train_dataset,
+                batch_size=train_batch_size,
+                num_workers=num_workers,
+                drop_last=True,
+                collate_fn=collate_fn,
+                sampler=train_sampler,
+            )
+
+        val_batch_size = self.config.data.val_batch_size  # Prefer config value if set
 ''',
     )
     changed |= _replace_once(
@@ -434,8 +596,6 @@ def patch_trainer(gopd_dir: Path) -> bool:
                         metrics.update(audit_metrics)
                         if self.mopd_audit_logger.should_compute_full_gradient(self.global_steps):
                             batch.meta_info.update(self.mopd_audit_logger.full_gradient_meta("train", self.global_steps))
-                            full_gradient_output = self.actor_rollout_wg.compute_mopd_full_gradient_metrics(batch)
-                            metrics.update(reduce_metrics(full_gradient_output.meta_info["metrics"]))
 
                     # update critic
                     if self.use_critic:
@@ -685,6 +845,88 @@ def patch_fsdp_worker(gopd_dir: Path) -> bool:
     return changed
 
 
+def patch_dp_actor(gopd_dir: Path) -> bool:
+    path = gopd_dir / "verl" / "verl" / "workers" / "actor" / "dp_actor.py"
+    changed = False
+    original = path.read_text(encoding="utf-8")
+    normalized = _strip_dp_actor_audit_blocks(original)
+    if normalized != original:
+        path.write_text(normalized, encoding="utf-8")
+        changed = True
+    changed |= _replace_once(
+        path,
+        '''        metrics = {}
+''',
+        '''        metrics = {}
+        # MOPD audit: domain-gradient tracker begin
+        mopd_gradient_tracker = None
+        mopd_full_gradient_cfg = data.meta_info.get("mopd_full_gradient", {})
+        if isinstance(mopd_full_gradient_cfg, dict) and mopd_full_gradient_cfg.get("enabled", False):
+            from mopd_verl.full_gradient_worker import SequentialBackwardDomainGradientTracker
+
+            mopd_gradient_tracker = SequentialBackwardDomainGradientTracker(self, mopd_full_gradient_cfg)
+        # MOPD audit: domain-gradient tracker end
+''',
+    )
+    changed |= _replace_once(
+        path,
+        '''                    micro_batches = mini_batch.split(self.config.ppo_micro_batch_size_per_gpu)
+
+                self.actor_optimizer.zero_grad()
+
+                for micro_batch in micro_batches:
+''',
+        '''                    micro_batches = mini_batch.split(self.config.ppo_micro_batch_size_per_gpu)
+                micro_batches = list(micro_batches)
+                if mopd_gradient_tracker is not None:
+                    tracked_micro_batches = mopd_gradient_tracker.prepare_micro_batches(micro_batches)
+                else:
+                    tracked_micro_batches = [(None, micro_batch) for micro_batch in micro_batches]
+
+                self.actor_optimizer.zero_grad()
+                # MOPD audit: domain-gradient tracker begin
+                if mopd_gradient_tracker is not None:
+                    mopd_gradient_tracker.start_mini_batch()
+                # MOPD audit: domain-gradient tracker end
+
+                for mopd_domain, micro_batch in tracked_micro_batches:
+''',
+    )
+    changed |= _replace_once(
+        path,
+        '''                    if self.scaler is not None:
+                        self.scaler.scale(loss).backward()
+                    else:
+                        loss.backward()
+
+                    micro_batch_metrics["actor/pg_loss"] = pg_loss.detach().item() * loss_scale_factor
+''',
+        '''                    if self.scaler is not None:
+                        self.scaler.scale(loss).backward()
+                    else:
+                        loss.backward()
+                    # MOPD audit: domain-gradient tracker begin
+                    if mopd_gradient_tracker is not None:
+                        mopd_gradient_tracker.after_backward(mopd_domain, len(micro_batch))
+                    # MOPD audit: domain-gradient tracker end
+
+                    micro_batch_metrics["actor/pg_loss"] = pg_loss.detach().item() * loss_scale_factor
+''',
+    )
+    changed |= _replace_once(
+        path,
+        '''                grad_norm = self._optimizer_step()
+''',
+        '''                # MOPD audit: domain-gradient tracker begin
+                if mopd_gradient_tracker is not None:
+                    append_to_dict(metrics, mopd_gradient_tracker.finish_mini_batch())
+                # MOPD audit: domain-gradient tracker end
+                grad_norm = self._optimizer_step()
+''',
+    )
+    return changed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("gopd_dir", help="Path to the G-OPD checkout root.")
@@ -692,10 +934,12 @@ def main() -> int:
 
     gopd_dir = Path(args.gopd_dir).resolve()
     changed = {
+        "main_ppo": patch_main_ppo(gopd_dir),
         "dataset": patch_dataset(gopd_dir),
         "reward_score": patch_reward_score(gopd_dir),
         "trainer": patch_trainer(gopd_dir),
         "fsdp_worker": patch_fsdp_worker(gopd_dir),
+        "dp_actor": patch_dp_actor(gopd_dir),
     }
     for name, was_changed in changed.items():
         print(f"{name}: {'patched' if was_changed else 'already patched'}")
