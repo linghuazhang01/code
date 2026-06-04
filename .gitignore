@@ -8,6 +8,7 @@ credentials.json
 settings.json
 *_secret*
 *_token*
+!third_party/verl/tests/workers/rollout/test_sglang_async_rollout_w_tools_token_out.py
 
 # Python
 __pycache__/
@@ -21,6 +22,9 @@ venv/
 *.egg-info/
 build/
 dist/
+!third_party/
+!third_party/verl/
+!third_party/verl/**/*.whl
 
 # Experiment outputs
 audit/
@@ -47,9 +51,15 @@ events.out.tfevents*
 *.ckpt
 *.onnx
 models/
+!third_party/verl/verl/models/
+!third_party/verl/verl/models/**
+!third_party/verl/tests/models/
+!third_party/verl/tests/models/**
 hf_home/
 G-OPD/
 G-OPD-Training-Data/
+!data/G-OPD-Training-Data/
+!data/G-OPD-Training-Data/**/*.parquet
 data/agentic_benchmarks/sources/
 data/agentic_benchmarks/cache/
 data/agentic_benchmarks/processed/
