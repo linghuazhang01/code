@@ -20,6 +20,17 @@ The current remote default is `/root/autodl-tmp/opd_mopd/OPD-code`, but that is 
 
 ### 1. Sync Code And Data
 
+If you cloned this repository from GitHub, install Git LFS and fetch the LFS-managed data/wheel files before running any training script:
+
+```bash
+git clone git@github.com:linghuazhang01/code.git OPD-code
+cd OPD-code
+git lfs install
+git lfs pull
+```
+
+Without `git lfs pull`, the parquet files under `data/G-OPD-Training-Data/` and the large wheel under `third_party/verl/` remain as small pointer files, so data checks and training startup will fail.
+
 If local data is missing:
 
 ```bash

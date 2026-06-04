@@ -37,6 +37,17 @@
 
 ### 1. 本地同步代码与数据到远端
 
+如果是从 GitHub clone 这个仓库，先安装 Git LFS 并拉取 LFS 管理的数据和 wheel 文件：
+
+```bash
+git clone git@github.com:linghuazhang01/code.git OPD-code
+cd OPD-code
+git lfs install
+git lfs pull
+```
+
+如果没有执行 `git lfs pull`，`data/G-OPD-Training-Data/` 下的 parquet 和 `third_party/verl/` 下的大 wheel 只会是很小的 pointer 文件，后续数据检查和训练启动都会失败。
+
 先在本地代码目录确认 `data/G-OPD-Training-Data` 存在；如果没有，先下载：
 
 ```bash
