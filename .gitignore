@@ -1,5 +1,6 @@
 # Secrets / local connection files
 ssh.sh
+api.sh
 .env
 .env.*
 *.pem
@@ -33,6 +34,7 @@ checkpoints/
 tensorboard_log/
 paper_eval/
 eval_outputs/
+eval/results/
 logs/
 outputs/
 runs/
@@ -65,6 +67,7 @@ data/agentic_benchmarks/cache/
 data/agentic_benchmarks/processed/
 !data/agentic_benchmarks/
 !data/agentic_benchmarks/README.md
+eval/domains/greasoner/data/official/
 
 # OS/editor
 .DS_Store

@@ -37,6 +37,7 @@ class DataConfig:
     seed: int = 42
     return_raw_chat: bool = True
     enable_thinking: bool = False
+    need_tools_kwargs: bool = False
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,9 @@ class ModelConfig:
     student_base_path: str | None
     math_teacher_path: str
     code_teacher_path: str
+    reasoning_teacher_path: str | None
+    primary_teacher_path: str
+    secondary_teacher_path: str | None
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,7 @@ class ActorConfig:
     gradient_checkpointing: bool = True
     param_offload: bool = False
     optimizer_offload: bool = False
+    fsdp_size: int | None = None
 
 
 @dataclass(frozen=True)
@@ -72,11 +77,13 @@ class RolloutConfig:
     log_prob_micro_batch_size_per_gpu: int = 4
     tensor_model_parallel_size: int = 4
     name: str = "vllm"
+    mode: str = "sync"
     gpu_memory_utilization: float = 0.6
     enforce_eager: bool = False
     enable_chunked_prefill: bool = False
     n: int = 1
     max_num_batched_tokens: int = 32768
+    max_model_len: int | None = None
     max_num_seqs: int = 1024
     num_gpu_blocks_override: int | None = None
     temperature: float = 1.0
@@ -86,6 +93,15 @@ class RolloutConfig:
     val_temperature: float = 1.0
     val_top_p: float = 1.0
     seed: int = 42
+    multi_turn_enable: bool = False
+    multi_turn_tool_config_path: str | None = None
+    multi_turn_max_assistant_turns: int | None = None
+    multi_turn_max_user_turns: int | None = None
+    multi_turn_max_parallel_calls: int = 1
+    multi_turn_max_tool_response_length: int = 256
+    multi_turn_tool_response_truncate_side: str = "middle"
+    multi_turn_format: str = "hermes"
+    multi_turn_tokenization_sanity_check_mode: str = "strict"
 
 
 @dataclass(frozen=True)
@@ -111,25 +127,17 @@ class AuditConfig:
     log_validation_metrics: bool = True
     tier2_window_size: int = 20
     calibration_bins: int = 10
-    validation_anchor_enabled: bool = True
-    validation_anchor_on_step0: bool = False
-    validation_anchor_refresh_steps: int = 0
     full_gradient_enabled: bool = False
     full_gradient_freq_steps: int = 1
     full_gradient_train_max_samples_per_domain: int | None = None
-    full_gradient_validation_max_samples_per_domain: int | None = None
-    full_gradient_validation_files: list[str] = field(default_factory=list)
-    full_gradient_validation_batch_size: int | None = None
     full_gradient_micro_batch_size_per_gpu: int = 1
     full_gradient_storage_dtype: str = "float32"
     sample_gradient_enabled: bool = False
     sample_gradient_norm_enabled: bool = True
     sample_gradient_cos_enabled: bool = False
     sample_gradient_cos_freq_steps: int = 1
-    sample_gradient_cos_max_samples_per_domain: int | None = 8
-    sample_gradient_cos_selection: str = "top_norm_plus_random"
     sample_gradient_log_sample_level: bool = True
-    sample_gradient_seed: int = 17
+    full_gradient_offload_domain_gradients: bool = True
 
 
 @dataclass(frozen=True)
@@ -195,6 +203,7 @@ class MOPDConfig:
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     ray_kwargs: RayKwargsConfig = field(default_factory=RayKwargsConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
+    extra_overrides: list[str] = field(default_factory=list)
 
 
 def _expect_mapping(value: Any, key: str) -> dict[str, Any]:
@@ -284,6 +293,24 @@ def load_config(path: str | Path) -> MOPDConfig:
         seed=int(data_raw.get("seed", DataConfig.seed)),
         return_raw_chat=bool(data_raw.get("return_raw_chat", True)),
         enable_thinking=bool(data_raw.get("enable_thinking", False)),
+        need_tools_kwargs=bool(data_raw.get("need_tools_kwargs", False)),
+    )
+    primary_teacher_raw = model_raw.get(
+        "primary_teacher_path",
+        model_raw.get("reasoning_teacher_path", model_raw.get("math_teacher_path")),
+    )
+    if primary_teacher_raw is None:
+        raise ValueError(
+            "Expected 'model.primary_teacher_path', 'model.reasoning_teacher_path', "
+            "or 'model.math_teacher_path'."
+        )
+    secondary_teacher_raw = model_raw.get(
+        "secondary_teacher_path",
+        model_raw.get("code_teacher_path", primary_teacher_raw),
+    )
+    code_teacher_raw = model_raw.get(
+        "code_teacher_path",
+        secondary_teacher_raw if secondary_teacher_raw is not None else primary_teacher_raw,
     )
     model = ModelConfig(
         student_path=str(model_raw["student_path"]),
@@ -292,8 +319,15 @@ def load_config(path: str | Path) -> MOPDConfig:
             if model_raw.get("student_base_path", model_raw["student_path"]) is None
             else str(model_raw.get("student_base_path", model_raw["student_path"]))
         ),
-        math_teacher_path=str(model_raw["math_teacher_path"]),
-        code_teacher_path=str(model_raw["code_teacher_path"]),
+        math_teacher_path=str(model_raw.get("math_teacher_path", primary_teacher_raw)),
+        code_teacher_path=str(code_teacher_raw),
+        reasoning_teacher_path=(
+            None
+            if model_raw.get("reasoning_teacher_path") is None
+            else str(model_raw["reasoning_teacher_path"])
+        ),
+        primary_teacher_path=str(primary_teacher_raw),
+        secondary_teacher_path=(None if secondary_teacher_raw is None else str(secondary_teacher_raw)),
     )
 
     return MOPDConfig(
@@ -328,4 +362,5 @@ def load_config(path: str | Path) -> MOPDConfig:
             ray_init=RayInitConfig(**_expect_mapping(root.get("ray_kwargs", {}).get("ray_init", {}), "ray_init"))
         ),
         runtime=RuntimeConfig(**_expect_mapping(root.get("runtime", {}), "runtime")),
+        extra_overrides=_string_list(root.get("extra_overrides", []), "extra_overrides"),
     )

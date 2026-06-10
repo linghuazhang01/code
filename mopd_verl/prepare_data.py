@@ -12,39 +12,24 @@ from typing import Any
 
 import pandas as pd
 
+from eval.data_prep.paper_eval import (
+    evalplus_jsonl_to_verl_parquet,
+    lcb_jsonl_to_verl_parquet,
+    math_eval_jsonl_to_verl_parquet,
+    prepare_paper_eval_data,
+)
+from mopd_verl.general_reasoner_data import (
+    DEFAULT_DATASET_NAME as GENERAL_REASONER_DATASET_NAME,
+    general_reasoner_to_verl_parquet,
+    prepare_general_reasoner_hf_dataset,
+)
+from mopd_verl.searchqa_data import searchqa_to_verl_parquet
+from grpo.data.toolrl import toolrl_to_verl_parquet
+
 if hasattr(sys, "set_int_max_str_digits"):
     sys.set_int_max_str_digits(0)
 
-VALID_TEACHERS = {"math", "code"}
-PAPER_MATH_EVAL_PROMPT = (
-    "Please reason step by step, and put your final answer within \\boxed{}."
-)
-PAPER_MATH_EVAL_SPECS = {
-    "aime24": ("AIME2024", "data/aime24/test.jsonl", "PaperEval/AIME24/test.parquet"),
-    "aime25": ("AIME2025", "data/aime25/test.jsonl", "PaperEval/AIME25/test.parquet"),
-    "hmmt25_feb": ("HMMT25Feb", "data/hmmt25_feb/test.jsonl", "PaperEval/HMMT25Feb/test.parquet"),
-    "hmmt25_nov": ("HMMT25Nov", "data/hmmt25_nov/test.jsonl", "PaperEval/HMMT25Nov/test.parquet"),
-}
-PAPER_CODE_EVAL_SPECS = {
-    "humaneval_plus": ("HumanEvalPlus", "code_eval/data/HumanEvalPlus.jsonl", "PaperEval/HumanEvalPlus/test.parquet"),
-    "mbpp_plus": ("MBPPPlus", "code_eval/data/MbppPlus.jsonl", "PaperEval/MBPPPlus/test.parquet"),
-}
-LCB_RELEASE_FILES = {
-    "release_v1": ["test.jsonl"],
-    "release_v2": ["test.jsonl", "test2.jsonl"],
-    "release_v3": ["test.jsonl", "test2.jsonl", "test3.jsonl"],
-    "release_v4": ["test.jsonl", "test2.jsonl", "test3.jsonl", "test4.jsonl"],
-    "release_v5": ["test.jsonl", "test2.jsonl", "test3.jsonl", "test4.jsonl", "test5.jsonl"],
-    "release_v6": ["test.jsonl", "test2.jsonl", "test3.jsonl", "test4.jsonl", "test5.jsonl", "test6.jsonl"],
-    "release_latest": ["test.jsonl", "test2.jsonl", "test3.jsonl", "test4.jsonl", "test5.jsonl", "test6.jsonl"],
-}
-for _lcb_idx in range(1, 7):
-    LCB_RELEASE_FILES[f"v{_lcb_idx}"] = ["test.jsonl" if _lcb_idx == 1 else f"test{_lcb_idx}.jsonl"]
-
-CODE_EVAL_PROMPT_PREFIX = (
-    "Write a Python solution for the following programming problem. "
-    "Return only the code, without explanations.\n\n"
-)
+VALID_TEACHERS = {"math", "code", "reasoning", "search", "tool"}
 
 
 @dataclass(frozen=True)
@@ -121,216 +106,6 @@ def merge_teacher_data(math_path: str | Path, code_path: str | Path, output_path
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     merged.to_parquet(output, index=False)
-
-
-def _load_jsonl(path: Path) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as handle:
-        for line_number, line in enumerate(handle, start=1):
-            stripped = line.strip()
-            if not stripped:
-                continue
-            record = json.loads(stripped)
-            if not isinstance(record, dict):
-                raise ValueError(f"{path}:{line_number} is not a JSON object.")
-            records.append(record)
-    return records
-
-
-def math_eval_jsonl_to_verl_parquet(input_path: str | Path, output_path: str | Path, data_source: str) -> int:
-    """Convert paper math eval JSONL files into verl validation parquet format."""
-
-    source = Path(input_path)
-    output = Path(output_path)
-    rows: list[dict[str, Any]] = []
-    for row_position, record in enumerate(_load_jsonl(source)):
-        problem = str(record.get("problem", "")).strip()
-        answer = str(record.get("answer", "")).strip()
-        if not problem or not answer:
-            raise ValueError(f"{source}:{row_position + 1} must contain non-empty problem and answer fields.")
-        raw_id = record.get("id", row_position)
-        rows.append(
-            {
-                "id": f"{data_source}:{raw_id}",
-                "data_source": data_source,
-                "prompt": [
-                    {
-                        "role": "user",
-                        "content": f"{problem}\n{PAPER_MATH_EVAL_PROMPT}",
-                    }
-                ],
-                "ability": "math",
-                "reward_model": {"style": "rule", "ground_truth": answer},
-                "extra_info": {
-                    "index": row_position,
-                    "split": "test",
-                    "sample_id": f"validation:{data_source}:{raw_id}",
-                    "domain": "math",
-                    "source_domain": "math",
-                    "validation_dataset": data_source,
-                },
-            }
-        )
-
-    output.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(rows).to_parquet(output, index=False)
-    return len(rows)
-
-
-def _evalplus_ground_truth(record: Mapping[str, Any], data_source: str) -> str:
-    entry_point = str(record["entry_point"])
-    if data_source == "HumanEvalPlus":
-        assert_case = str(record.get("test", "")).strip()
-        if "check(" in assert_case:
-            assert_case = f"{assert_case}\ncheck({entry_point})"
-    else:
-        assert_case = str(record.get("assertion", "")).strip()
-    return json.dumps(
-        {
-            "prompt": str(record.get("prompt", "")),
-            "entry_point": entry_point,
-            "assert_case": assert_case,
-            "dataset": data_source,
-        },
-        ensure_ascii=False,
-    )
-
-
-def evalplus_jsonl_to_verl_parquet(input_path: str | Path, output_path: str | Path, data_source: str) -> int:
-    """Convert HumanEval+/MBPP+ JSONL files into verl validation parquet format."""
-
-    source = Path(input_path)
-    output = Path(output_path)
-    rows: list[dict[str, Any]] = []
-    for row_position, record in enumerate(_load_jsonl(source)):
-        task_id = str(record.get("task_id", row_position))
-        prompt = str(record.get("prompt", "")).strip()
-        if not prompt:
-            raise ValueError(f"{source}:{row_position + 1} must contain a non-empty prompt.")
-        rows.append(
-            {
-                "id": f"{data_source}:{task_id}",
-                "data_source": data_source,
-                "prompt": [
-                    {
-                        "role": "user",
-                        "content": CODE_EVAL_PROMPT_PREFIX + prompt,
-                    }
-                ],
-                "ability": "code",
-                "reward_model": {"style": "rule", "ground_truth": _evalplus_ground_truth(record, data_source)},
-                "extra_info": {
-                    "index": row_position,
-                    "split": "test",
-                    "sample_id": f"validation:{data_source}:{task_id}",
-                    "opd_teacher": "code",
-                    "domain": "code",
-                    "source_domain": "code",
-                    "validation_dataset": data_source,
-                    "entry_point": record.get("entry_point"),
-                    "task_id": task_id,
-                },
-            }
-        )
-
-    output.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(rows).to_parquet(output, index=False)
-    return len(rows)
-
-
-def _json_loads_if_needed(value: Any) -> Any:
-    if isinstance(value, str):
-        return json.loads(value)
-    return value
-
-
-def _lcb_ground_truth(record: Mapping[str, Any]) -> str:
-    metadata = _json_loads_if_needed(record.get("metadata", "{}")) or {}
-    public_tests = _json_loads_if_needed(record.get("public_test_cases", "[]")) or []
-    return json.dumps(
-        {
-            "inputs": [str(test.get("input", "")) for test in public_tests],
-            "outputs": [str(test.get("output", "")) for test in public_tests],
-            "fn_name": metadata.get("func_name"),
-        },
-        ensure_ascii=False,
-    )
-
-
-def lcb_jsonl_to_verl_parquet(input_paths: Sequence[str | Path], output_path: str | Path) -> int:
-    """Convert LiveCodeBench code-generation-lite JSONL shards into verl validation parquet format."""
-
-    output = Path(output_path)
-    rows: list[dict[str, Any]] = []
-    for input_path in input_paths:
-        source = Path(input_path)
-        if not source.exists():
-            continue
-        for record in _load_jsonl(source):
-            row_position = len(rows)
-            question_id = str(record.get("question_id", row_position))
-            title = str(record.get("question_title", "")).strip()
-            question = str(record.get("question_content", "")).strip()
-            starter_code = str(record.get("starter_code", "") or "").strip()
-            prompt_parts = [part for part in [title, question, starter_code] if part]
-            if not prompt_parts:
-                raise ValueError(f"{source}:{row_position + 1} must contain question text or starter code.")
-            rows.append(
-                {
-                    "id": f"LiveCodeBench:{question_id}",
-                    "data_source": "LiveCodeBench",
-                    "prompt": [
-                        {
-                            "role": "user",
-                            "content": CODE_EVAL_PROMPT_PREFIX + "\n\n".join(prompt_parts),
-                        }
-                    ],
-                    "ability": "code",
-                    "reward_model": {"style": "rule", "ground_truth": _lcb_ground_truth(record)},
-                    "extra_info": {
-                        "index": row_position,
-                        "split": "test",
-                        "sample_id": f"validation:LiveCodeBench:{question_id}",
-                        "opd_teacher": "code",
-                        "domain": "code",
-                        "source_domain": "code",
-                        "validation_dataset": "LiveCodeBench",
-                        "question_id": question_id,
-                        "platform": record.get("platform"),
-                    },
-                }
-            )
-
-    output.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(rows).to_parquet(output, index=False)
-    return len(rows)
-
-
-def prepare_paper_eval_data(gopd_dir: str | Path, output_root: str | Path | None = None) -> dict[str, int]:
-    """Prepare paper-eval validation parquets under a G-OPD checkout."""
-
-    root = Path(gopd_dir)
-    target_root = Path(output_root) if output_root is not None else root / "G-OPD-Training-Data"
-    counts: dict[str, int] = {}
-    for dataset_name, (data_source, jsonl_relative, parquet_relative) in PAPER_MATH_EVAL_SPECS.items():
-        counts[dataset_name] = math_eval_jsonl_to_verl_parquet(
-            input_path=root / jsonl_relative,
-            output_path=target_root / parquet_relative,
-            data_source=data_source,
-        )
-    for dataset_name, (data_source, jsonl_relative, parquet_relative) in PAPER_CODE_EVAL_SPECS.items():
-        counts[dataset_name] = evalplus_jsonl_to_verl_parquet(
-            input_path=root / jsonl_relative,
-            output_path=target_root / parquet_relative,
-            data_source=data_source,
-        )
-    lcb_root = root / "code_eval/coding/LiveCodeBench/code_generation_lite"
-    lcb_files = [lcb_root / name for name in LCB_RELEASE_FILES["release_v6"]]
-    counts["lcb"] = lcb_jsonl_to_verl_parquet(
-        input_paths=lcb_files,
-        output_path=target_root / "PaperEval/LiveCodeBench/test.parquet",
-    )
-    return counts
 
 
 def teacher_counts(path: str | Path) -> dict[str, int]:
@@ -431,8 +206,61 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     paper_eval_parser.add_argument(
         "--output-root",
         default=None,
-        help="Output root for generated parquets. Defaults to <gopd-dir>/G-OPD-Training-Data.",
+        help="Output root for generated parquets. Defaults to <gopd-dir>/eval/domains.",
     )
+    searchqa_parser = subparsers.add_parser(
+        "prepare-searchqa",
+        help="Convert SearchQA/Search-R1-style parquet or JSONL into verl parquet format.",
+    )
+    searchqa_parser.add_argument("--input", required=True, help="Input .parquet or .jsonl file.")
+    searchqa_parser.add_argument("--output", required=True, help="Output verl parquet file.")
+    searchqa_parser.add_argument("--split", default="train", help="Split name to record in extra_info.")
+    searchqa_parser.add_argument(
+        "--data-source",
+        default=None,
+        help="Default base data source, e.g. nq or hotpotqa. Existing row data_source values take precedence.",
+    )
+    searchqa_parser.add_argument("--teacher", default="search", choices=sorted(VALID_TEACHERS), help="OPD teacher label.")
+    searchqa_parser.add_argument(
+        "--data-source-prefix",
+        default="searchR1",
+        help="Prefix used for reward dispatch, e.g. searchR1 produces searchR1_nq.",
+    )
+    general_reasoner_parser = subparsers.add_parser(
+        "prepare-general-reasoner",
+        help="Convert General-Reasoner/WebInstruct JSONL, JSON, or parquet into verl parquet format.",
+    )
+    general_reasoner_parser.add_argument("--input", required=True, help="Input .parquet, .json, or .jsonl file.")
+    general_reasoner_parser.add_argument("--output", required=True, help="Output verl parquet file.")
+    general_reasoner_parser.add_argument("--split", default="train", help="Split name to record in extra_info.")
+    general_reasoner_parser.add_argument("--max-samples", type=int, default=None, help="Optional cap for quick tests.")
+
+    general_reasoner_hf_parser = subparsers.add_parser(
+        "prepare-general-reasoner-hf",
+        help="Download TIGER-Lab/WebInstruct-verified and write train/test verl parquet files.",
+    )
+    general_reasoner_hf_parser.add_argument("--dataset-name", default=GENERAL_REASONER_DATASET_NAME)
+    general_reasoner_hf_parser.add_argument(
+        "--output-dir",
+        default="data/GeneralReasoner/WebInstructVerified",
+        help="Directory for train.parquet/test.parquet outputs.",
+    )
+    general_reasoner_hf_parser.add_argument(
+        "--test-max-samples",
+        type=int,
+        default=100,
+        help="Cap test/validation examples for validation cost control. Use -1 for all.",
+    )
+    toolrl_parser = subparsers.add_parser(
+        "prepare-toolrl",
+        help="Convert ToolRL/RLLA parquet into the shared verl parquet format.",
+    )
+    toolrl_parser.add_argument("--input", required=True, help="Input ToolRL .parquet file.")
+    toolrl_parser.add_argument("--output", required=True, help="Output verl parquet file.")
+    toolrl_parser.add_argument("--split", default="train", help="Split name to record in extra_info.")
+    toolrl_parser.add_argument("--teacher", default="tool", choices=sorted(VALID_TEACHERS), help="OPD teacher label.")
+    toolrl_parser.add_argument("--data-source", default="toolrl_rlla", help="Data source tag for reward logging.")
+    toolrl_parser.add_argument("--max-samples", type=int, default=None, help="Optional cap for quick tests.")
     return parser.parse_args(argv)
 
 
@@ -442,6 +270,73 @@ def main(argv: Sequence[str] | None = None) -> int:
         counts = prepare_paper_eval_data(args.gopd_dir, args.output_root)
         sys.stdout.write(json.dumps({"counts": counts}, sort_keys=True) + "\n")
         return 0
+    if args.command == "prepare-searchqa":
+        count = searchqa_to_verl_parquet(
+            args.input,
+            args.output,
+            split=args.split,
+            data_source=args.data_source,
+            teacher=args.teacher,
+            data_source_prefix=args.data_source_prefix,
+        )
+        validation = validate_teacher_labels(args.output)
+        sample_validation = validate_sample_ids(args.output)
+        payload = {
+            "count": count,
+            "counts": validation.counts,
+            "invalid_rows": validation.invalid_rows[:20],
+            "sample_id_duplicate_count": sample_validation.duplicate_count,
+            "sample_id_invalid_rows": sample_validation.invalid_rows[:20],
+        }
+        sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
+        return 0 if validation.is_valid and sample_validation.is_valid else 1
+    if args.command == "prepare-general-reasoner":
+        count = general_reasoner_to_verl_parquet(
+            args.input,
+            args.output,
+            split=args.split,
+            max_samples=args.max_samples,
+        )
+        validation = validate_teacher_labels(args.output)
+        sample_validation = validate_sample_ids(args.output)
+        payload = {
+            "count": count,
+            "counts": validation.counts,
+            "invalid_rows": validation.invalid_rows[:20],
+            "sample_id_duplicate_count": sample_validation.duplicate_count,
+            "sample_id_invalid_rows": sample_validation.invalid_rows[:20],
+        }
+        sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
+        return 0 if validation.is_valid and sample_validation.is_valid else 1
+    if args.command == "prepare-general-reasoner-hf":
+        counts = prepare_general_reasoner_hf_dataset(
+            dataset_name=args.dataset_name,
+            output_dir=args.output_dir,
+            test_max_samples=args.test_max_samples,
+        )
+        payload = {"counts": counts, "output_dir": args.output_dir}
+        sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
+        return 0
+    if args.command == "prepare-toolrl":
+        count = toolrl_to_verl_parquet(
+            args.input,
+            args.output,
+            split=args.split,
+            teacher=args.teacher,
+            data_source=args.data_source,
+            max_samples=args.max_samples,
+        )
+        validation = validate_teacher_labels(args.output)
+        sample_validation = validate_sample_ids(args.output)
+        payload = {
+            "count": count,
+            "counts": validation.counts,
+            "invalid_rows": validation.invalid_rows[:20],
+            "sample_id_duplicate_count": sample_validation.duplicate_count,
+            "sample_id_invalid_rows": sample_validation.invalid_rows[:20],
+        }
+        sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
+        return 0 if validation.is_valid and sample_validation.is_valid else 1
 
     if args.command == "merge":
         merge_teacher_data(args.math_train, args.code_train, args.output)

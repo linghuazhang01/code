@@ -13,7 +13,6 @@ DIRECT_AUDIT_CATEGORIES = {
     "cost",
     "full_grad",
     "full_grad_alignment",
-    "full_grad_anchor",
     "full_grad_contribution",
     "full_grad_conflict",
     "full_grad_cost",
@@ -66,13 +65,6 @@ CORE_DOMAIN_COVERAGE = {"duplicate_rate"}
 CORE_FULL_GRAD = {"grad_norm", "sample_count"}
 CORE_GLOBAL_FULL_GRAD = {"total_grad_norm"}
 CORE_FULL_GRAD_ALIGNMENT = {"full_grad_cosine_domain_total"}
-CORE_FULL_GRAD_ANCHOR = {
-    "full_grad_cosine_i_j",
-    "predicted_val_opd_loss_delta_i_j",
-    "validation_anchor_grad_norm",
-    "validation_anchor_sample_count",
-    "validation_anchor_token_count",
-}
 CORE_FULL_GRAD_CONTRIBUTION = {"signed_projection_share"}
 CORE_CONFLICT = {
     "conflict_magnitude_i_k",
@@ -80,13 +72,14 @@ CORE_CONFLICT = {
 }
 CORE_AUDIT = {
     "error",
-    "full_gradient_anchor_available",
-    "full_gradient_anchor_count",
-    "full_gradient_anchor_token_count",
     "full_gradient_autograd_unavailable",
     "full_gradient_domain_sequential_available",
     "full_gradient_domain_sequential_unsupported",
+    "full_gradient_replicated_all_reduce",
     "full_gradient_true_backward_fallback",
+    "sample_gradient_distributed_unsupported",
+    "sample_gradient_distributed_world_size",
+    "sample_gradient_zero_norm_count",
     "wall_time_step",
 }
 CORE_GLOBAL_DATA = {"domain_mix_entropy", "total_samples", "total_tokens"}
@@ -215,8 +208,6 @@ def _keep_domain(category: str, metric: str, parts: list[str]) -> bool:
         return metric in CORE_SAMPLE_GRAD_CONTRIBUTION
     if category == "full_grad":
         return metric in CORE_FULL_GRAD
-    if category == "full_grad_anchor":
-        return metric in CORE_FULL_GRAD_ANCHOR
     if category == "teacher":
         return metric in CORE_DOMAIN_TEACHER
     if category == "reward":

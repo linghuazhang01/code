@@ -19,13 +19,13 @@ data:
     code: 0.5
   domain_sampling_replacement: true
   val_files:
-    - data/G-OPD-Training-Data/PaperEval/AIME24/test.parquet
-    - data/G-OPD-Training-Data/PaperEval/AIME25/test.parquet
-    - data/G-OPD-Training-Data/PaperEval/HMMT25Feb/test.parquet
-    - data/G-OPD-Training-Data/PaperEval/HMMT25Nov/test.parquet
-    - data/G-OPD-Training-Data/PaperEval/HumanEvalPlus/test.parquet
-    - data/G-OPD-Training-Data/PaperEval/MBPPPlus/test.parquet
-    - data/G-OPD-Training-Data/PaperEval/LiveCodeBench/test.parquet
+    - eval/domains/math/data/AIME24/test.parquet
+    - eval/domains/math/data/AIME25/test.parquet
+    - eval/domains/math/data/HMMT25Feb/test.parquet
+    - eval/domains/math/data/HMMT25Nov/test.parquet
+    - eval/domains/code/data/HumanEvalPlus/test.parquet
+    - eval/domains/code/data/MBPPPlus/test.parquet
+    - eval/domains/code/data/LiveCodeBench/test.parquet
   train_batch_size: 1024
   max_prompt_length: 2048
   max_response_length: 16384
@@ -99,17 +99,10 @@ audit:
   log_validation_metrics: true
   tier2_window_size: 20
   calibration_bins: 10
-  validation_anchor_enabled: true
-  validation_anchor_on_step0: false
-  validation_anchor_refresh_steps: 0
-  full_gradient_validation_files:
-    - data/G-OPD-Training-Data/PaperEval/AIME25/test.parquet
-    - data/G-OPD-Training-Data/PaperEval/HumanEvalPlus/test.parquet
-  full_gradient_validation_batch_size: 128
 
 paper_eval:
   enabled: false
-  script_path: scripts/run_paper_eval_suite.sh
+  script_path: eval/scripts/run_paper_eval_suite.sh
   model_path: null
   output_dir: paper_eval
   datasets:

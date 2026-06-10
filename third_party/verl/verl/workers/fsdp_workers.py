@@ -118,6 +118,18 @@ def get_sharding_strategy(device_mesh):
     return sharding_strategy
 
 
+def _reshard_fsdp_module(module):
+    """Reshard FSDP modules only when the active strategy actually shards."""
+    version = fsdp_version(module)
+    if version == 1:
+        handle = getattr(module, "_handle", None)
+        if handle is None or not bool(getattr(handle, "uses_sharded_strategy", True)):
+            return
+        handle.reshard(True)
+    elif version == 2:
+        module.reshard()
+
+
 def get_vl_model_vision_tower(vl_model_instance):
     """
     Util to extract Vision Tower from a VL model instance
@@ -868,7 +880,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             if self.rank == 0:
                 print(f"Actor base model initialized successfully from {base_model_path}")
 
-        # Ref's base model (for computing base_ref_log_prob)
+        # Ref's base model (for computing code_teacher_log_prob)
         self.base_ref_policy = None
         self._has_base_ref_model = False
         ref_model_config = self.config.ref.get("model", {})
@@ -932,15 +944,6 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
 
 
-
-    # MOPD audit: full-parameter gradient helpers begin
-    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
-    @DistProfiler.annotate(color="cyan", role="mopd_full_gradient")
-    def compute_mopd_full_gradient_metrics(self, data: DataProto):
-        from mopd_verl.full_gradient_worker import compute_mopd_full_gradient_metrics
-
-        return compute_mopd_full_gradient_metrics(self, data)
-    # MOPD audit: full-parameter gradient helpers end
 
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
     @DistProfiler.annotate(color="red", role="actor_update")
@@ -1068,7 +1071,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         # https://pytorch.org/docs/stable/notes/fsdp.html#fsdp-notes
         # unshard the root FSDP module
         if self.world_size > 1 and fsdp_version(self.actor.actor_module) == 1:
-            self.actor.actor_module._handle.reshard(True)
+            _reshard_fsdp_module(self.actor.actor_module)
 
         if self._is_offload_param:
             offload_fsdp_model_to_cpu(self.actor_module_fsdp)
@@ -1083,8 +1086,8 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             # if _is_lora, actor without lora applied is the ref
             data.meta_info["is_lora"] = True
             data = self.compute_log_prob(data)
-            # this old_log_probs is in fact ref_log_prob
-            data = DataProto.from_dict(tensors={"ref_log_prob": data.batch["old_log_probs"]})
+            # this old_log_probs is in fact math_teacher_log_prob
+            data = DataProto.from_dict(tensors={"math_teacher_log_prob": data.batch["old_log_probs"]})
             return data
         assert self._is_ref
         # else:
@@ -1098,17 +1101,14 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         with self.ulysses_sharding_manager:
             data = data.to("cpu")  # data will to device with each micro batch on ref.compute_log_prob
             output, _ = self.ref_policy.compute_log_prob(data=data, calculate_entropy=False)
-            output = DataProto.from_dict(tensors={"ref_log_prob": output})
+            output = DataProto.from_dict(tensors={"math_teacher_log_prob": output})
 
         output = output.to("cpu")
 
         # https://pytorch.org/docs/stable/notes/fsdp.html#fsdp-notes
         # unshard the root FSDP module
         if self.world_size > 1:
-            if fsdp_version(self.ref_policy.actor_module) == 1:
-                self.ref_policy.actor_module._handle.reshard(True)
-            elif fsdp_version(self.ref_policy.actor_module) == 2:
-                self.ref_policy.actor_module.reshard()
+            _reshard_fsdp_module(self.ref_policy.actor_module)
 
         return output
     
@@ -1118,11 +1118,11 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         """Compute log probabilities using actor's base model.
         
         This is used for corrected reward computation:
-        corrected_reward = old_log_prob - ref_log_prob - (base_log_prob - base_ref_log_prob)
-        
+        corrected_reward = old_log_prob - math_teacher_log_prob - (base_log_prob - code_teacher_log_prob)
+
         Args:
             data: DataProto containing input_ids, attention_mask, position_ids, responses
-            
+
         Returns:
             DataProto with base_log_prob tensor
         """
@@ -1144,10 +1144,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         # unshard the root FSDP module
         if self.world_size > 1:
-            if fsdp_version(self.base_policy.actor_module) == 1:
-                self.base_policy.actor_module._handle.reshard(True)
-            elif fsdp_version(self.base_policy.actor_module) == 2:
-                self.base_policy.actor_module.reshard()
+            _reshard_fsdp_module(self.base_policy.actor_module)
 
         return output
 
@@ -1157,14 +1154,13 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         """Compute log probabilities using ref's base model.
         
         This is used for corrected reward computation:
-        corrected_reward = old_log_prob - ref_log_prob - (base_log_prob - base_ref_log_prob)
-        
+        corrected_reward = old_log_prob - math_teacher_log_prob - (base_log_prob - code_teacher_log_prob)
+
         Args:
-            data: DataProto containing ref_input_ids, ref_attention_mask, ref_position_ids, responses
-                  (uses ref model inputs if different tokenization is needed)
-            
+            data: DataProto containing input_ids, attention_mask, position_ids, responses
+
         Returns:
-            DataProto with base_ref_log_prob tensor
+            DataProto with code_teacher_log_prob tensor
         """
         if not self._has_base_ref_model:
             raise ValueError("Base ref model not initialized. Please set actor_rollout_ref.ref.model.base_model_path in config.")
@@ -1178,16 +1174,13 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         with self.ulysses_sharding_manager:
             data = data.to("cpu")  # data will to device with each micro batch
             output, _ = self.base_ref_policy.compute_log_prob(data=data, calculate_entropy=False)
-            output = DataProto.from_dict(tensors={"base_ref_log_prob": output})
+            output = DataProto.from_dict(tensors={"code_teacher_log_prob": output})
 
         output = output.to("cpu")
 
         # unshard the root FSDP module
         if self.world_size > 1:
-            if fsdp_version(self.base_ref_policy.actor_module) == 1:
-                self.base_ref_policy.actor_module._handle.reshard(True)
-            elif fsdp_version(self.base_ref_policy.actor_module) == 2:
-                self.base_ref_policy.actor_module.reshard()
+            _reshard_fsdp_module(self.base_ref_policy.actor_module)
 
         return output
 
@@ -2083,7 +2076,7 @@ class RewardModelWorker(Worker, DistProfilerExtension):
         # https://pytorch.org/docs/stable/notes/fsdp.html#fsdp-notes
         # unshard the root FSDP module
         if self.world_size > 1 and fsdp_version(self.reward_module) == 1:
-            self.reward_module._handle.reshard(True)
+            _reshard_fsdp_module(self.reward_module)
 
         output = output.to("cpu")
         return output

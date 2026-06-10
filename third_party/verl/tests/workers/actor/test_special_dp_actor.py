@@ -14,14 +14,26 @@
 
 import unittest
 
+import numpy as np
 import torch
 import torch.nn as nn
 from tensordict import TensorDict
 from transformers import AutoModelForCausalLM, Qwen3Config
 
 from verl import DataProto
-from verl.workers.actor.dp_actor import DataParallelPPOActor
+from verl.workers.actor.dp_actor import DataParallelPPOActor, _teacher_type_at
 from verl.workers.config import FSDPActorConfig, OptimizerConfig
+
+
+class TestTeacherTypeRouting(unittest.TestCase):
+    def test_numpy_teacher_labels_are_indexed_per_sample(self):
+        labels = np.array(["math", "code"], dtype=object)
+
+        self.assertEqual(_teacher_type_at(labels, 0), "math")
+        self.assertEqual(_teacher_type_at(labels, 1), "code")
+
+    def test_scalar_teacher_label_remains_supported(self):
+        self.assertEqual(_teacher_type_at("math", 1), "math")
 
 
 class MockTransformerModel(nn.Module):

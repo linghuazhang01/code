@@ -1,0 +1,128 @@
+# SearchQA/Search-R1-style MOPD setting.
+# The current MOPD worker has two reference slots. Search rows use
+# extra_info.opd_teacher=search and route through the primary ref teacher slot.
+
+runtime:
+  python_bin: python
+  verl_module: verl.trainer.main_ppo
+  wandb_mode: online
+  used_model: no_api
+
+data:
+  domain_train_files:
+    search:
+      - data/SearchQA/train.parquet
+  domain_sampling_weights:
+    search: 1.0
+  domain_sampling_replacement: true
+  val_files:
+    - data/SearchQA/test.parquet
+  train_batch_size: 512
+  val_batch_size: 256
+  max_prompt_length: 4096
+  max_response_length: 3000
+  filter_overlong_prompts: true
+  truncation: error
+  shuffle: true
+  validation_shuffle: false
+  seed: 42
+  return_raw_chat: true
+  enable_thinking: true
+  need_tools_kwargs: true
+
+model:
+  student_path: Qwen/Qwen3-4B
+  student_base_path: Qwen/Qwen3-4B
+  primary_teacher_path: Qwen3-4B-Non-Thinking-RL-SearchQA
+  secondary_teacher_path: Qwen/Qwen3-4B
+
+actor:
+  learning_rate: "1e-6"
+  lr_warmup_steps_ratio: 0.285
+  only_reverse_kl_advantages: true
+  lambda_vals: 1.25
+  multi_teacher_distill: true
+  ppo_mini_batch_size: 256
+  ppo_micro_batch_size_per_gpu: 1
+  use_kl_loss: true
+  kl_loss_coef: 0
+  kl_loss_type: low_var_kl
+  entropy_coeff: 0
+  ppo_max_token_len_per_gpu: 32768
+  gradient_checkpointing: true
+  param_offload: false
+  optimizer_offload: false
+
+rollout:
+  calculate_log_probs: true
+  log_prob_micro_batch_size_per_gpu: 4
+  tensor_model_parallel_size: 4
+  name: sglang
+  mode: sync
+  gpu_memory_utilization: 0.5
+  enable_chunked_prefill: false
+  n: 1
+  max_model_len: 15000
+  max_num_batched_tokens: 32768
+  max_num_seqs: 1024
+  temperature: 1.0
+  top_p: 1.0
+  val_n: 1
+  val_do_sample: false
+  val_temperature: 1.0
+  val_top_p: 1.0
+  seed: 42
+  multi_turn_enable: true
+  multi_turn_tool_config_path: configs/tool_config/search_tool_config.yaml
+  multi_turn_max_assistant_turns: 2
+  multi_turn_max_parallel_calls: 1
+  multi_turn_max_tool_response_length: 512
+  multi_turn_tool_response_truncate_side: middle
+  multi_turn_format: qwen
+  multi_turn_tokenization_sanity_check_mode: ignore_strippable
+
+rollout_correction:
+  rollout_is: token
+  rollout_is_threshold: 5.0
+  rollout_rs: null
+  bypass_mode: false
+
+audit:
+  enabled: false
+  output_dir: mopd_audit_searchqa
+  domains:
+    - search
+  tensorboard_prefix: mopd
+  tensorboard_layout: domain_category
+  tensorboard_prune_mode: core
+  loss_variance_signal: opd_loss_token
+  max_samples_per_domain: 32
+  high_variance_cv_threshold: 1.0
+  log_sample_level: true
+  log_validation_metrics: true
+  tier2_window_size: 20
+  calibration_bins: 10
+
+paper_eval:
+  enabled: false
+  script_path: null
+  model_path: null
+  output_dir: paper_eval_searchqa
+  datasets: []
+
+trainer:
+  project_name: on-policy-distillation
+  experiment_name: Qwen3-4B-SearchQA-MOPD
+  logger: '["console","wandb"]'
+  n_gpus_per_node: 8
+  nnodes: 1
+  save_freq: 100
+  default_local_dir: checkpoints/Qwen3-4B-SearchQA-MOPD
+  test_freq: 50
+  total_epochs: 1
+  total_training_steps: null
+  max_actor_ckpt_to_keep: null
+  max_critic_ckpt_to_keep: null
+  critic_warmup: 0
+  val_before_train: false
+  log_val_generations: 10

@@ -22,8 +22,11 @@ pip install "nvidia-ml-py>=12.560.30" "fastapi[standard]>=0.115.0" "optree>=0.13
 
 echo "3. install FlashAttention and FlashInfer"
 # Install flash-attn-2.7.4.post1 (cxx11abi=False)
-wget -nv https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp310-cp310-linux_x86_64.whl && \
-    pip install --no-cache-dir flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp310-cp310-linux_x86_64.whl
+FLASH_ATTN_WHEEL="flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp310-cp310-linux_x86_64.whl"
+if [ ! -f "${FLASH_ATTN_WHEEL}" ]; then
+    wget -nv "https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/${FLASH_ATTN_WHEEL}"
+fi
+pip install --no-cache-dir "${FLASH_ATTN_WHEEL}"
 
 # FlashInfer is optional for the single-step smoke path. GitHub wheel
 # downloads are often slow on rented instances, so skip it by default.

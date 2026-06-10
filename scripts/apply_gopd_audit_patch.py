@@ -114,21 +114,6 @@ def _strip_trainer_audit_blocks(text: str) -> str:
         "\n                logger.log(data=metrics, step=self.global_steps)",
         text,
     )
-    text = re.sub(
-        r"\n {12}# MOPD audit: validation anchor begin\n.*?\n {12}# MOPD audit: validation anchor end\n",
-        "\n",
-        text,
-        flags=re.DOTALL,
-    )
-    text = re.sub(
-        r"\n {12}if \(\n"
-        r" {16}getattr\(self, \"mopd_audit_logger\", None\) is not None\n"
-        r" {16}and self\.mopd_audit_logger\.should_update_validation_anchor\(self\.global_steps\)\n"
-        r" {12}\):\n.*?\n {12}# evaluate using reward_function",
-        "\n            # evaluate using reward_function",
-        text,
-        flags=re.DOTALL,
-    )
     text = text.replace(
         'test_batch.meta_info["validate"] = True\n\n\n            # evaluate using reward_function',
         'test_batch.meta_info["validate"] = True\n\n            # evaluate using reward_function',
@@ -436,153 +421,6 @@ def patch_trainer(gopd_dir: Path) -> bool:
     )
     changed |= _replace_once(
         path,
-        '''        self.val_dataloader = StatefulDataLoader(
-            dataset=self.val_dataset,
-            batch_size=val_batch_size,
-            num_workers=num_workers,
-            shuffle=self.config.data.get("validation_shuffle", True),
-            drop_last=False,
-            collate_fn=collate_fn,
-        )
-
-        assert len(self.train_dataloader) >= 1, "Train dataloader is empty!"
-''',
-        '''        self.val_dataloader = StatefulDataLoader(
-            dataset=self.val_dataset,
-            batch_size=val_batch_size,
-            num_workers=num_workers,
-            shuffle=self.config.data.get("validation_shuffle", True),
-            drop_last=False,
-            collate_fn=collate_fn,
-        )
-
-        self.mopd_validation_anchor_dataloader = None
-        mopd_audit_cfg = self.config.get("mopd_audit", {})
-        anchor_files = mopd_audit_cfg.get("full_gradient_validation_files", [])
-        if anchor_files:
-            anchor_data_config = deepcopy(self.config.data)
-            with open_dict(anchor_data_config):
-                anchor_data_config.shuffle = False
-                anchor_data_config.validation_shuffle = False
-            anchor_dataset = create_rl_dataset(
-                anchor_files,
-                anchor_data_config,
-                self.tokenizer,
-                self.processor,
-                max_samples=-1,
-            )
-            anchor_batch_size = mopd_audit_cfg.get("full_gradient_validation_batch_size", None)
-            if anchor_batch_size is None:
-                anchor_batch_size = 1
-            self.mopd_validation_anchor_dataloader = StatefulDataLoader(
-                dataset=anchor_dataset,
-                batch_size=int(anchor_batch_size),
-                num_workers=num_workers,
-                shuffle=False,
-                drop_last=False,
-                collate_fn=collate_fn,
-            )
-            assert len(self.mopd_validation_anchor_dataloader) >= 1, "MOPD validation anchor dataloader is empty!"
-            print(
-                f"Size of MOPD validation anchor dataloader: {len(self.mopd_validation_anchor_dataloader)}, "
-                f"batch size: {anchor_batch_size}"
-            )
-
-        assert len(self.train_dataloader) >= 1, "Train dataloader is empty!"
-''',
-    )
-    changed |= _replace_once(
-        path,
-        '''    def _validate(self):
-''',
-        '''    def _mopd_add_validation_anchor_log_probs(self, anchor_batch, size_divisor):
-        anchor_batch, anchor_pad_size = pad_dataproto_to_divisor(anchor_batch, size_divisor)
-        old_log_prob = self.actor_rollout_wg.compute_log_prob(anchor_batch)
-        if "entropys" in old_log_prob.batch:
-            old_log_prob.batch.pop("entropys")
-        anchor_batch = anchor_batch.union(old_log_prob)
-        if self.use_reference_policy:
-            if not self.ref_in_actor:
-                ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(anchor_batch)
-            else:
-                ref_log_prob = self.actor_rollout_wg.compute_ref_log_prob(anchor_batch)
-            anchor_batch = anchor_batch.union(ref_log_prob)
-        if self.use_base_models:
-            if self.ref_base_model_path is not None:
-                if not self.ref_in_actor:
-                    base_ref_log_prob = self.ref_policy_wg.compute_base_ref_log_prob(anchor_batch)
-                else:
-                    base_ref_log_prob = self.actor_rollout_wg.compute_base_ref_log_prob(anchor_batch)
-                anchor_batch = anchor_batch.union(base_ref_log_prob)
-            if self.base_model_path is not None:
-                ref_input_tensors = {}
-                for tensor_key in ("ref_input_ids", "ref_attention_mask", "ref_position_ids"):
-                    if tensor_key in anchor_batch.batch:
-                        ref_input_tensors[tensor_key] = anchor_batch.batch.pop(tensor_key)
-                base_log_prob = self.actor_rollout_wg.compute_base_log_prob(anchor_batch)
-                anchor_batch = anchor_batch.union(base_log_prob)
-                for tensor_key, tensor_value in ref_input_tensors.items():
-                    anchor_batch.batch[tensor_key] = tensor_value
-        return unpad_dataproto(anchor_batch, pad_size=anchor_pad_size)
-
-    def _compute_mopd_validation_anchor_metrics(self):
-        if (
-            getattr(self, "mopd_audit_logger", None) is None
-            or not self.mopd_audit_logger.should_update_validation_anchor(self.global_steps)
-            or getattr(self, "mopd_validation_anchor_dataloader", None) is None
-        ):
-            return {}
-
-        audit_validation_metrics = {}
-        size_divisor = (
-            self.actor_rollout_wg.world_size
-            if not self.async_rollout_mode
-            else self.config.actor_rollout_ref.rollout.agent.num_workers
-        )
-        for anchor_data in self.mopd_validation_anchor_dataloader:
-            anchor_batch = DataProto.from_single_dict(anchor_data)
-            if "uid" not in anchor_batch.non_tensor_batch:
-                anchor_batch.non_tensor_batch["uid"] = np.array(
-                    [str(uuid.uuid4()) for _ in range(len(anchor_batch.batch))], dtype=object
-                )
-            anchor_batch = anchor_batch.repeat(
-                repeat_times=self.config.actor_rollout_ref.rollout.val_kwargs.n,
-                interleave=True,
-            )
-            anchor_gen_batch = self._get_gen_batch(anchor_batch)
-            anchor_gen_batch.meta_info = {
-                "eos_token_id": self.tokenizer.eos_token_id,
-                "pad_token_id": self.tokenizer.pad_token_id,
-                "recompute_log_prob": False,
-                "do_sample": self.config.actor_rollout_ref.rollout.val_kwargs.do_sample,
-                "validate": True,
-                "global_steps": self.global_steps,
-            }
-            anchor_gen_batch_padded, pad_size = pad_dataproto_to_divisor(anchor_gen_batch, size_divisor)
-            if not self.async_rollout_mode:
-                anchor_output_padded = self.actor_rollout_wg.generate_sequences(anchor_gen_batch_padded)
-            else:
-                anchor_output_padded = self.async_rollout_manager.generate_sequences(anchor_gen_batch_padded)
-            anchor_output = unpad_dataproto(anchor_output_padded, pad_size=pad_size)
-            anchor_batch = anchor_batch.union(anchor_output)
-            anchor_batch.meta_info["validate"] = True
-            anchor_batch = self._mopd_add_validation_anchor_log_probs(anchor_batch, size_divisor)
-            audit_validation_metrics.update(
-                self.mopd_audit_logger.log_validation_anchor_batch(anchor_batch, self.global_steps)
-            )
-            if self.mopd_audit_logger.should_compute_full_gradient(self.global_steps):
-                anchor_batch.meta_info.update(
-                    self.mopd_audit_logger.full_gradient_meta("validation_anchor", self.global_steps)
-                )
-                full_gradient_output = self.actor_rollout_wg.compute_mopd_full_gradient_metrics(anchor_batch)
-                audit_validation_metrics.update(reduce_metrics(full_gradient_output.meta_info["metrics"]))
-        return audit_validation_metrics
-
-    def _validate(self):
-''',
-    )
-    changed |= _replace_once(
-        path,
         '''                    # update critic
                     if self.use_critic:
 ''',
@@ -703,14 +541,6 @@ def patch_trainer(gopd_dir: Path) -> bool:
     )
     changed |= _replace_once(
         path,
-        '''        sample_uids = []
-''',
-        '''        sample_uids = []
-        audit_validation_metrics = {}
-''',
-    )
-    changed |= _replace_once(
-        path,
         '''                metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
                 # TODO: implement actual tflpo and theoretical tflpo
                 n_gpus = self.resource_pool_manager.get_n_gpus()
@@ -728,88 +558,6 @@ def patch_trainer(gopd_dir: Path) -> bool:
                 # Note: mismatch metrics (KL, PPL, etc.) are collected at line 1179 after advantage computation
 ''',
     )
-    changed |= _replace_once(
-        path,
-        '''            test_batch = test_batch.union(test_output_gen_batch)
-            test_batch.meta_info["validate"] = True
-
-            # evaluate using reward_function
-''',
-        '''            test_batch = test_batch.union(test_output_gen_batch)
-            test_batch.meta_info["validate"] = True
-
-            # MOPD audit: validation anchor begin
-            if (
-                getattr(self, "mopd_audit_logger", None) is not None
-                and self.mopd_audit_logger.should_update_validation_anchor(self.global_steps)
-                and getattr(self, "mopd_validation_anchor_dataloader", None) is None
-            ):
-                anchor_batch = test_batch
-                anchor_batch, anchor_pad_size = pad_dataproto_to_divisor(anchor_batch, size_divisor)
-                old_log_prob = self.actor_rollout_wg.compute_log_prob(anchor_batch)
-                if "entropys" in old_log_prob.batch:
-                    old_log_prob.batch.pop("entropys")
-                anchor_batch = anchor_batch.union(old_log_prob)
-                if self.use_reference_policy:
-                    if not self.ref_in_actor:
-                        ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(anchor_batch)
-                    else:
-                        ref_log_prob = self.actor_rollout_wg.compute_ref_log_prob(anchor_batch)
-                    anchor_batch = anchor_batch.union(ref_log_prob)
-                if self.use_base_models:
-                    if self.ref_base_model_path is not None:
-                        if not self.ref_in_actor:
-                            base_ref_log_prob = self.ref_policy_wg.compute_base_ref_log_prob(anchor_batch)
-                        else:
-                            base_ref_log_prob = self.actor_rollout_wg.compute_base_ref_log_prob(anchor_batch)
-                        anchor_batch = anchor_batch.union(base_ref_log_prob)
-                    if self.base_model_path is not None:
-                        ref_input_tensors = {}
-                        for tensor_key in ("ref_input_ids", "ref_attention_mask", "ref_position_ids"):
-                            if tensor_key in anchor_batch.batch:
-                                ref_input_tensors[tensor_key] = anchor_batch.batch.pop(tensor_key)
-                        base_log_prob = self.actor_rollout_wg.compute_base_log_prob(anchor_batch)
-                        anchor_batch = anchor_batch.union(base_log_prob)
-                        for tensor_key, tensor_value in ref_input_tensors.items():
-                            anchor_batch.batch[tensor_key] = tensor_value
-                anchor_batch = unpad_dataproto(anchor_batch, pad_size=anchor_pad_size)
-                audit_validation_metrics.update(
-                    self.mopd_audit_logger.log_validation_anchor_batch(anchor_batch, self.global_steps)
-                )
-                if self.mopd_audit_logger.should_compute_full_gradient(self.global_steps):
-                    anchor_batch.meta_info.update(
-                        self.mopd_audit_logger.full_gradient_meta("validation_anchor", self.global_steps)
-                    )
-                    full_gradient_output = self.actor_rollout_wg.compute_mopd_full_gradient_metrics(anchor_batch)
-                    audit_validation_metrics.update(reduce_metrics(full_gradient_output.meta_info["metrics"]))
-            # MOPD audit: validation anchor end
-
-            # evaluate using reward_function
-''',
-    )
-    changed |= _replace_once(
-        path,
-        '''        if len(sample_turns) > 0:
-            sample_turns = np.concatenate(sample_turns)
-            metric_dict["val-aux/num_turns/min"] = sample_turns.min()
-            metric_dict["val-aux/num_turns/max"] = sample_turns.max()
-            metric_dict["val-aux/num_turns/mean"] = sample_turns.mean()
-
-        return metric_dict
-''',
-        '''        if len(sample_turns) > 0:
-            sample_turns = np.concatenate(sample_turns)
-            metric_dict["val-aux/num_turns/min"] = sample_turns.min()
-            metric_dict["val-aux/num_turns/max"] = sample_turns.max()
-            metric_dict["val-aux/num_turns/mean"] = sample_turns.mean()
-
-        if getattr(self, "mopd_validation_anchor_dataloader", None) is not None:
-            audit_validation_metrics.update(self._compute_mopd_validation_anchor_metrics())
-
-        metric_dict.update(audit_validation_metrics)
-        return metric_dict
-''',
-    )
     changed |= _migrate_old_audit_logger_name(path)
     return changed
 
@@ -822,26 +570,6 @@ def patch_fsdp_worker(gopd_dir: Path) -> bool:
     if normalized != original:
         path.write_text(normalized, encoding="utf-8")
         changed = True
-    changed |= _replace_once(
-        path,
-        '''    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
-    @DistProfiler.annotate(color="red", role="actor_update")
-    def update_actor(self, data: DataProto):
-''',
-        '''    # MOPD audit: full-parameter gradient helpers begin
-    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
-    @DistProfiler.annotate(color="cyan", role="mopd_full_gradient")
-    def compute_mopd_full_gradient_metrics(self, data: DataProto):
-        from mopd_verl.full_gradient_worker import compute_mopd_full_gradient_metrics
-
-        return compute_mopd_full_gradient_metrics(self, data)
-    # MOPD audit: full-parameter gradient helpers end
-
-    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
-    @DistProfiler.annotate(color="red", role="actor_update")
-    def update_actor(self, data: DataProto):
-''',
-    )
     return changed
 
 
@@ -907,7 +635,7 @@ def patch_dp_actor(gopd_dir: Path) -> bool:
                         loss.backward()
                     # MOPD audit: domain-gradient tracker begin
                     if mopd_gradient_tracker is not None:
-                        mopd_gradient_tracker.after_backward(mopd_domain, len(micro_batch))
+                        mopd_gradient_tracker.after_backward(mopd_domain, len(micro_batch), micro_batch)
                     # MOPD audit: domain-gradient tracker end
 
                     micro_batch_metrics["actor/pg_loss"] = pg_loss.detach().item() * loss_scale_factor

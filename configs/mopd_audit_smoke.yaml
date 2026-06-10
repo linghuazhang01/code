@@ -89,9 +89,6 @@ audit:
   log_validation_metrics: true
   tier2_window_size: 5
   calibration_bins: 5
-  validation_anchor_enabled: true
-  validation_anchor_on_step0: false
-  validation_anchor_refresh_steps: 0
 
 trainer:
   project_name: on-policy-distillation

@@ -2,3 +2,5 @@ pyyaml
 pandas
 pyarrow
 tensorboard
+datasets
+requests

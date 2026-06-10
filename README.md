@@ -16,6 +16,15 @@ This checkout is the current OPD/MOPD training entrypoint. The training runtime 
 
 The current remote default is `/root/autodl-tmp/opd_mopd/OPD-code`, but that is only a sync-script default. Override `REMOTE_HOST`, `REMOTE_PORT`, and `REMOTE_CODE_DIR` to move to another server.
 
+## Training Entrypoints
+
+- `scripts/run_mopd.sh`: generic local launcher for any YAML config.
+- `scripts/run_math_code_mopd.sh`: math+code MOPD wrapper, defaulting to `configs/mopd_math_code.yaml`.
+- `scripts/run_general_reasoner_mopd.sh`: General-Reasoner/GReasoner 14B teacher MOPD wrapper, defaulting to `configs/mopd_general_reasoner.yaml`.
+- `scripts/start_remote_mopd_training.sh`: remote environment checks plus detached `screen` launch for any config.
+- `scripts/start_general_reasoner_mopd_training.sh`: remote shortcut for `configs/mopd_general_reasoner.yaml`.
+- `scripts/prepare_general_reasoner_data.sh`: prepares WebInstruct-verified train/eval parquet for the General-Reasoner MOPD path.
+
 ## From Scratch
 
 ### 1. Sync Code And Data
@@ -67,6 +76,17 @@ INSTALL_SGLANG=0
 USE_MEGATRON=0
 ```
 
+For Jupyter/Notebook, use the dedicated non-interactive wrapper:
+
+```python
+!bash scripts/setup_notebook_training_env.sh
+```
+
+It finds or installs Miniconda, creates `mopd-verl` from `conda-forge` with
+`--override-channels` to avoid Anaconda ToS prompts, runs the regular training
+environment setup, and registers the `MOPD (mopd-verl)` Jupyter kernel. Select
+that kernel or restart the current kernel after installation.
+
 ### 3. Download Or Verify Models
 
 The current formal config uses the 0.6B student plus two teacher checkpoints. The downloader also prepares the 4B base model so the student can be switched to `Qwen3-4B` later:
@@ -91,7 +111,7 @@ The script downloads the student from `Qwen/Qwen3-0.6B`, the 4B base model from 
 - `Keven16/Qwen3-4B-Non-Thinking-RL-Code-Step300`
 
 Set `DOWNLOAD_BASE_4B=0` only when you do not need the `../models/Qwen3-4B` base model.
-Set `DOWNLOAD_TEACHERS=0` only when those teacher directories already exist and you want to verify them without downloading. You can still override `MATH_TEACHER_MODEL_ID` and `CODE_TEACHER_MODEL_ID` for another hub source.
+Set `DOWNLOAD_TEACHERS=0` to skip math/code teacher downloads. If those teacher directories already exist and you only want to verify them, use `DOWNLOAD_TEACHERS=0 REQUIRE_MATH_CODE_TEACHERS=1`. You can still override `MATH_TEACHER_MODEL_ID` and `CODE_TEACHER_MODEL_ID` for another hub source.
 
 Use `MODEL_BACKEND=modelscope` for ModelScope.
 
@@ -137,6 +157,79 @@ bash scripts/run_remote_one_step_smoke.sh
 
 The smoke test uses synthetic `smoke_data/*.parquet` and temporarily maps all model roles to `Qwen/Qwen3-0.6B`. It only verifies that one optimizer step can run.
 
+## General-Reasoner 14B Teacher MOPD
+
+This path trains a Qwen3-4B student against `TIGER-Lab/General-Reasoner-Qwen3-14B` on WebInstruct-verified reasoning prompts. In configs and eval code the short domain name is `greasoner`, while the model and data adapter use `General-Reasoner`.
+
+Prepare WebInstruct-verified parquet files on the remote:
+
+```bash
+cd /root/autodl-tmp/opd_mopd/OPD-code
+bash scripts/prepare_general_reasoner_data.sh
+```
+
+Prepare only the models needed by this MOPD path:
+
+```bash
+cd /root/autodl-tmp/opd_mopd/OPD-code
+DOWNLOAD_STUDENT=0 \
+REQUIRE_STUDENT=0 \
+DOWNLOAD_TEACHERS=0 \
+REQUIRE_MATH_CODE_TEACHERS=0 \
+DOWNLOAD_REASONING_BASE_14B=0 \
+DOWNLOAD_REASONING_TEACHER=1 \
+bash scripts/download_mopd_models.sh
+```
+
+The command above prepares:
+
+```text
+../models/Qwen3-4B
+../models/General-Reasoner-Qwen3-14B
+```
+
+It does not download `../models/Qwen3-14B` unless `DOWNLOAD_REASONING_BASE_14B=1` is set explicitly.
+
+Dry-run the generated verl command:
+
+```bash
+cd /root/autodl-tmp/opd_mopd/OPD-code
+bash scripts/run_general_reasoner_mopd.sh --dry-run -- \
+  trainer.total_training_steps=1
+```
+
+Start remote training in a detached screen session:
+
+```bash
+cd /root/autodl-tmp/opd_mopd/OPD-code
+GPU_IDS=0,1,2,3,4,5,6,7 bash scripts/start_general_reasoner_mopd_training.sh
+```
+
+Equivalent explicit form:
+
+```bash
+GPU_IDS=0,1,2,3,4,5,6,7 \
+bash scripts/start_remote_mopd_training.sh configs/mopd_general_reasoner.yaml \
+  --run-id greasoner_14b_mopd_$(date +%Y%m%d_%H%M%S)
+```
+
+`configs/mopd_general_reasoner.yaml` sets `trainer.n_gpus_per_node=8`, so the launcher requires eight visible GPUs before it starts Ray/verl. A smaller run needs a compatible config/override set for `trainer.n_gpus_per_node`, tensor parallelism, and batch sizes; exposing only `GPU_IDS=0` is not enough.
+
+The config uses:
+
+- student: `../models/Qwen3-4B`
+- reasoning teacher: `../models/General-Reasoner-Qwen3-14B`
+- train parquet: `data/GeneralReasoner/WebInstructVerified/train.parquet`
+- validation parquet: `eval/domains/greasoner/data/WebInstructVerified/test.parquet`
+- teacher label: `extra_info.opd_teacher=reasoning`
+- thinking mode: `data.enable_thinking=true`
+
+Follow logs after launch:
+
+```bash
+tail -f "$(cat logs/opd_target_log)"
+```
+
 ## Formal Single-A800 Config
 
 `configs/mopd_formal_single_a800.yaml` uses:
@@ -144,11 +237,11 @@ The smoke test uses synthetic `smoke_data/*.parquet` and temporarily maps all mo
 - separate domain train files under `data/G-OPD-Training-Data/DeepMath-103K/` and `data/G-OPD-Training-Data/Eurus/`
 - local models under `../models/`
 - domain sampling weights `{math: 0.5, code: 0.5}`
-- `data.train_batch_size=128`
+- `data.train_batch_size=512`
 - `data.val_batch_size=1024`
 - `data.max_prompt_length=2048`
 - `data.max_response_length=16384`
-- `actor.ppo_mini_batch_size=128`
+- `actor.ppo_mini_batch_size=512`
 - `actor.ppo_micro_batch_size_per_gpu=1`
 - `rollout.gpu_memory_utilization=0.8`
 - `trainer.logger=["console","tensorboard"]`
@@ -159,17 +252,87 @@ The smoke test uses synthetic `smoke_data/*.parquet` and temporarily maps all mo
 - `audit.sample_gradient_enabled=true`
 - `audit.sample_gradient_norm_enabled=true`
 - `audit.sample_gradient_cos_enabled=true`
-- `audit.sample_gradient_cos_max_samples_per_domain=8`
+- Formal single-GPU profiles use `audit.full_gradient_storage_dtype=bfloat16`. The sequential tracker keeps only the two domain targets on CPU; dot, norm, and cosine accumulation remain FP32.
 - `paper_eval.enabled=false`
 
-External paper eval remains available through `scripts/run_paper_eval_suite.sh`, but it is legacy for the portable path because it still requires the full G-OPD eval tree.
+On a single-A800 node with 120 GB of CPU RAM, do not combine batch size 512,
+optimizer offload, and per-step full/sample-gradient auditing for the first
+formal-data run. Use this low-memory launch first:
+
+```bash
+bash scripts/start_remote_mopd_training.sh configs/mopd_formal_single_a800.yaml \
+  --run-id mopd_a800_lowmem_$(date +%Y%m%d_%H%M%S) \
+  -- \
+  data.train_batch_size=128 \
+  data.val_batch_size=128 \
+  actor_rollout_ref.actor.ppo_mini_batch_size=128 \
+  trainer.val_before_train=false
+```
+
+This keeps full-parameter and per-sample gradient diagnostics enabled while
+reducing the number of samples retained and recomputed in one actor update.
+Every sample in the actor mini-batch receives sample-to-domain cosine and
+projection metrics. Raising `RAY_memory_usage_threshold` is not a fix when the
+process is already close to physical RAM exhaustion.
+
+## Formal Dual-A800 Config
+
+Use `configs/mopd_formal_dual_a800.yaml` for two NVIDIA A800 80GB GPUs. It
+keeps the single-A800 global `train_batch_size=ppo_mini_batch_size=512`, uses
+FSDP across both GPUs, and runs rollout with TP=1 and two data-parallel
+replicas.
+
+The standard per-domain data, OPD loss, teacher confidence/gap, reward, and
+cost metrics remain enabled. Full-parameter and sample-gradient audit are
+disabled in this profile because their cross-rank aggregation has not yet been
+validated for different samples on each FSDP rank.
+
+```bash
+cd /root/OPD-code
+GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
+  configs/mopd_formal_dual_a800.yaml \
+  --run-id mopd_dual_a800_$(date +%Y%m%d_%H%M%S)
+```
+
+External paper eval remains available through `eval/scripts/run_paper_eval_suite.sh`, but it is legacy for the portable path because it still requires the full G-OPD eval tree.
 
 For the current metric definitions, use [`metrics_zh.md`](metrics_zh.md) as the source of truth. The formal config logs these audit families:
 
 - per-domain data, OPD loss, teacher confidence/gap, calibration, reward, advantage sign, and response length metrics;
 - full-parameter train gradient metrics: per-domain grad norm, math-vs-code cosine/conflict, domain-vs-total cosine, and signed projection share;
-- sampled per-example gradient metrics: sample grad norm distribution for every sample in the actor update mini-batch, plus sample-to-domain cosine and projection share for up to 8 selected samples per domain;
+- sampled per-example gradient metrics: sample grad norm, sample-to-domain cosine, and projection share for every sample in the actor update mini-batch;
 - cost metrics such as step seconds, tokens/sec, peak memory, and full-gradient backward time.
+
+## Formal Single-H200 Config
+
+Use `configs/mopd_formal_single_h200.yaml` for one NVIDIA H200 141GB. It keeps
+the math/code sampling, model paths, sequence lengths, and
+`train_batch_size=ppo_mini_batch_size=1024` unchanged, while using the extra HBM
+and bandwidth for:
+
+- GPU-resident optimizer state (`optimizer_offload=false`);
+- vLLM CUDA graphs (`enforce_eager=false`);
+- `log_prob_micro_batch_size_per_gpu=2`;
+- `max_num_batched_tokens=65536`;
+- `max_num_seqs=16`.
+
+The first full-length run intentionally keeps
+`ppo_micro_batch_size_per_gpu=1`. Responses can reach 16K tokens, so increasing
+the backward micro-batch before observing peak memory is not a safe default.
+
+Launch:
+
+```bash
+cd /root/OPD-code
+GPU_IDS=0 bash scripts/start_remote_mopd_training.sh \
+  configs/mopd_formal_single_h200.yaml \
+  --run-id mopd_h200_$(date +%Y%m%d_%H%M%S)
+```
+
+If the first 5-10 steps stay below roughly 120 GiB peak memory, the next tuning
+candidate is `actor.ppo_micro_batch_size_per_gpu=2`. Do not increase the global
+train batch merely because the GPU is larger, because that changes rollout
+freshness and experiment semantics.
 
 ## Domain Sampling
 
@@ -188,7 +351,7 @@ data:
   domain_sampling_replacement: true
 ```
 
-The launcher still expands these files into `data.train_files` for verl compatibility. The patched dataset loader tags each row by source file, and the patched trainer uses `DomainBatchSampler` to emit exact domain counts per training batch. With `train_batch_size=128` and `{math: 0.5, code: 0.5}`, every train batch contains 64 math rows and 64 code rows.
+The launcher still expands these files into `data.train_files` for verl compatibility. The patched dataset loader tags each row by source file, and the patched trainer uses `DomainBatchSampler` to emit exact domain counts per training batch. With `train_batch_size=512` and `{math: 0.5, code: 0.5}`, every train batch contains 256 math rows and 256 code rows.
 
 ## TensorBoard And Audit Files
 

@@ -38,6 +38,32 @@ def _hydra_scalar(value: object) -> str:
     return str(value)
 
 
+def _rollout_multiturn_overrides(config: MOPDConfig) -> list[str]:
+    rollout = config.rollout
+    if not rollout.multi_turn_enable and rollout.multi_turn_tool_config_path is None:
+        return []
+
+    overrides = [
+        f"actor_rollout_ref.rollout.multi_turn.enable={str(rollout.multi_turn_enable).lower()}",
+        f"actor_rollout_ref.rollout.multi_turn.max_parallel_calls={rollout.multi_turn_max_parallel_calls}",
+        f"actor_rollout_ref.rollout.multi_turn.max_tool_response_length={rollout.multi_turn_max_tool_response_length}",
+        "actor_rollout_ref.rollout.multi_turn.tool_response_truncate_side="
+        f"{rollout.multi_turn_tool_response_truncate_side}",
+        f"actor_rollout_ref.rollout.multi_turn.format={rollout.multi_turn_format}",
+        "actor_rollout_ref.rollout.multi_turn.tokenization_sanity_check_mode="
+        f"{rollout.multi_turn_tokenization_sanity_check_mode}",
+    ]
+    if rollout.multi_turn_tool_config_path is not None:
+        overrides.append(f"actor_rollout_ref.rollout.multi_turn.tool_config_path={rollout.multi_turn_tool_config_path}")
+    if rollout.multi_turn_max_assistant_turns is not None:
+        overrides.append(
+            f"actor_rollout_ref.rollout.multi_turn.max_assistant_turns={rollout.multi_turn_max_assistant_turns}"
+        )
+    if rollout.multi_turn_max_user_turns is not None:
+        overrides.append(f"actor_rollout_ref.rollout.multi_turn.max_user_turns={rollout.multi_turn_max_user_turns}")
+    return overrides
+
+
 def _audit_overrides(config: MOPDConfig) -> list[str]:
     audit = config.audit
     if not audit.enabled:
@@ -57,29 +83,18 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"+mopd_audit.log_validation_metrics={str(audit.log_validation_metrics).lower()}",
         f"+mopd_audit.tier2_window_size={audit.tier2_window_size}",
         f"+mopd_audit.calibration_bins={audit.calibration_bins}",
-        f"+mopd_audit.validation_anchor_enabled={str(audit.validation_anchor_enabled).lower()}",
-        f"+mopd_audit.validation_anchor_on_step0={str(audit.validation_anchor_on_step0).lower()}",
-        f"+mopd_audit.validation_anchor_refresh_steps={audit.validation_anchor_refresh_steps}",
         f"+mopd_audit.full_gradient_enabled={str(audit.full_gradient_enabled).lower()}",
         f"+mopd_audit.full_gradient_freq_steps={audit.full_gradient_freq_steps}",
         "+mopd_audit.full_gradient_train_max_samples_per_domain="
         f"{_hydra_scalar(audit.full_gradient_train_max_samples_per_domain)}",
-        "+mopd_audit.full_gradient_validation_max_samples_per_domain="
-        f"{_hydra_scalar(audit.full_gradient_validation_max_samples_per_domain)}",
-        f"+mopd_audit.full_gradient_validation_files={_hydra_list(audit.full_gradient_validation_files)}",
-        "+mopd_audit.full_gradient_validation_batch_size="
-        f"{_hydra_scalar(audit.full_gradient_validation_batch_size)}",
         f"+mopd_audit.full_gradient_micro_batch_size_per_gpu={audit.full_gradient_micro_batch_size_per_gpu}",
         f"+mopd_audit.full_gradient_storage_dtype={audit.full_gradient_storage_dtype}",
         f"+mopd_audit.sample_gradient_enabled={str(audit.sample_gradient_enabled).lower()}",
         f"+mopd_audit.sample_gradient_norm_enabled={str(audit.sample_gradient_norm_enabled).lower()}",
         f"+mopd_audit.sample_gradient_cos_enabled={str(audit.sample_gradient_cos_enabled).lower()}",
         f"+mopd_audit.sample_gradient_cos_freq_steps={audit.sample_gradient_cos_freq_steps}",
-        "+mopd_audit.sample_gradient_cos_max_samples_per_domain="
-        f"{_hydra_scalar(audit.sample_gradient_cos_max_samples_per_domain)}",
-        f"+mopd_audit.sample_gradient_cos_selection={audit.sample_gradient_cos_selection}",
         f"+mopd_audit.sample_gradient_log_sample_level={str(audit.sample_gradient_log_sample_level).lower()}",
-        f"+mopd_audit.sample_gradient_seed={audit.sample_gradient_seed}",
+        f"+mopd_audit.full_gradient_offload_domain_gradients={str(audit.full_gradient_offload_domain_gradients).lower()}",
     ]
 
 
@@ -122,6 +137,8 @@ def build_overrides(config: MOPDConfig) -> list[str]:
             "+actor_rollout_ref.rollout.engine_kwargs.vllm.num_gpu_blocks_override="
             f"{rollout.num_gpu_blocks_override}"
         )
+    if rollout.max_model_len is not None:
+        vllm_engine_overrides.append(f"actor_rollout_ref.rollout.max_model_len={rollout.max_model_len}")
 
     domain_sampling_overrides = []
     if data.domain_train_files:
@@ -137,14 +154,11 @@ def build_overrides(config: MOPDConfig) -> list[str]:
     model_overrides = [f"actor_rollout_ref.model.path={model.student_path}"]
     if model.student_base_path is not None:
         model_overrides.append(f"+actor_rollout_ref.model.base_model_path={model.student_base_path}")
-    model_overrides.extend(
-        [
-            f"+actor_rollout_ref.ref.model.path={model.math_teacher_path}",
-            f"+actor_rollout_ref.ref.model.base_model_path={model.code_teacher_path}",
-        ]
-    )
+    model_overrides.append(f"+actor_rollout_ref.ref.model.path={model.primary_teacher_path}")
+    if model.secondary_teacher_path is not None:
+        model_overrides.append(f"+actor_rollout_ref.ref.model.base_model_path={model.secondary_teacher_path}")
 
-    return [
+    overrides = [
         "algorithm.adv_estimator=grpo",
         f"algorithm.rollout_correction.rollout_is={rollout_correction.rollout_is}",
         f"algorithm.rollout_correction.rollout_is_threshold={rollout_correction.rollout_is_threshold}",
@@ -164,6 +178,7 @@ def build_overrides(config: MOPDConfig) -> list[str]:
         f"data.seed={data.seed}",
         f"data.return_raw_chat={_bool(data.return_raw_chat)}",
         f"+data.apply_chat_template_kwargs.enable_thinking={_bool(data.enable_thinking)}",
+        f"+data.need_tools_kwargs={_bool(data.need_tools_kwargs)}",
         *model_overrides,
         f"actor_rollout_ref.actor.optim.lr={actor.learning_rate}",
         f"actor_rollout_ref.actor.optim.lr_warmup_steps_ratio={actor.lr_warmup_steps_ratio}",
@@ -181,9 +196,15 @@ def build_overrides(config: MOPDConfig) -> list[str]:
         f"actor_rollout_ref.model.enable_gradient_checkpointing={_bool(actor.gradient_checkpointing)}",
         f"actor_rollout_ref.actor.fsdp_config.param_offload={_bool(actor.param_offload)}",
         f"actor_rollout_ref.actor.fsdp_config.optimizer_offload={_bool(actor.optimizer_offload)}",
+        *(
+            [f"actor_rollout_ref.actor.fsdp_config.fsdp_size={actor.fsdp_size}"]
+            if actor.fsdp_size is not None
+            else []
+        ),
         f"actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu={rollout.log_prob_micro_batch_size_per_gpu}",
         f"actor_rollout_ref.rollout.tensor_model_parallel_size={rollout.tensor_model_parallel_size}",
         f"actor_rollout_ref.rollout.name={rollout.name}",
+        f"actor_rollout_ref.rollout.mode={rollout.mode}",
         f"actor_rollout_ref.rollout.gpu_memory_utilization={rollout.gpu_memory_utilization}",
         f"actor_rollout_ref.rollout.enforce_eager={_bool(rollout.enforce_eager)}",
         f"actor_rollout_ref.rollout.enable_chunked_prefill={_bool(rollout.enable_chunked_prefill)}",
@@ -215,7 +236,15 @@ def build_overrides(config: MOPDConfig) -> list[str]:
         f"trainer.total_training_steps={_hydra_scalar(trainer.total_training_steps)}",
         f"+trainer.max_actor_ckpt_to_keep={_hydra_scalar(trainer.max_actor_ckpt_to_keep)}",
         f"+trainer.max_critic_ckpt_to_keep={_hydra_scalar(trainer.max_critic_ckpt_to_keep)}",
-    ] + ray_overrides + vllm_engine_overrides + domain_sampling_overrides + _audit_overrides(config) + _paper_eval_overrides(config)
+    ]
+    overrides.extend(ray_overrides)
+    overrides.extend(vllm_engine_overrides)
+    overrides.extend(domain_sampling_overrides)
+    overrides.extend(_rollout_multiturn_overrides(config))
+    overrides.extend(_audit_overrides(config))
+    overrides.extend(_paper_eval_overrides(config))
+    overrides.extend(config.extra_overrides)
+    return overrides
 
 
 def build_command(config: MOPDConfig, extra_args: Sequence[str] | None = None) -> list[str]:

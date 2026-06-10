@@ -23,6 +23,10 @@ Notes:
   - SSH password auth is automatic when local ssh.sh exists; set USE_SSHPASS=0 to disable it.
   - Rsync progress is shown by default; set RSYNC_PROGRESS=0 to disable progress output.
   - Extra Hydra overrides are passed exactly after '--'; the script does not add hidden training overrides.
+
+Environment:
+  GPU_IDS=0                  # comma- or space-separated visible physical GPUs
+  GPU_ID=0                   # legacy alias used only when GPU_IDS is unset
 USAGE
 }
 
@@ -34,13 +38,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_CODE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 REMOTE_HOST="${REMOTE_HOST:-root@connect.nma1.seetacloud.com}"
-REMOTE_PORT="${REMOTE_PORT:-51568}"
+REMOTE_PORT="${REMOTE_PORT:-30885}"
 REMOTE_ROOT="${REMOTE_ROOT:-/root/autodl-tmp/opd_mopd}"
 REMOTE_CODE_DIR="${REMOTE_CODE_DIR:-${REMOTE_ROOT}/OPD-code}"
 CONDA_SH="${CONDA_SH:-}"
 CONDA_ENV="${CONDA_ENV:-mopd-verl}"
 PYTHON_BIN="${PYTHON_BIN:-}"
-GPU_ID="${GPU_ID:-0}"
+GPU_IDS="${GPU_IDS:-${GPU_ID:-0}}"
 LOG_DIR="${LOG_DIR:-${REMOTE_CODE_DIR}/logs}"
 STOP_STALE_RAY="${STOP_STALE_RAY:-1}"
 ASSUME_YES="${ASSUME_YES:-0}"
@@ -264,6 +268,9 @@ else
   echo "== Run id / log =="
   echo "${RUN_ID}"
   echo "${LOG_FILE}"
+  echo
+  echo "== Remote GPU IDs =="
+  echo "${GPU_IDS}"
 fi
 echo
 
@@ -301,6 +308,7 @@ ssh_remote "mkdir -p $(quote "${REMOTE_CODE_DIR}")"
   --exclude "checkpoints/" \
   --exclude "audit/" \
   --exclude "eval_outputs/" \
+  --exclude "eval/results/" \
   -e "${RSYNC_RSH}" \
   "${LOCAL_CODE_DIR}/" \
   "${REMOTE_HOST}:${REMOTE_CODE_DIR}/"
@@ -317,7 +325,7 @@ cd $(quote "${REMOTE_CODE_DIR}")
 export CONDA_SH=$(quote "${CONDA_SH}")
 export CONDA_ENV=$(quote "${CONDA_ENV}")
 export PYTHON_BIN=$(quote "${PYTHON_BIN}")
-export GPU_ID=$(quote "${GPU_ID}")
+export GPU_IDS=$(quote "${GPU_IDS}")
 export LOG_DIR=$(quote "${LOG_DIR}")
 export STOP_STALE_RAY=$(quote "${STOP_STALE_RAY}")
 bash scripts/start_remote_mopd_training.sh $(quote "${REMOTE_START_CONFIG_ARG}") --run-id $(quote "${RUN_ID}")${EXTRA_ARGS_Q:+ --${EXTRA_ARGS_Q}}

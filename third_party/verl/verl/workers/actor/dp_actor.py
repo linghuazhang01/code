@@ -20,6 +20,7 @@ Single Process Actor
 import logging
 import os
 
+import numpy as np
 import torch
 from torch import nn
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -44,6 +45,16 @@ __all__ = ["DataParallelPPOActor"]
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
+
+
+def _teacher_type_at(opd_teacher: object, index: int) -> object:
+    if isinstance(opd_teacher, np.ndarray):
+        if opd_teacher.ndim == 0:
+            return opd_teacher.item()
+        return opd_teacher[index]
+    if isinstance(opd_teacher, (list, tuple)):
+        return opd_teacher[index]
+    return opd_teacher
 
 
 class DataParallelPPOActor(BasePPOActor):
@@ -395,7 +406,7 @@ class DataParallelPPOActor(BasePPOActor):
             "advantages",
         ]
         if self.config.use_kl_loss:
-            select_keys.append("ref_log_prob")
+            select_keys.append("math_teacher_log_prob")
         # Include pre-computed IS weights if present in batch
         # Weights are computed centrally in trainer and added to batch when algorithm.rollout_is=True
         if "rollout_is_weights" in data.batch.keys():
@@ -408,12 +419,12 @@ class DataParallelPPOActor(BasePPOActor):
         # actor_rollout_ref.ref.model.base_model_path are both specified
         if "base_log_prob" in data.batch.keys():
             select_keys.append("base_log_prob")
-        if "base_ref_log_prob" in data.batch.keys():
-            select_keys.append("base_ref_log_prob")
-        # Include ref_log_prob for only_reverse_kl_advantages mode
-        if self.config.policy_loss.only_reverse_kl_advantages and "ref_log_prob" in data.batch.keys():
-            if "ref_log_prob" not in select_keys:
-                select_keys.append("ref_log_prob")
+        if "code_teacher_log_prob" in data.batch.keys():
+            select_keys.append("code_teacher_log_prob")
+        # Include math_teacher_log_prob for only_reverse_kl_advantages mode
+        if self.config.policy_loss.only_reverse_kl_advantages and "math_teacher_log_prob" in data.batch.keys():
+            if "math_teacher_log_prob" not in select_keys:
+                select_keys.append("math_teacher_log_prob")
         
         has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
         non_tensor_select_keys = ["multi_modal_inputs"] if has_multi_modal_inputs else []
@@ -436,9 +447,9 @@ class DataParallelPPOActor(BasePPOActor):
         mopd_gradient_tracker = None
         mopd_full_gradient_cfg = data.meta_info.get("mopd_full_gradient", {})
         if isinstance(mopd_full_gradient_cfg, dict) and mopd_full_gradient_cfg.get("enabled", False):
-            from mopd_verl.full_gradient_worker import SequentialBackwardDomainGradientTracker
+            from mopd_verl.full_gradient_worker import SameForwardDomainGradientProbe
 
-            mopd_gradient_tracker = SequentialBackwardDomainGradientTracker(self, mopd_full_gradient_cfg)
+            mopd_gradient_tracker = SameForwardDomainGradientProbe(self, mopd_full_gradient_cfg)
         # MOPD audit: domain-gradient tracker end
         for _ in range(self.config.ppo_epochs):
             for batch_idx, mini_batch in enumerate(mini_batches):
@@ -507,7 +518,7 @@ class DataParallelPPOActor(BasePPOActor):
                         # Corrected reverse KL with base model normalization if base log probs are available
                         # Formula: (log_prob_actor - log_prob_ref) - (log_prob_actor_base - log_prob_ref_base)
                         # This removes the base model bias from both actor and ref models
-                        if "base_log_prob" in model_inputs and "base_ref_log_prob" in model_inputs:
+                        if "base_log_prob" in model_inputs:
                             lambda_vals = self.config.policy_loss.lambda_vals
 
                             if self.config.policy_loss.multi_teacher_distill:
@@ -519,35 +530,30 @@ class DataParallelPPOActor(BasePPOActor):
                                     reverse_kl = torch.zeros_like(old_log_prob)
 
                                     for i in range(batch_size):
-                                        teacher_type = opd_teacher[i] if isinstance(opd_teacher, (list, tuple)) else opd_teacher
-                                        # TODO: need to improve the logic here
-                                        if teacher_type == "math":
-                                            if lambda_vals == 1.0:
-                                                reverse_kl[i] = old_log_prob[i] - model_inputs["ref_log_prob"][i]
-                                            else:
-                                                reverse_kl[i] = old_log_prob[i] - model_inputs["base_log_prob"][i] - (model_inputs["ref_log_prob"][i] - model_inputs["base_log_prob"][i]) * lambda_vals
-                                        elif teacher_type == "code":
-                                            if lambda_vals == 1.0:
-                                                reverse_kl[i] = old_log_prob[i] - model_inputs["base_ref_log_prob"][i]
-                                            else:
-                                                reverse_kl[i] = old_log_prob[i] - model_inputs["base_log_prob"][i] - (model_inputs["base_ref_log_prob"][i] - model_inputs["base_log_prob"][i]) * lambda_vals
+                                        teacher_type = _teacher_type_at(opd_teacher, i)
+                                        if teacher_type == "code" and "code_teacher_log_prob" in model_inputs:
+                                            teacher_log_prob = model_inputs["code_teacher_log_prob"][i]
                                         else:
-                                            reverse_kl[i] = old_log_prob[i] - model_inputs["ref_log_prob"][i]
+                                            teacher_log_prob = model_inputs["math_teacher_log_prob"][i]
+                                        if lambda_vals == 1.0:
+                                            reverse_kl[i] = old_log_prob[i] - teacher_log_prob
+                                        else:
+                                            reverse_kl[i] = old_log_prob[i] - model_inputs["base_log_prob"][i] - (teacher_log_prob - model_inputs["base_log_prob"][i]) * lambda_vals
                                 else:
-                                    reverse_kl = old_log_prob - model_inputs["ref_log_prob"]
+                                    reverse_kl = old_log_prob - model_inputs["math_teacher_log_prob"]
                                 #### multi-teacher distillation ####
                             else:
                                 #### single-teacher distillation ####
                                 reverse_kl = old_log_prob - model_inputs["base_log_prob"]
-                                reward_correction = model_inputs["ref_log_prob"] - model_inputs["base_log_prob"]
+                                reward_correction = model_inputs["math_teacher_log_prob"] - model_inputs["base_log_prob"]
 
                                 if lambda_vals == 1.0:
-                                    reverse_kl = old_log_prob - model_inputs["ref_log_prob"]
+                                    reverse_kl = old_log_prob - model_inputs["math_teacher_log_prob"]
                                 else:
                                     reverse_kl = reverse_kl - reward_correction * lambda_vals
                                 #### single-teacher distillation ####
                         elif (
-                            "base_ref_log_prob" in model_inputs
+                            "code_teacher_log_prob" in model_inputs
                             and self.config.policy_loss.multi_teacher_distill
                             and "opd_teacher" in model_inputs
                         ):
@@ -556,14 +562,16 @@ class DataParallelPPOActor(BasePPOActor):
                             reverse_kl = torch.zeros_like(old_log_prob)
 
                             for i in range(batch_size):
-                                teacher_type = opd_teacher[i] if isinstance(opd_teacher, (list, tuple)) else opd_teacher
-                                if teacher_type == "code":
-                                    reverse_kl[i] = old_log_prob[i] - model_inputs["base_ref_log_prob"][i]
-                                else:
-                                    reverse_kl[i] = old_log_prob[i] - model_inputs["ref_log_prob"][i]
+                                teacher_type = _teacher_type_at(opd_teacher, i)
+                                teacher_log_prob = (
+                                    model_inputs["code_teacher_log_prob"][i]
+                                    if teacher_type == "code"
+                                    else model_inputs["math_teacher_log_prob"][i]
+                                )
+                                reverse_kl[i] = old_log_prob[i] - teacher_log_prob
                         else:
                             # Standard reverse KL: log(π_actor / π_ref) = log_prob_actor - log_prob_ref
-                            reverse_kl = old_log_prob - model_inputs["ref_log_prob"]
+                            reverse_kl = old_log_prob - model_inputs["math_teacher_log_prob"]
                         advantages = (- (reverse_kl))
                    
                     # gpg -> verl.trainer.ppo.core_algos.compute_policy_loss_gpg
@@ -605,10 +613,10 @@ class DataParallelPPOActor(BasePPOActor):
                         policy_loss = pg_loss
 
                     if self.config.use_kl_loss:
-                        ref_log_prob = model_inputs["ref_log_prob"]
+                        math_teacher_log_prob = model_inputs["math_teacher_log_prob"]
                         # compute kl loss
                         kld = kl_penalty(
-                            logprob=log_prob, ref_logprob=ref_log_prob, kl_penalty=self.config.kl_loss_type
+                            logprob=log_prob, ref_logprob=math_teacher_log_prob, kl_penalty=self.config.kl_loss_type
                         )
                         kl_loss = agg_loss(loss_mat=kld, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
 
@@ -622,6 +630,20 @@ class DataParallelPPOActor(BasePPOActor):
                         loss = policy_loss * loss_scale_factor
                     else:
                         loss = policy_loss * loss_scale_factor
+                    # MOPD audit: capture domain gradients via autograd.grad (before backward)
+                    if mopd_gradient_tracker is not None:
+                        mopd_gradient_tracker.capture_micro_batch(
+                            model_inputs=model_inputs,
+                            old_log_prob=old_log_prob,
+                            log_prob=log_prob,
+                            advantages=advantages,
+                            response_mask=response_mask,
+                            entropy=entropy,
+                            policy_loss_fn=policy_loss_fn,
+                            loss_agg_mode=loss_agg_mode,
+                            loss_scale_factor=loss_scale_factor,
+                            rollout_is_weights=rollout_is_weights,
+                        )
                     # MOPD audit: sample-gradient tracker begin
                     if mopd_gradient_tracker is not None:
                         mopd_gradient_tracker.before_backward(

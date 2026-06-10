@@ -19,10 +19,6 @@ from mopd_verl.audit_scalar_logging import (
     log_training_cost as _log_training_cost,
     log_validation_metrics as _log_validation_metrics,
 )
-from mopd_verl.audit_validation import (
-    log_validation_anchor_batch as _log_validation_anchor_batch,
-    should_update_validation_anchor as _should_update_validation_anchor,
-)
 from mopd_verl.tensorboard_filter import (
     filter_tensorboard_metrics as _filter_tensorboard_metrics,
     is_direct_audit_metric_key,
@@ -153,20 +149,10 @@ class MOPDAuditLogger:
         self.log_validation = bool(_cfg_get(audit_config, "log_validation_metrics", True))
         self.tier2_window_size = max(2, int(_cfg_get(audit_config, "tier2_window_size", 20)))
         self.calibration_bins = max(1, int(_cfg_get(audit_config, "calibration_bins", 10)))
-        self.validation_anchor_enabled = bool(_cfg_get(audit_config, "validation_anchor_enabled", True))
-        self.validation_anchor_on_step0 = bool(_cfg_get(audit_config, "validation_anchor_on_step0", False))
-        self.validation_anchor_refresh_steps = int(_cfg_get(audit_config, "validation_anchor_refresh_steps", 0))
         self.full_gradient_enabled = bool(_cfg_get(audit_config, "full_gradient_enabled", False))
         self.full_gradient_freq_steps = max(1, int(_cfg_get(audit_config, "full_gradient_freq_steps", 1)))
         self.full_gradient_train_max_samples_per_domain = _optional_positive_int(
             _cfg_get(audit_config, "full_gradient_train_max_samples_per_domain", None)
-        )
-        self.full_gradient_validation_max_samples_per_domain = _optional_positive_int(
-            _cfg_get(audit_config, "full_gradient_validation_max_samples_per_domain", None)
-        )
-        self.full_gradient_validation_files = list(_cfg_get(audit_config, "full_gradient_validation_files", []) or [])
-        self.full_gradient_validation_batch_size = _optional_positive_int(
-            _cfg_get(audit_config, "full_gradient_validation_batch_size", None)
         )
         self.full_gradient_micro_batch_size_per_gpu = max(
             1,
@@ -180,20 +166,15 @@ class MOPDAuditLogger:
             1,
             int(_cfg_get(audit_config, "sample_gradient_cos_freq_steps", 1)),
         )
-        self.sample_gradient_cos_max_samples_per_domain = _optional_positive_int(
-            _cfg_get(audit_config, "sample_gradient_cos_max_samples_per_domain", 8)
-        )
-        self.sample_gradient_cos_selection = str(
-            _cfg_get(audit_config, "sample_gradient_cos_selection", "top_norm_plus_random")
-        )
         self.sample_gradient_log_sample_level = bool(
             _cfg_get(audit_config, "sample_gradient_log_sample_level", True)
         )
-        self.sample_gradient_seed = int(_cfg_get(audit_config, "sample_gradient_seed", 17))
+        self.full_gradient_offload_domain_gradients = bool(
+            _cfg_get(audit_config, "full_gradient_offload_domain_gradients", True)
+        )
         policy_loss = _cfg_get(_cfg_get(_cfg_get(config, "actor_rollout_ref", {}), "actor", {}), "policy_loss", {})
         self.lambda_vals = float(_cfg_get(policy_loss, "lambda_vals", 1.0))
         self._last_validation_metrics: dict[str, float] = {}
-        self._validation_anchor_step: int | None = None
         self._validation_gain_history: dict[str, list[float]] = {}
         self._seen_sample_ids: dict[str, set[str]] = {domain: set() for domain in self.domains}
         if self.enabled:
@@ -253,11 +234,6 @@ class MOPDAuditLogger:
         return self.enabled and (full_gradient_active or sample_gradient_active)
 
     def full_gradient_meta(self, mode: str, step: int) -> dict[str, Any]:
-        max_samples = (
-            self.full_gradient_validation_max_samples_per_domain
-            if mode == "validation_anchor"
-            else self.full_gradient_train_max_samples_per_domain
-        )
         return {
             "mopd_full_gradient": {
                 "enabled": self.should_compute_full_gradient(step),
@@ -266,21 +242,18 @@ class MOPDAuditLogger:
                 "step": step,
                 "domains": self.domains,
                 "output_dir": str(self.output_dir),
-                "max_samples_per_domain": max_samples,
+                "max_samples_per_domain": self.full_gradient_train_max_samples_per_domain,
                 "micro_batch_size_per_gpu": self.full_gradient_micro_batch_size_per_gpu,
                 "storage_dtype": self.full_gradient_storage_dtype,
                 "learning_rate": self._current_learning_rate_value(),
-                "validation_anchor_refresh_steps": self.validation_anchor_refresh_steps,
                 "sample_gradient_enabled": self.sample_gradient_enabled and mode == "train",
                 "sample_gradient_norm_enabled": self.sample_gradient_norm_enabled,
                 "sample_gradient_cos_enabled": self.sample_gradient_cos_enabled
                 and mode == "train"
                 and step % self.sample_gradient_cos_freq_steps == 0,
                 "sample_gradient_cos_freq_steps": self.sample_gradient_cos_freq_steps,
-                "sample_gradient_cos_max_samples_per_domain": self.sample_gradient_cos_max_samples_per_domain,
-                "sample_gradient_cos_selection": self.sample_gradient_cos_selection,
                 "sample_gradient_log_sample_level": self.sample_gradient_log_sample_level,
-                "sample_gradient_seed": self.sample_gradient_seed,
+                "offload_domain_gradients": self.full_gradient_offload_domain_gradients,
             }
         }
 
@@ -330,12 +303,6 @@ class MOPDAuditLogger:
         self._write_jsonl("loss_variance_sample.jsonl", sample_rows)
         return metrics
 
-    def should_update_validation_anchor(self, step: int) -> bool:
-        return _should_update_validation_anchor(self, step)
-
-    def log_validation_anchor_batch(self, batch: Any, step: int) -> dict[str, float]:
-        return _log_validation_anchor_batch(self, batch, step)
-
     def log_validation_metrics(self, val_metrics: dict[str, Any], step: int) -> dict[str, float]:
         return _log_validation_metrics(self, val_metrics, step)
 
@@ -350,10 +317,10 @@ class MOPDAuditLogger:
         old_log_probs = tensor_batch["old_log_probs"].detach().float()
         response_mask = response_mask_from_batch(tensor_batch, old_log_probs)
         batch_keys = set(tensor_batch.keys())
-        ref_log_prob = (tensor_batch["ref_log_prob"] if "ref_log_prob" in batch_keys else old_log_probs).detach().float()
+        math_teacher_log_prob = (tensor_batch["math_teacher_log_prob"] if "math_teacher_log_prob" in batch_keys else old_log_probs).detach().float()
         base_log_prob = (tensor_batch["base_log_prob"] if "base_log_prob" in batch_keys else old_log_probs).detach().float()
-        base_ref_log_prob = (
-            tensor_batch["base_ref_log_prob"] if "base_ref_log_prob" in batch_keys else ref_log_prob
+        code_teacher_log_prob = (
+            tensor_batch["code_teacher_log_prob"] if "code_teacher_log_prob" in batch_keys else math_teacher_log_prob
         ).detach().float()
         batch_size = int(old_log_probs.shape[0])
 
@@ -363,7 +330,7 @@ class MOPDAuditLogger:
         teacher_log_probs = torch.zeros_like(old_log_probs)
         reverse_kl = torch.zeros_like(old_log_probs)
         for idx, label in enumerate(labels):
-            teacher_log_prob = base_ref_log_prob[idx] if label == "code" else ref_log_prob[idx]
+            teacher_log_prob = code_teacher_log_prob[idx] if label == "code" else math_teacher_log_prob[idx]
             teacher_log_probs[idx] = teacher_log_prob
             if self.lambda_vals == 1.0:
                 reverse_kl[idx] = old_log_probs[idx] - teacher_log_prob

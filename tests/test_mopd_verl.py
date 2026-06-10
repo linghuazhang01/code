@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -14,6 +15,7 @@ from mopd_verl.domain_sampling import (
     domain_sample_weights,
     normalize_domain_sampling_weights,
 )
+from mopd_verl.general_reasoner_data import general_reasoner_to_verl_parquet
 from mopd_verl.launch import build_command, format_command
 from mopd_verl.prepare_data import (
     evalplus_jsonl_to_verl_parquet,
@@ -25,8 +27,12 @@ from mopd_verl.prepare_data import (
     validate_sample_ids,
     validate_teacher_labels,
 )
+from mopd_verl.search_retrieval_server import RetrievalService, SearchResult
+from mopd_verl.searchqa_data import searchqa_to_verl_parquet
 from mopd_verl.settings import load_config
 from mopd_verl.smoke_data import write_smoke_data
+from grpo.data.toolrl import toolrl_to_verl_parquet
+from grpo.rewards.toolrl import compute_score as compute_toolrl_score
 from mopd_verl.verl_audit import MOPDAuditLogger
 
 
@@ -57,11 +63,94 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("data/G-OPD-Training-Data/DeepMath-103K/train_filtered_level6.parquet", rendered)
         self.assertIn("data/G-OPD-Training-Data/Eurus/code_train.parquet", rendered)
         self.assertNotIn("math_and_code/train.parquet", rendered)
-        self.assertIn("data/G-OPD-Training-Data/PaperEval/HMMT25Feb/test.parquet", rendered)
-        self.assertIn("data/G-OPD-Training-Data/PaperEval/HMMT25Nov/test.parquet", rendered)
-        self.assertIn("data/G-OPD-Training-Data/PaperEval/HumanEvalPlus/test.parquet", rendered)
-        self.assertIn("data/G-OPD-Training-Data/PaperEval/MBPPPlus/test.parquet", rendered)
-        self.assertIn("data/G-OPD-Training-Data/PaperEval/LiveCodeBench/test.parquet", rendered)
+        self.assertIn("eval/domains/math/data/HMMT25Feb/test.parquet", rendered)
+        self.assertIn("eval/domains/math/data/HMMT25Nov/test.parquet", rendered)
+        self.assertIn("eval/domains/code/data/HumanEvalPlus/test.parquet", rendered)
+        self.assertIn("eval/domains/code/data/MBPPPlus/test.parquet", rendered)
+        self.assertIn("eval/domains/code/data/LiveCodeBench/test.parquet", rendered)
+
+    def test_searchqa_command_enables_tool_rollout(self) -> None:
+        config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_searchqa.yaml"
+        config = load_config(config_path)
+        rendered = format_command(build_command(config))
+
+        self.assertIn("actor_rollout_ref.model.path=Qwen/Qwen3-4B", rendered)
+        self.assertIn("+actor_rollout_ref.ref.model.path=Qwen3-4B-Non-Thinking-RL-SearchQA", rendered)
+        self.assertIn("+actor_rollout_ref.ref.model.base_model_path=Qwen/Qwen3-4B", rendered)
+        self.assertIn("+data.domain_sampling_weights={search: 1}", rendered)
+        self.assertIn("+data.domain_train_files=", rendered)
+        self.assertIn("data/SearchQA/train.parquet", rendered)
+        self.assertIn("actor_rollout_ref.rollout.name=sglang", rendered)
+        self.assertIn("actor_rollout_ref.rollout.mode=sync", rendered)
+        self.assertIn("actor_rollout_ref.rollout.max_model_len=15000", rendered)
+        self.assertIn("actor_rollout_ref.rollout.multi_turn.enable=true", rendered)
+        self.assertIn("actor_rollout_ref.rollout.multi_turn.tool_config_path=configs/tool_config/search_tool_config.yaml", rendered)
+        self.assertIn("+data.need_tools_kwargs=True", rendered)
+
+    def test_toolrl_command_uses_custom_reward(self) -> None:
+        config_path = Path(__file__).resolve().parents[1] / "grpo" / "configs" / "toolrl.yaml"
+        config = load_config(config_path)
+        rendered = format_command(build_command(config))
+
+        self.assertIn("data/ToolRL/rlla_4k/train.parquet", rendered)
+        self.assertIn("+data.domain_sampling_weights={tool: 1}", rendered)
+        self.assertIn("actor_rollout_ref.actor.policy_loss.multi_teacher_distill=false", rendered)
+        self.assertIn("actor_rollout_ref.actor.use_kl_loss=False", rendered)
+        self.assertIn("custom_reward_function.path=grpo/rewards/toolrl.py", rendered)
+        self.assertIn("custom_reward_function.name=compute_score", rendered)
+        self.assertIn("actor_rollout_ref.rollout.n=4", rendered)
+
+    def test_general_reasoner_command_uses_external_verifier_worker(self) -> None:
+        config_path = Path(__file__).resolve().parents[1] / "grpo" / "configs" / "general_reasoner.yaml"
+        config = load_config(config_path)
+        rendered = format_command(build_command(config))
+
+        self.assertIn("data/GeneralReasoner/WebInstructVerified/train.parquet", rendered)
+        self.assertIn("+data.domain_sampling_weights={reasoning: 1}", rendered)
+        self.assertIn("custom_reward_function.path=grpo/rewards/general_reasoner.py", rendered)
+        self.assertIn("reward_model.enable=True", rendered)
+        self.assertIn("reward_model.strategy=verifier", rendered)
+        self.assertIn("+reward_model.worker.path=grpo/workers/general_verifier.py", rendered)
+        self.assertIn("+reward_model.worker.name=RewardModelWorker", rendered)
+        self.assertIn("reward_model.model.path=TIGER-Lab/general-verifier", rendered)
+
+    def test_general_reasoner_command_uses_reasoning_teacher(self) -> None:
+        config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_general_reasoner.yaml"
+        config = load_config(config_path)
+        rendered = format_command(build_command(config))
+
+        self.assertIn("actor_rollout_ref.model.path=../models/Qwen3-4B", rendered)
+        self.assertIn("+actor_rollout_ref.model.base_model_path=../models/Qwen3-4B", rendered)
+        self.assertEqual(config.model.reasoning_teacher_path, "../models/General-Reasoner-Qwen3-14B")
+        self.assertIn("+actor_rollout_ref.ref.model.path=../models/General-Reasoner-Qwen3-14B", rendered)
+        self.assertIsNone(config.model.secondary_teacher_path)
+        self.assertNotIn("+actor_rollout_ref.ref.model.base_model_path=Qwen/Qwen3-14B", rendered)
+        self.assertIn("+data.domain_sampling_weights={reasoning: 1}", rendered)
+        self.assertIn("data/GeneralReasoner/WebInstructVerified/train.parquet", rendered)
+        self.assertIn("eval/domains/greasoner/data/WebInstructVerified/test.parquet", rendered)
+        self.assertIn("+data.apply_chat_template_kwargs.enable_thinking=True", rendered)
+        self.assertIn("+data.need_tools_kwargs=False", rendered)
+        self.assertIn("trainer.experiment_name=Qwen3-4B-GeneralReasoner-Qwen3-14B-MOPD", rendered)
+        self.assertNotIn("actor_rollout_ref.rollout.multi_turn.tool_config_path", rendered)
+
+    def test_dp_actor_routes_non_code_teacher_labels_through_primary_ref(self) -> None:
+        source_path = Path(__file__).resolve().parents[1] / "third_party" / "verl" / "verl" / "workers" / "actor" / "dp_actor.py"
+        source = source_path.read_text(encoding="utf-8")
+
+        self.assertIn(
+            'if teacher_type == "code" and "code_teacher_log_prob" in model_inputs:\n'
+            '                                            teacher_log_prob = model_inputs["code_teacher_log_prob"][i]\n'
+            "                                        else:\n"
+            '                                            teacher_log_prob = model_inputs["math_teacher_log_prob"][i]',
+            source,
+        )
+        self.assertIn(
+            "if lambda_vals == 1.0:\n"
+            "                                            reverse_kl[i] = old_log_prob[i] - teacher_log_prob\n"
+            "                                        else:\n"
+            "                                            reverse_kl[i] = old_log_prob[i] - model_inputs[\"base_log_prob\"][i]",
+            source,
+        )
 
     def test_audit_smoke_command_contains_tensorboard_and_audit_settings(self) -> None:
         config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_audit_smoke.yaml"
@@ -89,37 +178,85 @@ class MOPDVerlTests(unittest.TestCase):
 
         self.assertIn("+mopd_audit.full_gradient_enabled=true", rendered)
         self.assertIn("+mopd_audit.full_gradient_freq_steps=1", rendered)
-        self.assertIn("+mopd_audit.validation_anchor_on_step0=false", rendered)
         self.assertIn("+mopd_audit.full_gradient_train_max_samples_per_domain=null", rendered)
-        self.assertIn("+mopd_audit.full_gradient_validation_max_samples_per_domain=null", rendered)
-        self.assertIn("+mopd_audit.full_gradient_validation_files=", rendered)
-        self.assertIn("PaperEval/AIME25/test.parquet", rendered)
-        self.assertIn("PaperEval/HumanEvalPlus/test.parquet", rendered)
-        self.assertIn("+mopd_audit.full_gradient_validation_batch_size=128", rendered)
         self.assertIn("+mopd_audit.full_gradient_micro_batch_size_per_gpu=1", rendered)
-        self.assertIn("+mopd_audit.full_gradient_storage_dtype=float32", rendered)
+        self.assertIn("+mopd_audit.full_gradient_storage_dtype=bfloat16", rendered)
         self.assertIn("+mopd_audit.sample_gradient_enabled=true", rendered)
         self.assertIn("+mopd_audit.sample_gradient_norm_enabled=true", rendered)
         self.assertIn("+mopd_audit.sample_gradient_cos_enabled=true", rendered)
         self.assertIn("+mopd_audit.sample_gradient_cos_freq_steps=1", rendered)
-        self.assertIn("+mopd_audit.sample_gradient_cos_max_samples_per_domain=8", rendered)
-        self.assertIn("+mopd_audit.sample_gradient_cos_selection=top_norm_plus_random", rendered)
+        self.assertIn("actor_rollout_ref.actor.fsdp_config.fsdp_size=1", rendered)
+        self.assertNotIn("sample_gradient_cos_max_samples_per_domain", rendered)
+        self.assertNotIn("sample_gradient_cos_selection", rendered)
         self.assertIn("+mopd_audit.tensorboard_prune_mode=core", rendered)
         self.assertIn("+data.domain_sampling_weights={math: 0.5, code: 0.5}", rendered)
         self.assertIn("+data.domain_train_files=", rendered)
         self.assertIn("DeepMath-103K/train_filtered_level6.parquet", rendered)
         self.assertIn("Eurus/code_train.parquet", rendered)
-        self.assertIn("PaperEval/AIME24/test.parquet", rendered)
-        self.assertIn("PaperEval/AIME25/test.parquet", rendered)
-        self.assertIn("PaperEval/HMMT25Feb/test.parquet", rendered)
-        self.assertIn("PaperEval/HMMT25Nov/test.parquet", rendered)
-        self.assertIn("PaperEval/MBPPPlus/test.parquet", rendered)
-        self.assertIn("PaperEval/LiveCodeBench/test.parquet", rendered)
+        self.assertIn("eval/domains/math/data/AIME24/test.parquet", rendered)
+        self.assertIn("eval/domains/math/data/AIME25/test.parquet", rendered)
+        self.assertIn("eval/domains/math/data/HMMT25Feb/test.parquet", rendered)
+        self.assertIn("eval/domains/math/data/HMMT25Nov/test.parquet", rendered)
+        self.assertIn("eval/domains/code/data/MBPPPlus/test.parquet", rendered)
+        self.assertNotIn("eval/domains/code/data/LiveCodeBench/test.parquet", rendered)
         self.assertIn("trainer.default_local_dir=checkpoints/formal_single_a800", rendered)
         self.assertNotIn("/root/autodl-tmp/opd_mopd/G-OPD/G-OPD-Training-Data", rendered)
         self.assertNotIn("/root/autodl-tmp/opd_mopd/OPD-code", rendered)
         self.assertNotIn("+paper_eval.enabled=true", rendered)
         self.assertNotIn("run_paper_eval_suite.sh", rendered)
+
+    def test_single_h200_profile_preserves_math_code_semantics(self) -> None:
+        config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_formal_single_h200.yaml"
+        config = load_config(config_path)
+        rendered = format_command(build_command(config))
+
+        self.assertEqual(config.data.train_batch_size, 1024)
+        self.assertEqual(config.actor.ppo_mini_batch_size, 1024)
+        self.assertEqual(config.actor.ppo_micro_batch_size_per_gpu, 1)
+        self.assertFalse(config.actor.optimizer_offload)
+        self.assertEqual(config.rollout.log_prob_micro_batch_size_per_gpu, 2)
+        self.assertFalse(config.rollout.enforce_eager)
+        self.assertEqual(config.rollout.max_num_batched_tokens, 65536)
+        self.assertEqual(config.rollout.max_num_seqs, 16)
+        self.assertEqual(config.trainer.n_gpus_per_node, 1)
+        self.assertEqual(config.trainer.save_freq, 50)
+        self.assertEqual(config.ray_kwargs.ray_init.num_cpus, 8)
+        self.assertIn("actor_rollout_ref.rollout.gpu_memory_utilization=0.8", rendered)
+        self.assertIn("eval/domains/math/data/AIME25/test.parquet", rendered)
+        self.assertIn("eval/domains/code/data/HumanEvalPlus/test.parquet", rendered)
+        self.assertNotIn(
+            "data.val_files=['data/G-OPD-Training-Data/Eurus/code_train.parquet']",
+            rendered,
+        )
+        self.assertIn("trainer.default_local_dir=checkpoints/formal_single_h200", rendered)
+        self.assertIn("+mopd_audit.output_dir=audit/formal_single_h200", rendered)
+        self.assertIn("+mopd_audit.full_gradient_storage_dtype=bfloat16", rendered)
+
+    def test_dual_a800_profile_uses_replicated_two_gpu_gradient_audit(self) -> None:
+        config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_formal_dual_a800.yaml"
+        config = load_config(config_path)
+        rendered = format_command(build_command(config))
+
+        self.assertEqual(config.data.train_batch_size, 512)
+        self.assertEqual(config.actor.ppo_mini_batch_size, 512)
+        self.assertEqual(config.actor.ppo_micro_batch_size_per_gpu, 1)
+        self.assertEqual(config.rollout.tensor_model_parallel_size, 1)
+        self.assertEqual(config.trainer.n_gpus_per_node, 2)
+        self.assertTrue(config.audit.enabled)
+        self.assertEqual(config.actor.fsdp_size, 1)
+        self.assertTrue(config.audit.full_gradient_enabled)
+        self.assertTrue(config.audit.sample_gradient_enabled)
+        self.assertTrue(config.audit.sample_gradient_norm_enabled)
+        self.assertTrue(config.audit.sample_gradient_cos_enabled)
+        self.assertIn("trainer.n_gpus_per_node=2", rendered)
+        self.assertIn("actor_rollout_ref.rollout.tensor_model_parallel_size=1", rendered)
+        self.assertIn("actor_rollout_ref.actor.fsdp_config.fsdp_size=1", rendered)
+        self.assertIn("+mopd_audit.output_dir=audit/formal_dual_a800", rendered)
+        self.assertIn("+mopd_audit.full_gradient_enabled=true", rendered)
+        self.assertIn("+mopd_audit.sample_gradient_enabled=true", rendered)
+        self.assertIn("+mopd_audit.sample_gradient_norm_enabled=true", rendered)
+        self.assertIn("+mopd_audit.sample_gradient_cos_enabled=true", rendered)
+        self.assertIn("trainer.default_local_dir=checkpoints/formal_dual_a800", rendered)
 
     def test_domain_sampling_weights_target_domain_mass(self) -> None:
         rows = [
@@ -166,6 +303,46 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertEqual(domains.count("math"), 2)
         self.assertEqual(domains.count("code"), 2)
 
+    def test_toolrl_conversion_adds_teacher_metadata_and_role(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "toolrl.parquet"
+            target = Path(tmpdir) / "toolrl_verl.parquet"
+            pd.DataFrame(
+                [
+                    {
+                        "data_source": "rlla",
+                        "prompt": [{"content": "Pick the right tool."}],
+                        "ability": "tool",
+                        "reward_model": {"style": "rule", "ground_truth": "<think> ok </think>"},
+                        "extra_info": {"index": 7},
+                    }
+                ]
+            ).to_parquet(source, index=False)
+
+            count = toolrl_to_verl_parquet(source, target, split="train")
+            row = pd.read_parquet(target).to_dict(orient="records")[0]
+
+        self.assertEqual(count, 1)
+        self.assertEqual(row["prompt"][0]["role"], "user")
+        self.assertEqual(row["extra_info"]["opd_teacher"], "tool")
+        self.assertEqual(row["extra_info"]["domain"], "tool")
+        self.assertEqual(row["extra_info"]["split"], "train")
+
+    def test_toolrl_reward_scores_exact_tool_call(self) -> None:
+        response = (
+            '<think> I should call the tool. </think>\n'
+            '<tool_call>\n{"name": "GetNews", "parameters": {"page": "1"}}\n</tool_call>'
+        )
+        reward = compute_toolrl_score(
+            data_source="toolrl_rlla",
+            solution_str=response,
+            ground_truth=response,
+        )
+
+        self.assertEqual(reward["toolrl_format"], 1.0)
+        self.assertEqual(reward["toolrl_correctness"], 3.0)
+        self.assertEqual(reward["score"], 4.0)
+
     def test_tensorboard_core_filter_keeps_high_signal_metrics(self) -> None:
         logger = MOPDAuditLogger(
             {
@@ -187,11 +364,6 @@ class MOPDVerlTests(unittest.TestCase):
             "global/loss/sample_opd_loss_variance": 0.1,
             "math/loss/opd_loss_p95": 0.9,
             "math/loss/kl_spike_rate": 0.2,
-            "math/full_grad_anchor/code/full_grad_cosine_i_j": 0.2,
-            "math/full_grad_anchor/code/full_grad_dot_i_j": 10.0,
-            "math/full_grad_anchor/code/predicted_val_opd_loss_delta_i_j": -0.001,
-            "math/full_grad_anchor/code/alignment_sign_i_j": 1.0,
-            "code/full_grad_anchor/validation_anchor_token_count": 64.0,
             "global/full_grad/total_grad_norm": 2.0,
             "global/full_grad_conflict/math_vs_code/full_grad_cosine_train_i_k": -0.3,
             "global/full_grad_conflict/math_vs_code/full_grad_dot_train_i_k": -10.0,
@@ -199,7 +371,9 @@ class MOPDVerlTests(unittest.TestCase):
             "global/full_grad_contribution/math_to_total/signed_projection_share": 0.6,
             "global/audit/full_gradient_domain_sequential_available": 1.0,
             "global/audit/full_gradient_domain_sequential_unsupported": 0.0,
-            "global/audit/full_gradient_anchor_token_count": 128.0,
+            "global/audit/full_gradient_replicated_all_reduce": 1.0,
+            "global/audit/sample_gradient_distributed_unsupported": 1.0,
+            "global/audit/sample_gradient_distributed_world_size": 2.0,
             "math/grad_conflict/code/grad_cosine_train_i_k": -0.4,
             "global/grad_conflict/math_vs_code/grad_cosine_train_i_k": -0.4,
             "math/grad/grad_norm": 1.0,
@@ -242,16 +416,15 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("math/loss/sample_opd_loss_variance", filtered)
         self.assertIn("global/loss/token_opd_loss_mean", filtered)
         self.assertIn("global/loss/sample_opd_loss_variance", filtered)
-        self.assertIn("math/full_grad_anchor/code/full_grad_cosine_i_j", filtered)
-        self.assertIn("math/full_grad_anchor/code/predicted_val_opd_loss_delta_i_j", filtered)
-        self.assertIn("code/full_grad_anchor/validation_anchor_token_count", filtered)
         self.assertIn("global/full_grad/total_grad_norm", filtered)
         self.assertIn("global/full_grad_conflict/math_vs_code/full_grad_cosine_train_i_k", filtered)
         self.assertIn("global/full_grad_alignment/math_vs_total/full_grad_cosine_domain_total", filtered)
         self.assertIn("global/full_grad_contribution/math_to_total/signed_projection_share", filtered)
         self.assertIn("global/audit/full_gradient_domain_sequential_available", filtered)
         self.assertIn("global/audit/full_gradient_domain_sequential_unsupported", filtered)
-        self.assertIn("global/audit/full_gradient_anchor_token_count", filtered)
+        self.assertIn("global/audit/full_gradient_replicated_all_reduce", filtered)
+        self.assertIn("global/audit/sample_gradient_distributed_unsupported", filtered)
+        self.assertIn("global/audit/sample_gradient_distributed_world_size", filtered)
         self.assertIn("math/teacher/teacher_student_gap_mean", filtered)
         self.assertIn("math/advantage/positive_frac", filtered)
         self.assertIn("math/length/response_mean", filtered)
@@ -272,8 +445,6 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("actor/lr", filtered)
         self.assertNotIn("math/loss/opd_loss_p95", filtered)
         self.assertNotIn("math/loss/kl_spike_rate", filtered)
-        self.assertNotIn("math/full_grad_anchor/code/full_grad_dot_i_j", filtered)
-        self.assertNotIn("math/full_grad_anchor/code/alignment_sign_i_j", filtered)
         self.assertNotIn("global/full_grad_conflict/math_vs_code/full_grad_dot_train_i_k", filtered)
         self.assertNotIn("math/grad_conflict/code/grad_cosine_train_i_k", filtered)
         self.assertNotIn("global/grad_conflict/math_vs_code/grad_cosine_train_i_k", filtered)
@@ -357,7 +528,13 @@ class MOPDVerlTests(unittest.TestCase):
         model_inputs = {"opd_teacher": ["math", "math", "code", "code"]}
         probe = SameForwardDomainGradientProbe(
             actor,
-            {"enabled": True, "domains": ["math", "code"], "storage_dtype": "float32", "learning_rate": 1e-5},
+            {
+                "enabled": True,
+                "domains": ["math", "code"],
+                "storage_dtype": "float32",
+                "learning_rate": 1e-5,
+                "offload_domain_gradients": False,
+            },
         )
 
         probe.start_mini_batch()
@@ -381,14 +558,65 @@ class MOPDVerlTests(unittest.TestCase):
             loss_agg_mode="token-mean",
             config=actor.config,
         )
-        full_grad = torch.autograd.grad(full_loss, tuple(actor.actor_module.parameters()))[0].detach().flatten().cpu()
-        summed_domain_grad = probe._vectors["math"] + probe._vectors["code"]
-        self.assertTrue(torch.allclose(summed_domain_grad, full_grad, atol=1e-6))
+        full_grad = torch.autograd.grad(full_loss, tuple(actor.actor_module.parameters()))[0].detach().flatten()
+        summed_domain_grad = probe._gpu_vectors["math"] + probe._gpu_vectors["code"]
+        self.assertTrue(torch.allclose(summed_domain_grad.cpu(), full_grad.cpu(), atol=1e-6))
 
         metrics = probe.finish_mini_batch()
         self.assertIn("math/full_grad/grad_norm", metrics)
         self.assertIn("code/full_grad/grad_norm", metrics)
         self.assertIn("global/full_grad_conflict/code_vs_math/full_grad_cosine_train_i_k", metrics)
+        self.assertIn("global/full_grad/total_grad_norm", metrics)
+        self.assertIn("global/full_grad_alignment/math_vs_total/full_grad_cosine_domain_total", metrics)
+        self.assertIn("global/full_grad_contribution/code_to_total/signed_projection_share", metrics)
+
+    def test_same_forward_domain_probe_reports_offloaded_full_grad_metrics(self) -> None:
+        try:
+            import math
+
+            import torch
+
+            from mopd_verl.full_gradient_worker import SameForwardDomainGradientProbe
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient probe dependencies are not installed: {exc}")
+
+        class ToyActor:
+            pass
+
+        probe = SameForwardDomainGradientProbe(
+            ToyActor(),
+            {
+                "enabled": True,
+                "domains": ["math", "code"],
+                "storage_dtype": "float32",
+                "offload_domain_gradients": True,
+            },
+        )
+
+        probe.start_mini_batch()
+        probe._cpu_vectors = {
+            "math": torch.tensor([1.0, 0.0], dtype=torch.float32),
+            "code": torch.tensor([0.0, 2.0], dtype=torch.float32),
+        }
+        probe._sample_counts = {"math": 3, "code": 5}
+
+        metrics = probe.finish_mini_batch()
+
+        self.assertAlmostEqual(metrics["math/full_grad/grad_norm"], 1.0, places=6)
+        self.assertAlmostEqual(metrics["code/full_grad/grad_norm"], 2.0, places=6)
+        self.assertEqual(metrics["math/full_grad/sample_count"], 3.0)
+        self.assertEqual(metrics["code/full_grad/sample_count"], 5.0)
+        self.assertAlmostEqual(metrics["global/full_grad/total_grad_norm"], math.sqrt(5.0), places=6)
+        self.assertAlmostEqual(
+            metrics["global/full_grad_alignment/math_vs_total/full_grad_cosine_domain_total"],
+            1.0 / math.sqrt(5.0),
+            places=6,
+        )
+        self.assertAlmostEqual(
+            metrics["global/full_grad_contribution/code_to_total/signed_projection_share"],
+            4.0 / 5.0,
+            places=6,
+        )
 
     def test_sequential_backward_domain_tracker_computes_total_cosine_and_contribution(self) -> None:
         try:
@@ -507,6 +735,355 @@ class MOPDVerlTests(unittest.TestCase):
             places=6,
         )
 
+    def test_sample_gradient_cos_uses_all_candidates(self) -> None:
+        try:
+            from mopd_verl.full_gradient_worker import SequentialBackwardDomainGradientTracker
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ToyActor:
+            pass
+
+        tracker = SequentialBackwardDomainGradientTracker(
+            ToyActor(),
+            {
+                "enabled": True,
+                "domains": ["math", "code"],
+                "sample_gradient_enabled": True,
+                "sample_gradient_cos_enabled": True,
+            },
+        )
+        candidates: list[dict[str, object]] = [
+            {
+                "row": {
+                    "sample_grad_norm": float(index),
+                    "loss_scale_factor": 1.0,
+                    "on_policy": True,
+                    "computed_for_cos": False,
+                },
+                "micro_batch": object(),
+            }
+            for index in range(20)
+        ]
+        tracker._sample_candidates = {"math": candidates}
+        processed: list[object] = []
+
+        def fake_recompute(micro_batch: object, **_: object) -> dict[str, float]:
+            processed.append(micro_batch)
+            return {
+                "sample_to_domain_cos": 1.0,
+                "sample_projection_share": 0.05,
+                "sample_recompute_grad_norm": 1.0,
+            }
+
+        tracker._recompute_sample_to_domain_stats = fake_recompute
+        metrics = tracker._sample_cos_metrics({"math": ((), 1.0)})
+
+        self.assertEqual(processed, [candidate["micro_batch"] for candidate in candidates])
+        self.assertEqual(metrics["math/sample_grad_cos/sample_count"], 20.0)
+        self.assertTrue(all(candidate["row"]["computed_for_cos"] for candidate in candidates))
+
+    def test_same_forward_sample_cos_metrics_use_core_tensorboard_tags_and_signed_projection(self) -> None:
+        try:
+            from mopd_verl.full_gradient_worker import SameForwardDomainGradientProbe
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient probe dependencies are not installed: {exc}")
+
+        class ToyActor:
+            pass
+
+        tracker = SameForwardDomainGradientProbe(
+            ToyActor(),
+            {
+                "enabled": True,
+                "domains": ["math"],
+                "sample_gradient_enabled": True,
+                "sample_gradient_cos_enabled": True,
+            },
+        )
+        candidates = [
+            {"row": {"loss_scale_factor": 1.0, "on_policy": True}, "micro_batch": object()},
+            {"row": {"loss_scale_factor": 1.0, "on_policy": True}, "micro_batch": object()},
+        ]
+        tracker._sample_candidates = {"math": candidates}
+        tracker._domain_target_chunks = {"math": ()}
+        tracker._domain_norms = {"math": 1.0}
+        tracker._domain_norm_sqs = {"math": 1.0}
+        values = iter(
+            [
+                {"cosine": -0.25, "projection_share": -0.5},
+                {"cosine": 0.75, "projection_share": 0.25},
+            ]
+        )
+
+        tracker._recompute_sample_to_domain_stats = lambda *_args, **_kwargs: next(values)
+        metrics = tracker._sample_cos_metrics()
+
+        self.assertAlmostEqual(metrics["math/sample_grad_cos/domain_cos_mean"], 0.25, places=6)
+        self.assertAlmostEqual(metrics["math/sample_grad_cos/domain_cos_negative_frac"], 0.5, places=6)
+        self.assertAlmostEqual(metrics["math/sample_grad_contribution/projection_share_mean"], -0.125, places=6)
+        self.assertAlmostEqual(metrics["math/sample_grad_contribution/projection_share_negative_frac"], 0.5, places=6)
+        self.assertAlmostEqual(metrics["math/sample_grad_contribution/top1_abs_share"], 0.5, places=6)
+
+    def test_same_forward_keeps_sample_gradient_metrics_under_replicated_distributed(self) -> None:
+        try:
+            from mopd_verl.full_gradient_worker import SameForwardDomainGradientProbe
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient probe dependencies are not installed: {exc}")
+
+        class ToyActor:
+            pass
+
+        with patch("mopd_verl.full_gradient_worker._distributed_world_size", return_value=2):
+            probe = SameForwardDomainGradientProbe(
+                ToyActor(),
+                {
+                    "enabled": True,
+                    "domains": ["math", "code"],
+                    "sample_gradient_enabled": True,
+                    "sample_gradient_norm_enabled": True,
+                    "sample_gradient_cos_enabled": True,
+                    "domain_gradient_enabled": False,
+                },
+            )
+
+        self.assertTrue(probe.sample_norm_enabled)
+        self.assertTrue(probe.sample_cos_enabled)
+        self.assertTrue(probe.sample_log_sample_level)
+        self.assertTrue(probe.domain_gradient_enabled)
+
+        metrics = probe.finish_mini_batch()
+
+        self.assertEqual(metrics["global/audit/full_gradient_replicated_all_reduce"], 1.0)
+        self.assertNotIn("global/audit/sample_gradient_distributed_unsupported", metrics)
+        self.assertNotIn("global/audit/sample_gradient_distributed_world_size", metrics)
+        self.assertNotIn("math/sample_grad/norm_mean", metrics)
+        self.assertNotIn("math/sample_grad_cos/domain_cos_mean", metrics)
+
+    def test_same_forward_sample_norm_only_does_not_compute_replicated_domain_gradient(self) -> None:
+        try:
+            from mopd_verl.full_gradient_worker import SameForwardDomainGradientProbe
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient probe dependencies are not installed: {exc}")
+
+        class ToyActor:
+            pass
+
+        with patch("mopd_verl.full_gradient_worker._distributed_world_size", return_value=2):
+            probe = SameForwardDomainGradientProbe(
+                ToyActor(),
+                {
+                    "enabled": True,
+                    "domains": ["math", "code"],
+                    "sample_gradient_enabled": True,
+                    "sample_gradient_norm_enabled": True,
+                    "sample_gradient_cos_enabled": False,
+                    "domain_gradient_enabled": False,
+                },
+            )
+
+        self.assertTrue(probe.sample_norm_enabled)
+        self.assertFalse(probe.sample_cos_enabled)
+        self.assertFalse(probe.domain_gradient_enabled)
+
+        metrics = probe.finish_mini_batch()
+
+        self.assertNotIn("global/audit/full_gradient_replicated_all_reduce", metrics)
+        self.assertNotIn("global/audit/sample_gradient_distributed_unsupported", metrics)
+        self.assertNotIn("global/full_grad/total_grad_norm", metrics)
+
+    def test_same_forward_replicated_distributed_all_reduces_domain_targets(self) -> None:
+        try:
+            import math
+
+            import torch
+            from torch import nn
+
+            from mopd_verl.full_gradient_worker import SameForwardDomainGradientProbe
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient probe dependencies are not installed: {exc}")
+
+        class ToyActor:
+            def __init__(self) -> None:
+                self.actor_module = nn.Linear(2, 1, bias=False)
+
+        def fake_all_reduce_vector_sum(vector: torch.Tensor) -> torch.Tensor:
+            if torch.allclose(vector.cpu(), torch.tensor([1.0, 0.0])):
+                vector.add_(torch.tensor([3.0, 0.0], dtype=vector.dtype, device=vector.device))
+            elif torch.allclose(vector.cpu(), torch.tensor([0.0, 2.0])):
+                vector.add_(torch.tensor([0.0, 5.0], dtype=vector.dtype, device=vector.device))
+            return vector
+
+        actor = ToyActor()
+        with patch("mopd_verl.full_gradient_worker._distributed_world_size", return_value=2):
+            probe = SameForwardDomainGradientProbe(
+                actor,
+                {
+                    "enabled": True,
+                    "domains": ["math", "code"],
+                    "offload_domain_gradients": False,
+                    "sample_gradient_enabled": True,
+                    "sample_gradient_cos_enabled": True,
+                },
+            )
+
+        probe._gpu_vectors = {
+            "math": torch.tensor([1.0, 0.0], dtype=torch.float32),
+            "code": torch.tensor([0.0, 2.0], dtype=torch.float32),
+        }
+        probe._sample_counts = {"math": 1, "code": 1}
+
+        with patch("mopd_verl.full_gradient_worker._all_reduce_vector_sum", fake_all_reduce_vector_sum):
+            metrics = probe._compute_domain_summary_metrics()
+
+        self.assertAlmostEqual(metrics["math/full_grad/grad_norm"], 4.0, places=6)
+        self.assertAlmostEqual(metrics["code/full_grad/grad_norm"], 7.0, places=6)
+        self.assertAlmostEqual(metrics["global/full_grad/total_grad_norm"], math.sqrt(65.0), places=6)
+        self.assertAlmostEqual(
+            metrics["global/full_grad_conflict/code_vs_math/full_grad_cosine_train_i_k"],
+            0.0,
+            places=6,
+        )
+        self.assertTrue(torch.allclose(probe._gpu_vectors["math"], torch.tensor([4.0, 0.0])))
+        self.assertTrue(torch.allclose(probe._gpu_vectors["code"], torch.tensor([0.0, 7.0])))
+        self.assertTrue(torch.allclose(probe._domain_target_chunks["math"][0], torch.tensor([4.0, 0.0])))
+
+    def test_low_precision_gradient_storage_uses_fp32_cosine_accumulation(self) -> None:
+        try:
+            import torch
+            from torch import nn
+
+            from mopd_verl.full_gradient_worker import (
+                SequentialBackwardDomainGradientTracker,
+                _current_grad_difference_snapshot,
+                _storage_dtype,
+            )
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ToyActor:
+            def __init__(self) -> None:
+                self.actor_module = nn.Linear(3, 1, bias=False)
+
+        self.assertEqual(_storage_dtype("fp16"), torch.float16)
+        self.assertEqual(_storage_dtype("bf16"), torch.bfloat16)
+        actor = ToyActor()
+        tracker = SequentialBackwardDomainGradientTracker(actor, {"domains": ["math", "code"]})
+        gradient = torch.tensor([0.125, -0.25, 0.5], dtype=torch.bfloat16)
+        target = torch.tensor([0.5, 0.25, -0.125], dtype=torch.bfloat16)
+
+        norm_sq, dot = tracker._grad_stats_from_tensors((gradient,), (target,))
+        expected_gradient = gradient.float()
+        expected_target = target.float()
+
+        self.assertAlmostEqual(norm_sq, torch.dot(expected_gradient, expected_gradient).item(), places=7)
+        self.assertAlmostEqual(dot, torch.dot(expected_gradient, expected_target).item(), places=7)
+
+        parameter = next(actor.actor_module.parameters())
+        parameter.grad = gradient.float().reshape_as(parameter)
+        original_grad = parameter.grad.clone()
+        snapshot = _current_grad_difference_snapshot(actor, (target,), "bfloat16")
+
+        self.assertIsNotNone(snapshot)
+        self.assertIsNotNone(snapshot.second_chunks)
+        second_chunk = snapshot.second_chunks[0]
+        self.assertEqual(second_chunk.dtype, torch.bfloat16)
+        self.assertTrue(torch.equal(parameter.grad, original_grad))
+        expected_second = gradient.float() - target.float()
+        self.assertTrue(torch.allclose(second_chunk.float(), expected_second, atol=2e-3))
+        self.assertAlmostEqual(
+            snapshot.second_target_norm_sq,
+            torch.dot(second_chunk.float(), second_chunk.float()).item(),
+            places=7,
+        )
+
+    def test_sequential_bfloat16_tracker_keeps_two_domain_targets_without_touching_grad(self) -> None:
+        try:
+            import torch
+            from torch import nn
+
+            from mopd_verl.full_gradient_worker import SequentialBackwardDomainGradientTracker
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ToyActor:
+            def __init__(self) -> None:
+                self.actor_module = nn.Linear(2, 1, bias=False)
+                self.actor_optimizer = torch.optim.SGD(self.actor_module.parameters(), lr=0.1)
+
+        actor = ToyActor()
+        tracker = SequentialBackwardDomainGradientTracker(
+            actor,
+            {
+                "enabled": True,
+                "domains": ["math", "code"],
+                "storage_dtype": "bfloat16",
+                "sample_gradient_enabled": True,
+                "sample_gradient_norm_enabled": False,
+                "sample_gradient_cos_enabled": True,
+            },
+        )
+        captured_targets: dict[str, tuple[tuple[torch.Tensor, ...], float]] = {}
+
+        def capture_targets(
+            domain_targets: dict[str, tuple[tuple[torch.Tensor, ...], float]],
+        ) -> dict[str, float]:
+            captured_targets.update(domain_targets)
+            return {}
+
+        tracker._sample_cos_metrics = capture_targets
+        actor.actor_optimizer.zero_grad()
+        tracker.start_mini_batch()
+        actor.actor_module(torch.tensor([[1.0, 0.0]])).sum().backward()
+        tracker.after_backward("math", 1)
+        actor.actor_module(torch.tensor([[0.0, 1.0]])).sum().backward()
+        tracker.after_backward("code", 1)
+        total_grad = next(actor.actor_module.parameters()).grad.clone()
+
+        tracker.finish_mini_batch()
+
+        self.assertEqual(set(captured_targets), {"math", "code"})
+        self.assertTrue(
+            all(chunk.dtype == torch.bfloat16 for chunks, _ in captured_targets.values() for chunk in chunks)
+        )
+        self.assertTrue(torch.equal(next(actor.actor_module.parameters()).grad, total_grad))
+        self.assertFalse(hasattr(tracker, "_sample_restore_grad_chunks"))
+
+    def test_zero_sample_autograd_gradient_does_not_replace_training_gradient(self) -> None:
+        try:
+            import torch
+            from torch import nn
+
+            from mopd_verl.full_gradient_worker import SequentialBackwardDomainGradientTracker
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ToyActor:
+            def __init__(self) -> None:
+                self.actor_module = nn.Linear(2, 1, bias=False)
+
+        actor = ToyActor()
+        parameter = next(actor.actor_module.parameters())
+        parameter.grad = torch.tensor([[3.0, 4.0]])
+        original_grad = parameter.grad.clone()
+        tracker = SequentialBackwardDomainGradientTracker(actor, {"domains": ["math", "code"]})
+        zero_loss = (parameter * 0.0).sum()
+
+        with patch("mopd_verl.full_gradient_worker._actor_micro_batch_loss", return_value=zero_loss):
+            stats = tracker._recompute_sample_to_domain_stats(
+                object(),
+                target_chunks=(torch.ones(parameter.numel(), dtype=torch.bfloat16),),
+                target_norm=parameter.numel() ** 0.5,
+                target_norm_sq=float(parameter.numel()),
+                loss_scale_factor=1.0,
+                on_policy=True,
+            )
+
+        self.assertTrue(torch.equal(parameter.grad, original_grad))
+        self.assertEqual(stats["sample_recompute_grad_norm"], 0.0)
+        self.assertIsNone(stats["sample_to_domain_cos"])
+        self.assertEqual(tracker._sample_zero_norm_count, 1)
+
     def test_audit_logger_emits_domain_category_metrics_on_synthetic_batch(self) -> None:
         try:
             import torch
@@ -523,11 +1100,11 @@ class MOPDVerlTests(unittest.TestCase):
                         [[-0.2, -0.4, -0.3], [-0.5, -0.3, 0.0], [-0.6, -0.8, -0.4], [-0.7, 0.0, 0.0]],
                         dtype=torch.float32,
                     ),
-                    "ref_log_prob": torch.tensor(
+                    "math_teacher_log_prob": torch.tensor(
                         [[-0.3, -0.5, -0.35], [-0.45, -0.4, 0.0], [-0.9, -0.7, -0.5], [-0.8, 0.0, 0.0]],
                         dtype=torch.float32,
                     ),
-                    "base_ref_log_prob": torch.tensor(
+                    "code_teacher_log_prob": torch.tensor(
                         [[-0.1, -0.2, -0.3], [-0.4, -0.5, 0.0], [-0.5, -0.6, -0.3], [-0.6, 0.0, 0.0]],
                         dtype=torch.float32,
                     ),
@@ -568,7 +1145,6 @@ class MOPDVerlTests(unittest.TestCase):
                 }
             )
             batch = SyntheticBatch(output_dir)
-            self.assertEqual(logger.log_validation_anchor_batch(batch=batch, step=0), {})
             metrics = logger.log_training_step(batch=batch, step=0, lr="1e-5")
             metrics.update(logger.log_validation_metrics({"val/math/score": 0.2, "val/code/score": 0.1}, step=0))
             metrics.update(logger.log_validation_metrics({"val/math/score": 0.25, "val/code/score": 0.05}, step=1))
@@ -646,51 +1222,10 @@ class MOPDVerlTests(unittest.TestCase):
                 "sample_influence.jsonl",
                 "coverage_diversity.jsonl",
                 "shadow_probe.jsonl",
-                "validation_anchor.jsonl",
-                "gradient_anchor_alignment.jsonl",
                 "domain_conflict.jsonl",
             ]
             for filename in removed_files:
                 self.assertFalse((output_dir / filename).exists(), filename)
-
-    def test_validation_anchor_scheduler_marks_full_gradient_anchor_step(self) -> None:
-        logger = MOPDAuditLogger(
-            {
-                "mopd_audit": {
-                    "enabled": True,
-                    "domains": ["math", "code"],
-                    "full_gradient_enabled": True,
-                    "validation_anchor_enabled": True,
-                    "validation_anchor_on_step0": True,
-                    "validation_anchor_refresh_steps": 0,
-                }
-            }
-        )
-
-        self.assertTrue(logger.should_update_validation_anchor(0))
-        self.assertEqual(logger.log_validation_anchor_batch(batch=object(), step=0), {})
-        self.assertTrue(logger.should_update_validation_anchor(0))
-        self.assertFalse(logger.should_update_validation_anchor(1))
-
-    def test_validation_anchor_scheduler_can_skip_step0(self) -> None:
-        logger = MOPDAuditLogger(
-            {
-                "mopd_audit": {
-                    "enabled": True,
-                    "domains": ["math", "code"],
-                    "full_gradient_enabled": True,
-                    "validation_anchor_enabled": True,
-                    "validation_anchor_on_step0": False,
-                    "validation_anchor_refresh_steps": 0,
-                }
-            }
-        )
-
-        self.assertFalse(logger.should_update_validation_anchor(0))
-        self.assertEqual(logger.log_validation_anchor_batch(batch=object(), step=0), {})
-        self.assertTrue(logger.should_update_validation_anchor(1))
-        self.assertEqual(logger.log_validation_anchor_batch(batch=object(), step=1), {})
-        self.assertFalse(logger.should_update_validation_anchor(2))
 
     def test_merge_teacher_data_adds_extra_info_labels(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -712,9 +1247,107 @@ class MOPDVerlTests(unittest.TestCase):
             ).to_parquet(code_path, index=False)
 
             merge_teacher_data(math_path, code_path, output_path)
-            self.assertEqual(teacher_counts(output_path), {"code": 1, "math": 2})
+            self.assertEqual(teacher_counts(output_path), {"code": 1, "math": 2, "reasoning": 0, "search": 0, "tool": 0})
             sample_validation = validate_sample_ids(output_path)
             self.assertTrue(sample_validation.is_valid)
+
+    def test_searchqa_to_verl_parquet_adds_search_teacher_and_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            jsonl_path = temp_path / "searchqa.jsonl"
+            parquet_path = temp_path / "train.parquet"
+            record = {
+                "id": "nq0",
+                "data_source": "nq",
+                "question": "Who wrote the first computer program?",
+                "golden_answers": ["Ada Lovelace"],
+            }
+            jsonl_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            row_count = searchqa_to_verl_parquet(jsonl_path, parquet_path, split="train")
+            frame = pd.read_parquet(parquet_path)
+            extra_info = frame.iloc[0]["extra_info"]
+
+            self.assertEqual(row_count, 1)
+            self.assertEqual(frame.iloc[0]["data_source"], "searchR1_nq")
+            self.assertEqual(frame.iloc[0]["ability"], "searchqa")
+            self.assertEqual(frame.iloc[0]["reward_model"]["ground_truth"], {"target": ["Ada Lovelace"]})
+            self.assertEqual(extra_info["opd_teacher"], "search")
+            self.assertEqual(extra_info["domain"], "search")
+            self.assertEqual(extra_info["source_domain"], "search")
+            self.assertTrue(extra_info["need_tools_kwargs"])
+            self.assertEqual(extra_info["tools_kwargs"]["search"]["create_kwargs"]["data_source"], "searchR1_nq")
+            self.assertIn("<tool_call>", frame.iloc[0]["prompt"][1]["content"])
+            self.assertEqual(teacher_counts(parquet_path), {"code": 0, "math": 0, "reasoning": 0, "search": 1, "tool": 0})
+
+    def test_general_reasoner_to_verl_parquet_adds_reasoning_teacher(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            jsonl_path = temp_path / "general_reasoner.jsonl"
+            parquet_path = temp_path / "test.parquet"
+            record = {
+                "id": "g0",
+                "question": "What is 1+1?",
+                "answer": "2",
+                "difficulty": "easy",
+            }
+            jsonl_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            row_count = general_reasoner_to_verl_parquet(jsonl_path, parquet_path, split="test")
+            frame = pd.read_parquet(parquet_path)
+            extra_info = frame.iloc[0]["extra_info"]
+
+            self.assertEqual(row_count, 1)
+            self.assertEqual(frame.iloc[0]["data_source"], "general-reasoner")
+            self.assertEqual(frame.iloc[0]["ability"], "reasoning")
+            self.assertEqual(frame.iloc[0]["reward_model"]["ground_truth"], "2")
+            self.assertEqual(extra_info["opd_teacher"], "reasoning")
+            self.assertEqual(extra_info["domain"], "reasoning")
+            self.assertEqual(extra_info["validation_dataset"], "general-reasoner")
+            self.assertIn("Please reason step by step", frame.iloc[0]["prompt"][0]["content"])
+            self.assertEqual(teacher_counts(parquet_path), {"code": 0, "math": 0, "reasoning": 1, "search": 0, "tool": 0})
+
+    def test_search_retrieval_service_formats_verl_tool_response(self) -> None:
+        class FakeBackend:
+            def search(self, query: str, topk: int) -> list[SearchResult]:
+                return [SearchResult(title="Ada Lovelace", snippet=f"{query} result", url="https://example.com")]
+
+        service = RetrievalService(backend=FakeBackend())
+        payload = service.search_batch(["first programmer"], topk=1)
+        document = payload["result"][0][0]["document"]["contents"]
+
+        self.assertIn("Ada Lovelace", document)
+        self.assertIn("first programmer result", document)
+        self.assertIn("https://example.com", document)
+
+    def test_searchqa_reward_dispatch_uses_em(self) -> None:
+        try:
+            from verl.utils.reward_score import default_compute_score
+        except ModuleNotFoundError as exc:
+            self.skipTest(f"vendored verl is not importable: {exc}")
+
+        score = default_compute_score(
+            "searchR1_nq",
+            "<answer>Ada Lovelace</answer>",
+            {"target": ["Ada Lovelace"]},
+        )
+
+        self.assertEqual(score, 1.0)
+
+    def test_general_reasoner_reward_dispatch_uses_math_verify(self) -> None:
+        try:
+            import math_verify  # noqa: F401
+            from verl.utils.reward_score import default_compute_score
+        except ModuleNotFoundError as exc:
+            self.skipTest(f"General-Reasoner reward dependencies are not importable: {exc}")
+
+        score = default_compute_score(
+            "general-reasoner",
+            "We compute the result and obtain \\boxed{2}.",
+            "2",
+        )
+
+        self.assertEqual(score, 1.0)
 
     def test_math_eval_jsonl_to_verl_parquet_adds_validation_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -759,6 +1392,10 @@ class MOPDVerlTests(unittest.TestCase):
             self.assertEqual(frame.iloc[0]["ability"], "code")
             self.assertEqual(frame.iloc[0]["extra_info"]["opd_teacher"], "code")
             self.assertEqual(frame.iloc[0]["extra_info"]["validation_dataset"], "HumanEvalPlus")
+            self.assertEqual(frame.iloc[0]["extra_info"]["prompt_template"], "paper_evalplus_qwen_chat")
+            self.assertIn("Present the code in", frame.iloc[0]["prompt"][0]["content"])
+            self.assertIn("You need to think first then write the Python code.", frame.iloc[0]["prompt"][0]["content"])
+            self.assertNotIn("Return only the code, without explanations.", frame.iloc[0]["prompt"][0]["content"])
             self.assertIn('"entry_point": "add"', ground_truth)
             self.assertIn('"assert_case"', ground_truth)
             self.assertIn("check(add)", ground_truth)
@@ -790,6 +1427,9 @@ class MOPDVerlTests(unittest.TestCase):
             self.assertEqual(frame.iloc[0]["data_source"], "LiveCodeBench")
             self.assertEqual(frame.iloc[0]["ability"], "code")
             self.assertEqual(frame.iloc[0]["extra_info"]["validation_dataset"], "LiveCodeBench")
+            self.assertEqual(frame.iloc[0]["extra_info"]["prompt_template"], "paper_lcb_qwen3_non_thinking")
+            self.assertIn("Question:\nImplement add.", frame.iloc[0]["prompt"][0]["content"])
+            self.assertIn("Present the code in", frame.iloc[0]["prompt"][0]["content"])
             self.assertIn('"outputs": ["3"]', frame.iloc[0]["reward_model"]["ground_truth"])
 
     def test_prepare_paper_eval_data_writes_all_validation_parquets(self) -> None:
@@ -839,7 +1479,7 @@ class MOPDVerlTests(unittest.TestCase):
             (lcb_dir / "test.jsonl").write_text(json.dumps(lcb_record) + "\n", encoding="utf-8")
 
             counts = prepare_paper_eval_data(root)
-            output_root = root / "G-OPD-Training-Data" / "PaperEval"
+            output_root = root / "eval" / "domains"
 
             self.assertEqual(
                 counts,
@@ -853,13 +1493,13 @@ class MOPDVerlTests(unittest.TestCase):
                     "lcb": 1,
                 },
             )
-            self.assertTrue((output_root / "AIME24" / "test.parquet").exists())
-            self.assertTrue((output_root / "AIME25" / "test.parquet").exists())
-            self.assertTrue((output_root / "HMMT25Feb" / "test.parquet").exists())
-            self.assertTrue((output_root / "HMMT25Nov" / "test.parquet").exists())
-            self.assertTrue((output_root / "HumanEvalPlus" / "test.parquet").exists())
-            self.assertTrue((output_root / "MBPPPlus" / "test.parquet").exists())
-            self.assertTrue((output_root / "LiveCodeBench" / "test.parquet").exists())
+            self.assertTrue((output_root / "math/data/AIME24/test.parquet").exists())
+            self.assertTrue((output_root / "math/data/AIME25/test.parquet").exists())
+            self.assertTrue((output_root / "math/data/HMMT25Feb/test.parquet").exists())
+            self.assertTrue((output_root / "math/data/HMMT25Nov/test.parquet").exists())
+            self.assertTrue((output_root / "code/data/HumanEvalPlus/test.parquet").exists())
+            self.assertTrue((output_root / "code/data/MBPPPlus/test.parquet").exists())
+            self.assertTrue((output_root / "code/data/LiveCodeBench/test.parquet").exists())
 
     def test_validate_teacher_labels_rejects_missing_or_invalid_labels(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -874,7 +1514,7 @@ class MOPDVerlTests(unittest.TestCase):
 
             validation = validate_teacher_labels(path)
             self.assertFalse(validation.is_valid)
-            self.assertEqual(validation.counts, {"code": 0, "math": 1})
+            self.assertEqual(validation.counts, {"code": 0, "math": 1, "reasoning": 0, "search": 0, "tool": 0})
             self.assertEqual(len(validation.invalid_rows), 2)
 
     def test_validate_sample_ids_rejects_missing_duplicate_or_mismatched_domain(self) -> None:
@@ -898,8 +1538,8 @@ class MOPDVerlTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             paths = write_smoke_data(temp_dir)
 
-            self.assertEqual(teacher_counts(paths["train"]), {"code": 1, "math": 1})
-            self.assertEqual(teacher_counts(paths["val"]), {"code": 1, "math": 1})
+            self.assertEqual(teacher_counts(paths["train"]), {"code": 1, "math": 1, "reasoning": 0, "search": 0, "tool": 0})
+            self.assertEqual(teacher_counts(paths["val"]), {"code": 1, "math": 1, "reasoning": 0, "search": 0, "tool": 0})
             self.assertTrue(validate_sample_ids(paths["train"]).is_valid)
             self.assertTrue(validate_sample_ids(paths["val"]).is_valid)
 

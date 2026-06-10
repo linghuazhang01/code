@@ -27,7 +27,8 @@ Environment:
   CONDA_SH=<auto-detected conda.sh when available>
   CONDA_ENV=mopd-verl
   PYTHON_BIN=<active python after conda activation>
-  GPU_ID=0
+  GPU_IDS=0                  # comma- or space-separated visible physical GPUs
+  GPU_ID=0                   # legacy alias used only when GPU_IDS is unset
   LOG_DIR=$CODE_DIR/logs
   STOP_STALE_RAY=1
   GPU_IDLE_MEMORY_LIMIT_MB=1000
@@ -55,11 +56,25 @@ if [[ -z "${CONDA_SH:-}" ]]; then
 fi
 CONDA_ENV="${CONDA_ENV:-mopd-verl}"
 PYTHON_BIN="${PYTHON_BIN:-}"
-GPU_ID="${GPU_ID:-0}"
+GPU_IDS="${GPU_IDS:-${GPU_ID:-0}}"
 LOG_DIR="${LOG_DIR:-${CODE_DIR}/logs}"
 STOP_STALE_RAY="${STOP_STALE_RAY:-1}"
 GPU_IDLE_MEMORY_LIMIT_MB="${GPU_IDLE_MEMORY_LIMIT_MB:-1000}"
 VERL_RUNTIME_DIR="${VERL_RUNTIME_DIR:-${CODE_DIR}/third_party/verl}"
+
+GPU_IDS="${GPU_IDS//$'\t'/,}"
+GPU_IDS="${GPU_IDS// /,}"
+while [[ "${GPU_IDS}" == *",,"* ]]; do
+  GPU_IDS="${GPU_IDS//,,/,}"
+done
+GPU_IDS="${GPU_IDS#,}"
+GPU_IDS="${GPU_IDS%,}"
+if [[ -z "${GPU_IDS}" ]]; then
+  echo "GPU_IDS cannot be empty." >&2
+  exit 2
+fi
+IFS=',' read -r -a GPU_ID_LIST <<< "${GPU_IDS}"
+VISIBLE_GPU_COUNT="${#GPU_ID_LIST[@]}"
 
 if [[ $# -lt 1 || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   usage
@@ -144,8 +159,8 @@ if [[ -z "${RUN_ID}" ]]; then
   RUN_ID="${config_stem}_$(date +%Y%m%d_%H%M%S)"
 fi
 
-if [[ ! -f "${SCRIPT_DIR}/run_math_code_mopd.sh" ]]; then
-  echo "Missing training wrapper: ${SCRIPT_DIR}/run_math_code_mopd.sh" >&2
+if [[ ! -f "${SCRIPT_DIR}/run_mopd.sh" ]]; then
+  echo "Missing training wrapper: ${SCRIPT_DIR}/run_mopd.sh" >&2
   exit 2
 fi
 
@@ -208,15 +223,16 @@ if isinstance(domain_train_files, dict):
         else:
             paths.extend(str(item) for item in value)
 
-audit = config.get("audit") or {}
-value = audit.get("full_gradient_validation_files") or []
-if isinstance(value, str):
-    paths.append(value)
-else:
-    paths.extend(str(item) for item in value)
-
 models = config.get("model") or {}
-for key in ("student_path", "student_base_path", "math_teacher_path", "code_teacher_path"):
+for key in (
+    "student_path",
+    "student_base_path",
+    "math_teacher_path",
+    "code_teacher_path",
+    "primary_teacher_path",
+    "secondary_teacher_path",
+    "reasoning_teacher_path",
+):
     value = models.get(key)
     if not value:
         continue
@@ -239,6 +255,41 @@ if missing:
     raise SystemExit(2)
 PY
 
+REQUIRED_GPUS="$("${PYTHON_BIN}" - "${CONFIG_PATH}" "${EXTRA_ARGS[@]}" <<'PY'
+from pathlib import Path
+import sys
+import yaml
+
+config_path = Path(sys.argv[1])
+config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+value = (config.get("trainer") or {}).get("n_gpus_per_node", 1)
+
+for override in sys.argv[2:]:
+    if "=" not in override:
+        continue
+    key, raw_value = override.split("=", 1)
+    if key.lstrip("+") == "trainer.n_gpus_per_node":
+        value = raw_value.strip().strip("'\"")
+
+try:
+    print(int(value))
+except (TypeError, ValueError) as exc:
+    raise SystemExit(f"trainer.n_gpus_per_node must be an integer, got {value!r}") from exc
+PY
+)"
+
+if [[ "${REQUIRED_GPUS}" -gt "${VISIBLE_GPU_COUNT}" ]]; then
+  cat >&2 <<EOF
+Config requests trainer.n_gpus_per_node=${REQUIRED_GPUS}, but GPU_IDS exposes only ${VISIBLE_GPU_COUNT} GPU(s): ${GPU_IDS}
+
+Set GPU_IDS to enough physical GPUs, for example:
+  GPU_IDS=0,1,2,3,4,5,6,7 bash scripts/start_remote_mopd_training.sh ${CONFIG_ARG}
+
+Or pass a compatible config/override set after '--'.
+EOF
+  exit 2
+fi
+
 mkdir -p "${LOG_DIR}"
 LOG_FILE="${LOG_DIR}/${RUN_ID}.log"
 GPU_CSV="${LOG_DIR}/${RUN_ID}_gpu.csv"
@@ -257,17 +308,19 @@ if [[ "${FOREGROUND}" != "1" ]]; then
 fi
 
 if command -v nvidia-smi >/dev/null 2>&1; then
-  GPU_USED="$(nvidia-smi --id="${GPU_ID}" --query-gpu=memory.used --format=csv,noheader,nounits | tr -dc '0-9')"
-  if [[ -z "${GPU_USED}" ]]; then
-    echo "Could not read GPU ${GPU_ID} memory usage from nvidia-smi." >&2
-    nvidia-smi >&2 || true
-    exit 3
-  fi
-  if [[ "${GPU_USED:-999999}" -gt "${GPU_IDLE_MEMORY_LIMIT_MB}" ]]; then
-    echo "GPU ${GPU_ID} is not idle: ${GPU_USED} MiB used." >&2
-    nvidia-smi >&2 || true
-    exit 3
-  fi
+  for gpu_id in "${GPU_ID_LIST[@]}"; do
+    GPU_USED="$(nvidia-smi --id="${gpu_id}" --query-gpu=memory.used --format=csv,noheader,nounits | head -n 1 | tr -dc '0-9')"
+    if [[ -z "${GPU_USED}" ]]; then
+      echo "Could not read GPU ${gpu_id} memory usage from nvidia-smi." >&2
+      nvidia-smi >&2 || true
+      exit 3
+    fi
+    if [[ "${GPU_USED:-999999}" -gt "${GPU_IDLE_MEMORY_LIMIT_MB}" ]]; then
+      echo "GPU ${gpu_id} is not idle: ${GPU_USED} MiB used." >&2
+      nvidia-smi >&2 || true
+      exit 3
+    fi
+  done
 fi
 
 if [[ "${STOP_STALE_RAY}" == "1" ]]; then
@@ -283,6 +336,10 @@ EXTRA_ARGS_Q=""
 for arg in "${EXTRA_ARGS[@]}"; do
   EXTRA_ARGS_Q+=" $(quote "${arg}")"
 done
+RUN_MOPD_EXTRA_ARGS_Q=""
+if [[ -n "${EXTRA_ARGS_Q}" ]]; then
+  RUN_MOPD_EXTRA_ARGS_Q=" --${EXTRA_ARGS_Q}"
+fi
 
 DRY_RUN_ENV=""
 if [[ "${DRY_RUN_FLAG}" == "1" ]]; then
@@ -297,7 +354,7 @@ if [[ -n $(quote "${CONDA_SH}") && -f $(quote "${CONDA_SH}") ]]; then
   conda activate $(quote "${CONDA_ENV}")
 fi
 cd $(quote "${CODE_DIR}")
-export CUDA_VISIBLE_DEVICES=$(quote "${GPU_ID}")
+export CUDA_VISIBLE_DEVICES=$(quote "${GPU_IDS}")
 export PYTHONUNBUFFERED=1
 export PYTHONINTMAXSTRDIGITS=0
 export VERL_RUNTIME_DIR=$(quote "${VERL_RUNTIME_DIR}")
@@ -322,9 +379,10 @@ trap 'kill \${GPU_MONITOR_PID} 2>/dev/null || true' EXIT
   echo CONFIG=$(quote "${CONFIG_PATH}")
   echo CODE_DIR=$(quote "${CODE_DIR}")
   echo VERL_RUNTIME_DIR=$(quote "${VERL_RUNTIME_DIR}")
+  echo CUDA_VISIBLE_DEVICES=$(quote "${GPU_IDS}")
   echo LOG_FILE=$(quote "${LOG_FILE}")
   echo START_TS=\$(date -Is)
-  $(printf "%s" "${DRY_RUN_ENV}")MOPD_CONFIG=$(quote "${CONFIG_PATH}") PYTHON_BIN=$(quote "${PYTHON_BIN}") bash scripts/run_math_code_mopd.sh${EXTRA_ARGS_Q}
+  $(printf "%s" "${DRY_RUN_ENV}")PYTHON_BIN=$(quote "${PYTHON_BIN}") bash scripts/run_mopd.sh $(quote "${CONFIG_PATH}")${RUN_MOPD_EXTRA_ARGS_Q}
 } 2>&1 | tee -a $(quote "${LOG_FILE}")
 LAUNCH
 chmod +x "${LAUNCH_FILE}"
@@ -333,6 +391,8 @@ echo "== Remote training launch =="
 echo "CODE_DIR=${CODE_DIR}"
 echo "CONFIG=${CONFIG_PATH}"
 echo "VERL_RUNTIME_DIR=${VERL_RUNTIME_DIR}"
+echo "GPU_IDS=${GPU_IDS}"
+echo "REQUIRED_GPUS=${REQUIRED_GPUS}"
 echo "RUN_ID=${RUN_ID}"
 echo "LOG_FILE=${LOG_FILE}"
 echo "LAUNCH_FILE=${LAUNCH_FILE}"

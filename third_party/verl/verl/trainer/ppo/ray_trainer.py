@@ -155,7 +155,7 @@ def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, 
     # compute kl between ref_policy and current policy
     # When apply_kl_penalty, algorithm.use_kl_in_reward=True, so the reference model has been enabled.
     kld = core_algos.kl_penalty(
-        data.batch["old_log_probs"], data.batch["ref_log_prob"], kl_penalty=kl_penalty
+        data.batch["old_log_probs"], data.batch["math_teacher_log_prob"], kl_penalty=kl_penalty
     )  # (batch_size, response_length)
     kld = kld * response_mask
     beta = kl_ctrl.value
@@ -478,38 +478,6 @@ class RayPPOTrainer:
             collate_fn=collate_fn,
         )
 
-        self.mopd_validation_anchor_dataloader = None
-        mopd_audit_cfg = self.config.get("mopd_audit", {})
-        anchor_files = mopd_audit_cfg.get("full_gradient_validation_files", [])
-        if anchor_files:
-            anchor_data_config = deepcopy(self.config.data)
-            with open_dict(anchor_data_config):
-                anchor_data_config.shuffle = False
-                anchor_data_config.validation_shuffle = False
-            anchor_dataset = create_rl_dataset(
-                anchor_files,
-                anchor_data_config,
-                self.tokenizer,
-                self.processor,
-                max_samples=-1,
-            )
-            anchor_batch_size = mopd_audit_cfg.get("full_gradient_validation_batch_size", None)
-            if anchor_batch_size is None:
-                anchor_batch_size = 1
-            self.mopd_validation_anchor_dataloader = StatefulDataLoader(
-                dataset=anchor_dataset,
-                batch_size=int(anchor_batch_size),
-                num_workers=num_workers,
-                shuffle=False,
-                drop_last=False,
-                collate_fn=collate_fn,
-            )
-            assert len(self.mopd_validation_anchor_dataloader) >= 1, "MOPD validation anchor dataloader is empty!"
-            print(
-                f"Size of MOPD validation anchor dataloader: {len(self.mopd_validation_anchor_dataloader)}, "
-                f"batch size: {anchor_batch_size}"
-            )
-
         assert len(self.train_dataloader) >= 1, "Train dataloader is empty!"
         assert len(self.val_dataloader) >= 1, "Validation dataloader is empty!"
 
@@ -637,89 +605,6 @@ class RayPPOTrainer:
 
         return gen_batch
 
-    def _mopd_add_validation_anchor_log_probs(self, anchor_batch, size_divisor):
-        anchor_batch, anchor_pad_size = pad_dataproto_to_divisor(anchor_batch, size_divisor)
-        old_log_prob = self.actor_rollout_wg.compute_log_prob(anchor_batch)
-        if "entropys" in old_log_prob.batch:
-            old_log_prob.batch.pop("entropys")
-        anchor_batch = anchor_batch.union(old_log_prob)
-        if self.use_reference_policy:
-            if not self.ref_in_actor:
-                ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(anchor_batch)
-            else:
-                ref_log_prob = self.actor_rollout_wg.compute_ref_log_prob(anchor_batch)
-            anchor_batch = anchor_batch.union(ref_log_prob)
-        if self.use_base_models:
-            if self.ref_base_model_path is not None:
-                if not self.ref_in_actor:
-                    base_ref_log_prob = self.ref_policy_wg.compute_base_ref_log_prob(anchor_batch)
-                else:
-                    base_ref_log_prob = self.actor_rollout_wg.compute_base_ref_log_prob(anchor_batch)
-                anchor_batch = anchor_batch.union(base_ref_log_prob)
-            if self.base_model_path is not None:
-                ref_input_tensors = {}
-                for tensor_key in ("ref_input_ids", "ref_attention_mask", "ref_position_ids"):
-                    if tensor_key in anchor_batch.batch:
-                        ref_input_tensors[tensor_key] = anchor_batch.batch.pop(tensor_key)
-                base_log_prob = self.actor_rollout_wg.compute_base_log_prob(anchor_batch)
-                anchor_batch = anchor_batch.union(base_log_prob)
-                for tensor_key, tensor_value in ref_input_tensors.items():
-                    anchor_batch.batch[tensor_key] = tensor_value
-        return unpad_dataproto(anchor_batch, pad_size=anchor_pad_size)
-
-    def _compute_mopd_validation_anchor_metrics(self):
-        if (
-            getattr(self, "mopd_audit_logger", None) is None
-            or not self.mopd_audit_logger.should_update_validation_anchor(self.global_steps)
-            or getattr(self, "mopd_validation_anchor_dataloader", None) is None
-        ):
-            return {}
-
-        audit_validation_metrics = {}
-        size_divisor = (
-            self.actor_rollout_wg.world_size
-            if not self.async_rollout_mode
-            else self.config.actor_rollout_ref.rollout.agent.num_workers
-        )
-        for anchor_data in self.mopd_validation_anchor_dataloader:
-            anchor_batch = DataProto.from_single_dict(anchor_data)
-            if "uid" not in anchor_batch.non_tensor_batch:
-                anchor_batch.non_tensor_batch["uid"] = np.array(
-                    [str(uuid.uuid4()) for _ in range(len(anchor_batch.batch))], dtype=object
-                )
-            anchor_batch = anchor_batch.repeat(
-                repeat_times=self.config.actor_rollout_ref.rollout.val_kwargs.n,
-                interleave=True,
-            )
-            anchor_gen_batch = self._get_gen_batch(anchor_batch)
-            anchor_gen_batch.meta_info = {
-                "eos_token_id": self.tokenizer.eos_token_id,
-                "pad_token_id": self.tokenizer.pad_token_id,
-                "recompute_log_prob": False,
-                "do_sample": self.config.actor_rollout_ref.rollout.val_kwargs.do_sample,
-                "validate": True,
-                "global_steps": self.global_steps,
-            }
-            anchor_gen_batch_padded, pad_size = pad_dataproto_to_divisor(anchor_gen_batch, size_divisor)
-            if not self.async_rollout_mode:
-                anchor_output_padded = self.actor_rollout_wg.generate_sequences(anchor_gen_batch_padded)
-            else:
-                anchor_output_padded = self.async_rollout_manager.generate_sequences(anchor_gen_batch_padded)
-            anchor_output = unpad_dataproto(anchor_output_padded, pad_size=pad_size)
-            anchor_batch = anchor_batch.union(anchor_output)
-            anchor_batch.meta_info["validate"] = True
-            anchor_batch = self._mopd_add_validation_anchor_log_probs(anchor_batch, size_divisor)
-            audit_validation_metrics.update(
-                self.mopd_audit_logger.log_validation_anchor_batch(anchor_batch, self.global_steps)
-            )
-            if self.mopd_audit_logger.should_compute_full_gradient(self.global_steps):
-                anchor_batch.meta_info.update(
-                    self.mopd_audit_logger.full_gradient_meta("validation_anchor", self.global_steps)
-                )
-                full_gradient_output = self.actor_rollout_wg.compute_mopd_full_gradient_metrics(anchor_batch)
-                audit_validation_metrics.update(reduce_metrics(full_gradient_output.meta_info["metrics"]))
-        return audit_validation_metrics
-
     def _validate(self):
         data_source_lst = []
         reward_extra_infos_dict: dict[str, list] = defaultdict(list)
@@ -731,8 +616,6 @@ class RayPPOTrainer:
         sample_scores = []
         sample_turns = []
         sample_uids = []
-        audit_validation_metrics = {}
-
         for test_data in self.val_dataloader:
             test_batch = DataProto.from_single_dict(test_data)
 
@@ -798,52 +681,6 @@ class RayPPOTrainer:
             test_batch = test_batch.union(test_output_gen_batch)
             test_batch.meta_info["validate"] = True
 
-            # MOPD audit: validation anchor begin
-            if (
-                getattr(self, "mopd_audit_logger", None) is not None
-                and self.mopd_audit_logger.should_update_validation_anchor(self.global_steps)
-                and getattr(self, "mopd_validation_anchor_dataloader", None) is None
-            ):
-                anchor_batch = test_batch
-                anchor_batch, anchor_pad_size = pad_dataproto_to_divisor(anchor_batch, size_divisor)
-                old_log_prob = self.actor_rollout_wg.compute_log_prob(anchor_batch)
-                if "entropys" in old_log_prob.batch:
-                    old_log_prob.batch.pop("entropys")
-                anchor_batch = anchor_batch.union(old_log_prob)
-                if self.use_reference_policy:
-                    if not self.ref_in_actor:
-                        ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(anchor_batch)
-                    else:
-                        ref_log_prob = self.actor_rollout_wg.compute_ref_log_prob(anchor_batch)
-                    anchor_batch = anchor_batch.union(ref_log_prob)
-                if self.use_base_models:
-                    if self.ref_base_model_path is not None:
-                        if not self.ref_in_actor:
-                            base_ref_log_prob = self.ref_policy_wg.compute_base_ref_log_prob(anchor_batch)
-                        else:
-                            base_ref_log_prob = self.actor_rollout_wg.compute_base_ref_log_prob(anchor_batch)
-                        anchor_batch = anchor_batch.union(base_ref_log_prob)
-                    if self.base_model_path is not None:
-                        ref_input_tensors = {}
-                        for tensor_key in ("ref_input_ids", "ref_attention_mask", "ref_position_ids"):
-                            if tensor_key in anchor_batch.batch:
-                                ref_input_tensors[tensor_key] = anchor_batch.batch.pop(tensor_key)
-                        base_log_prob = self.actor_rollout_wg.compute_base_log_prob(anchor_batch)
-                        anchor_batch = anchor_batch.union(base_log_prob)
-                        for tensor_key, tensor_value in ref_input_tensors.items():
-                            anchor_batch.batch[tensor_key] = tensor_value
-                anchor_batch = unpad_dataproto(anchor_batch, pad_size=anchor_pad_size)
-                audit_validation_metrics.update(
-                    self.mopd_audit_logger.log_validation_anchor_batch(anchor_batch, self.global_steps)
-                )
-                if self.mopd_audit_logger.should_compute_full_gradient(self.global_steps):
-                    anchor_batch.meta_info.update(
-                        self.mopd_audit_logger.full_gradient_meta("validation_anchor", self.global_steps)
-                    )
-                    full_gradient_output = self.actor_rollout_wg.compute_mopd_full_gradient_metrics(anchor_batch)
-                    audit_validation_metrics.update(reduce_metrics(full_gradient_output.meta_info["metrics"]))
-            # MOPD audit: validation anchor end
-
             # evaluate using reward_function
             if self.val_reward_fn is None:
                 raise ValueError("val_reward_fn must be provided for validation.")
@@ -906,7 +743,6 @@ class RayPPOTrainer:
             metric_dict["val-aux/num_turns/max"] = sample_turns.max()
             metric_dict["val-aux/num_turns/mean"] = sample_turns.mean()
 
-        metric_dict.update(audit_validation_metrics)
         return metric_dict
 
     def init_workers(self):
@@ -1492,10 +1328,10 @@ class RayPPOTrainer:
 
                     # Compute base model log probs for corrected reward computation
                     # This computes: base_log_prob from actor's base model (using input_ids)
-                    # and base_ref_log_prob from ref's base model (using ref_input_ids)
+                    # and code_teacher_log_prob from ref's base model (using ref_input_ids)
                     if self.use_base_models:
                         with marked_timer("base_log_probs", timing_raw, color="green"):
-                            # First compute base_ref_log_prob using ref's base model
+                            # First compute code_teacher_log_prob using ref's base model
                             # This uses ref_input_ids which may be present in batch
                             if self.ref_base_model_path is not None:
                                 if not self.ref_in_actor:
@@ -1524,12 +1360,12 @@ class RayPPOTrainer:
                                     batch.batch[key] = tensor
                             
                             base_log_prob_shape = batch.batch["base_log_prob"].shape if "base_log_prob" in batch.batch else None
-                            base_ref_log_prob_shape = (
-                                batch.batch["base_ref_log_prob"].shape if "base_ref_log_prob" in batch.batch else None
+                            code_teacher_log_prob_shape = (
+                                batch.batch["code_teacher_log_prob"].shape if "code_teacher_log_prob" in batch.batch else None
                             )
                             print(
                                 f"Computed base log probs: base_log_prob shape={base_log_prob_shape}, "
-                                f"base_ref_log_prob shape={base_ref_log_prob_shape}"
+                                f"code_teacher_log_prob shape={code_teacher_log_prob_shape}"
                             ) 
                     
                     # compute values
