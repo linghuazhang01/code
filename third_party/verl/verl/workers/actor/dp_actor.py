@@ -103,7 +103,11 @@ class DataParallelPPOActor(BasePPOActor):
             self.scaler = None
 
     def _forward_micro_batch(
-        self, micro_batch, temperature, calculate_entropy=False
+        self,
+        micro_batch,
+        temperature,
+        calculate_entropy=False,
+        inplace_backward: bool | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Returns:
@@ -211,13 +215,13 @@ class DataParallelPPOActor(BasePPOActor):
                     logits_rmpad.div_(temperature)
 
                     # if use_sp: ((total_nnz / sp) + pad) ; if not use_sp: (batch, seqlen)
-                    inplace_backward = True
+                    logprob_inplace_backward = True if inplace_backward is None else bool(inplace_backward)
                     if calculate_entropy:
-                        inplace_backward = False
+                        logprob_inplace_backward = False
                     log_probs = logprobs_from_logits(
                         logits=logits_rmpad,
                         labels=input_ids_rmpad_rolled,
-                        inplace_backward=inplace_backward,
+                        inplace_backward=logprob_inplace_backward,
                     )
 
                     # compute entropy
@@ -289,7 +293,14 @@ class DataParallelPPOActor(BasePPOActor):
 
                     logits.div_(temperature)
                     logits = logits[:, -response_length - 1 : -1, :]  # (bsz, response_length, vocab_size)
-                    log_probs = logprobs_from_logits(logits, micro_batch["responses"])
+                    logprob_inplace_backward = True if inplace_backward is None else bool(inplace_backward)
+                    if calculate_entropy:
+                        logprob_inplace_backward = False
+                    log_probs = logprobs_from_logits(
+                        logits,
+                        micro_batch["responses"],
+                        inplace_backward=logprob_inplace_backward,
+                    )
                     if calculate_entropy:
                         if not self.config.entropy_checkpointing:
                             entropy = verl_F.entropy_from_logits(logits)  # (bsz, response_length)
@@ -447,9 +458,9 @@ class DataParallelPPOActor(BasePPOActor):
         mopd_gradient_tracker = None
         mopd_full_gradient_cfg = data.meta_info.get("mopd_full_gradient", {})
         if isinstance(mopd_full_gradient_cfg, dict) and mopd_full_gradient_cfg.get("enabled", False):
-            from mopd_verl.full_gradient_worker import SameForwardDomainGradientProbe
+            from mopd_verl.full_gradient_worker import SequentialBackwardDomainGradientTracker
 
-            mopd_gradient_tracker = SameForwardDomainGradientProbe(self, mopd_full_gradient_cfg)
+            mopd_gradient_tracker = SequentialBackwardDomainGradientTracker(self, mopd_full_gradient_cfg)
         # MOPD audit: domain-gradient tracker end
         for _ in range(self.config.ppo_epochs):
             for batch_idx, mini_batch in enumerate(mini_batches):
@@ -630,20 +641,6 @@ class DataParallelPPOActor(BasePPOActor):
                         loss = policy_loss * loss_scale_factor
                     else:
                         loss = policy_loss * loss_scale_factor
-                    # MOPD audit: capture domain gradients via autograd.grad (before backward)
-                    if mopd_gradient_tracker is not None:
-                        mopd_gradient_tracker.capture_micro_batch(
-                            model_inputs=model_inputs,
-                            old_log_prob=old_log_prob,
-                            log_prob=log_prob,
-                            advantages=advantages,
-                            response_mask=response_mask,
-                            entropy=entropy,
-                            policy_loss_fn=policy_loss_fn,
-                            loss_agg_mode=loss_agg_mode,
-                            loss_scale_factor=loss_scale_factor,
-                            rollout_is_weights=rollout_is_weights,
-                        )
                     # MOPD audit: sample-gradient tracker begin
                     if mopd_gradient_tracker is not None:
                         mopd_gradient_tracker.before_backward(

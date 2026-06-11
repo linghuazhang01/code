@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pandas as pd
@@ -37,6 +38,111 @@ from mopd_verl.verl_audit import MOPDAuditLogger
 
 
 class MOPDVerlTests(unittest.TestCase):
+    def test_domain_gradient_batch_balance_aligns_two_actor_ranks(self) -> None:
+        try:
+            import torch
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"torch is not installed: {exc}")
+
+        class SyntheticBatch:
+            def __init__(self) -> None:
+                lengths = [(idx * 7) % 16 + 1 for idx in range(64)]
+                self.batch = {
+                    "attention_mask": torch.stack(
+                        [
+                            torch.cat(
+                                [
+                                    torch.ones(length, dtype=torch.long),
+                                    torch.zeros(16 - length, dtype=torch.long),
+                                ]
+                            )
+                            for length in lengths
+                        ]
+                    )
+                }
+                self.non_tensor_batch = {
+                    "opd_teacher": ["math"] * 32 + ["code"] * 32,
+                    "sample_id": [f"sample-{idx}" for idx in range(64)],
+                }
+
+            def reorder(self, indices: object) -> None:
+                index_list = indices.tolist()
+                self.batch = {key: value[indices] for key, value in self.batch.items()}
+                self.non_tensor_batch = {
+                    key: [value[idx] for idx in index_list] for key, value in self.non_tensor_batch.items()
+                }
+
+        logger = MOPDAuditLogger(
+            {
+                "mopd_audit": {
+                    "enabled": True,
+                    "domains": ["math", "code"],
+                    "full_gradient_enabled": True,
+                    "full_gradient_micro_batch_size_per_gpu": 1,
+                }
+            }
+        )
+        batch = SyntheticBatch()
+
+        metrics = logger.balance_domain_gradient_batch(batch, step=0, world_size=2)
+
+        self.assertEqual(metrics["global/audit/full_gradient_domain_partition_aligned"], 1.0)
+        self.assertEqual(metrics["global/audit/full_gradient_domain_partition_unsupported"], 0.0)
+        self.assertTrue(batch.meta_info["mopd_domain_gradient_partition"]["aligned"])
+        self.assertEqual(
+            batch.meta_info["mopd_domain_gradient_partition"]["domain_block_sample_counts"],
+            {"math": 16, "code": 16},
+        )
+        for rank in range(2):
+            rank_labels = batch.non_tensor_batch["opd_teacher"][rank * 32 : (rank + 1) * 32]
+            self.assertEqual(rank_labels.count("math"), 16)
+            self.assertEqual(rank_labels.count("code"), 16)
+        self.assertEqual(len(set(batch.non_tensor_batch["sample_id"])), 64)
+
+        rank_workloads = []
+        for rank in range(2):
+            rank_mask = batch.batch["attention_mask"][rank * 32 : (rank + 1) * 32]
+            rank_lengths = rank_mask.sum(dim=-1)
+            rank_workloads.append(int((24576 * rank_lengths + rank_lengths.square()).sum().item()))
+        self.assertLess(abs(rank_workloads[0] - rank_workloads[1]), max(rank_workloads) * 0.05)
+
+    def test_domain_gradient_batch_balance_skips_non_divisible_domains(self) -> None:
+        try:
+            import torch
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"torch is not installed: {exc}")
+
+        class SyntheticBatch:
+            def __init__(self) -> None:
+                self.batch = {"attention_mask": torch.ones((8, 4), dtype=torch.long)}
+                self.non_tensor_batch = {
+                    "opd_teacher": ["math"] * 5 + ["code"] * 3,
+                    "sample_id": [f"sample-{idx}" for idx in range(8)],
+                }
+
+            def reorder(self, indices: object) -> None:
+                raise AssertionError(f"unsupported batch must not be reordered: {indices}")
+
+        logger = MOPDAuditLogger(
+            {
+                "mopd_audit": {
+                    "enabled": True,
+                    "domains": ["math", "code"],
+                    "full_gradient_enabled": True,
+                }
+            }
+        )
+
+        batch = SyntheticBatch()
+        metrics = logger.balance_domain_gradient_batch(batch, step=0, world_size=2)
+
+        self.assertEqual(metrics["global/audit/full_gradient_domain_partition_aligned"], 0.0)
+        self.assertEqual(metrics["global/audit/full_gradient_domain_partition_unsupported"], 1.0)
+        self.assertEqual(
+            batch.meta_info["mopd_domain_gradient_partition"]["unsupported_reason"],
+            "domain_counts_not_divisible_by_rank_micro_batch",
+        )
+
     def test_validation_dataset_and_teacher_domain_are_separate(self) -> None:
         non_tensor = {
             "data_source": ["AIME2024", "codeforces"],
@@ -372,7 +478,10 @@ class MOPDVerlTests(unittest.TestCase):
             "global/audit/full_gradient_domain_sequential_available": 1.0,
             "global/audit/full_gradient_domain_sequential_unsupported": 0.0,
             "global/audit/full_gradient_replicated_all_reduce": 1.0,
+            "global/audit/full_gradient_replica_count": 2.0,
             "global/audit/sample_gradient_distributed_unsupported": 1.0,
+            "global/audit/sample_gradient_norm_distributed_unsupported": 1.0,
+            "global/audit/sample_gradient_cos_distributed_unsupported": 1.0,
             "global/audit/sample_gradient_distributed_world_size": 2.0,
             "math/grad_conflict/code/grad_cosine_train_i_k": -0.4,
             "global/grad_conflict/math_vs_code/grad_cosine_train_i_k": -0.4,
@@ -416,14 +525,17 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("math/loss/sample_opd_loss_variance", filtered)
         self.assertIn("global/loss/token_opd_loss_mean", filtered)
         self.assertIn("global/loss/sample_opd_loss_variance", filtered)
-        self.assertIn("global/full_grad/total_grad_norm", filtered)
+        self.assertNotIn("global/full_grad/total_grad_norm", filtered)
         self.assertIn("global/full_grad_conflict/math_vs_code/full_grad_cosine_train_i_k", filtered)
         self.assertIn("global/full_grad_alignment/math_vs_total/full_grad_cosine_domain_total", filtered)
         self.assertIn("global/full_grad_contribution/math_to_total/signed_projection_share", filtered)
         self.assertIn("global/audit/full_gradient_domain_sequential_available", filtered)
         self.assertIn("global/audit/full_gradient_domain_sequential_unsupported", filtered)
         self.assertIn("global/audit/full_gradient_replicated_all_reduce", filtered)
+        self.assertIn("global/audit/full_gradient_replica_count", filtered)
         self.assertIn("global/audit/sample_gradient_distributed_unsupported", filtered)
+        self.assertIn("global/audit/sample_gradient_norm_distributed_unsupported", filtered)
+        self.assertIn("global/audit/sample_gradient_cos_distributed_unsupported", filtered)
         self.assertIn("global/audit/sample_gradient_distributed_world_size", filtered)
         self.assertIn("math/teacher/teacher_student_gap_mean", filtered)
         self.assertIn("math/advantage/positive_frac", filtered)
@@ -566,16 +678,37 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("math/full_grad/grad_norm", metrics)
         self.assertIn("code/full_grad/grad_norm", metrics)
         self.assertIn("global/full_grad_conflict/code_vs_math/full_grad_cosine_train_i_k", metrics)
-        self.assertIn("global/full_grad/total_grad_norm", metrics)
+        self.assertNotIn("global/full_grad/total_grad_norm", metrics)
         self.assertIn("global/full_grad_alignment/math_vs_total/full_grad_cosine_domain_total", metrics)
         self.assertIn("global/full_grad_contribution/code_to_total/signed_projection_share", metrics)
+
+    def test_full_gradient_vector_reductions_are_chunked(self) -> None:
+        try:
+            import math
+
+            import torch
+
+            from mopd_verl.full_gradient_worker import (
+                _local_vector_dot,
+                _local_vector_norm,
+            )
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient probe dependencies are not installed: {exc}")
+
+        left = torch.arange(1.0, 11.0)
+        right = torch.arange(10.0, 0.0, -1.0)
+        with patch("mopd_verl.full_gradient_worker._VECTOR_REDUCTION_CHUNK_SIZE", 3):
+            dot = _local_vector_dot(left, right)
+            norm = _local_vector_norm(left)
+
+        self.assertAlmostEqual(dot, 220.0, places=6)
+        self.assertAlmostEqual(norm, math.sqrt(385.0), places=6)
 
     def test_same_forward_domain_probe_reports_offloaded_full_grad_metrics(self) -> None:
         try:
             import math
 
             import torch
-
             from mopd_verl.full_gradient_worker import SameForwardDomainGradientProbe
         except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
             self.skipTest(f"gradient probe dependencies are not installed: {exc}")
@@ -606,7 +739,7 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertAlmostEqual(metrics["code/full_grad/grad_norm"], 2.0, places=6)
         self.assertEqual(metrics["math/full_grad/sample_count"], 3.0)
         self.assertEqual(metrics["code/full_grad/sample_count"], 5.0)
-        self.assertAlmostEqual(metrics["global/full_grad/total_grad_norm"], math.sqrt(5.0), places=6)
+        self.assertNotIn("global/full_grad/total_grad_norm", metrics)
         self.assertAlmostEqual(
             metrics["global/full_grad_alignment/math_vs_total/full_grad_cosine_domain_total"],
             1.0 / math.sqrt(5.0),
@@ -633,6 +766,8 @@ class MOPDVerlTests(unittest.TestCase):
             def __init__(self) -> None:
                 self.actor_module = nn.Linear(2, 1, bias=False)
                 self.actor_optimizer = torch.optim.SGD(self.actor_module.parameters(), lr=0.1)
+                self.config = {"fsdp_config": {"fsdp_size": 1}}
+                self.config = {"fsdp_config": {"fsdp_size": 1}}
 
         actor = ToyActor()
         tracker = SequentialBackwardDomainGradientTracker(
@@ -652,7 +787,7 @@ class MOPDVerlTests(unittest.TestCase):
         expected_domain_total_cosine = 1.0 / expected_total_norm
         self.assertAlmostEqual(metrics["math/full_grad/grad_norm"], 1.0, places=6)
         self.assertAlmostEqual(metrics["code/full_grad/grad_norm"], 1.0, places=6)
-        self.assertAlmostEqual(metrics["global/full_grad/total_grad_norm"], expected_total_norm, places=6)
+        self.assertNotIn("global/full_grad/total_grad_norm", metrics)
         self.assertAlmostEqual(
             metrics["global/full_grad_conflict/math_vs_code/full_grad_cosine_train_i_k"],
             0.0,
@@ -728,12 +863,338 @@ class MOPDVerlTests(unittest.TestCase):
 
         self.assertAlmostEqual(metrics["math/full_grad/grad_norm"], math.sqrt(5.0), places=6)
         self.assertAlmostEqual(metrics["code/full_grad/grad_norm"], 5.0, places=6)
-        self.assertAlmostEqual(metrics["global/full_grad/total_grad_norm"], math.sqrt(52.0), places=6)
+        self.assertNotIn("global/full_grad/total_grad_norm", metrics)
         self.assertAlmostEqual(
             metrics["global/full_grad_conflict/math_vs_code/full_grad_cosine_train_i_k"],
             11.0 / (math.sqrt(5.0) * 5.0),
             places=6,
         )
+
+    def test_sequential_tracker_skips_all_ranks_when_any_rank_is_unsupported(self) -> None:
+        try:
+            from mopd_verl.full_gradient_worker import SequentialBackwardDomainGradientTracker
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ToyActor:
+            pass
+
+        class ToyMicroBatch:
+            def __init__(self, domain: str) -> None:
+                self.non_tensor_batch = {"opd_teacher": [domain]}
+
+            def __len__(self) -> int:
+                return 1
+
+        tracker = SequentialBackwardDomainGradientTracker(
+            ToyActor(),
+            {"enabled": True, "domains": ["math", "code"]},
+        )
+        micro_batches = [ToyMicroBatch("math"), ToyMicroBatch("code")]
+
+        with patch("mopd_verl.full_gradient_worker._all_ranks_true", return_value=False):
+            tracked = tracker.prepare_micro_batches(micro_batches)
+
+        self.assertFalse(tracker._prepared_supported)
+        self.assertEqual([domain for domain, _ in tracked], [None, None])
+        self.assertEqual([micro_batch for _, micro_batch in tracked], micro_batches)
+
+    def test_sequential_tracker_requires_aligned_domain_boundaries_across_ranks(self) -> None:
+        try:
+            from mopd_verl.full_gradient_worker import SequentialBackwardDomainGradientTracker
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ToyActor:
+            pass
+
+        class ToyMicroBatch:
+            def __init__(self, domain: str) -> None:
+                self.non_tensor_batch = {"opd_teacher": [domain]}
+
+            def __len__(self) -> int:
+                return 1
+
+        tracker = SequentialBackwardDomainGradientTracker(
+            ToyActor(),
+            {"enabled": True, "domains": ["math", "code"]},
+        )
+        micro_batches = [
+            ToyMicroBatch("math"),
+            ToyMicroBatch("math"),
+            ToyMicroBatch("code"),
+        ]
+
+        with (
+            patch("mopd_verl.full_gradient_worker._all_ranks_true", return_value=True),
+            patch("mopd_verl.full_gradient_worker._all_ranks_equal_ints", return_value=False),
+        ):
+            tracked = tracker.prepare_micro_batches(micro_batches)
+
+        self.assertFalse(tracker._prepared_supported)
+        self.assertEqual([domain for domain, _ in tracked], [None, None, None])
+
+    def test_sequential_tracker_accepts_aligned_domain_partition_metadata(self) -> None:
+        try:
+            from mopd_verl.full_gradient_worker import SequentialBackwardDomainGradientTracker
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ToyActor:
+            pass
+
+        class ToyMicroBatch:
+            def __init__(self, domain: str, sample_count: int) -> None:
+                self.non_tensor_batch = {"opd_teacher": [domain] * sample_count}
+                self._sample_count = sample_count
+
+            def __len__(self) -> int:
+                return self._sample_count
+
+        tracker = SequentialBackwardDomainGradientTracker(
+            ToyActor(),
+            {
+                "enabled": True,
+                "domain_gradient_enabled": True,
+                "domains": ["math", "code"],
+                "domain_partition": {
+                    "aligned": True,
+                    "domain_order": ["math", "code"],
+                    "domain_block_sample_counts": {"math": 2, "code": 2},
+                },
+            },
+        )
+        micro_batches = [ToyMicroBatch("math", 2), ToyMicroBatch("code", 2)]
+
+        with (
+            patch("mopd_verl.full_gradient_worker._distributed_world_size", return_value=2),
+            patch("mopd_verl.full_gradient_worker._all_ranks_true", return_value=True),
+            patch("mopd_verl.full_gradient_worker._all_ranks_equal_ints", return_value=True),
+        ):
+            tracked = tracker.prepare_micro_batches(micro_batches)
+
+        self.assertTrue(tracker._prepared_supported)
+        self.assertTrue(tracker.domain_gradient_enabled)
+        self.assertEqual([domain for domain, _ in tracked], ["math", "code"])
+
+    def test_full_gradient_statistics_sum_rank_shards_without_replica_averaging(self) -> None:
+        try:
+            import torch
+            from torch import nn
+
+            from mopd_verl.full_gradient_worker import (
+                _current_grad_difference_snapshot,
+                _gradient_replica_count,
+            )
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ToyActor:
+            def __init__(self) -> None:
+                self.actor_module = nn.Linear(2, 1, bias=False)
+                self.config = {"fsdp_config": {"fsdp_size": 1}}
+
+        actor = ToyActor()
+        parameter = next(actor.actor_module.parameters())
+        parameter.grad = torch.tensor([[1.0, 2.0]])
+        first_chunks = (torch.tensor([1.0, 0.0]),)
+
+        with (
+            patch("mopd_verl.full_gradient_worker._distributed_world_size", return_value=2),
+            patch(
+                "mopd_verl.full_gradient_worker._all_reduce_values_sum",
+                side_effect=lambda values: [value * 2.0 for value in values],
+            ) as reduce_mock,
+        ):
+            self.assertEqual(_gradient_replica_count(actor), 2)
+            snapshot = _current_grad_difference_snapshot(actor, first_chunks)
+
+        self.assertIsNotNone(snapshot)
+        reduce_mock.assert_called_once()
+        self.assertAlmostEqual(snapshot.first_norm_sq, 2.0, places=6)
+        self.assertAlmostEqual(snapshot.second_norm_sq, 8.0, places=6)
+        self.assertAlmostEqual(snapshot.total_norm_sq, 10.0, places=6)
+        self.assertAlmostEqual(snapshot.first_second_dot, 0.0, places=6)
+
+    def test_full_shard_gradient_statistics_do_not_apply_replica_division(self) -> None:
+        try:
+            from mopd_verl.full_gradient_worker import _gradient_replica_count
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ToyActor:
+            config = {"fsdp_config": {"fsdp_size": -1}}
+
+        with patch("mopd_verl.full_gradient_worker._distributed_world_size", return_value=4):
+            self.assertEqual(_gradient_replica_count(ToyActor()), 1)
+
+    def test_sequential_tracker_keeps_sample_norm_for_full_param_replicas(self) -> None:
+        try:
+            from mopd_verl.full_gradient_worker import SequentialBackwardDomainGradientTracker
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ToyActor:
+            config = {"fsdp_config": {"fsdp_size": 1}}
+
+        with patch("mopd_verl.full_gradient_worker._distributed_world_size", return_value=2):
+            tracker = SequentialBackwardDomainGradientTracker(
+                ToyActor(),
+                {
+                    "enabled": True,
+                    "domains": ["math", "code"],
+                    "sample_gradient_enabled": True,
+                    "sample_gradient_norm_enabled": True,
+                    "sample_gradient_cos_enabled": True,
+                },
+            )
+
+        self.assertTrue(tracker.sample_norm_enabled)
+        self.assertTrue(tracker.sample_cos_enabled)
+        self.assertTrue(tracker.sample_log_sample_level)
+        self.assertFalse(tracker._sample_gradient_distributed_unsupported)
+        self.assertFalse(tracker._sample_gradient_cos_distributed_unsupported)
+
+        tracker._sample_records = [
+            {"domain": "math", "sample_grad_norm": 1.0},
+            {"domain": "code", "sample_grad_norm": 3.0},
+        ]
+        with patch("mopd_verl.full_gradient_worker._all_gather_list", side_effect=lambda values: list(values)):
+            metrics = tracker._sample_norm_metrics()
+
+        self.assertEqual(metrics["math/sample_grad/norm_mean"], 1.0)
+        self.assertEqual(metrics["code/sample_grad/norm_mean"], 3.0)
+
+    def test_full_gradient_meta_carries_domain_partition_metadata(self) -> None:
+        logger = MOPDAuditLogger(
+            {
+                "mopd_audit": {
+                    "enabled": True,
+                    "domains": ["math", "code"],
+                    "full_gradient_enabled": True,
+                }
+            }
+        )
+
+        meta = logger.full_gradient_meta(
+            "train",
+            3,
+            {
+                "aligned": True,
+                "domain_block_sample_counts": {"math": 8, "code": 8},
+            },
+        )
+
+        self.assertEqual(
+            meta["mopd_full_gradient"]["domain_partition"]["domain_block_sample_counts"],
+            {"math": 8, "code": 8},
+        )
+
+    def test_sequential_tracker_disables_sample_norm_for_sharded_params(self) -> None:
+        try:
+            from mopd_verl.full_gradient_worker import SequentialBackwardDomainGradientTracker
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ToyActor:
+            config = {"fsdp_config": {"fsdp_size": -1}}
+
+        with patch("mopd_verl.full_gradient_worker._distributed_world_size", return_value=2):
+            tracker = SequentialBackwardDomainGradientTracker(
+                ToyActor(),
+                {
+                    "enabled": True,
+                    "domains": ["math", "code"],
+                    "sample_gradient_enabled": True,
+                    "sample_gradient_norm_enabled": True,
+                    "sample_gradient_cos_enabled": False,
+                },
+            )
+
+        self.assertFalse(tracker.sample_norm_enabled)
+        self.assertFalse(tracker.sample_log_sample_level)
+        self.assertTrue(tracker._sample_gradient_distributed_unsupported)
+        self.assertTrue(tracker._sample_gradient_norm_distributed_unsupported)
+
+    def test_sequential_tracker_disables_sample_gradient_when_fsdp_size_is_not_one(self) -> None:
+        try:
+            from mopd_verl.full_gradient_worker import SequentialBackwardDomainGradientTracker
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ToyActor:
+            config = {"fsdp_config": {"fsdp_size": -1}}
+
+        tracker = SequentialBackwardDomainGradientTracker(
+            ToyActor(),
+            {
+                "enabled": True,
+                "domains": ["math", "code"],
+                "sample_gradient_enabled": True,
+                "sample_gradient_norm_enabled": True,
+                "sample_gradient_cos_enabled": True,
+            },
+        )
+
+        self.assertFalse(tracker.sample_norm_enabled)
+        self.assertFalse(tracker.sample_cos_enabled)
+        self.assertTrue(tracker._sample_gradient_distributed_unsupported)
+        self.assertTrue(tracker._sample_gradient_norm_distributed_unsupported)
+        self.assertTrue(tracker._sample_gradient_cos_distributed_unsupported)
+
+    def test_balance_batch_logs_seqlen_tokens_and_workload_separately(self) -> None:
+        trainer_path = (
+            Path(__file__).resolve().parents[1]
+            / "third_party"
+            / "verl"
+            / "verl"
+            / "trainer"
+            / "ppo"
+            / "ray_trainer.py"
+        )
+        source = trainer_path.read_text(encoding="utf-8")
+
+        self.assertIn("global_workload_lst = calculate_workload(global_seqlen_lst)", source)
+        self.assertIn('prefix=logging_prefix.replace("seqlen", "workload")', source)
+        self.assertNotIn("global_seqlen_lst = calculate_workload(global_seqlen_lst)", source)
+
+    def test_dp_actor_uses_real_backward_sequential_gradient_tracker(self) -> None:
+        actor_path = (
+            Path(__file__).resolve().parents[1]
+            / "third_party"
+            / "verl"
+            / "verl"
+            / "workers"
+            / "actor"
+            / "dp_actor.py"
+        )
+        source = actor_path.read_text(encoding="utf-8")
+        patch_source = (
+            Path(__file__).resolve().parents[1] / "scripts" / "apply_gopd_audit_patch.py"
+        ).read_text(encoding="utf-8")
+        fsdp_worker_source = (
+            Path(__file__).resolve().parents[1]
+            / "third_party"
+            / "verl"
+            / "verl"
+            / "workers"
+            / "fsdp_workers.py"
+        ).read_text(encoding="utf-8")
+        gradient_worker_source = (
+            Path(__file__).resolve().parents[1] / "mopd_verl" / "full_gradient_worker.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("SequentialBackwardDomainGradientTracker", source)
+        self.assertNotIn("mopd_gradient_tracker.capture_micro_batch(", source)
+        self.assertIn("SequentialBackwardDomainGradientTracker", patch_source)
+        self.assertIn("mopd_gradient_tracker.before_backward(", patch_source)
+        self.assertNotIn("mopd_gradient_tracker.capture_micro_batch(", patch_source)
+        self.assertIn(
+            'gradient_checkpointing_kwargs={"use_reentrant": False}',
+            fsdp_worker_source,
+        )
+        self.assertNotIn("_grad_stats_from_true_backward", gradient_worker_source)
+        self.assertNotIn("sample_recompute_used_true_backward_fallback", gradient_worker_source)
 
     def test_sample_gradient_cos_uses_all_candidates(self) -> None:
         try:
@@ -781,7 +1242,178 @@ class MOPDVerlTests(unittest.TestCase):
 
         self.assertEqual(processed, [candidate["micro_batch"] for candidate in candidates])
         self.assertEqual(metrics["math/sample_grad_cos/sample_count"], 20.0)
+        self.assertEqual(metrics["math/sample_grad_cos/attempted_count"], 20.0)
+        self.assertEqual(metrics["math/sample_grad_cos/unavailable_count"], 0.0)
+        self.assertEqual(metrics["math/sample_grad_cos/valid_frac"], 1.0)
+        self.assertAlmostEqual(metrics["math/sample_grad_contribution/projection_share_sum"], 1.0, places=6)
+        self.assertAlmostEqual(
+            metrics["math/sample_grad_contribution/projection_share_sum_error"],
+            0.0,
+            places=6,
+        )
         self.assertTrue(all(candidate["row"]["computed_for_cos"] for candidate in candidates))
+
+    def test_sample_gradient_cos_metrics_gather_global_values(self) -> None:
+        try:
+            from mopd_verl.full_gradient_worker import SequentialBackwardDomainGradientTracker
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ToyActor:
+            pass
+
+        tracker = SequentialBackwardDomainGradientTracker(
+            ToyActor(),
+            {
+                "enabled": True,
+                "domains": ["math", "code"],
+                "sample_gradient_enabled": True,
+                "sample_gradient_cos_enabled": True,
+            },
+        )
+        tracker._sample_candidates = {
+            "math": [
+                {
+                    "row": {
+                        "loss_scale_factor": 1.0,
+                        "on_policy": True,
+                        "computed_for_cos": False,
+                    },
+                    "micro_batch": object(),
+                }
+            ]
+        }
+        tracker._recompute_sample_to_domain_stats = lambda *_args, **_kwargs: {
+            "sample_to_domain_cos": 0.25,
+            "sample_projection_share": 0.4,
+            "sample_recompute_grad_norm": 1.0,
+        }
+
+        with patch(
+            "mopd_verl.full_gradient_worker._all_gather_list",
+            side_effect=lambda values: list(values) + [0.75 if values and values[0] == 0.25 else 0.6],
+        ):
+            metrics = tracker._sample_cos_metrics({"math": ((), 1.0)})
+
+        self.assertEqual(metrics["math/sample_grad_cos/sample_count"], 2.0)
+        self.assertAlmostEqual(metrics["math/sample_grad_cos/domain_cos_mean"], 0.5, places=6)
+        self.assertAlmostEqual(metrics["math/sample_grad_contribution/projection_share_sum"], 1.0, places=6)
+
+    def test_sample_gradient_projection_sum_is_normalized_across_replicas(self) -> None:
+        try:
+            from mopd_verl.full_gradient_worker import SequentialBackwardDomainGradientTracker
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ToyActor:
+            config = {"fsdp_config": {"fsdp_size": 1}}
+
+        tracker = SequentialBackwardDomainGradientTracker(
+            ToyActor(),
+            {
+                "enabled": True,
+                "domains": ["math", "code"],
+                "sample_gradient_enabled": True,
+                "sample_gradient_cos_enabled": True,
+            },
+        )
+        tracker._sample_candidates = {
+            "math": [
+                {
+                    "row": {
+                        "loss_scale_factor": 1.0,
+                        "on_policy": True,
+                        "computed_for_cos": False,
+                    },
+                    "micro_batch": object(),
+                }
+            ]
+        }
+        tracker._recompute_sample_to_domain_stats = lambda *_args, **_kwargs: {
+            "sample_to_domain_cos": 1.0,
+            "sample_projection_share": 1.0,
+            "sample_recompute_grad_norm": 1.0,
+        }
+
+        with patch(
+            "mopd_verl.full_gradient_worker._all_gather_list",
+            side_effect=lambda values: list(values) + list(values),
+        ), patch(
+            "mopd_verl.full_gradient_worker._gradient_replica_count",
+            return_value=2,
+        ):
+            metrics = tracker._sample_cos_metrics({"math": ((), 1.0)})
+
+        self.assertEqual(
+            metrics["math/sample_grad_contribution/projection_share_sum_across_replicas"],
+            2.0,
+        )
+        self.assertEqual(
+            metrics["math/sample_grad_contribution/projection_share_replica_count"],
+            2.0,
+        )
+        self.assertEqual(metrics["math/sample_grad_contribution/projection_share_sum"], 1.0)
+        self.assertEqual(metrics["math/sample_grad_contribution/projection_share_sum_error"], 0.0)
+
+    def test_sample_gradient_cos_caches_structural_autograd_unavailability(self) -> None:
+        try:
+            from mopd_verl.full_gradient_worker import SequentialBackwardDomainGradientTracker
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ToyActor:
+            pass
+
+        tracker = SequentialBackwardDomainGradientTracker(
+            ToyActor(),
+            {
+                "enabled": True,
+                "domains": ["math", "code"],
+                "sample_gradient_enabled": True,
+                "sample_gradient_cos_enabled": True,
+            },
+        )
+        tracker._sample_candidates = {
+            "math": [
+                {
+                    "row": {
+                        "loss_scale_factor": 1.0,
+                        "on_policy": True,
+                        "computed_for_cos": False,
+                    },
+                    "micro_batch": object(),
+                }
+                for _ in range(3)
+            ]
+        }
+        recompute_count = 0
+
+        def disconnected_recompute(*_args: object, **_kwargs: object) -> dict[str, object]:
+            nonlocal recompute_count
+            recompute_count += 1
+            return {
+                "sample_to_domain_cos": None,
+                "sample_projection_share": None,
+                "sample_recompute_grad_norm": 0.0,
+                "sample_recompute_non_none_grad_count": 0.0,
+                "sample_recompute_available": 0.0,
+                "sample_recompute_autograd_error": "all_parameters_disconnected",
+            }
+
+        tracker._recompute_sample_to_domain_stats = disconnected_recompute
+        metrics = tracker._sample_cos_metrics({"math": ((), 1.0)})
+
+        self.assertEqual(recompute_count, 1)
+        self.assertEqual(metrics["math/sample_grad_cos/attempted_count"], 3.0)
+        self.assertEqual(metrics["math/sample_grad_cos/unavailable_count"], 3.0)
+        self.assertEqual(metrics["math/sample_grad_cos/all_parameters_disconnected_count"], 3.0)
+        self.assertTrue(
+            all(
+                candidate["row"]["sample_recompute_autograd_error"]
+                == "all_parameters_disconnected"
+                for candidate in tracker._sample_candidates["math"]
+            )
+        )
 
     def test_same_forward_sample_cos_metrics_use_core_tensorboard_tags_and_signed_projection(self) -> None:
         try:
@@ -938,7 +1570,7 @@ class MOPDVerlTests(unittest.TestCase):
 
         self.assertAlmostEqual(metrics["math/full_grad/grad_norm"], 4.0, places=6)
         self.assertAlmostEqual(metrics["code/full_grad/grad_norm"], 7.0, places=6)
-        self.assertAlmostEqual(metrics["global/full_grad/total_grad_norm"], math.sqrt(65.0), places=6)
+        self.assertNotIn("global/full_grad/total_grad_norm", metrics)
         self.assertAlmostEqual(
             metrics["global/full_grad_conflict/code_vs_math/full_grad_cosine_train_i_k"],
             0.0,
@@ -1010,6 +1642,7 @@ class MOPDVerlTests(unittest.TestCase):
             def __init__(self) -> None:
                 self.actor_module = nn.Linear(2, 1, bias=False)
                 self.actor_optimizer = torch.optim.SGD(self.actor_module.parameters(), lr=0.1)
+                self.config = {"fsdp_config": {"fsdp_size": 1}}
 
         actor = ToyActor()
         tracker = SequentialBackwardDomainGradientTracker(
@@ -1040,7 +1673,11 @@ class MOPDVerlTests(unittest.TestCase):
         tracker.after_backward("code", 1)
         total_grad = next(actor.actor_module.parameters()).grad.clone()
 
-        tracker.finish_mini_batch()
+        with patch(
+            "mopd_verl.full_gradient_worker.get_torch_device",
+            return_value=SimpleNamespace(max_memory_allocated=lambda: 0),
+        ):
+            tracker.finish_mini_batch()
 
         self.assertEqual(set(captured_targets), {"math", "code"})
         self.assertTrue(
@@ -1082,7 +1719,372 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertTrue(torch.equal(parameter.grad, original_grad))
         self.assertEqual(stats["sample_recompute_grad_norm"], 0.0)
         self.assertIsNone(stats["sample_to_domain_cos"])
+        self.assertIsNone(stats["sample_projection_share"])
+        self.assertEqual(stats["sample_recompute_available"], 0.0)
         self.assertEqual(tracker._sample_zero_norm_count, 1)
+
+    def test_disconnected_sample_autograd_is_not_reported_as_zero_norm(self) -> None:
+        try:
+            import torch
+            from torch import nn
+
+            from mopd_verl.full_gradient_worker import SequentialBackwardDomainGradientTracker
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ToyActor:
+            def __init__(self) -> None:
+                self.actor_module = nn.Linear(1, 1, bias=False)
+
+        actor = ToyActor()
+        parameter = next(actor.actor_module.parameters())
+        tracker = SequentialBackwardDomainGradientTracker(actor, {"domains": ["math", "code"]})
+        disconnected_loss = torch.tensor(1.0, requires_grad=True)
+
+        with patch(
+            "mopd_verl.full_gradient_worker._actor_micro_batch_loss",
+            return_value=disconnected_loss,
+        ):
+            stats = tracker._recompute_sample_to_domain_stats(
+                object(),
+                target_chunks=(torch.tensor([1.0]),),
+                target_norm=1.0,
+                target_norm_sq=1.0,
+                loss_scale_factor=1.0,
+                on_policy=True,
+            )
+
+        self.assertEqual(
+            stats["sample_recompute_autograd_error"],
+            "all_parameters_disconnected",
+        )
+        self.assertEqual(stats["sample_recompute_non_none_grad_count"], 0.0)
+        self.assertEqual(tracker._sample_zero_norm_count, 0)
+
+    def test_sample_recompute_matches_training_on_policy_old_log_prob(self) -> None:
+        try:
+            import torch
+            from torch import nn
+
+            from mopd_verl.full_gradient_worker import _actor_micro_batch_loss
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class PolicyLossConfig:
+            loss_mode = "vanilla"
+            only_reverse_kl_advantages = True
+
+            def get(self, key: str, default: object = None) -> object:
+                return getattr(self, key, default)
+
+        class ActorConfig:
+            clip_ratio = 0.2
+            clip_ratio_low = None
+            clip_ratio_high = None
+            entropy_coeff = 0.0
+            loss_agg_mode = "token-mean"
+            use_kl_loss = False
+            policy_loss = PolicyLossConfig()
+
+            def get(self, key: str, default: object = None) -> object:
+                return getattr(self, key, default)
+
+        class ToyActor:
+            def __init__(self) -> None:
+                self.actor_module = nn.Linear(1, 1, bias=False)
+                self.actor_module.weight.data.zero_()
+                self.config = ActorConfig()
+
+            def _forward_micro_batch(
+                self,
+                model_inputs: dict[str, torch.Tensor],
+                *,
+                temperature: float,
+                calculate_entropy: bool,
+            ) -> tuple[None, torch.Tensor]:
+                del temperature, calculate_entropy
+                log_prob = self.actor_module.weight.reshape(1, 1).expand_as(model_inputs["response_mask"])
+                return None, log_prob
+
+        class FakeBatch:
+            def __init__(self) -> None:
+                self.batch = {
+                    "response_mask": torch.ones((1, 1), dtype=torch.float32),
+                    "old_log_probs": torch.full((1, 1), 0.1, dtype=torch.float32),
+                    "math_teacher_log_prob": torch.full((1, 1), -0.5, dtype=torch.float32),
+                    "advantages": torch.zeros((1, 1), dtype=torch.float32),
+                }
+                self.non_tensor_batch = {}
+                self.meta_info = {"temperature": 1.0}
+
+            def to(self, device: object) -> "FakeBatch":
+                del device
+                return self
+
+        actor = ToyActor()
+        with patch("mopd_verl.full_gradient_worker.get_device_id", return_value="cpu"):
+            loss = _actor_micro_batch_loss(actor, FakeBatch(), loss_scale_factor=1.0, on_policy=True)
+        gradient = torch.autograd.grad(loss, tuple(actor.actor_module.parameters()))[0]
+
+        self.assertGreater(float(gradient.abs().sum().item()), 0.0)
+        self.assertGreater(float(gradient.item()), 0.0)
+
+        actor.actor_module.weight.data.zero_()
+        with patch("mopd_verl.full_gradient_worker.get_device_id", return_value="cpu"):
+            off_policy_loss = _actor_micro_batch_loss(
+                actor,
+                FakeBatch(),
+                loss_scale_factor=1.0,
+                on_policy=False,
+            )
+        off_policy_gradient = torch.autograd.grad(off_policy_loss, tuple(actor.actor_module.parameters()))[0]
+
+        self.assertGreater(abs(float(off_policy_gradient.item()) - float(gradient.item())), 1e-4)
+
+    def test_sample_recompute_disables_inplace_logprob_backward(self) -> None:
+        try:
+            import torch
+            from torch import nn
+
+            from mopd_verl.full_gradient_worker import _actor_micro_batch_loss
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class PolicyLossConfig:
+            loss_mode = "vanilla"
+            only_reverse_kl_advantages = True
+
+            def get(self, key: str, default: object = None) -> object:
+                return getattr(self, key, default)
+
+        class ActorConfig:
+            clip_ratio = 0.2
+            clip_ratio_low = None
+            clip_ratio_high = None
+            entropy_coeff = 0.0
+            loss_agg_mode = "token-mean"
+            use_kl_loss = False
+            policy_loss = PolicyLossConfig()
+
+            def get(self, key: str, default: object = None) -> object:
+                return getattr(self, key, default)
+
+        class ToyActor:
+            def __init__(self) -> None:
+                self.actor_module = nn.Linear(1, 1, bias=False)
+                self.actor_module.weight.data.zero_()
+                self.config = ActorConfig()
+                self.inplace_backward_flags: list[object] = []
+
+            def _forward_micro_batch(
+                self,
+                model_inputs: dict[str, torch.Tensor],
+                *,
+                temperature: float,
+                calculate_entropy: bool,
+                inplace_backward: object = None,
+            ) -> tuple[None, torch.Tensor]:
+                del temperature, calculate_entropy
+                self.inplace_backward_flags.append(inplace_backward)
+                log_prob = self.actor_module.weight.reshape(1, 1).expand_as(model_inputs["response_mask"])
+                return None, log_prob
+
+        class FakeBatch:
+            def __init__(self) -> None:
+                self.batch = {
+                    "response_mask": torch.ones((1, 1), dtype=torch.float32),
+                    "old_log_probs": torch.full((1, 1), 0.1, dtype=torch.float32),
+                    "math_teacher_log_prob": torch.full((1, 1), -0.5, dtype=torch.float32),
+                    "advantages": torch.zeros((1, 1), dtype=torch.float32),
+                }
+                self.non_tensor_batch = {}
+                self.meta_info = {"temperature": 1.0}
+
+            def to(self, device: object) -> "FakeBatch":
+                del device
+                return self
+
+        actor = ToyActor()
+        with patch("mopd_verl.full_gradient_worker.get_device_id", return_value="cpu"):
+            loss = _actor_micro_batch_loss(
+                actor,
+                FakeBatch(),
+                loss_scale_factor=1.0,
+                on_policy=True,
+                safe_logprob_backward=True,
+            )
+        gradient = torch.autograd.grad(loss, tuple(actor.actor_module.parameters()))[0]
+
+        self.assertEqual(actor.inplace_backward_flags, [False])
+        self.assertGreater(float(gradient.abs().sum().item()), 0.0)
+
+    def test_sample_recompute_projection_shares_reconstruct_domain_gradient(self) -> None:
+        try:
+            import torch
+            from torch import nn
+
+            from mopd_verl.full_gradient_worker import (
+                SequentialBackwardDomainGradientTracker,
+                _actor_micro_batch_loss,
+            )
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class PolicyLossConfig:
+            loss_mode = "vanilla"
+            only_reverse_kl_advantages = True
+
+            def get(self, key: str, default: object = None) -> object:
+                return getattr(self, key, default)
+
+        class ActorConfig:
+            clip_ratio = 0.2
+            clip_ratio_low = None
+            clip_ratio_high = None
+            entropy_coeff = 0.0
+            loss_agg_mode = "token-mean"
+            use_kl_loss = False
+            policy_loss = PolicyLossConfig()
+            fsdp_config = {"fsdp_size": 1}
+
+            def get(self, key: str, default: object = None) -> object:
+                return getattr(self, key, default)
+
+        class ToyActor:
+            def __init__(self) -> None:
+                self.actor_module = nn.Linear(2, 1, bias=False)
+                self.actor_module.weight.data.zero_()
+                self.actor_optimizer = torch.optim.SGD(self.actor_module.parameters(), lr=0.1)
+                self.config = ActorConfig()
+
+            def _forward_micro_batch(
+                self,
+                model_inputs: dict[str, torch.Tensor],
+                *,
+                temperature: float,
+                calculate_entropy: bool,
+                inplace_backward: object = None,
+            ) -> tuple[None, torch.Tensor]:
+                del temperature, calculate_entropy, inplace_backward
+                return None, self.actor_module(model_inputs["features"])
+
+        class FakeBatch:
+            def __init__(self, features: list[float], teacher_log_prob: float) -> None:
+                self.batch = {
+                    "features": torch.tensor([features], dtype=torch.float32),
+                    "response_mask": torch.ones((1, 1), dtype=torch.float32),
+                    "old_log_probs": torch.zeros((1, 1), dtype=torch.float32),
+                    "math_teacher_log_prob": torch.full(
+                        (1, 1),
+                        teacher_log_prob,
+                        dtype=torch.float32,
+                    ),
+                    "advantages": torch.zeros((1, 1), dtype=torch.float32),
+                }
+                self.non_tensor_batch = {}
+                self.meta_info = {"temperature": 1.0}
+
+            def to(self, device: object) -> "FakeBatch":
+                del device
+                return self
+
+        actor = ToyActor()
+        batches = [
+            FakeBatch([1.0, 0.0], -0.5),
+            FakeBatch([0.0, 1.0], -1.0),
+        ]
+        parameter = next(actor.actor_module.parameters())
+        actor.actor_optimizer.zero_grad()
+        with patch("mopd_verl.full_gradient_worker.get_device_id", return_value="cpu"):
+            for batch in batches:
+                loss = _actor_micro_batch_loss(
+                    actor,
+                    batch,
+                    loss_scale_factor=0.5,
+                    on_policy=True,
+                )
+                loss.backward()
+        domain_gradient = parameter.grad.detach().reshape(-1).clone()
+        target_norm_sq = float(torch.dot(domain_gradient, domain_gradient).item())
+        tracker = SequentialBackwardDomainGradientTracker(
+            actor,
+            {
+                "domains": ["math", "code"],
+                "sample_gradient_enabled": True,
+                "sample_gradient_cos_enabled": True,
+            },
+        )
+
+        with patch("mopd_verl.full_gradient_worker.get_device_id", return_value="cpu"):
+            stats = [
+                tracker._recompute_sample_to_domain_stats(
+                    batch,
+                    target_chunks=(domain_gradient,),
+                    target_norm=target_norm_sq**0.5,
+                    target_norm_sq=target_norm_sq,
+                    loss_scale_factor=0.5,
+                    on_policy=True,
+                )
+                for batch in batches
+            ]
+
+        projection_sum = sum(float(item["sample_projection_share"]) for item in stats)
+        self.assertAlmostEqual(projection_sum, 1.0, places=6)
+        self.assertTrue(all(item["sample_recompute_available"] == 1.0 for item in stats))
+        self.assertTrue(torch.equal(parameter.grad.reshape(-1), domain_gradient))
+
+    def test_sample_recompute_does_not_backward_when_autograd_grad_is_zero(self) -> None:
+        try:
+            import torch
+            from torch import nn
+
+            from mopd_verl.full_gradient_worker import SequentialBackwardDomainGradientTracker
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ToyActor:
+            def __init__(self) -> None:
+                self.actor_module = nn.Linear(1, 1, bias=False)
+                self.actor_optimizer = torch.optim.SGD(self.actor_module.parameters(), lr=0.1)
+                self.config = {"fsdp_config": {"fsdp_size": 1}}
+
+        actor = ToyActor()
+        parameter = next(actor.actor_module.parameters())
+        parameter.grad = torch.tensor([[7.0]])
+        training_grad = parameter.grad.detach().clone()
+        tracker = SequentialBackwardDomainGradientTracker(
+            actor,
+            {
+                "domains": ["math", "code"],
+                "sample_gradient_enabled": True,
+                "sample_gradient_cos_enabled": True,
+            },
+        )
+        with patch(
+            "mopd_verl.full_gradient_worker._actor_micro_batch_loss",
+            side_effect=lambda *_args, **_kwargs: actor.actor_module(torch.tensor([[2.0]])).sum(),
+        ), patch(
+            "torch.autograd.grad",
+            return_value=(torch.zeros_like(parameter),),
+        ), patch.object(
+            torch.Tensor,
+            "backward",
+            side_effect=AssertionError("sample recompute must never call loss.backward()"),
+        ):
+            stats = tracker._recompute_sample_to_domain_stats(
+                object(),
+                target_chunks=(torch.tensor([1.0], dtype=torch.float32),),
+                target_norm=1.0,
+                target_norm_sq=1.0,
+                loss_scale_factor=1.0,
+                on_policy=True,
+            )
+
+        self.assertEqual(float(stats["sample_recompute_grad_norm"]), 0.0)
+        self.assertEqual(stats["sample_recompute_non_none_grad_count"], 1.0)
+        self.assertEqual(stats["sample_recompute_available"], 0.0)
+        self.assertIsNone(stats["sample_projection_share"])
+        self.assertTrue(torch.equal(parameter.grad, training_grad))
 
     def test_audit_logger_emits_domain_category_metrics_on_synthetic_batch(self) -> None:
         try:

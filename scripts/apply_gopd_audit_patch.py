@@ -99,6 +99,17 @@ def _strip_trainer_audit_blocks(text: str) -> str:
         text,
     )
     text = re.sub(
+        r"\n {20}metrics\.update\(\n"
+        r" {24}self\.mopd_audit_logger\.balance_domain_gradient_batch\(\n"
+        r" {28}batch,\n"
+        r" {28}step=self\.global_steps,\n"
+        r" {28}world_size=self\.actor_rollout_wg\.world_size,\n"
+        r" {24}\)\n"
+        r" {20}\)",
+        "",
+        text,
+    )
+    text = re.sub(
         r"\n {20}metrics\.update\(self\.mopd_audit_logger\.log_validation_metrics\(val_metrics, self\.global_steps\)\)",
         "",
         text,
@@ -133,8 +144,10 @@ def _strip_fsdp_worker_audit_blocks(text: str) -> str:
 
 def _strip_dp_actor_audit_blocks(text: str) -> str:
     text = re.sub(
-        r"\n {8,24}# MOPD audit: (?:same-forward domain-gradient probe|domain-gradient tracker) begin\n.*?"
-        r"\n {8,24}# MOPD audit: (?:same-forward domain-gradient probe|domain-gradient tracker) end\n",
+        r"\n {8,24}# MOPD audit: "
+        r"(?:same-forward domain-gradient probe|domain-gradient tracker|sample-gradient tracker) begin\n.*?"
+        r"\n {8,24}# MOPD audit: "
+        r"(?:same-forward domain-gradient probe|domain-gradient tracker|sample-gradient tracker) end\n",
         "\n",
         text,
         flags=re.DOTALL,
@@ -421,6 +434,26 @@ def patch_trainer(gopd_dir: Path) -> bool:
     )
     changed |= _replace_once(
         path,
+        '''                    if self.config.trainer.balance_batch:
+                        self._balance_batch(batch, metrics=metrics)
+
+                    # compute global_valid tokens
+''',
+        '''                    if self.config.trainer.balance_batch:
+                        self._balance_batch(batch, metrics=metrics)
+                    metrics.update(
+                        self.mopd_audit_logger.balance_domain_gradient_batch(
+                            batch,
+                            step=self.global_steps,
+                            world_size=self.actor_rollout_wg.world_size,
+                        )
+                    )
+
+                    # compute global_valid tokens
+''',
+    )
+    changed |= _replace_once(
+        path,
         '''                    # update critic
                     if self.use_critic:
 ''',
@@ -433,7 +466,13 @@ def patch_trainer(gopd_dir: Path) -> bool:
                         )
                         metrics.update(audit_metrics)
                         if self.mopd_audit_logger.should_compute_full_gradient(self.global_steps):
-                            batch.meta_info.update(self.mopd_audit_logger.full_gradient_meta("train", self.global_steps))
+                            batch.meta_info.update(
+                                self.mopd_audit_logger.full_gradient_meta(
+                                    "train",
+                                    self.global_steps,
+                                    batch.meta_info.get("mopd_domain_gradient_partition", {}),
+                                )
+                            )
 
                     # update critic
                     if self.use_critic:
@@ -629,7 +668,16 @@ def patch_dp_actor(gopd_dir: Path) -> bool:
 
                     micro_batch_metrics["actor/pg_loss"] = pg_loss.detach().item() * loss_scale_factor
 ''',
-        '''                    if self.scaler is not None:
+        '''                    # MOPD audit: sample-gradient tracker begin
+                    if mopd_gradient_tracker is not None:
+                        mopd_gradient_tracker.before_backward(
+                            mopd_domain,
+                            micro_batch,
+                            loss_scale_factor=loss_scale_factor,
+                            on_policy=on_policy,
+                        )
+                    # MOPD audit: sample-gradient tracker end
+                    if self.scaler is not None:
                         self.scaler.scale(loss).backward()
                     else:
                         loss.backward()

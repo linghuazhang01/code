@@ -26,6 +26,9 @@ from mopd_verl.tensorboard_filter import (
 from mopd_verl.tensorboard_tags import domain_metric_category, safe_name
 
 
+_DOMAIN_PARTITION_META_KEY = "mopd_domain_gradient_partition"
+
+
 def _to_builtin(value: Any) -> Any:
     if hasattr(value, "detach"):
         value = value.detach()
@@ -131,6 +134,40 @@ def _scalar_float(value: Any) -> float | None:
     return finite_float(converted)
 
 
+def _equal_workload_partitions(
+    indices: list[int],
+    workloads: list[int],
+    partition_count: int,
+) -> list[list[int]]:
+    """Greedily balance workload while keeping equal sample counts."""
+
+    capacity = len(indices) // partition_count
+    partitions: list[list[int]] = [[] for _ in range(partition_count)]
+    partition_workloads = [0 for _ in range(partition_count)]
+    ordered_indices = sorted(indices, key=lambda idx: (-workloads[idx], idx))
+    for sample_idx in ordered_indices:
+        candidates = [rank for rank in range(partition_count) if len(partitions[rank]) < capacity]
+        target_rank = min(
+            candidates,
+            key=lambda rank: (partition_workloads[rank], len(partitions[rank]), rank),
+        )
+        partitions[target_rank].append(sample_idx)
+        partition_workloads[target_rank] += workloads[sample_idx]
+
+    for rank, partition in enumerate(partitions):
+        partition.sort(key=lambda idx: (workloads[idx], idx))
+        partitions[rank] = partition[::2] + partition[1::2][::-1]
+    return partitions
+
+
+def _ensure_meta_info(batch: Any) -> dict[str, Any]:
+    meta_info = getattr(batch, "meta_info", None)
+    if not isinstance(meta_info, dict):
+        meta_info = {}
+        setattr(batch, "meta_info", meta_info)
+    return meta_info
+
+
 class MOPDAuditLogger:
     """Writes per-domain audit JSONL rows and TensorBoard-compatible scalars."""
 
@@ -223,7 +260,7 @@ class MOPDAuditLogger:
         return _filter_tensorboard_metrics(metrics, self.tensorboard_prune_mode)
 
     def should_compute_full_gradient(self, step: int) -> bool:
-        full_gradient_active = self.full_gradient_enabled and step % self.full_gradient_freq_steps == 0
+        full_gradient_active = self.should_compute_domain_gradient(step)
         sample_gradient_active = self.sample_gradient_enabled and (
             self.sample_gradient_norm_enabled
             or (
@@ -233,11 +270,122 @@ class MOPDAuditLogger:
         )
         return self.enabled and (full_gradient_active or sample_gradient_active)
 
-    def full_gradient_meta(self, mode: str, step: int) -> dict[str, Any]:
+    def should_compute_domain_gradient(self, step: int) -> bool:
+        return self.enabled and self.full_gradient_enabled and step % self.full_gradient_freq_steps == 0
+
+    def balance_domain_gradient_batch(
+        self,
+        batch: Any,
+        *,
+        step: int,
+        world_size: int,
+    ) -> dict[str, float]:
+        """Align domain counts across contiguous actor-rank dispatch chunks."""
+
+        if not self.should_compute_domain_gradient(step):
+            return {}
+
+        meta_info = _ensure_meta_info(batch)
+        partition_meta: dict[str, Any] = {
+            "aligned": False,
+            "unsupported_reason": "not_checked",
+            "step": int(step),
+            "world_size": int(world_size),
+            "domains": list(self.domains),
+            "domain_order": list(self.domains),
+            "micro_batch_size_per_gpu": int(self.full_gradient_micro_batch_size_per_gpu),
+        }
+        meta_info[_DOMAIN_PARTITION_META_KEY] = partition_meta
+        metrics = {
+            "global/audit/full_gradient_domain_partition_aligned": 0.0,
+            "global/audit/full_gradient_domain_partition_unsupported": 1.0,
+        }
+        if world_size <= 1:
+            partition_meta["aligned"] = True
+            partition_meta["unsupported_reason"] = ""
+            metrics["global/audit/full_gradient_domain_partition_aligned"] = 1.0
+            metrics["global/audit/full_gradient_domain_partition_unsupported"] = 0.0
+            return metrics
+        if len(self.domains) != 2 or "attention_mask" not in batch.batch:
+            partition_meta["unsupported_reason"] = "requires_two_domains_and_attention_mask"
+            return metrics
+
+        attention_mask = batch.batch["attention_mask"]
+        batch_size = int(attention_mask.shape[0])
+        if batch_size == 0 or batch_size % world_size != 0:
+            partition_meta["unsupported_reason"] = "batch_size_not_divisible_by_world_size"
+            return metrics
+
+        labels = extract_teacher_domains(batch.non_tensor_batch, batch_size)
+        if set(labels) != set(self.domains):
+            partition_meta["unsupported_reason"] = "domains_do_not_match_batch_labels"
+            return metrics
+
+        micro_batch_size = self.full_gradient_micro_batch_size_per_gpu
+        required_multiple = world_size * micro_batch_size
+        domain_indices = {
+            domain: [idx for idx, label in enumerate(labels) if label == domain] for domain in self.domains
+        }
+        if any(not indices or len(indices) % required_multiple != 0 for indices in domain_indices.values()):
+            partition_meta["unsupported_reason"] = "domain_counts_not_divisible_by_rank_micro_batch"
+            return metrics
+
+        lengths = attention_mask.detach().view(batch_size, -1).sum(dim=-1).to(device="cpu").long()
+        workloads = [24576 * int(length) + int(length) ** 2 for length in lengths.tolist()]
+        domain_partitions = {
+            domain: _equal_workload_partitions(indices, workloads, world_size)
+            for domain, indices in domain_indices.items()
+        }
+        rank_partitions = [
+            [
+                sample_idx
+                for domain in self.domains
+                for sample_idx in domain_partitions[domain][rank]
+            ]
+            for rank in range(world_size)
+        ]
+        expected_rank_size = batch_size // world_size
+        if any(len(partition) != expected_rank_size for partition in rank_partitions):
+            partition_meta["unsupported_reason"] = "rank_partition_size_mismatch"
+            return metrics
+
+        import torch
+
+        global_idx = torch.tensor(
+            [sample_idx for partition in rank_partitions for sample_idx in partition],
+            dtype=torch.long,
+        )
+        batch.reorder(global_idx)
+        domain_block_sample_counts = {
+            domain: len(domain_partitions[domain][0]) for domain in self.domains
+        }
+        rank_domain_sample_counts = [
+            {domain: len(domain_partitions[domain][rank]) for domain in self.domains}
+            for rank in range(world_size)
+        ]
+        partition_meta.update(
+            {
+                "aligned": True,
+                "unsupported_reason": "",
+                "rank_sample_count": int(expected_rank_size),
+                "domain_block_sample_counts": domain_block_sample_counts,
+                "rank_domain_sample_counts": rank_domain_sample_counts,
+            }
+        )
+        metrics["global/audit/full_gradient_domain_partition_aligned"] = 1.0
+        metrics["global/audit/full_gradient_domain_partition_unsupported"] = 0.0
+        return metrics
+
+    def full_gradient_meta(
+        self,
+        mode: str,
+        step: int,
+        domain_partition: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         return {
             "mopd_full_gradient": {
                 "enabled": self.should_compute_full_gradient(step),
-                "domain_gradient_enabled": self.full_gradient_enabled and step % self.full_gradient_freq_steps == 0,
+                "domain_gradient_enabled": self.should_compute_domain_gradient(step),
                 "mode": mode,
                 "step": step,
                 "domains": self.domains,
@@ -254,6 +402,7 @@ class MOPDAuditLogger:
                 "sample_gradient_cos_freq_steps": self.sample_gradient_cos_freq_steps,
                 "sample_gradient_log_sample_level": self.sample_gradient_log_sample_level,
                 "offload_domain_gradients": self.full_gradient_offload_domain_gradients,
+                "domain_partition": domain_partition or {},
             }
         }
 

@@ -999,16 +999,16 @@ class RayPPOTrainer:
         attention_mask = batch.batch["attention_mask"]
         batch_size = attention_mask.shape[0]
         global_seqlen_lst = batch.batch["attention_mask"].view(batch_size, -1).sum(-1)  # (train_batch_size,)
-        global_seqlen_lst = calculate_workload(global_seqlen_lst)
+        global_workload_lst = calculate_workload(global_seqlen_lst)
         world_size = self.actor_rollout_wg.world_size
         if keep_minibatch:
             # Decouple the DP balancing and mini-batching.
             minibatch_size = self.config.actor_rollout_ref.actor.get("ppo_mini_batch_size")
-            minibatch_num = len(global_seqlen_lst) // minibatch_size
+            minibatch_num = len(global_workload_lst) // minibatch_size
             global_partition_lst = [[] for _ in range(world_size)]
             for i in range(minibatch_num):
                 rearrange_minibatch_lst = get_seqlen_balanced_partitions(
-                    global_seqlen_lst[i * minibatch_size : (i + 1) * minibatch_size],
+                    global_workload_lst[i * minibatch_size : (i + 1) * minibatch_size],
                     k_partitions=world_size,
                     equal_size=True,
                 )
@@ -1016,11 +1016,11 @@ class RayPPOTrainer:
                     global_partition_lst[j].extend([x + minibatch_size * i for x in part])
         else:
             global_partition_lst = get_seqlen_balanced_partitions(
-                global_seqlen_lst, k_partitions=world_size, equal_size=True
+                global_workload_lst, k_partitions=world_size, equal_size=True
             )
         # Place smaller micro-batches at both ends to reduce the bubbles in pipeline parallel.
         for idx, partition in enumerate(global_partition_lst):
-            partition.sort(key=lambda x: (global_seqlen_lst[x], x))
+            partition.sort(key=lambda x: (global_workload_lst[x], x))
             ordered_partition = partition[::2] + partition[1::2][::-1]
             global_partition_lst[idx] = ordered_partition
         # reorder based on index. The data will be automatically equally partitioned by dispatch function
@@ -1028,6 +1028,13 @@ class RayPPOTrainer:
         batch.reorder(global_idx)
         global_balance_stats = log_seqlen_unbalance(
             seqlen_list=global_seqlen_lst, partitions=global_partition_lst, prefix=logging_prefix
+        )
+        global_balance_stats.update(
+            log_seqlen_unbalance(
+                seqlen_list=global_workload_lst,
+                partitions=global_partition_lst,
+                prefix=logging_prefix.replace("seqlen", "workload"),
+            )
         )
         metrics.update(global_balance_stats)
 
@@ -1204,6 +1211,13 @@ class RayPPOTrainer:
                     # but might affect the loss calculation (due to the change of mini-batching).
                     if self.config.trainer.balance_batch:
                         self._balance_batch(batch, metrics=metrics)
+                    metrics.update(
+                        self.mopd_audit_logger.balance_domain_gradient_batch(
+                            batch,
+                            step=self.global_steps,
+                            world_size=self.actor_rollout_wg.world_size,
+                        )
+                    )
 
                     # compute global_valid tokens
                     batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
@@ -1432,7 +1446,13 @@ class RayPPOTrainer:
                         )
                         metrics.update(audit_metrics)
                         if self.mopd_audit_logger.should_compute_full_gradient(self.global_steps):
-                            batch.meta_info.update(self.mopd_audit_logger.full_gradient_meta("train", self.global_steps))
+                            batch.meta_info.update(
+                                self.mopd_audit_logger.full_gradient_meta(
+                                    "train",
+                                    self.global_steps,
+                                    batch.meta_info.get("mopd_domain_gradient_partition", {}),
+                                )
+                            )
 
                     # update critic
                     if self.use_critic:

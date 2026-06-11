@@ -33,7 +33,6 @@ math/full_grad/grad_norm
 math/sample_grad/norm_mean
 math/sample_grad_cos/domain_cos_mean
 math/sample_grad_contribution/projection_share_mean
-global/full_grad/total_grad_norm
 global/full_grad_conflict/math_vs_code/full_grad_cosine_train_i_k
 global/full_grad_alignment/math_vs_total/full_grad_cosine_domain_total
 global/full_grad_contribution/math_to_total/signed_projection_share
@@ -122,7 +121,13 @@ else:
 
 full-gradient audit 的 train tracker 不再走同图 `torch.autograd.grad()`，因为 FSDP/sharded 参数下该路径可能拿不到有效 `.grad`。新路径直接读取真实 backward 后的参数 `.grad` snapshot。因此它不再是手写的 `reverse_kl * ratio` proxy，也不再是 train-side 额外 forward/backward。不过它仍然是**一阶梯度诊断**，不是临时执行 Adam/optimizer step 后的真实 validation delta。
 
+当前 verl FSDP worker 启用 gradient checkpointing 时显式传入 `use_reentrant: false`。这保留了标准 backward 的兼容性，也避免重新引入 reentrant checkpoint 对 `autograd.grad()` 的限制；train-side full-gradient tracker 本身只复用 `loss.backward()` 产生的 `.grad`。
+
 当前 train-side sequential tracker 只支持两个 train domains，且要求每个 micro-batch 只包含一个 domain；正式配置中 `full_gradient_micro_batch_size_per_gpu: 1` 满足这个条件。如果出现 mixed-domain micro-batch，tracker 会写入 `global/audit/full_gradient_domain_sequential_unsupported=1`，并跳过本 mini-batch 的 domain gradient metrics。
+
+multi-GPU 下还要求各 rank 的 domain micro-batch 数量一致，以保证每次 FSDP backward collective 都处于同一个 domain block。若任一 rank 不满足单-domain micro-batch，或各 rank 的 domain 边界不对齐，所有 rank 都会跳过该 mini-batch 的 domain gradient metrics，避免把不同 domain 的梯度错误聚合。
+
+gradient scalar statistics 按 FSDP topology 归并：FULL_SHARD 对各 rank 持有的参数 shard 做 sum；HYBRID_SHARD 先对所有 rank 做 sum，再除以相同 shard 的 DDP replica 数。实现只 collective norm/dot 等 FP64 scalars，不 all-gather 完整参数梯度，因此不会额外复制 multi-billion-parameter gradient vector。
 
 正式配置：
 
@@ -152,7 +157,6 @@ sample-gradient 配置的含义：
 | --- | --- | --- |
 | `<train_domain>/full_grad/grad_norm` | 当前 actor update mini-batch 中该 train domain 的真实参数梯度范数。 | 从真实 backward 后的参数 `.grad` snapshot 计算 `||g_train_i||_2`。 |
 | `<train_domain>/full_grad/sample_count` | 该 train domain probe 使用的样本数。 | 当前 actor update mini-batch 中该 domain 样本数，经 distributed sum。 |
-| `global/full_grad/total_grad_norm` | 当前 actor update mini-batch 的真实总梯度范数。 | `||g_total||_2`，其中 `g_total = g_math + g_code`。 |
 | `global/full_grad_conflict/<domain_i>_vs_<domain_k>/full_grad_cosine_train_i_k` | 两个 train domains 的真实参数梯度方向相似度。 | `cosine(g_train_i, g_train_k)`。 |
 | `global/full_grad_conflict/<domain_i>_vs_<domain_k>/conflict_magnitude_i_k` | 真实参数梯度冲突强度。 | `max(0, -full_grad_cosine_train_i_k)`。 |
 | `global/full_grad_alignment/<domain_i>_vs_total/full_grad_cosine_domain_total` | train domain 梯度与总梯度的方向一致性。 | `(g_i · g_total) / (||g_i||_2 ||g_total||_2)`。 |
@@ -183,6 +187,7 @@ sample grad norm 不需要额外 backward：tracker 在真实 actor backward 过
 | `<domain>/sample_grad_contribution/projection_share_max` | 全部样本 projection share 最大值。 | `max(projection_share)`。 |
 | `<domain>/sample_grad_contribution/projection_share_negative_frac` | 全部样本中抵消 domain gradient 方向的比例。 | 统计 `projection_share < 0` 的比例。 |
 | `<domain>/sample_grad_contribution/top1_abs_share` | 全部样本里绝对投影贡献最大的单样本强度。 | `max(abs(projection_share))`。 |
+| `<domain>/sample_grad_contribution/projection_share_sum` | sample projection share 的求和 sanity check。 | 若 sample 重算 loss 与 domain gradient 口径一致，且统计覆盖该 domain 全部样本，此值应接近 1；明显偏离表示 sample/domain 梯度口径不一致或样本未完整聚合。 |
 
 已删除：所有 `grad/*`、`grad_anchor/*`、`grad_conflict/*` proxy metrics。
 

@@ -44,7 +44,13 @@ def _is_domain_sample_grad_metric(key: str) -> bool:
 
 
 def _is_domain_sample_grad_cos_metric(key: str) -> bool:
-    return key.startswith("domain_cos_") or key in {"sample_count"}
+    return key.startswith("domain_cos_") or key in {
+        "all_parameters_disconnected_count",
+        "attempted_count",
+        "sample_count",
+        "unavailable_count",
+        "valid_frac",
+    }
 
 
 def _is_domain_sample_grad_contribution_metric(key: str) -> bool:

@@ -42,12 +42,25 @@ CORE_DOMAIN_LOSS = {
 CORE_DOMAIN_ADVANTAGE = {"positive_frac"}
 CORE_DOMAIN_LENGTH = {"response_mean", "response_p95", "response_clip_ratio"}
 CORE_SAMPLE_GRAD = {"norm_mean", "norm_p50", "norm_p95", "norm_max", "norm_cv", "sample_count"}
-CORE_SAMPLE_GRAD_COS = {"domain_cos_mean", "domain_cos_p05", "domain_cos_negative_frac", "sample_count"}
+CORE_SAMPLE_GRAD_COS = {
+    "all_parameters_disconnected_count",
+    "attempted_count",
+    "domain_cos_mean",
+    "domain_cos_p05",
+    "domain_cos_negative_frac",
+    "sample_count",
+    "unavailable_count",
+    "valid_frac",
+}
 CORE_SAMPLE_GRAD_CONTRIBUTION = {
     "projection_share_mean",
     "projection_share_min",
     "projection_share_max",
     "projection_share_negative_frac",
+    "projection_share_sum",
+    "projection_share_sum_across_replicas",
+    "projection_share_sum_error",
+    "projection_share_replica_count",
     "top1_abs_share",
 }
 CORE_GLOBAL_LOSS = {
@@ -63,7 +76,6 @@ CORE_DOMAIN_TEACHER = {"teacher_confidence_mean", "teacher_student_gap_mean"}
 CORE_DOMAIN_REWARD = {"training_accuracy", "training_reward_mean"}
 CORE_DOMAIN_COVERAGE = {"duplicate_rate"}
 CORE_FULL_GRAD = {"grad_norm", "sample_count"}
-CORE_GLOBAL_FULL_GRAD = {"total_grad_norm"}
 CORE_FULL_GRAD_ALIGNMENT = {"full_grad_cosine_domain_total"}
 CORE_FULL_GRAD_CONTRIBUTION = {"signed_projection_share"}
 CORE_CONFLICT = {
@@ -76,8 +88,11 @@ CORE_AUDIT = {
     "full_gradient_domain_sequential_available",
     "full_gradient_domain_sequential_unsupported",
     "full_gradient_replicated_all_reduce",
+    "full_gradient_replica_count",
     "full_gradient_true_backward_fallback",
     "sample_gradient_distributed_unsupported",
+    "sample_gradient_cos_distributed_unsupported",
+    "sample_gradient_norm_distributed_unsupported",
     "sample_gradient_distributed_world_size",
     "sample_gradient_zero_norm_count",
     "wall_time_step",
@@ -103,7 +118,6 @@ CORE_LENGTH = {"clip_ratio", "max", "mean"}
 CORE_TIMING_SECONDS = {"gen", "step", "testing", "update_actor"}
 CORE_TIMING_PER_TOKEN = {"gen", "update_actor"}
 CORE_PERF = {"max_memory_allocated_gb", "throughput", "time_per_step", "total_num_tokens"}
-CORE_GLOBAL_SEQLEN = {"max", "mean", "minmax_diff"}
 CORE_TRAINING = {"epoch", "global_step"}
 
 
@@ -152,8 +166,6 @@ def keep_core_metric(key: str) -> bool:
         return metric in CORE_TIMING_PER_TOKEN
     if root == "perf":
         return metric in CORE_PERF
-    if root == "global_seqlen":
-        return metric in CORE_GLOBAL_SEQLEN
     if root == "training":
         return metric in CORE_TRAINING
     if root == "global":
@@ -168,8 +180,6 @@ def _keep_global(category: str, metric: str, parts: list[str]) -> bool:
         return metric in CORE_GLOBAL_COST
     if category == "full_grad_cost":
         return metric in {"backward_seconds", "max_memory_allocated_gb"}
-    if category == "full_grad":
-        return metric in CORE_GLOBAL_FULL_GRAD
     if category == "full_grad_alignment":
         return metric in CORE_FULL_GRAD_ALIGNMENT
     if category == "full_grad_contribution":

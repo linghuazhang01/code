@@ -16,6 +16,9 @@ from verl import DataProto
 from verl.utils.device import get_device_id, get_torch_device
 
 
+_VECTOR_REDUCTION_CHUNK_SIZE = 1 << 26
+
+
 def _cfg_get(config: Any, key: str, default: Any = None) -> Any:
     if config is None:
         return default
@@ -110,6 +113,13 @@ def _all_reduce_sum(value: float) -> float:
     return float(tensor.item())
 
 
+def _all_reduce_values_sum(values: list[float]) -> list[float]:
+    tensor = torch.tensor(values, device=get_device_id(), dtype=torch.float64)
+    if torch.distributed.is_initialized():
+        torch.distributed.all_reduce(tensor, op=torch.distributed.ReduceOp.SUM)
+    return [float(value) for value in tensor.tolist()]
+
+
 def _all_reduce_vector_sum(vector: torch.Tensor) -> torch.Tensor:
     if torch.distributed.is_initialized():
         torch.distributed.all_reduce(vector, op=torch.distributed.ReduceOp.SUM)
@@ -146,29 +156,104 @@ def _distributed_world_size() -> int:
     return 1
 
 
+def _all_ranks_true(value: bool) -> bool:
+    if not torch.distributed.is_available() or not torch.distributed.is_initialized():
+        return value
+    tensor = torch.tensor(int(value), device=get_device_id(), dtype=torch.int32)
+    torch.distributed.all_reduce(tensor, op=torch.distributed.ReduceOp.MIN)
+    return bool(tensor.item())
+
+
+def _all_ranks_equal_ints(values: list[int]) -> bool:
+    if not torch.distributed.is_available() or not torch.distributed.is_initialized():
+        return True
+    local = torch.tensor(values, device=get_device_id(), dtype=torch.int64)
+    minimum = local.clone()
+    maximum = local.clone()
+    torch.distributed.all_reduce(minimum, op=torch.distributed.ReduceOp.MIN)
+    torch.distributed.all_reduce(maximum, op=torch.distributed.ReduceOp.MAX)
+    return bool(torch.equal(minimum, maximum))
+
+
+def _actor_fsdp_size(actor: Any) -> int | None:
+    actor_config = getattr(actor, "config", None)
+    fsdp_config = _cfg_get(actor_config, "fsdp_config", {})
+    raw_fsdp_size = _cfg_get(fsdp_config, "fsdp_size", -1)
+    try:
+        return int(raw_fsdp_size)
+    except (TypeError, ValueError):
+        return None
+
+
+def _gradient_replica_count(actor: Any) -> int:
+    world_size = _distributed_world_size()
+    if world_size <= 1:
+        return 1
+
+    fsdp_size = _actor_fsdp_size(actor)
+    if fsdp_size is None:
+        return 1
+
+    if fsdp_size <= 0 or fsdp_size >= world_size or world_size % fsdp_size != 0:
+        return 1
+    return world_size // fsdp_size
+
+
+def _reduce_gradient_scalars(actor: Any, values: list[float]) -> list[float]:
+    return _all_reduce_values_sum(values)
+
+
+def _actor_has_full_local_params_for_sample_gradient(actor: Any) -> bool:
+    return _actor_fsdp_size(actor) == 1
+
+
+def _chunks_local_sumsq(chunks: tuple[torch.Tensor, ...]) -> float:
+    total = 0.0
+    for chunk in chunks:
+        chunk_sumsq = _chunked_vector_dot(chunk.float(), chunk.float())
+        if chunk_sumsq is not None:
+            total += chunk_sumsq
+    return total
+
+
+def _chunked_vector_dot(left: torch.Tensor, right: torch.Tensor) -> float | None:
+    left_flat = left.reshape(-1)
+    right_flat = right.reshape(-1)
+    if left_flat.numel() == 0 or left_flat.numel() != right_flat.numel():
+        return None
+
+    total = 0.0
+    for start in range(0, left_flat.numel(), _VECTOR_REDUCTION_CHUNK_SIZE):
+        end = min(start + _VECTOR_REDUCTION_CHUNK_SIZE, left_flat.numel())
+        left_chunk = left_flat[start:end].float()
+        right_chunk = right_flat[start:end].float()
+        total += float(torch.dot(left_chunk, right_chunk).item())
+    return total
+
+
 def _local_vector_norm(vector: torch.Tensor) -> float:
-    if vector.numel() == 0:
+    sumsq = _chunked_vector_dot(vector, vector)
+    if sumsq is None:
         return 0.0
-    return float(max(torch.dot(vector.float(), vector.float()).item(), 0.0) ** 0.5)
+    return float(max(sumsq, 0.0) ** 0.5)
 
 
 def _local_vector_dot(left: torch.Tensor, right: torch.Tensor) -> float | None:
-    if left.numel() == 0 or right.numel() == 0 or left.numel() != right.numel():
-        return None
-    return float(torch.dot(left.float(), right.float()).item())
+    return _chunked_vector_dot(left, right)
 
 
 def _vector_norm(vector: torch.Tensor) -> float:
-    if vector.numel() == 0:
+    local_sumsq = _chunked_vector_dot(vector, vector)
+    if local_sumsq is None:
         return 0.0
-    local_sumsq = torch.dot(vector.float(), vector.float()).item()
     return float(max(_all_reduce_sum(local_sumsq), 0.0) ** 0.5)
 
 
 def _vector_dot(left: torch.Tensor, right: torch.Tensor) -> float | None:
-    if left.numel() == 0 or right.numel() == 0 or left.numel() != right.numel():
+    local_dot = _chunked_vector_dot(left, right)
+    if local_dot is None:
         return None
-    return _all_reduce_sum(torch.dot(left.float(), right.float()).item())
+    return _all_reduce_sum(local_dot)
 
 
 def _safe_cosine(dot: float | None, left_norm: float, right_norm: float) -> float | None:
@@ -184,6 +269,16 @@ def _storage_dtype(storage_dtype: str) -> torch.dtype:
     if normalized in {"bfloat16", "bf16"}:
         return torch.bfloat16
     return torch.float32
+
+
+def _max_memory_allocated_gb() -> float:
+    max_memory_allocated = getattr(get_torch_device(), "max_memory_allocated", None)
+    if not callable(max_memory_allocated):
+        return 0.0
+    try:
+        return float(max_memory_allocated()) / (1024**3)
+    except (RuntimeError, TypeError, ValueError):
+        return 0.0
 
 
 @dataclass(frozen=True)
@@ -271,32 +366,44 @@ def _current_grad_difference_snapshot(
             total_float = torch.zeros_like(first_float)
         second_float = total_float - first_float
 
-        first_sumsq += torch.dot(first_float, first_float).item()
-        total_sumsq += torch.dot(total_float, total_float).item()
-        first_total_dot += torch.dot(first_float, total_float).item()
-        second_sumsq += torch.dot(second_float, second_float).item()
-        first_second_dot += torch.dot(first_float, second_float).item()
-        second_total_dot += torch.dot(second_float, total_float).item()
+        first_sumsq += _chunked_vector_dot(first_float, first_float) or 0.0
+        total_sumsq += _chunked_vector_dot(total_float, total_float) or 0.0
+        first_total_dot += _chunked_vector_dot(first_float, total_float) or 0.0
+        second_sumsq += _chunked_vector_dot(second_float, second_float) or 0.0
+        first_second_dot += _chunked_vector_dot(first_float, second_float) or 0.0
+        second_total_dot += _chunked_vector_dot(second_float, total_float) or 0.0
 
         if second_pieces is not None and dtype is not None:
             second_piece = second_float.to(dtype=dtype)
             second_pieces.append(second_piece)
             second_piece_float = second_piece.float()
-            second_target_sumsq += torch.dot(second_piece_float, second_piece_float).item()
+            second_target_sumsq += (
+                _chunked_vector_dot(second_piece_float, second_piece_float) or 0.0
+            )
             del second_piece_float
         del first_float, total_float, second_float
 
+    scalar_values = [
+        first_sumsq,
+        total_sumsq,
+        first_total_dot,
+        second_sumsq,
+        first_second_dot,
+        second_total_dot,
+    ]
+    if second_pieces is not None:
+        scalar_values.append(second_target_sumsq)
+    reduced_values = _reduce_gradient_scalars(actor, scalar_values)
+
     return _GradDifferenceSnapshot(
-        first_norm_sq=_all_reduce_sum(first_sumsq),
-        total_norm_sq=_all_reduce_sum(total_sumsq),
-        first_total_dot=_all_reduce_sum(first_total_dot),
-        second_norm_sq=_all_reduce_sum(second_sumsq),
-        first_second_dot=_all_reduce_sum(first_second_dot),
-        second_total_dot=_all_reduce_sum(second_total_dot),
+        first_norm_sq=reduced_values[0],
+        total_norm_sq=reduced_values[1],
+        first_total_dot=reduced_values[2],
+        second_norm_sq=reduced_values[3],
+        first_second_dot=reduced_values[4],
+        second_total_dot=reduced_values[5],
         second_chunks=tuple(second_pieces) if second_pieces is not None else None,
-        second_target_norm_sq=(
-            _all_reduce_sum(second_target_sumsq) if second_pieces is not None else None
-        ),
+        second_target_norm_sq=reduced_values[6] if second_pieces is not None else None,
     )
 
 
@@ -366,7 +473,9 @@ def _parameter_grad_norm(
     for parameter in parameters:
         if parameter.grad is not None:
             gradient = parameter.grad.detach().float().reshape(-1)
-            local_sumsq += torch.dot(gradient, gradient).item()
+            gradient_sumsq = _chunked_vector_dot(gradient, gradient)
+            if gradient_sumsq is not None:
+                local_sumsq += gradient_sumsq
     return float(max(_all_reduce_sum(local_sumsq), 0.0) ** 0.5)
 
 
@@ -520,6 +629,7 @@ def _actor_micro_batch_loss(
     *,
     loss_scale_factor: float,
     on_policy: bool,
+    safe_logprob_backward: bool = False,
 ) -> torch.Tensor:
     from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
 
@@ -527,12 +637,14 @@ def _actor_micro_batch_loss(
     model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
     response_mask = model_inputs["response_mask"]
     entropy_coeff = float(_cfg_get(actor.config, "entropy_coeff", 0.0) or 0.0)
-    entropy, log_prob = actor._forward_micro_batch(
-        model_inputs,
-        temperature=float(micro_batch.meta_info.get("temperature", 1.0)),
-        calculate_entropy=entropy_coeff != 0,
-    )
-    if hasattr(actor.config, "use_rollout_log_probs") and actor.config.use_rollout_log_probs:
+    forward_kwargs = {
+        "temperature": float(micro_batch.meta_info.get("temperature", 1.0)),
+        "calculate_entropy": entropy_coeff != 0,
+    }
+    if safe_logprob_backward:
+        forward_kwargs["inplace_backward"] = False
+    entropy, log_prob = actor._forward_micro_batch(model_inputs, **forward_kwargs)
+    if bool(_cfg_get(actor.config, "use_rollout_log_probs", False)):
         old_log_prob = model_inputs["old_log_probs"]
     elif on_policy:
         old_log_prob = log_prob.detach()
@@ -590,20 +702,28 @@ class SequentialBackwardDomainGradientTracker:
         self._distributed_world_size = _distributed_world_size()
         requested_sample_norm = self.sample_gradient_enabled and bool(cfg.get("sample_gradient_norm_enabled", True))
         requested_sample_cos = self.sample_gradient_enabled and bool(cfg.get("sample_gradient_cos_enabled", False))
-        self._sample_gradient_distributed_unsupported = (
-            self._distributed_world_size > 1 and (requested_sample_norm or requested_sample_cos)
+        self._sample_gradient_uses_full_local_params = _actor_has_full_local_params_for_sample_gradient(actor)
+        self._sample_gradient_norm_distributed_unsupported = (
+            requested_sample_norm and not self._sample_gradient_uses_full_local_params
         )
-        self.sample_norm_enabled = requested_sample_norm and not self._sample_gradient_distributed_unsupported
-        self.sample_cos_enabled = requested_sample_cos and not self._sample_gradient_distributed_unsupported
+        self._sample_gradient_cos_distributed_unsupported = (
+            requested_sample_cos and not self._sample_gradient_uses_full_local_params
+        )
+        self.sample_norm_enabled = requested_sample_norm and not self._sample_gradient_norm_distributed_unsupported
+        self.sample_cos_enabled = requested_sample_cos and not self._sample_gradient_cos_distributed_unsupported
+        self._sample_gradient_distributed_unsupported = not (
+            self.sample_norm_enabled or self.sample_cos_enabled or not (requested_sample_norm or requested_sample_cos)
+        )
         self.sample_log_sample_level = (
             bool(cfg.get("sample_gradient_log_sample_level", True))
-            and not self._sample_gradient_distributed_unsupported
+            and self.sample_norm_enabled
         )
         self.output_dir = str(cfg.get("output_dir", ""))
         self._sample_counts: dict[str, int] = {}
         self._first_domain_chunks: tuple[torch.Tensor, ...] | None = None
         self._expected_first_domain_samples: int | None = None
         self._started_at = 0.0
+        self._domain_partition_meta = cfg.get("domain_partition", {})
         self._prepared_supported = len(self.domains) == 2
         self._hook_handles: list[Any] = []
         self._active_norm_parts: list[torch.Tensor] | None = None
@@ -614,30 +734,63 @@ class SequentialBackwardDomainGradientTracker:
         self._sample_zero_norm_count = 0
 
     def prepare_micro_batches(self, micro_batches: list[Any]) -> list[tuple[str | None, Any]]:
+        original_micro_batches = list(micro_batches)
         self._expected_first_domain_samples = None
-        if len(self.domains) != 2:
-            self._prepared_supported = False
-            return [(None, micro_batch) for micro_batch in micro_batches]
-
+        partition_meta = self._domain_partition_meta if isinstance(self._domain_partition_meta, dict) else {}
+        partition_aligned = (
+            bool(partition_meta.get("aligned", False))
+            if partition_meta
+            else self._distributed_world_size <= 1
+        )
+        locally_supported = len(self.domains) == 2 and partition_aligned
         buckets: dict[str, list[tuple[str, Any]]] = {domain: [] for domain in self.domains}
-        for micro_batch in micro_batches:
-            labels = _teacher_labels(micro_batch)
-            unique_labels = set(labels)
-            if len(unique_labels) != 1:
-                self._prepared_supported = False
-                return [(None, item) for item in micro_batches]
-            domain = next(iter(unique_labels))
-            if domain not in buckets:
-                self._prepared_supported = False
-                return [(None, item) for item in micro_batches]
-            buckets[domain].append((domain, micro_batch))
+        if locally_supported:
+            for micro_batch in original_micro_batches:
+                labels = _teacher_labels(micro_batch)
+                unique_labels = set(labels)
+                if len(unique_labels) != 1:
+                    locally_supported = False
+                    break
+                domain = next(iter(unique_labels))
+                if domain not in buckets:
+                    locally_supported = False
+                    break
+                buckets[domain].append((domain, micro_batch))
+        if locally_supported:
+            locally_supported = all(buckets[domain] for domain in self.domains)
 
-        if not all(buckets[domain] for domain in self.domains):
+        globally_supported = _all_ranks_true(locally_supported)
+        domain_sample_counts = [
+            sum(len(micro_batch) for _, micro_batch in buckets[domain]) if locally_supported else 0
+            for domain in self.domains
+        ]
+        domain_micro_batch_counts = [
+            len(buckets[domain]) if locally_supported else 0 for domain in self.domains
+        ]
+        counts_aligned = False
+        if globally_supported:
+            micro_batch_counts_aligned = _all_ranks_equal_ints(domain_micro_batch_counts)
+            sample_counts_aligned = _all_ranks_equal_ints(domain_sample_counts)
+            meta_sample_counts = partition_meta.get("domain_block_sample_counts", {})
+            meta_counts_match = all(
+                int(meta_sample_counts.get(domain, -1)) == domain_sample_counts[idx]
+                for idx, domain in enumerate(self.domains)
+            ) if meta_sample_counts else self._distributed_world_size <= 1
+            counts_aligned = micro_batch_counts_aligned and sample_counts_aligned and meta_counts_match
+        self._prepared_supported = globally_supported and counts_aligned
+        if self.domain_gradient_enabled and not self._prepared_supported:
+            self.domain_gradient_enabled = False
+        if not self._prepared_supported:
+            self._expected_first_domain_samples = None
+            self._first_domain_chunks = None
+            return [(None, item) for item in original_micro_batches]
+
+        if partition_meta.get("domain_order") not in (None, list(self.domains)):
+            self.domain_gradient_enabled = False
             self._prepared_supported = False
-            return [(None, item) for item in micro_batches]
+            return [(None, item) for item in original_micro_batches]
 
-        self._prepared_supported = True
-        self._expected_first_domain_samples = sum(len(micro_batch) for _, micro_batch in buckets[self.domains[0]])
+        self._expected_first_domain_samples = domain_sample_counts[0]
         ordered: list[tuple[str | None, Any]] = []
         for domain in self.domains:
             ordered.extend(buckets[domain])
@@ -709,11 +862,19 @@ class SequentialBackwardDomainGradientTracker:
             "global/audit/full_gradient_domain_sequential_available": 0.0,
             "global/audit/full_gradient_domain_sequential_unsupported": float(not self._prepared_supported),
             "global/full_grad_cost/backward_seconds": time.perf_counter() - self._started_at,
-            "global/full_grad_cost/max_memory_allocated_gb": get_torch_device().max_memory_allocated() / (1024**3),
+            "global/full_grad_cost/max_memory_allocated_gb": _max_memory_allocated_gb(),
         }
+        replica_count = _gradient_replica_count(self.actor)
+        if replica_count > 1:
+            metrics["global/audit/full_gradient_replicated_all_reduce"] = 1.0
+            metrics["global/audit/full_gradient_replica_count"] = float(replica_count)
         if self._sample_gradient_distributed_unsupported:
             metrics["global/audit/sample_gradient_distributed_unsupported"] = 1.0
             metrics["global/audit/sample_gradient_distributed_world_size"] = float(self._distributed_world_size)
+        if self._sample_gradient_norm_distributed_unsupported:
+            metrics["global/audit/sample_gradient_norm_distributed_unsupported"] = 1.0
+        if self._sample_gradient_cos_distributed_unsupported:
+            metrics["global/audit/sample_gradient_cos_distributed_unsupported"] = 1.0
         first_chunks = self._first_domain_chunks
         self._first_domain_chunks = None
         domain_targets: dict[str, tuple[tuple[torch.Tensor, ...], float]] = {}
@@ -725,7 +886,9 @@ class SequentialBackwardDomainGradientTracker:
         metrics.update(self._sample_norm_metrics())
         if self.sample_cos_enabled and domain_targets:
             metrics.update(self._sample_cos_metrics(domain_targets))
-        metrics["global/audit/sample_gradient_zero_norm_count"] = float(self._sample_zero_norm_count)
+        metrics["global/audit/sample_gradient_zero_norm_count"] = _all_reduce_sum(
+            self._sample_zero_norm_count
+        )
         if self.sample_log_sample_level:
             _write_jsonl_rows(self.output_dir, "sample_grad_metrics.jsonl", self._sample_records)
         self._remove_sample_norm_hooks()
@@ -762,7 +925,11 @@ class SequentialBackwardDomainGradientTracker:
         scale = _current_grad_scale(self.actor)
         if scale != 1.0:
             local_sumsq /= scale * scale
-        grad_norm = float(max(_all_reduce_sum(local_sumsq), 0.0) ** 0.5)
+        if self._sample_gradient_uses_full_local_params:
+            norm_sumsq = local_sumsq
+        else:
+            norm_sumsq = _all_reduce_sum(local_sumsq)
+        grad_norm = float(max(norm_sumsq, 0.0) ** 0.5)
         row = {
             **context,
             "sample_grad_norm": grad_norm,
@@ -816,8 +983,6 @@ class SequentialBackwardDomainGradientTracker:
         metrics[f"{first_safe}/full_grad/sample_count"] = _all_reduce_sum(self._sample_counts.get(first_domain, 0))
         metrics[f"{second_safe}/full_grad/grad_norm"] = second_norm
         metrics[f"{second_safe}/full_grad/sample_count"] = _all_reduce_sum(self._sample_counts.get(second_domain, 0))
-        metrics["global/full_grad/total_grad_norm"] = total_norm
-
         pair = f"{first_safe}_vs_{second_safe}"
         domain_cosine = _safe_cosine(first_second_dot, first_norm, second_norm)
         if domain_cosine is not None:
@@ -848,8 +1013,9 @@ class SequentialBackwardDomainGradientTracker:
         by_domain: dict[str, list[float]] = {}
         for row in self._sample_records:
             by_domain.setdefault(str(row["domain"]), []).append(float(row["sample_grad_norm"]))
-        for domain, values in sorted(by_domain.items()):
-            finite = _finite_values(values)
+        domain_names = sorted(set(self.domains) | set(_all_gather_list(list(by_domain))))
+        for domain in domain_names:
+            finite = _finite_values(_all_gather_list(by_domain.get(domain, [])))
             if not finite:
                 continue
             safe_domain = _safe_name(domain)
@@ -865,6 +1031,7 @@ class SequentialBackwardDomainGradientTracker:
 
     def _sample_cos_metrics(self, domain_targets: dict[str, tuple[tuple[torch.Tensor, ...], float]]) -> dict[str, float]:
         metrics: dict[str, float] = {}
+        structural_unavailable_reason: str | None = None
         for domain, candidates in sorted(self._sample_candidates.items()):
             if domain not in domain_targets:
                 continue
@@ -874,40 +1041,99 @@ class SequentialBackwardDomainGradientTracker:
             target_norm = target_norm_sq**0.5
             cos_values: list[float] = []
             share_values: list[float] = []
+            availability_values: list[float] = []
+            disconnected_values: list[float] = []
             for candidate in candidates:
                 row = candidate["row"]
-                stats = self._recompute_sample_to_domain_stats(
-                    candidate["micro_batch"],
-                    target_chunks=target_chunks,
-                    target_norm=target_norm,
-                    target_norm_sq=target_norm_sq,
-                    loss_scale_factor=float(row.get("loss_scale_factor", 1.0)),
-                    on_policy=bool(row.get("on_policy", False)),
-                )
+                if structural_unavailable_reason is None:
+                    stats = self._recompute_sample_to_domain_stats(
+                        candidate["micro_batch"],
+                        target_chunks=target_chunks,
+                        target_norm=target_norm,
+                        target_norm_sq=target_norm_sq,
+                        loss_scale_factor=float(row.get("loss_scale_factor", 1.0)),
+                        on_policy=bool(row.get("on_policy", False)),
+                    )
+                    if stats.get("sample_recompute_autograd_error") == "all_parameters_disconnected":
+                        structural_unavailable_reason = "all_parameters_disconnected"
+                else:
+                    stats = {
+                        "sample_to_domain_cos": None,
+                        "sample_projection_share": None,
+                        "sample_recompute_grad_norm": 0.0,
+                        "sample_recompute_non_none_grad_count": 0.0,
+                        "sample_recompute_available": 0.0,
+                        "sample_recompute_autograd_error": structural_unavailable_reason,
+                    }
                 row["computed_for_cos"] = True
                 row.update(stats)
                 cos_value = stats.get("sample_to_domain_cos")
                 share_value = stats.get("sample_projection_share")
+                disconnected_values.append(
+                    float(stats.get("sample_recompute_autograd_error") == "all_parameters_disconnected")
+                )
+                available = float(
+                    stats.get(
+                        "sample_recompute_available",
+                        cos_value is not None or share_value is not None,
+                    )
+                )
+                availability_values.append(available)
                 if cos_value is not None:
                     cos_values.append(float(cos_value))
                 if share_value is not None:
                     share_values.append(float(share_value))
             safe_domain = _safe_name(domain)
-            if cos_values:
-                metrics[f"{safe_domain}/sample_grad_cos/domain_cos_mean"] = _mean(cos_values) or 0.0
-                metrics[f"{safe_domain}/sample_grad_cos/domain_cos_p05"] = _percentile(cos_values, 5.0) or 0.0
+            global_cos_values = _finite_values(_all_gather_list(cos_values))
+            global_share_values = _finite_values(_all_gather_list(share_values))
+            global_availability_values = _finite_values(_all_gather_list(availability_values))
+            global_disconnected_values = _finite_values(_all_gather_list(disconnected_values))
+            if global_availability_values:
+                attempted_count = len(global_availability_values)
+                available_count = sum(value > 0.5 for value in global_availability_values)
+                metrics[f"{safe_domain}/sample_grad_cos/attempted_count"] = float(attempted_count)
+                metrics[f"{safe_domain}/sample_grad_cos/unavailable_count"] = float(
+                    attempted_count - available_count
+                )
+                metrics[f"{safe_domain}/sample_grad_cos/valid_frac"] = available_count / attempted_count
+            if global_disconnected_values:
+                metrics[f"{safe_domain}/sample_grad_cos/all_parameters_disconnected_count"] = float(
+                    sum(value > 0.5 for value in global_disconnected_values)
+                )
+            if global_cos_values:
+                metrics[f"{safe_domain}/sample_grad_cos/domain_cos_mean"] = _mean(global_cos_values) or 0.0
+                metrics[f"{safe_domain}/sample_grad_cos/domain_cos_p05"] = _percentile(global_cos_values, 5.0) or 0.0
                 metrics[f"{safe_domain}/sample_grad_cos/domain_cos_negative_frac"] = float(
-                    np.mean([value < 0.0 for value in cos_values])
+                    np.mean([value < 0.0 for value in global_cos_values])
                 )
-                metrics[f"{safe_domain}/sample_grad_cos/sample_count"] = float(len(cos_values))
-            if share_values:
-                metrics[f"{safe_domain}/sample_grad_contribution/projection_share_mean"] = _mean(share_values) or 0.0
-                metrics[f"{safe_domain}/sample_grad_contribution/projection_share_min"] = min(share_values)
-                metrics[f"{safe_domain}/sample_grad_contribution/projection_share_max"] = max(share_values)
+                metrics[f"{safe_domain}/sample_grad_cos/sample_count"] = float(len(global_cos_values))
+            if global_share_values:
+                metrics[f"{safe_domain}/sample_grad_contribution/projection_share_mean"] = _mean(global_share_values) or 0.0
+                metrics[f"{safe_domain}/sample_grad_contribution/projection_share_min"] = min(global_share_values)
+                metrics[f"{safe_domain}/sample_grad_contribution/projection_share_max"] = max(global_share_values)
                 metrics[f"{safe_domain}/sample_grad_contribution/projection_share_negative_frac"] = float(
-                    np.mean([value < 0.0 for value in share_values])
+                    np.mean([value < 0.0 for value in global_share_values])
                 )
-                metrics[f"{safe_domain}/sample_grad_contribution/top1_abs_share"] = max(abs(value) for value in share_values)
+                metrics[f"{safe_domain}/sample_grad_contribution/top1_abs_share"] = max(
+                    abs(value) for value in global_share_values
+                )
+                projection_share_sum_across_replicas = sum(global_share_values)
+                replica_count = (
+                    _gradient_replica_count(self.actor)
+                    if self._sample_gradient_uses_full_local_params
+                    else 1
+                )
+                projection_share_sum = projection_share_sum_across_replicas / max(replica_count, 1)
+                metrics[
+                    f"{safe_domain}/sample_grad_contribution/projection_share_sum_across_replicas"
+                ] = projection_share_sum_across_replicas
+                metrics[
+                    f"{safe_domain}/sample_grad_contribution/projection_share_replica_count"
+                ] = float(replica_count)
+                metrics[f"{safe_domain}/sample_grad_contribution/projection_share_sum"] = projection_share_sum
+                metrics[f"{safe_domain}/sample_grad_contribution/projection_share_sum_error"] = abs(
+                    projection_share_sum - 1.0
+                )
         return metrics
 
     def _recompute_sample_to_domain_stats(
@@ -922,28 +1148,59 @@ class SequentialBackwardDomainGradientTracker:
     ) -> dict[str, float | None]:
         parameters = _trainable_parameters(self.actor)
         if len(parameters) != len(target_chunks):
-            return {"sample_to_domain_cos": None, "sample_projection_share": None, "sample_recompute_grad_norm": None}
-        loss = _actor_micro_batch_loss(
-            self.actor,
-            micro_batch,
-            loss_scale_factor=loss_scale_factor,
-            on_policy=on_policy,
-        )
-        gradients = torch.autograd.grad(loss, parameters, retain_graph=False, allow_unused=True)
+            return {
+                "sample_to_domain_cos": None,
+                "sample_projection_share": None,
+                "sample_recompute_grad_norm": None,
+                "sample_recompute_non_none_grad_count": 0.0,
+                "sample_recompute_available": 0.0,
+                "sample_recompute_autograd_error": "parameter_target_mismatch",
+            }
+        try:
+            loss = _actor_micro_batch_loss(
+                self.actor,
+                micro_batch,
+                loss_scale_factor=loss_scale_factor,
+                on_policy=on_policy,
+                safe_logprob_backward=True,
+            )
+            gradients = torch.autograd.grad(loss, parameters, retain_graph=False, allow_unused=True)
+            autograd_error: str | None = None
+        except Exception as exc:
+            gradients = tuple(None for _ in parameters)
+            autograd_error = type(exc).__name__
         local_norm_sq, local_dot = self._grad_stats_from_tensors(gradients, target_chunks)
+        non_none_grad_count = sum(gradient is not None for gradient in gradients)
+        if non_none_grad_count == 0 and autograd_error is None:
+            autograd_error = "all_parameters_disconnected"
         if local_norm_sq is None or local_dot is None:
-            return {"sample_to_domain_cos": None, "sample_projection_share": None, "sample_recompute_grad_norm": None}
-        norm_sq = max(_all_reduce_sum(local_norm_sq), 0.0)
-        dot = _all_reduce_sum(local_dot)
-        if norm_sq <= 0.0:
+            return {
+                "sample_to_domain_cos": None,
+                "sample_projection_share": None,
+                "sample_recompute_grad_norm": None,
+                "sample_recompute_non_none_grad_count": float(non_none_grad_count),
+                "sample_recompute_available": 0.0,
+                "sample_recompute_autograd_error": autograd_error,
+            }
+        if self._sample_gradient_uses_full_local_params:
+            norm_sq = max(local_norm_sq, 0.0)
+            dot = local_dot
+        else:
+            norm_sq = max(_all_reduce_sum(local_norm_sq), 0.0)
+            dot = _all_reduce_sum(local_dot)
+        if non_none_grad_count > 0 and norm_sq <= 0.0:
             self._sample_zero_norm_count += 1
         sample_norm = norm_sq**0.5
-        cosine = None if sample_norm <= 0.0 or target_norm <= 0.0 else dot / (sample_norm * target_norm)
-        projection_share = None if target_norm_sq <= 0.0 else dot / target_norm_sq
+        available = non_none_grad_count > 0 and sample_norm > 0.0 and target_norm > 0.0
+        cosine = dot / (sample_norm * target_norm) if available else None
+        projection_share = dot / target_norm_sq if available and target_norm_sq > 0.0 else None
         return {
             "sample_to_domain_cos": cosine,
             "sample_projection_share": projection_share,
             "sample_recompute_grad_norm": sample_norm,
+            "sample_recompute_non_none_grad_count": float(non_none_grad_count),
+            "sample_recompute_available": float(available),
+            "sample_recompute_autograd_error": autograd_error,
         }
 
     def _grad_stats_from_tensors(
@@ -960,8 +1217,12 @@ class SequentialBackwardDomainGradientTracker:
             if gradient_gpu.numel() != target.numel():
                 return None, None
             target_gpu = target.reshape(-1).to(device=gradient_gpu.device, dtype=torch.float32)
-            local_norm_sq += torch.dot(gradient_gpu, gradient_gpu).item()
-            local_dot += torch.dot(gradient_gpu, target_gpu).item()
+            gradient_norm_sq = _chunked_vector_dot(gradient_gpu, gradient_gpu)
+            gradient_target_dot = _chunked_vector_dot(gradient_gpu, target_gpu)
+            if gradient_norm_sq is None or gradient_target_dot is None:
+                return None, None
+            local_norm_sq += gradient_norm_sq
+            local_dot += gradient_target_dot
         return local_norm_sq, local_dot
 
 
@@ -1192,7 +1453,7 @@ class SameForwardDomainGradientProbe:
             "global/audit/full_gradient_true_backward_fallback": 0.0,
             "global/audit/sample_gradient_zero_norm_count": 0.0,
             "global/full_grad_cost/backward_seconds": time.perf_counter() - self._started_at,
-            "global/full_grad_cost/max_memory_allocated_gb": get_torch_device().max_memory_allocated() / (1024**3),
+            "global/full_grad_cost/max_memory_allocated_gb": _max_memory_allocated_gb(),
         }
         if self._distributed_world_size > 1 and self.domain_gradient_enabled:
             metrics["global/audit/full_gradient_replicated_all_reduce"] = 1.0
@@ -1518,7 +1779,6 @@ class SameForwardDomainGradientProbe:
         if total_vector is not None:
             total_norm = _local_vector_norm(total_vector) if self._domain_vectors_are_global else _vector_norm(total_vector)
             total_norm_sq = total_norm * total_norm
-            metrics["global/full_grad/total_grad_norm"] = total_norm
             if total_norm > 0.0:
                 for domain, vector in domain_vectors.items():
                     domain_norm = self._domain_norms.get(domain, 0.0)
@@ -1728,7 +1988,12 @@ class SameForwardDomainGradientProbe:
 
         # -- compute sample loss ----------------------------------------
         response_mask = model_inputs["response_mask"]
-        old_log_prob = log_prob.detach() if on_policy else model_inputs["old_log_probs"]
+        if bool(_cfg_get(self.actor.config, "use_rollout_log_probs", False)):
+            old_log_prob = model_inputs["old_log_probs"]
+        elif on_policy:
+            old_log_prob = log_prob.detach()
+        else:
+            old_log_prob = model_inputs["old_log_probs"]
         advantages = _actor_reverse_kl_advantages(self.actor, model_inputs, old_log_prob)
         rollout_is_weights = model_inputs.get("rollout_is_weights", None)
 
@@ -1794,7 +2059,11 @@ class SameForwardDomainGradientProbe:
                 target_chunk_gpu = target_chunk.to(device=device, dtype=torch.float32)
             else:
                 target_chunk_gpu = target_chunk.float()
-            dot_total += torch.dot(sample_chunk.float(), target_chunk_gpu).item()
+            chunk_dot = _chunked_vector_dot(sample_chunk, target_chunk_gpu)
+            if chunk_dot is None:
+                del target_chunk_gpu
+                return {"cosine": None, "projection_share": None}
+            dot_total += chunk_dot
             del target_chunk_gpu
             offset += chunk_len
 
