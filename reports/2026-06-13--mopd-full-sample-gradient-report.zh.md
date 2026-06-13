@@ -1,0 +1,118 @@
+---
+type: results-report
+date: 2026-06-13
+experiment_line: mopd-gradient-audit
+round: 0
+purpose: full-sample-gradient-diagnosis
+status: active
+source_artifacts:
+  - "TensorBoard run: on-policy-distillation/Qwen3-4B-Multi-Teacher-ExOPD-formal-dual-a800"
+  - "Remote log: logs/mopd_tp2_ckpt_b256_resp8k_util08_20260612_1102.log"
+linked_experiments:
+  - mopd_tp2_ckpt_b256_resp8k_util08_20260612_1102
+linked_results: []
+---
+
+# MOPD Full/Sample Gradient 诊断报告
+
+## Executive Summary
+
+本轮双 A800 诊断实验只完整记录到 step 1-5，step 6 完成 generation 后没有继续产出训练 scalar。日志中没有看到 OOM、Traceback、RuntimeError、ValueError、NaN 或 Inf，因此目前更像是训练进程在 generation 之后停滞或退出，而不是显式异常崩溃。
+
+核心结论是：math 的 sample gradient 相对 code 持续变强，但这不等价于 math 主导了 global/full_grad 更新方向。full_grad 视角下，math 和 code 的梯度方向从 step 2 开始强烈冲突；total update 多数 step 仍更接近 code，只有 step 3 math 的 signed projection share 短暂占主导。
+
+## Experiment Identity And Setup
+
+- 配置：`configs/mopd_formal_dual_a800.yaml`
+- GPU：2 x NVIDIA A800 80GB
+- 关键参数：`train_batch_size=256`，`ppo_mini_batch_size=256`，`max_response_length=8192`
+- Rollout：vLLM TP=2，`gpu_memory_utilization=0.8`
+- Actor：`gradient_checkpointing=true`，`fsdp_size=1`
+- Audit：full-gradient 每 step 开启；sample gradient norm 开启；sample-to-domain cosine 关闭
+- 可用 TensorBoard step：1-5
+
+## Main Findings
+
+### 1. full_grad 显示 math/code 梯度方向存在强冲突
+
+| Step | math full_grad norm | code full_grad norm | math-vs-code cosine |
+| ---: | ---: | ---: | ---: |
+| 1 | 0.240204 | 1.890120 | -0.103692 |
+| 2 | 0.128565 | 0.165392 | -0.725777 |
+| 3 | 0.193730 | 0.187963 | -0.942088 |
+| 4 | 0.153246 | 0.157669 | -0.942960 |
+| 5 | 0.156139 | 0.173288 | -0.919388 |
+
+从 step 2 开始，math/code full gradient cosine 进入明显负值区间，step 3-5 约为 -0.94、-0.94、-0.92。这说明两个 domain 的更新方向高度相反，不能只看 domain loss 或 sample norm 的大小来判断谁“贡献更大”。
+
+### 2. global/full_grad 的 total update 多数时候更偏 code
+
+| Step | math vs total cosine | code vs total cosine | math signed share | code signed share |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.023520 | 0.991900 | 0.0030 | 0.9970 |
+| 2 | 0.074770 | 0.631810 | 0.0842 | 0.9158 |
+| 3 | 0.255430 | 0.083690 | 0.7589 | 0.2412 |
+| 4 | 0.086780 | 0.249900 | 0.2524 | 0.7477 |
+| 5 | -0.046570 | 0.435810 | -0.1065 | 1.1066 |
+
+除 step 3 以外，total update 的方向和 signed projection 都更偏 code。step 5 中 math signed share 为负，表示 math 梯度相对 total update 已经是反向投影；code signed share 超过 1，是因为 code 不只是贡献 total update，还抵消了 math 的反向分量。
+
+### 3. sample_grad 解释了“math 比例上涨、code 比例下降”的表观现象
+
+| Step | math sample norm mean | code sample norm mean | math sample norm share | math/code ratio |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.113792 | 0.308501 | 26.9% | 0.37x |
+| 2 | 0.100166 | 0.088152 | 53.2% | 1.14x |
+| 3 | 0.099863 | 0.038417 | 72.2% | 2.60x |
+| 4 | 0.097218 | 0.035304 | 73.4% | 2.75x |
+| 5 | 0.073221 | 0.020039 | 78.5% | 3.65x |
+
+math 的 sample gradient norm 在 step 1-5 下降较慢，而 code 从 0.308501 快速降到 0.020039。因此按 sample norm 计算的 math 占比会持续上涨，code 占比自然下降。step 5 的分布也支持这一点：math p50 为 0.06483，code p50 为 0.01420；math p95 为 0.1320，code p95 为 0.0623。
+
+这说明 math 样本的单样本训练压力更稳定、更大；code 样本在前几步被快速压低，后续单样本 gradient 变小。
+
+### 4. loss/gap 和 clipping 指标支持同一个解释
+
+step 5 中 math 的 token OPD loss 约为 code 的 12.13x，sample OPD loss 约为 5.23x，teacher-student absolute gap 约为 9.99x。也就是说，math 当前仍有更大的 teacher-student mismatch，因此 sample gradient 更大是合理的。
+
+同时，math token fraction 约为 30.1%，code token fraction 约为 69.9%；math clip ratio 只有 1.6%，code clip ratio 为 50.0%。这意味着 code 虽然 token 更多，但大量 code token 已经进入被 clipping 或压制的区域；math token 更少，但有效误差信号更强。
+
+## Statistical Validation
+
+这份分析是描述性诊断，不应作为最终统计结论。原因是当前只有 5 个完整训练 step，且 step 6 没有训练 scalar。可以稳定引用的部分是指标方向和相对关系：
+
+- audit health 指标干净：`autograd_unavailable=0`，`true_backward_fallback=0`，`sample_gradient_zero_norm_count=0`
+- full-gradient sequential path 可用：`domain_sequential_available=1`
+- replicated all-reduce 生效：`replicated_all_reduce=1`，`replica_count=2`
+- math/code full_grad cosine 在 step 2-5 持续为负，并在 step 3-5 接近 -0.9
+- sample gradient norm 的 math share 从 26.9% 上升到 78.5%
+
+## What Changed Our Belief
+
+原始观察是“math 的比例一直涨，code 一直降低”。只看 sample gradient norm，确实可以得出这个现象；但 global/full_grad 指标改变了我们对它的解释。
+
+现在更准确的判断是：math 的 per-sample signal 正在变强或衰减更慢，但由于 math/code 梯度方向冲突，global update 是否偏向 math 要看 signed projection share 和 domain-vs-total cosine。当前 total update 多数 step 仍由 code 决定，math 主要体现为更大的局部训练压力，而不是稳定主导全局更新方向。
+
+## Limitations
+
+- 只有 step 1-5 的完整训练 scalar，趋势长度不足。
+- sample-to-domain cosine 当前在双卡 profile 中关闭，因此无法直接确认每个 sample gradient 与 domain full_grad 的方向一致性。
+- step 6 generation 后缺少后续训练 scalar，需要继续定位停滞原因。
+- 当前报告没有使用 validation accuracy 或 downstream paper eval，因此不能推断最终能力变化。
+
+## Next Actions
+
+1. 继续跑更长的稳定训练，至少拿到 20-50 个完整 step，再判断 math/code 占比是否收敛。
+2. 优先实现或恢复 two-pass FSDP sample-to-domain cosine，用来区分“sample norm 大”与“sample 方向真正支持 domain update”。
+3. 增加 normalized contribution 指标，例如 signed projection share 除以 token fraction 或 sample fraction，避免 token 数差异掩盖 domain pressure。
+4. 对 step 6 停滞点单独排查：重点看 generation 完成后的 actor update、full-gradient backward 和 sample-gradient recompute 阶段。
+5. 将 4 卡和 8 卡 profile 作为后续 scale 实验入口，保持每 GPU 约 128 prompts，便于和当前双卡诊断结果对齐。
+
+## Artifact And Reproducibility Index
+
+- 配置文件：`configs/mopd_formal_dual_a800.yaml`
+- 4 卡 scale 配置：`configs/mopd_formal_4gpu_a800.yaml`
+- 8 卡 scale 配置：`configs/mopd_formal_8gpu_a800.yaml`
+- TensorBoard run：`on-policy-distillation/Qwen3-4B-Multi-Teacher-ExOPD-formal-dual-a800`
+- 远端日志：`logs/mopd_tp2_ckpt_b256_resp8k_util08_20260612_1102.log`
+- 关键 TensorBoard tags：`math/full_grad/grad_norm`，`code/full_grad/grad_norm`，`global/full_grad_conflict/math_vs_code/full_grad_cosine_train_i_k`，`global/full_grad_contribution/*/signed_projection_share`，`math/sample_grad/norm_mean`，`code/sample_grad/norm_mean`

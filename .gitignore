@@ -1,6 +1,7 @@
 # Secrets / local connection files
-ssh.sh
-api.sh
+/ssh.sh
+/ssh*.sh
+/api.sh
 .env
 .env.*
 *.pem
@@ -40,6 +41,7 @@ outputs/
 runs/
 wandb/
 temp/
+/SERVER_PACKAGE_MANIFEST.txt
 *.log
 *.jsonl
 events.out.tfevents*
@@ -60,6 +62,7 @@ models/
 hf_home/
 G-OPD/
 G-OPD-Training-Data/
+/eval/domains.zip
 !data/G-OPD-Training-Data/
 !data/G-OPD-Training-Data/**/*.parquet
 data/agentic_benchmarks/sources/

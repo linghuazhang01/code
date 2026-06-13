@@ -277,15 +277,16 @@ process is already close to physical RAM exhaustion.
 
 ## Formal Dual-A800 Config
 
-Use `configs/mopd_formal_dual_a800.yaml` for two NVIDIA A800 80GB GPUs. It
-keeps the single-A800 global `train_batch_size=ppo_mini_batch_size=512`, uses
-FSDP across both GPUs, and runs rollout with TP=1 and two data-parallel
-replicas.
+Use `configs/mopd_formal_dual_a800.yaml` for the current two-A800 diagnostic
+run. It uses `train_batch_size=ppo_mini_batch_size=256`,
+`max_response_length=8192`, replicated actor audit coordinates
+(`actor.fsdp_size=1`), rollout TP=2 across the two GPUs,
+`gpu_memory_utilization=0.8`, and `total_training_steps=10`.
 
 The standard per-domain data, OPD loss, teacher confidence/gap, reward, and
-cost metrics remain enabled. Full-parameter and sample-gradient audit are
-disabled in this profile because their cross-rank aggregation has not yet been
-validated for different samples on each FSDP rank.
+cost metrics remain enabled. Full-parameter auditing and sample gradient norms
+remain enabled. Sample-to-domain cosine is disabled until the two-pass FSDP
+implementation is ready.
 
 ```bash
 cd /root/OPD-code
@@ -300,8 +301,34 @@ For the current metric definitions, use [`metrics_zh.md`](metrics_zh.md) as the 
 
 - per-domain data, OPD loss, teacher confidence/gap, calibration, reward, advantage sign, and response length metrics;
 - full-parameter train gradient metrics: per-domain grad norm, math-vs-code cosine/conflict, domain-vs-total cosine, and signed projection share;
-- sampled per-example gradient metrics: sample grad norm, sample-to-domain cosine, and projection share for every sample in the actor update mini-batch;
+- sampled per-example gradient metrics: sample grad norm for every sample in the actor update mini-batch; sample-to-domain cosine and projection share are disabled in the dual-A800 profile;
 - cost metrics such as step seconds, tokens/sec, peak memory, and full-gradient backward time.
+
+The Chinese gradient report for this run is in
+[`reports/2026-06-13--mopd-full-sample-gradient-report.zh.md`](reports/2026-06-13--mopd-full-sample-gradient-report.zh.md).
+
+## Formal Scaled-A800 Configs
+
+The multi-GPU A800 profiles scale the current two-A800 setup while keeping 8K
+responses, per-step full-gradient audit, and sample gradient norm logging.
+Sample-to-domain cosine remains disabled until the two-pass FSDP path is ready.
+
+| Config | GPUs | Train/PPO batch | Response | Rollout TP | vLLM util | Notes |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `configs/mopd_formal_4gpu_a800.yaml` | 4 | 512 | 8192 | 4 | 0.8 | One TP=4 rollout group, about 128 prompts/GPU. |
+| `configs/mopd_formal_8gpu_a800.yaml` | 8 | 1024 | 8192 | 4 | 0.8 | Two TP=4 rollout groups, about 128 prompts/GPU. |
+
+Launch examples:
+
+```bash
+GPU_IDS=0,1,2,3 bash scripts/start_remote_mopd_training.sh \
+  configs/mopd_formal_4gpu_a800.yaml \
+  --run-id mopd_4gpu_a800_$(date +%Y%m%d_%H%M%S)
+
+GPU_IDS=0,1,2,3,4,5,6,7 bash scripts/start_remote_mopd_training.sh \
+  configs/mopd_formal_8gpu_a800.yaml \
+  --run-id mopd_8gpu_a800_$(date +%Y%m%d_%H%M%S)
+```
 
 ## Formal Single-H200 Config
 
