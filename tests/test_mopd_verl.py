@@ -188,7 +188,7 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("data/SearchQA/train.parquet", rendered)
         self.assertIn("actor_rollout_ref.rollout.name=sglang", rendered)
         self.assertIn("actor_rollout_ref.rollout.mode=sync", rendered)
-        self.assertIn("actor_rollout_ref.rollout.max_model_len=15000", rendered)
+        self.assertIn("actor_rollout_ref.rollout.max_model_len=20480", rendered)
         self.assertIn("actor_rollout_ref.rollout.multi_turn.enable=true", rendered)
         self.assertIn("actor_rollout_ref.rollout.multi_turn.tool_config_path=configs/tool_config/search_tool_config.yaml", rendered)
         self.assertIn("+data.need_tools_kwargs=True", rendered)

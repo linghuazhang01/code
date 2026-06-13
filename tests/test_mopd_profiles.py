@@ -69,3 +69,16 @@ class MOPDProfileTests(unittest.TestCase):
                     cpu_count=cpu_count,
                     output_name=output_name,
                 )
+
+    def test_explicit_rollout_model_lengths_cover_prompt_and_response(self) -> None:
+        config_dir = Path(__file__).resolve().parents[1] / "configs"
+
+        for config_path in sorted(config_dir.glob("*.yaml")):
+            with self.subTest(config=config_path.name):
+                config = load_config(config_path)
+                max_model_len = config.rollout.max_model_len
+                if max_model_len is None:
+                    continue
+
+                required_context = config.data.max_prompt_length + config.data.max_response_length
+                self.assertGreaterEqual(max_model_len, required_context)

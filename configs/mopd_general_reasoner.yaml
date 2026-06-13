@@ -62,7 +62,7 @@ rollout:
   gpu_memory_utilization: 0.6
   enable_chunked_prefill: false
   n: 1
-  max_model_len: 9216
+  max_model_len: 17408
   max_num_batched_tokens: 32768
   max_num_seqs: 1024
   temperature: 1.0
