@@ -19,7 +19,7 @@
 ## 代码功能
 
 - `configs/mopd_formal_single_a800.yaml`：当前 single-A800 正式训练配置，0.6B student、两个 4B teacher、本地 parquet 数据、TensorBoard logger、full-gradient 与 sample-gradient audit。
-- `configs/mopd_formal_dual_a800.yaml`：当前 dual-A800 诊断训练配置，8K response、TP=2、full-gradient audit 与 sample gradient norm。
+- `configs/mopd_formal_dual_a800.yaml`：当前 dual-A800 诊断训练配置，16K response、TP=2、full-gradient audit 与 sample gradient norm。
 - `configs/mopd_formal_4gpu_a800.yaml` / `configs/mopd_formal_8gpu_a800.yaml`：从 dual-A800 profile 扩展到 4/8 卡，保持约 128 prompts/GPU。
 - `configs/mopd_math_code.yaml`：paper-style 两教师配置。
 - `configs/mopd_general_reasoner.yaml`：General-Reasoner-Qwen3-14B 作为 reasoning teacher、Qwen3-4B 作为 student 的 WebInstruct MOPD 配置。
@@ -321,7 +321,7 @@ sample-to-domain cosine 和 projection share。不要通过提高
 
 两张 NVIDIA A800 80GB 当前诊断实验使用
 `configs/mopd_formal_dual_a800.yaml`。该配置使用
-`train_batch_size=ppo_mini_batch_size=256`、`max_response_length=8192`、
+`train_batch_size=ppo_mini_batch_size=256`、`max_response_length=16384`、
 replicated actor audit 坐标系（`actor.fsdp_size=1`）、rollout TP=2、
 `gpu_memory_utilization=0.8`，并把 `total_training_steps` 设为 10。
 
@@ -350,14 +350,14 @@ GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
 
 ## Formal Scaled-A800 配置
 
-多卡 A800 profile 从当前双卡设置线性扩展，保留 8K response、逐 step
+多卡 A800 profile 从当前双卡设置线性扩展，保留 16K response、逐 step
 full-gradient audit 和 sample gradient norm 统计。sample-to-domain cosine
 继续关闭，等待 two-pass FSDP 路径完成后再启用。
 
 | 配置 | GPU 数 | Train/PPO batch | Response | Rollout TP | vLLM util | 说明 |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| `configs/mopd_formal_4gpu_a800.yaml` | 4 | 512 | 8192 | 4 | 0.8 | 一个 TP=4 rollout group，约 128 prompts/GPU。 |
-| `configs/mopd_formal_8gpu_a800.yaml` | 8 | 1024 | 8192 | 4 | 0.8 | 两个 TP=4 rollout group，约 128 prompts/GPU。 |
+| `configs/mopd_formal_4gpu_a800.yaml` | 4 | 512 | 16384 | 4 | 0.8 | 一个 TP=4 rollout group，约 128 prompts/GPU。 |
+| `configs/mopd_formal_8gpu_a800.yaml` | 8 | 1024 | 16384 | 4 | 0.8 | 两个 TP=4 rollout group，约 128 prompts/GPU。 |
 
 启动示例：
 

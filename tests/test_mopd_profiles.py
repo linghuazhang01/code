@@ -22,7 +22,7 @@ class MOPDProfileTests(unittest.TestCase):
         rendered = format_command(build_command(config))
 
         self.assertEqual(config.data.train_batch_size, batch_size)
-        self.assertEqual(config.data.max_response_length, 8192)
+        self.assertEqual(config.data.max_response_length, 16384)
         self.assertEqual(config.actor.ppo_mini_batch_size, batch_size)
         self.assertEqual(config.actor.ppo_micro_batch_size_per_gpu, 1)
         self.assertTrue(config.actor.gradient_checkpointing)

@@ -344,7 +344,7 @@ class MOPDVerlTests(unittest.TestCase):
         rendered = format_command(build_command(config))
 
         self.assertEqual(config.data.train_batch_size, 256)
-        self.assertEqual(config.data.max_response_length, 8192)
+        self.assertEqual(config.data.max_response_length, 16384)
         self.assertEqual(config.actor.ppo_mini_batch_size, 256)
         self.assertEqual(config.actor.ppo_micro_batch_size_per_gpu, 1)
         self.assertTrue(config.actor.gradient_checkpointing)
@@ -360,7 +360,7 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertEqual(config.trainer.total_training_steps, 10)
         self.assertIn("trainer.n_gpus_per_node=2", rendered)
         self.assertIn("data.train_batch_size=256", rendered)
-        self.assertIn("data.max_response_length=8192", rendered)
+        self.assertIn("data.max_response_length=16384", rendered)
         self.assertIn("actor_rollout_ref.actor.ppo_mini_batch_size=256", rendered)
         self.assertIn("actor_rollout_ref.model.enable_gradient_checkpointing=True", rendered)
         self.assertIn("actor_rollout_ref.rollout.tensor_model_parallel_size=2", rendered)

@@ -279,7 +279,7 @@ process is already close to physical RAM exhaustion.
 
 Use `configs/mopd_formal_dual_a800.yaml` for the current two-A800 diagnostic
 run. It uses `train_batch_size=ppo_mini_batch_size=256`,
-`max_response_length=8192`, replicated actor audit coordinates
+`max_response_length=16384`, replicated actor audit coordinates
 (`actor.fsdp_size=1`), rollout TP=2 across the two GPUs,
 `gpu_memory_utilization=0.8`, and `total_training_steps=10`.
 
@@ -309,14 +309,14 @@ The Chinese gradient report for this run is in
 
 ## Formal Scaled-A800 Configs
 
-The multi-GPU A800 profiles scale the current two-A800 setup while keeping 8K
+The multi-GPU A800 profiles scale the current two-A800 setup while keeping 16K
 responses, per-step full-gradient audit, and sample gradient norm logging.
 Sample-to-domain cosine remains disabled until the two-pass FSDP path is ready.
 
 | Config | GPUs | Train/PPO batch | Response | Rollout TP | vLLM util | Notes |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| `configs/mopd_formal_4gpu_a800.yaml` | 4 | 512 | 8192 | 4 | 0.8 | One TP=4 rollout group, about 128 prompts/GPU. |
-| `configs/mopd_formal_8gpu_a800.yaml` | 8 | 1024 | 8192 | 4 | 0.8 | Two TP=4 rollout groups, about 128 prompts/GPU. |
+| `configs/mopd_formal_4gpu_a800.yaml` | 4 | 512 | 16384 | 4 | 0.8 | One TP=4 rollout group, about 128 prompts/GPU. |
+| `configs/mopd_formal_8gpu_a800.yaml` | 8 | 1024 | 16384 | 4 | 0.8 | Two TP=4 rollout groups, about 128 prompts/GPU. |
 
 Launch examples:
 
