@@ -20,7 +20,7 @@ data:
   train_batch_size: 512
   val_batch_size: 256
   max_prompt_length: 4096
-  max_response_length: 3000
+  max_response_length: 16384
   filter_overlong_prompts: true
   truncation: error
   shuffle: true
