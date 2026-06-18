@@ -161,6 +161,9 @@ class AuditConfig:
     full_gradient_offload_domain_gradients: bool = True
     token_gap_enabled: bool = True
     token_gap_freq_steps: int = 1
+    token_gap_vocab_vector_enabled: bool = False
+    token_gap_vocab_vector_freq_steps: int = 1
+    token_gap_vocab_size: int | None = None
     entropy_enabled: bool = True
     entropy_freq_steps: int = 1
     token_conflict_enabled: bool = True

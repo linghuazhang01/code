@@ -146,6 +146,28 @@ def _tensor_to_float_list(tensor: Any) -> list[float]:
     return [float(x) for x in tensor.detach().float().cpu().tolist()]
 
 
+def _tensor_to_int_list(tensor: Any) -> list[int]:
+    return [int(x) for x in tensor.detach().long().cpu().tolist()]
+
+
+def _infer_tokenizer_vocab_size(tokenizer: Any | None) -> int | None:
+    if tokenizer is None:
+        return None
+    try:
+        return int(len(tokenizer))
+    except TypeError:
+        pass
+    vocab_size = getattr(tokenizer, "vocab_size", None)
+    if vocab_size is not None:
+        return int(vocab_size)
+    get_vocab = getattr(tokenizer, "get_vocab", None)
+    if callable(get_vocab):
+        vocab = get_vocab()
+        if vocab is not None:
+            return int(len(vocab))
+    return None
+
+
 def _response_token_id_matrix(tensor_batch: Any, batch_keys: set[str], response_mask: Any) -> Any | None:
     if "responses" in batch_keys:
         token_ids = tensor_batch["responses"]
@@ -165,6 +187,82 @@ def _response_token_id_matrix(tensor_batch: Any, batch_keys: set[str], response_
     if int(token_ids.shape[0]) == int(response_mask.shape[0]) and int(token_ids.shape[-1]) >= response_len:
         return token_ids[:, -response_len:].detach().long().cpu()
     return None
+
+
+def _tensor_cosine(left: Any, right: Any) -> float | None:
+    import torch
+
+    left = left.detach().float().flatten()
+    right = right.detach().float().flatten()
+    denom = torch.linalg.vector_norm(left) * torch.linalg.vector_norm(right)
+    if float(denom.detach().cpu().item()) <= 0.0:
+        return None
+    return float((torch.dot(left, right) / denom).detach().cpu().item())
+
+
+def _token_gap_vocab_tensors(
+    *,
+    token_ids: Any,
+    response_mask: Any,
+    gap_signed: Any,
+    gap_abs: Any,
+    vocab_size: int,
+) -> dict[str, Any] | None:
+    import torch
+
+    valid = response_mask.detach().bool().cpu()
+    flat_ids = token_ids.detach().long().cpu()[valid]
+    if int(flat_ids.numel()) == 0:
+        return None
+
+    flat_signed = gap_signed.detach().float().cpu()[valid]
+    flat_abs = gap_abs.detach().float().cpu()[valid]
+    in_vocab = (flat_ids >= 0) & (flat_ids < int(vocab_size))
+    dropped = int((~in_vocab).sum().item())
+    flat_ids = flat_ids[in_vocab]
+    flat_signed = flat_signed[in_vocab]
+    flat_abs = flat_abs[in_vocab]
+    if int(flat_ids.numel()) == 0:
+        return None
+
+    counts_int = torch.bincount(flat_ids, minlength=int(vocab_size))
+    counts = counts_int.to(dtype=torch.float32)
+    signed_sum = torch.zeros(int(vocab_size), dtype=torch.float32)
+    abs_sum = torch.zeros(int(vocab_size), dtype=torch.float32)
+    signed_sum.index_add_(0, flat_ids, flat_signed)
+    abs_sum.index_add_(0, flat_ids, flat_abs)
+    denom = counts.clamp(min=1.0)
+    signed_mean = signed_sum / denom
+    abs_mean = abs_sum / denom
+    nonzero_ids = torch.nonzero(counts > 0, as_tuple=False).flatten()
+
+    return {
+        "vocab_size": int(vocab_size),
+        "observed_token_count": int(flat_ids.numel()),
+        "dropped_token_count": dropped,
+        "nonzero_token_id_count": int(nonzero_ids.numel()),
+        "nonzero_token_ids": nonzero_ids,
+        "token_count_vector_vocab": counts_int,
+        "gap_signed_sum_vector_vocab": signed_sum,
+        "gap_abs_sum_vector_vocab": abs_sum,
+        "gap_signed_mean_vector_vocab": signed_mean,
+        "gap_abs_mean_vector_vocab": abs_mean,
+    }
+
+
+def _token_gap_vocab_json_fields(vectors: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "vocab_size": int(vectors["vocab_size"]),
+        "observed_token_count": int(vectors["observed_token_count"]),
+        "dropped_token_count": int(vectors["dropped_token_count"]),
+        "nonzero_token_id_count": int(vectors["nonzero_token_id_count"]),
+        "nonzero_token_ids": _tensor_to_int_list(vectors["nonzero_token_ids"]),
+        "token_count_vector_vocab": _tensor_to_int_list(vectors["token_count_vector_vocab"]),
+        "gap_signed_sum_vector_vocab": _tensor_to_float_list(vectors["gap_signed_sum_vector_vocab"]),
+        "gap_abs_sum_vector_vocab": _tensor_to_float_list(vectors["gap_abs_sum_vector_vocab"]),
+        "gap_signed_mean_vector_vocab": _tensor_to_float_list(vectors["gap_signed_mean_vector_vocab"]),
+        "gap_abs_mean_vector_vocab": _tensor_to_float_list(vectors["gap_abs_mean_vector_vocab"]),
+    }
 
 
 def _token_conflict_attribution(
@@ -403,8 +501,9 @@ def _ensure_meta_info(batch: Any) -> dict[str, Any]:
 class MOPDAuditLogger:
     """Writes per-domain audit JSONL rows and TensorBoard-compatible scalars."""
 
-    def __init__(self, config: Any):
+    def __init__(self, config: Any, tokenizer: Any | None = None):
         self.config = config
+        self.tokenizer = tokenizer
         audit_config = _cfg_get(config, "mopd_audit", {})
         self.enabled = bool(_cfg_get(audit_config, "enabled", False))
         self.output_dir = Path(str(_cfg_get(audit_config, "output_dir", "mopd_audit")))
@@ -456,6 +555,19 @@ class MOPDAuditLogger:
         )
         self.token_gap_enabled = bool(_cfg_get(audit_config, "token_gap_enabled", True))
         self.token_gap_freq_steps = max(1, int(_cfg_get(audit_config, "token_gap_freq_steps", 1)))
+        self.token_gap_vocab_vector_enabled = bool(
+            _cfg_get(audit_config, "token_gap_vocab_vector_enabled", False)
+        )
+        self.token_gap_vocab_vector_freq_steps = max(
+            1,
+            int(_cfg_get(audit_config, "token_gap_vocab_vector_freq_steps", 1)),
+        )
+        self.token_gap_vocab_size = _optional_positive_int(_cfg_get(audit_config, "token_gap_vocab_size", None))
+        self.token_gap_vocab_size_source = "config" if self.token_gap_vocab_size is not None else "unavailable"
+        if self.token_gap_vocab_size is None:
+            self.token_gap_vocab_size = _infer_tokenizer_vocab_size(tokenizer)
+            if self.token_gap_vocab_size is not None:
+                self.token_gap_vocab_size_source = "tokenizer"
         self.entropy_enabled = bool(_cfg_get(audit_config, "entropy_enabled", True))
         self.entropy_freq_steps = max(1, int(_cfg_get(audit_config, "entropy_freq_steps", 1)))
         self.token_conflict_enabled = bool(_cfg_get(audit_config, "token_conflict_enabled", True))
@@ -543,6 +655,13 @@ class MOPDAuditLogger:
 
     def should_log_token_gap(self, step: int) -> bool:
         return self._freq_active(self.token_gap_enabled, self.token_gap_freq_steps, step)
+
+    def should_log_token_gap_vocab_vector(self, step: int) -> bool:
+        return self._freq_active(
+            self.token_gap_vocab_vector_enabled,
+            self.token_gap_vocab_vector_freq_steps,
+            step,
+        )
 
     def should_log_entropy(self, step: int) -> bool:
         return self._freq_active(self.entropy_enabled, self.entropy_freq_steps, step)
@@ -762,6 +881,7 @@ class MOPDAuditLogger:
                 sample_rows,
                 token_conflict_rows,
                 token_gap_rows,
+                token_gap_vocab_rows,
                 entropy_distribution_rows,
             ) = self._compute_training_rows(batch, step, lr)
         except Exception as exc:  # pragma: no cover - defensive remote logging
@@ -776,6 +896,8 @@ class MOPDAuditLogger:
             self._write_jsonl("token_conflict_attribution.jsonl", token_conflict_rows)
         if token_gap_rows:
             self._write_jsonl("token_gap_vectors.jsonl", token_gap_rows)
+        if token_gap_vocab_rows:
+            self._write_jsonl("token_gap_vocab_vectors.jsonl", token_gap_vocab_rows)
         if entropy_distribution_rows:
             self._write_jsonl("entropy_distribution_vectors.jsonl", entropy_distribution_rows)
         return metrics
@@ -790,7 +912,7 @@ class MOPDAuditLogger:
 
     def _compute_training_rows(
         self, batch: Any, step: int, lr: Any
-    ) -> tuple[dict[str, float], list, list, list, list, list, list]:
+    ) -> tuple[dict[str, float], list, list, list, list, list, list, list]:
         import torch
 
         tensor_batch = batch.batch
@@ -896,8 +1018,11 @@ class MOPDAuditLogger:
         sample_rows: list[dict[str, Any]] = []
         token_conflict_rows: list[dict[str, Any]] = []
         token_gap_rows: list[dict[str, Any]] = []
+        token_gap_vocab_rows: list[dict[str, Any]] = []
+        token_gap_vocab_vectors_by_domain: dict[str, dict[str, Any]] = {}
         entropy_distribution_rows: list[dict[str, Any]] = []
         token_gap_active = self.should_log_token_gap(step)
+        token_gap_vocab_active = token_gap_active and self.should_log_token_gap_vocab_vector(step)
         entropy_active = self.should_log_entropy(step)
         token_conflict_active = self.should_log_token_conflict(step)
         sample_level_active = self.should_log_sample_level(step)
@@ -921,8 +1046,17 @@ class MOPDAuditLogger:
         }
         sample_count_by_domain = {domain: len(indices) for domain, indices in indices_by_domain.items()}
         token_conflict_summaries: dict[str, dict[str, float]] = {}
-        if token_conflict_active:
+        token_ids = None
+        if token_conflict_active or token_gap_active:
             token_ids = _response_token_id_matrix(tensor_batch, batch_keys, response_mask)
+        token_gap_vocab_size = self.token_gap_vocab_size
+        token_gap_vocab_size_source = self.token_gap_vocab_size_source
+        if token_gap_active and token_ids is not None and token_gap_vocab_size is None:
+            observed_valid_ids = token_ids[response_mask.detach().bool().cpu()]
+            if int(observed_valid_ids.numel()) > 0:
+                token_gap_vocab_size = int(observed_valid_ids.max().item()) + 1
+                token_gap_vocab_size_source = "observed_max_token_id"
+        if token_conflict_active:
             token_conflict_summaries, token_conflict_rows = _token_conflict_attribution(
                 labels=labels,
                 domains=configured_domains,
@@ -979,6 +1113,27 @@ class MOPDAuditLogger:
                             "gap_vector_domain": _tensor_to_float_list(domain_gap_vector),
                         }
                     )
+                if token_ids is not None and indices and token_gap_vocab_size is not None:
+                    domain_token_ids = token_ids[indices]
+                    vocab_vectors = _token_gap_vocab_tensors(
+                        token_ids=domain_token_ids,
+                        response_mask=response_mask[indices],
+                        gap_signed=gap_signed[indices],
+                        gap_abs=gap_abs[indices],
+                        vocab_size=int(token_gap_vocab_size),
+                    )
+                    if vocab_vectors is not None:
+                        token_gap_vocab_vectors_by_domain[domain] = vocab_vectors
+                        if token_gap_vocab_active:
+                            token_gap_vocab_rows.append(
+                                {
+                                    "step": step,
+                                    "domain": domain,
+                                    "learning_rate": learning_rate,
+                                    "vocab_size_source": token_gap_vocab_size_source,
+                                    **_token_gap_vocab_json_fields(vocab_vectors),
+                                }
+                            )
             entropy_metrics: dict[str, float | None] = {}
             teacher_entropy_stats: dict[str, float | None] = {}
             student_entropy_stats: dict[str, float | None] = {}
@@ -1214,6 +1369,22 @@ class MOPDAuditLogger:
                         }
                     )
 
+        if token_gap_vocab_vectors_by_domain:
+            active_domains = [domain for domain in configured_domains if domain in token_gap_vocab_vectors_by_domain]
+            for left_idx, left_domain in enumerate(active_domains):
+                for right_domain in active_domains[left_idx + 1 :]:
+                    pair_name = f"{safe_name(left_domain)}_vs_{safe_name(right_domain)}"
+                    left_vectors = token_gap_vocab_vectors_by_domain[left_domain]
+                    right_vectors = token_gap_vocab_vectors_by_domain[right_domain]
+                    cosine_specs = {
+                        "gap_signed_sum_cosine": "gap_signed_sum_vector_vocab",
+                        "gap_abs_sum_cosine": "gap_abs_sum_vector_vocab",
+                    }
+                    for metric_name, vector_key in cosine_specs.items():
+                        cosine = _tensor_cosine(left_vectors[vector_key], right_vectors[vector_key])
+                        if cosine is not None:
+                            metrics[self._global_tag("token_gap_vocab_cosine", metric_name, pair_name)] = cosine
+
         if total_tokens:
             global_token_stats = _masked_token_stats(reverse_kl, response_mask)
             global_sample_stats = _sample_value_stats(opd_losses)
@@ -1242,5 +1413,6 @@ class MOPDAuditLogger:
             sample_rows,
             token_conflict_rows,
             token_gap_rows,
+            token_gap_vocab_rows,
             entropy_distribution_rows,
         )

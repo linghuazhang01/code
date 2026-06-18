@@ -27,6 +27,7 @@ DIRECT_AUDIT_CATEGORIES = {
     "entropy",
     "token_conflict",
     "token_gap",
+    "token_gap_vocab_cosine",
     "token_grad",
     "token_grad_conflict",
     "token_grad_contribution",
@@ -88,6 +89,10 @@ CORE_TOKEN_GAP = {
     "gap_signed_p05",
     "gap_signed_p50",
     "gap_signed_p95",
+}
+CORE_TOKEN_GAP_VOCAB_COSINE = {
+    "gap_abs_sum_cosine",
+    "gap_signed_sum_cosine",
 }
 CORE_DOMAIN_ENTROPY = {
     "cross_entropy_available",
@@ -301,6 +306,8 @@ def _keep_global(category: str, metric: str, parts: list[str]) -> bool:
         return metric in CORE_CONFLICT
     if category == "loss":
         return metric in CORE_GLOBAL_LOSS
+    if category == "token_gap_vocab_cosine":
+        return metric in CORE_TOKEN_GAP_VOCAB_COSINE
     if category == "optimization":
         return metric in CORE_GLOBAL_OPTIMIZATION
     if category == "validation":

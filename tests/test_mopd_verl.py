@@ -668,6 +668,10 @@ class MOPDVerlTests(unittest.TestCase):
                         [[1.0, 1.0, 0.0], [1.0, 1.0, 1.0]],
                         dtype=torch.float32,
                     ),
+                    "responses": torch.tensor(
+                        [[5, 2, 0], [5, 5, 7]],
+                        dtype=torch.long,
+                    ),
                     "student_entropy": torch.tensor(
                         [[0.5, 0.6, 0.0], [0.7, 0.8, 0.9]],
                         dtype=torch.float32,
@@ -698,6 +702,8 @@ class MOPDVerlTests(unittest.TestCase):
                         "output_dir": tmpdir,
                         "domains": ["math", "code"],
                         "log_sample_level": False,
+                        "token_gap_vocab_vector_enabled": True,
+                        "token_gap_vocab_size": 8,
                     },
                     "actor_rollout_ref": {
                         "actor": {"policy_loss": {"lambda_vals": 1.0}},
@@ -714,6 +720,10 @@ class MOPDVerlTests(unittest.TestCase):
                 json.loads(line)
                 for line in entropy_vector_path.read_text(encoding="utf-8").splitlines()
             ]
+            vocab_rows = [
+                json.loads(line)
+                for line in (Path(tmpdir) / "token_gap_vocab_vectors.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
 
         self.assertAlmostEqual(metrics["math/token_gap/gap_abs_sum"], 2.0)
         self.assertAlmostEqual(metrics["math/token_gap/gap_signed_mean"], 0.0)
@@ -725,6 +735,12 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertAlmostEqual(metrics["code/entropy/teacher_entropy_p95"], 1.29, places=5)
         self.assertAlmostEqual(metrics["code/entropy/sum_teacher_student_cross_entropy"], 7.5)
         self.assertAlmostEqual(metrics["code/entropy/teacher_student_cross_entropy_mean"], 2.5)
+        self.assertAlmostEqual(
+            metrics["global/token_gap_vocab_cosine/math_vs_code/gap_abs_sum_cosine"],
+            2**-0.5,
+            places=5,
+        )
+        self.assertNotIn("global/token_gap_vocab_cosine/math_vs_code/gap_signed_sum_cosine", metrics)
         vectors = {row["domain"]: row["gap_vector_domain"] for row in rows}
         signed_vectors = {row["domain"]: row["gap_signed_vector_domain"] for row in rows}
         abs_vectors = {row["domain"]: row["gap_abs_vector_domain"] for row in rows}
@@ -732,6 +748,20 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertEqual(vectors["code"], [1.0, -1.0, 0.0])
         self.assertEqual(signed_vectors["math"], [1.0, -1.0])
         self.assertEqual(abs_vectors["math"], [1.0, 1.0])
+        vocab_vectors = {row["domain"]: row for row in vocab_rows}
+        self.assertEqual(vocab_vectors["math"]["vocab_size"], 8)
+        self.assertEqual(vocab_vectors["math"]["vocab_size_source"], "config")
+        self.assertEqual(vocab_vectors["math"]["nonzero_token_ids"], [2, 5])
+        self.assertEqual(vocab_vectors["math"]["token_count_vector_vocab"][2], 1.0)
+        self.assertEqual(vocab_vectors["math"]["token_count_vector_vocab"][5], 1.0)
+        self.assertEqual(vocab_vectors["math"]["gap_signed_sum_vector_vocab"][2], -1.0)
+        self.assertEqual(vocab_vectors["math"]["gap_signed_sum_vector_vocab"][5], 1.0)
+        self.assertEqual(vocab_vectors["math"]["gap_abs_sum_vector_vocab"][2], 1.0)
+        self.assertEqual(vocab_vectors["math"]["gap_abs_sum_vector_vocab"][5], 1.0)
+        self.assertEqual(vocab_vectors["code"]["nonzero_token_ids"], [5, 7])
+        self.assertEqual(vocab_vectors["code"]["token_count_vector_vocab"][5], 2.0)
+        self.assertEqual(vocab_vectors["code"]["gap_signed_sum_vector_vocab"][5], 0.0)
+        self.assertEqual(vocab_vectors["code"]["gap_abs_sum_vector_vocab"][5], 2.0)
         entropy_vectors = {row["domain"]: row for row in entropy_rows}
         self.assertEqual(
             [round(value, 1) for value in entropy_vectors["math"]["teacher_entropy_vector_domain"]],
@@ -954,6 +984,9 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("+mopd_audit.sample_gradient_log_sample_level_freq_steps=1", rendered)
         self.assertIn("+mopd_audit.token_gap_enabled=true", rendered)
         self.assertIn("+mopd_audit.token_gap_freq_steps=1", rendered)
+        self.assertIn("+mopd_audit.token_gap_vocab_vector_enabled=false", rendered)
+        self.assertIn("+mopd_audit.token_gap_vocab_vector_freq_steps=1", rendered)
+        self.assertIn("+mopd_audit.token_gap_vocab_size=null", rendered)
         self.assertIn("+mopd_audit.entropy_enabled=true", rendered)
         self.assertIn("+mopd_audit.entropy_freq_steps=1", rendered)
         self.assertIn("+mopd_audit.token_conflict_enabled=true", rendered)
@@ -1204,6 +1237,7 @@ class MOPDVerlTests(unittest.TestCase):
             "math/teacher/teacher_student_gap_mean": 0.1,
             "math/token_gap/gap_abs_sum": 3.0,
             "math/token_gap/gap_signed_p95": 0.8,
+            "global/token_gap_vocab_cosine/math_vs_code/gap_abs_sum_cosine": 0.7,
             "math/entropy/sum_teacher_entropy": 12.0,
             "math/entropy/teacher_entropy_mean": 0.7,
             "math/entropy/teacher_entropy_p95": 1.1,
@@ -1276,6 +1310,7 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("math/teacher/teacher_student_gap_mean", filtered)
         self.assertIn("math/token_gap/gap_abs_sum", filtered)
         self.assertIn("math/token_gap/gap_signed_p95", filtered)
+        self.assertIn("global/token_gap_vocab_cosine/math_vs_code/gap_abs_sum_cosine", filtered)
         self.assertIn("math/entropy/sum_teacher_entropy", filtered)
         self.assertIn("math/entropy/teacher_entropy_mean", filtered)
         self.assertIn("math/entropy/teacher_entropy_p95", filtered)

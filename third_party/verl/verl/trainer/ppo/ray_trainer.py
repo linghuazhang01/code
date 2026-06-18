@@ -1146,7 +1146,7 @@ class RayPPOTrainer:
             default_backend=self.config.trainer.logger,
             config=OmegaConf.to_container(self.config, resolve=True),
         )
-        self.mopd_audit_logger = MOPDAuditLogger(self.config)
+        self.mopd_audit_logger = MOPDAuditLogger(self.config, tokenizer=self.tokenizer)
 
         self.global_steps = 0
 

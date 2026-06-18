@@ -195,7 +195,9 @@ configs/mopd_formal_dual_a800_student_topk.yaml
 
 ### 轻量指标
 
-- `audit.token_gap_enabled`: 记录 `teacher_logp - student_logp` 和绝对值分布。
+- `audit.token_gap_enabled`: 记录 `teacher_logp - student_logp` 和绝对值分布；默认写 response-token occurrence vector 到 `token_gap_vectors.jsonl`，并在有 token id 时记录全词表 domain-pair cosine scalar。
+- `audit.token_gap_vocab_vector_enabled`: 默认 `false`。开启后额外写全词表 dense vector 到 `token_gap_vocab_vectors.jsonl`，第 `v` 维对应 token id `v`。正式长跑建议低频开启，因为文件体积会明显增加。
+- `audit.token_gap_vocab_size`: 可选。通常 trainer 会从 tokenizer 自动推断 vocab size；无 tokenizer 的测试或离线场景可手动设置。
 - `audit.entropy_enabled`: 记录 teacher entropy、student entropy、teacher-student cross entropy。
 - `audit.token_conflict_enabled`: 记录 token-level teacher/student disagreement 与 top-token rows。
 
@@ -204,6 +206,7 @@ configs/mopd_formal_dual_a800_student_topk.yaml
 ```yaml
 audit:
   token_gap_freq_steps: 1
+  token_gap_vocab_vector_freq_steps: 10
   entropy_freq_steps: 1
   token_conflict_freq_steps: 1
 ```

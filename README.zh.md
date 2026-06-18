@@ -306,7 +306,7 @@ bash scripts/start_remote_mopd_training.sh configs/mopd_general_reasoner.yaml \
 - `audit.sample_gradient_norm_enabled`: `true`
 - `audit.sample_gradient_cos_enabled`: `false`
 - `audit.sample_gradient_log_sample_level_freq_steps`: `1`
-- `audit.token_gap_enabled`: `true`，`audit.token_gap_freq_steps: 1`，按 domain 记录 `teacher_logp - student_logp` 与 `abs(teacher_logp - student_logp)` 的分布统计，并把 raw domain vector 写到 `token_gap_vectors.jsonl`。
+- `audit.token_gap_enabled`: `true`，`audit.token_gap_freq_steps: 1`，按 domain 记录 `teacher_logp - student_logp` 与 `abs(teacher_logp - student_logp)` 的分布统计，并把 response token occurrence 级 raw domain vector 写到 `token_gap_vectors.jsonl`。如果能拿到 response token id，会同时记录全词表 domain-pair cosine scalar，例如 `global/token_gap_vocab_cosine/math_vs_code/gap_abs_sum_cosine`。设置 `audit.token_gap_vocab_vector_enabled=true` 后，会额外写 `token_gap_vocab_vectors.jsonl`：第 `v` 维对应 token id `v`，包含 count、signed-gap sum、abs-gap sum 和 mean vector。
 - `audit.entropy_enabled`: `true`，`audit.entropy_freq_steps: 1`，按 domain 记录 teacher entropy、student entropy、teacher-student cross entropy 的 sum 和分布统计，并把 raw vector 写到 `entropy_distribution_vectors.jsonl`。开启 top-k distill 时，teacher-student cross entropy 使用 `actor.topk_distill_support_source` 选出的同一个 local support 和重归一化口径。
 - `audit.token_conflict_enabled`: `true`，`audit.token_conflict_freq_steps: 1`，记录 token-level teacher/student disagreement 摘要，并把 top token 明细写到 `token_conflict_attribution.jsonl`。
 - `audit.token_gradient_enabled`: 默认 `false`。开启后先按 domain 收集本 step 全局所有 valid response token 的 `gap_abs = abs(teacher_logp - student_logp)` 分布，再在这个全量分布上选择 `top100_gap_abs` 和 top-p mass token 集合做额外 gradient recompute。若 `autograd.grad()` 断图，会回退到安全的 backward diagnostic。开启后 domain target chunks 会临时使用 FP32 存储，以降低 restore `.grad` 的量化误差。小 batch debug 时可以额外打开 `audit.token_gradient_strict_grad_restore=true`，fallback 前直接备份原始 `.grad`，fallback 后恢复这份原始快照。
@@ -570,7 +570,7 @@ JSONL audit 文件写到 config 中的 `audit.output_dir`，formal 默认是：
 audit/formal_single_a800/
 ```
 
-重点文件包括 `domain_step_metrics.jsonl`、`loss_variance_sample.jsonl`、`token_gap_vectors.jsonl`、`entropy_distribution_vectors.jsonl`、`token_conflict_attribution.jsonl`、`token_grad_metrics.jsonl`、`sample_grad_metrics.jsonl`、`validation_probe.jsonl`、`validation_gain_variance.jsonl`、`training_cost.jsonl` 和 `audit_errors.jsonl`。
+重点文件包括 `domain_step_metrics.jsonl`、`loss_variance_sample.jsonl`、`token_gap_vectors.jsonl`、`token_gap_vocab_vectors.jsonl`、`entropy_distribution_vectors.jsonl`、`token_conflict_attribution.jsonl`、`token_grad_metrics.jsonl`、`sample_grad_metrics.jsonl`、`validation_probe.jsonl`、`validation_gain_variance.jsonl`、`training_cost.jsonl` 和 `audit_errors.jsonl`。
 
 ## Legacy Paper Eval
 
