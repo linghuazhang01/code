@@ -78,6 +78,52 @@ policy_loss:
   # If true, uses multi-teacher distillation path (requires opd_teacher field in data)
   multi_teacher_distill: false
 
+  # Distillation objective. Default keeps the original chosen-token reverse KL behavior.
+  # Options: chosen_token_reverse_kl / topk_renormalized_reverse_kl /
+  # topk_renormalized_forward_kl / topk_forward_kl_with_tail /
+  # topk_reverse_kl_with_tail / naive_renormalized_topk_kl
+  distill_mode: "chosen_token_reverse_kl"
+
+  # Whether to use local-support top-k distillation.
+  topk_distill_enabled: false
+
+  # KL direction used when topk_distill_enabled=true and distill_mode is the
+  # default chosen_token_reverse_kl. Options: reverse / forward.
+  topk_distill_kl_direction: reverse
+
+  # Number of support tokens to distill per response position.
+  topk_distill_k: 8
+
+  # Which policy defines the top-k support. Options: teacher / student.
+  # teacher: use teacher top-k ids and gather student logprobs on them.
+  # student: use old actor/student top-k ids and gather teacher/current-student logprobs on them.
+  topk_distill_support_source: teacher
+
+  # Whether top-k KL includes a residual tail bucket for non-top-k vocabulary mass.
+  topk_distill_tail_bucket: true
+
+  # Temperature applied to the selected bucket distribution.
+  topk_distill_temperature: 1.0
+
+  # Weight for the top-k distillation loss added to the actor loss.
+  topk_distill_loss_weight: 1.0
+
+  # Chunk size for sparse top-k student logprob normalization.
+  topk_distill_logprob_chunk_size: 16
+
+  # Student logprob path for teacher top-k ids: sparse or full_vocab.
+  topk_distill_logprob_mode: sparse
+
+  # Whether batch-provided teacher_prefix_mask enables teacher-prefix loss routing.
+  teacher_prefix_enabled: false
+
+  # Which generated-token regions contribute loss under teacher-prefix routing.
+  # Options: prefix_and_suffix / suffix_only / prefix_only / all.
+  teacher_prefix_loss_region: suffix_only
+
+  # Weight for forward KL on teacher-sampled prefix tokens.
+  teacher_prefix_forward_kl_weight: 1.0
+
 # Constant C in Dual-clip PPO; clips when advantage < 0 and ratio > C
 clip_ratio_c: 3.0
 

@@ -20,13 +20,18 @@
 
 - `configs/mopd_formal_single_a800.yaml`：当前 single-A800 正式训练配置，0.6B student、两个 4B teacher、本地 parquet 数据、TensorBoard logger、full-gradient 与 sample-gradient audit。
 - `configs/mopd_formal_dual_a800.yaml`：当前 dual-A800 诊断训练配置，16K response、TP=2、full-gradient audit 与 sample gradient norm。
+- `configs/mopd_formal_dual_a800_pg_loss.yaml` / `configs/mopd_formal_dual_a800_teacher_topk.yaml` / `configs/mopd_formal_dual_a800_student_topk.yaml`：dual-A800 蒸馏目标对照配置，分别对应 chosen-token PG/OPD、teacher top-k LSM、student top-k LSM。
 - `configs/mopd_formal_4gpu_a800.yaml` / `configs/mopd_formal_8gpu_a800.yaml`：从 dual-A800 profile 扩展到 4/8 卡，保持约 128 prompts/GPU。
+- audit_all / audit_light 不再维护整份复制配置；使用 base config 加命令行 Hydra overrides 控制开关。
 - `configs/mopd_math_code.yaml`：paper-style 两教师配置。
 - `configs/mopd_general_reasoner.yaml`：General-Reasoner-Qwen3-14B 作为 reasoning teacher、Qwen3-4B 作为 student 的 WebInstruct MOPD 配置。
 - `configs/mopd_audit_smoke.yaml`：one-step smoke test 配置。
 - `scripts/run_mopd.sh`：通用本地 launcher，可启动任意 YAML config。
 - `mopd_verl/launch.py`：把 YAML 转成 `verl.trainer.main_ppo` 的 Hydra overrides。
 - `mopd_verl/settings.py`：typed config dataclasses。
+
+配置文件、蒸馏目标切换、audit 开关和常用 override 的集中说明见
+[`CONFIG_GUIDE.zh.md`](CONFIG_GUIDE.zh.md)。
 - `mopd_verl/domain_sampling.py`：按 `domain_train_files` 和 domain 权重构造 batch 内固定配额采样器。
 - `mopd_verl/verl_audit.py`：训练、validation、full-gradient audit 的 JSONL 与 TensorBoard scalar 逻辑。
 - `scripts/sync_and_start_remote_mopd.sh`：本地执行，rsync 本仓库到远端；可选择同步后直接启动训练。
@@ -285,15 +290,42 @@ bash scripts/start_remote_mopd_training.sh configs/mopd_general_reasoner.yaml \
 - `data.max_response_length`: `16384`
 - `actor.ppo_mini_batch_size`: `512`
 - `actor.ppo_micro_batch_size_per_gpu`: `1`
-- `rollout.gpu_memory_utilization`: `0.8`
+- `actor.use_dynamic_bsz`: base profile 默认 `false`。重型 top-k/audit run 建议打开，
+  让 actor update 按 token 数动态分 micro-batch，而不是固定按样本数分。
+- `rollout.gpu_memory_utilization`: 多卡 base profile 为 `0.8`，single-A800 base 为
+  `0.9`。重型 top-k/audit run 可调低，给 actor backward 留显存余量。
 - `trainer.logger`: `["console","tensorboard"]`
+- `audit.log_sample_level_freq_steps`: `1`
+- `audit.log_validation_metrics_freq_steps`: `1`
 - `audit.full_gradient_enabled`: `true`
 - `audit.full_gradient_freq_steps`: `1`
 - `audit.full_gradient_train_max_samples_per_domain`: `null`
 - `audit.full_gradient_micro_batch_size_per_gpu`: `1`
 - `audit.sample_gradient_enabled`: `true`
+- `audit.sample_gradient_freq_steps`: `1`
 - `audit.sample_gradient_norm_enabled`: `true`
-- `audit.sample_gradient_cos_enabled`: `true`
+- `audit.sample_gradient_cos_enabled`: `false`
+- `audit.sample_gradient_log_sample_level_freq_steps`: `1`
+- `audit.token_gap_enabled`: `true`，`audit.token_gap_freq_steps: 1`，按 domain 记录 `teacher_logp - student_logp` 与 `abs(teacher_logp - student_logp)` 的分布统计，并把 raw domain vector 写到 `token_gap_vectors.jsonl`。
+- `audit.entropy_enabled`: `true`，`audit.entropy_freq_steps: 1`，按 domain 记录 teacher entropy、student entropy、teacher-student cross entropy 的 sum 和分布统计，并把 raw vector 写到 `entropy_distribution_vectors.jsonl`。开启 top-k distill 时，teacher-student cross entropy 使用 `actor.topk_distill_support_source` 选出的同一个 local support 和重归一化口径。
+- `audit.token_conflict_enabled`: `true`，`audit.token_conflict_freq_steps: 1`，记录 token-level teacher/student disagreement 摘要，并把 top token 明细写到 `token_conflict_attribution.jsonl`。
+- `audit.token_gradient_enabled`: 默认 `false`。开启后先按 domain 收集本 step 全局所有 valid response token 的 `gap_abs = abs(teacher_logp - student_logp)` 分布，再在这个全量分布上选择 `top100_gap_abs` 和 top-p mass token 集合做额外 gradient recompute。若 `autograd.grad()` 断图，会回退到安全的 backward diagnostic。开启后 domain target chunks 会临时使用 FP32 存储，以降低 restore `.grad` 的量化误差。小 batch debug 时可以额外打开 `audit.token_gradient_strict_grad_restore=true`，fallback 前直接备份原始 `.grad`，fallback 后恢复这份原始快照。
+- `audit.token_gradient_freq_steps`: base profile 默认 `10`。
+- `audit.token_gradient_top_p`: `0.10`，token-gradient audit 会同时统计 `top100_gap_abs`，以及覆盖该比例 domain `gap_abs` mass 的最小 token 集合。
+- `actor.topk_distill_enabled`: 默认 `false`。开启后使用 local-support matching，在 `actor.topk_distill_k` 个 support token 内重归一化做 KL。`actor.topk_distill_support_source=teacher` 表示 support 来自 teacher top-k；`student` 表示 support 来自 old actor/student top-k，然后 teacher/current-student 都在同一个 support 上 gather logprob。默认使用 reverse-KL；若要做 forward-KL ablation，设置 `actor.topk_distill_kl_direction=forward`；若要使用旧的 tail-bucket 目标，可显式设置 `actor.distill_mode=topk_forward_kl_with_tail` 或 `topk_reverse_kl_with_tail`。
+- `rollout.teacher_prefix_sampling_enabled`: 默认 `false`。开启后 trainer
+  读取每条样本里的 `rollout.teacher_prefix_dataset_key` 字段，tokenize 后截断到
+  `rollout.teacher_prefix_length`，再让 student 从 `prompt + teacher_prefix`
+  继续采样 suffix。launcher 会自动开启 `actor.teacher_prefix_enabled`，
+  以便正确路由 teacher-prefix mask。默认 `actor.teacher_prefix_loss_region=suffix_only`，
+  因此 teacher-prefix token 只作为上下文，不产生 loss；student suffix token
+  继续使用配置里的 OPD/top-k objective。若希望 prefix 也用 forward-KL 训练，
+  可设置 `actor.teacher_prefix_loss_region=prefix_and_suffix`。
+- 对 `max_response_length=16384` 的 top-k 蒸馏，`actor.use_dynamic_bsz=true`
+  可以降低长短样本混在一起时的 actor backward 峰值，但不能把单条超长
+  response 切成多次 backward。若 debug run 采样到接近 16K 的 response，
+  建议先通过命令行覆盖 `data.max_response_length=8192` 或 `4096`，再开启所有
+  gradient audit。
 - 正式单卡配置使用 `audit.full_gradient_storage_dtype: bfloat16`。顺序 backward tracker 只在 CPU 保存两个 domain target；cosine 的 dot/norm 仍使用 FP32 累加。
 - `paper_eval.enabled`: `false`
 
@@ -329,6 +361,15 @@ replicated actor audit 坐标系（`actor.fsdp_size=1`）、rollout TP=2、
 指标保持开启。full-parameter audit 与 sample gradient norm 保持开启；
 sample-to-domain cosine 默认关闭，等待 two-pass FSDP 实现完成后再启用。
 
+额外提供三份 dual-A800 蒸馏目标对照配置，保持相同 model/data/rollout
+profile，只切换训练 objective：
+
+| 配置 | Objective | Top-k support |
+| --- | --- | --- |
+| `configs/mopd_formal_dual_a800_pg_loss.yaml` | chosen-token OPD / PG-style loss | 关闭 |
+| `configs/mopd_formal_dual_a800_teacher_topk.yaml` | top-k local support matching，reverse-KL，`k=5` | teacher top-k |
+| `configs/mopd_formal_dual_a800_student_topk.yaml` | top-k local support matching，reverse-KL，`k=5` | old actor/student top-k |
+
 ```bash
 cd /root/OPD-code
 GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
@@ -341,6 +382,7 @@ GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
 当前指标定义以 [`metrics_zh.md`](metrics_zh.md) 为准。正式配置会记录这些 audit 指标族：
 
 - per-domain data、OPD loss、teacher confidence/gap、calibration、reward、advantage sign、response length；
+- token-level conflict attribution summary 和 top-token JSONL 明细；
 - full-parameter train gradient：domain grad norm、math-vs-code cosine/conflict、domain-vs-total cosine、signed projection share；
 - sample-gradient：当前 actor update mini-batch 内全部样本的 sample grad norm；dual A800 默认不计算 sample-to-domain cosine 和 projection share；
 - cost：step seconds、tokens/sec、peak memory、full-gradient backward time。
@@ -370,6 +412,83 @@ GPU_IDS=0,1,2,3,4,5,6,7 bash scripts/start_remote_mopd_training.sh \
   configs/mopd_formal_8gpu_a800.yaml \
   --run-id mopd_8gpu_a800_$(date +%Y%m%d_%H%M%S)
 ```
+
+## Formal A800 Audit Overrides
+
+base 版 1/2/4/8 卡 A800 配置保留当前标准训练/audit 设置：gap、entropy、
+token-conflict、full-gradient、sample-gradient norm 开启；sample-gradient
+cosine、token-gradient audit 和 top-k distill 关闭。之前的
+`*_audit_all.yaml` / `*_audit_light.yaml` 复制配置已删除；需要固定开关组合时，
+使用 base config 并在 `--` 后追加 Hydra overrides。
+
+`audit_all` 会开启 `log_sample_level`、`log_validation_metrics`、
+`full_gradient_enabled`、sample gradient norm/cos、逐 step token-gradient
+audit，并启用 teacher-top-5 蒸馏。若要切到 student-top-k 版本，把
+`topk_distill_support_source` 改为 `student`：
+
+```bash
+GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
+  configs/mopd_formal_dual_a800.yaml \
+  --run-id mopd_dual_audit_all \
+  -- \
+  mopd_audit.log_sample_level=true \
+  mopd_audit.log_validation_metrics=true \
+  mopd_audit.full_gradient_enabled=true \
+  mopd_audit.sample_gradient_enabled=true \
+  mopd_audit.sample_gradient_norm_enabled=true \
+  mopd_audit.sample_gradient_cos_enabled=true \
+  mopd_audit.token_gap_enabled=true \
+  mopd_audit.entropy_enabled=true \
+  mopd_audit.token_conflict_enabled=true \
+  mopd_audit.token_gradient_enabled=true \
+  mopd_audit.full_gradient_freq_steps=1 \
+  mopd_audit.sample_gradient_freq_steps=1 \
+  mopd_audit.sample_gradient_cos_freq_steps=1 \
+  mopd_audit.sample_gradient_log_sample_level_freq_steps=1 \
+  mopd_audit.token_gap_freq_steps=1 \
+  mopd_audit.entropy_freq_steps=1 \
+  mopd_audit.token_conflict_freq_steps=1 \
+  mopd_audit.token_gradient_freq_steps=1 \
+  actor_rollout_ref.actor.use_dynamic_bsz=True \
+  actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+  actor_rollout_ref.actor.policy_loss.distill_mode=chosen_token_reverse_kl \
+  actor_rollout_ref.actor.policy_loss.topk_distill_enabled=true \
+  actor_rollout_ref.actor.policy_loss.topk_distill_kl_direction=reverse \
+  actor_rollout_ref.actor.policy_loss.topk_distill_k=5 \
+  actor_rollout_ref.actor.policy_loss.topk_distill_support_source=teacher \
+  actor_rollout_ref.actor.policy_loss.topk_distill_tail_bucket=false
+```
+
+所有重型 audit 都可以用各自的 `*_freq_steps` 独立节流。触发规则是
+`step % freq_steps == 0`；把频率调大表示开关仍然开启，但更少 step 执行和写
+JSONL。Top-k distill 是训练 objective，不属于 audit 统计，因此由
+`actor.topk_distill_enabled` 控制，不单独加 audit freq。
+
+`token_gradient_max_samples_per_domain`、`token_gradient_top_k_per_sample` 和 `token_gradient_min_teacher_diff` 仍会保留在配置里兼容旧启动文件，但 token-gradient audit 当前不再用它们截断候选池；候选池语义是 `global_candidate_scope=all_valid_response_tokens`。
+
+`audit_light` 会关闭你这次指定的额外 audit 输出：
+
+```bash
+scripts/run_mopd.sh configs/mopd_formal_single_a800.yaml -- \
+  mopd_audit.log_sample_level=false \
+  mopd_audit.log_validation_metrics=false \
+  mopd_audit.full_gradient_enabled=false \
+  mopd_audit.sample_gradient_enabled=false \
+  mopd_audit.sample_gradient_norm_enabled=false \
+  mopd_audit.sample_gradient_cos_enabled=false \
+  mopd_audit.token_gap_enabled=false \
+  mopd_audit.entropy_enabled=false \
+  mopd_audit.token_conflict_enabled=false \
+  mopd_audit.token_gradient_enabled=false \
+  actor_rollout_ref.actor.policy_loss.topk_distill_enabled=false
+```
+
+在 `audit_light` 下，audit 仍保留最核心的 per-domain row 和 cost row：
+data/token count、OPD loss mean/std/variance、advantage sign、response length、
+reward/accuracy（如果 batch 里有 `token_level_scores`）、calibration、
+duplicate rate、历史核心的 `teacher_student_gap_mean` 和
+`teacher_confidence_mean`、global loss/data summary，以及 `training_cost.jsonl`。
+如果要完全无 audit，额外设置 `audit.enabled=false`。
 
 ## Formal Single-H200 配置
 
@@ -434,6 +553,13 @@ math/advantage/positive_frac
 math/sample_grad/norm_mean
 math/sample_grad_cos/domain_cos_mean
 math/sample_grad_contribution/projection_share_mean
+math/token_conflict/teacher_teacher_diff_mean
+math/token_conflict/combined_diff_mass
+math/token_gap/gap_abs_p95
+math/entropy/teacher_entropy_p50
+math/token_grad_conflict/other_cos_negative_frac
+math/token_grad/top100_gap_abs_gap_abs_mass_frac
+math/token_grad/topp10_gap_abs_mass_gap_abs_mass_frac
 global/full_grad_conflict/math_vs_code/full_grad_cosine_train_i_k
 global/full_grad_contribution/math_to_total/signed_projection_share
 ```
@@ -444,7 +570,7 @@ JSONL audit 文件写到 config 中的 `audit.output_dir`，formal 默认是：
 audit/formal_single_a800/
 ```
 
-重点文件包括 `domain_step_metrics.jsonl`、`loss_variance_sample.jsonl`、`sample_grad_metrics.jsonl`、`validation_probe.jsonl`、`validation_gain_variance.jsonl`、`training_cost.jsonl` 和 `audit_errors.jsonl`。
+重点文件包括 `domain_step_metrics.jsonl`、`loss_variance_sample.jsonl`、`token_gap_vectors.jsonl`、`entropy_distribution_vectors.jsonl`、`token_conflict_attribution.jsonl`、`token_grad_metrics.jsonl`、`sample_grad_metrics.jsonl`、`validation_probe.jsonl`、`validation_gain_variance.jsonl`、`training_cost.jsonl` 和 `audit_errors.jsonl`。
 
 ## Legacy Paper Eval
 

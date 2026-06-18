@@ -122,6 +122,10 @@ class RolloutConfig(BaseConfig):
     do_sample: bool = True
     n: int = 1
 
+    teacher_prefix_sampling_enabled: bool = False
+    teacher_prefix_length: int = 1024
+    teacher_prefix_dataset_key: str = "prefix"
+
     # Early termination threshold for multi-turn rollout in sglang.
     # Abort remaining requests when (1 - over_sample_rate) * total_requests are completed.
     over_sample_rate: float = 0.0

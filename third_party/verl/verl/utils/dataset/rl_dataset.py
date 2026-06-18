@@ -470,6 +470,8 @@ class RLHFDataset(Dataset):
             row_dict["source_domain"] = row_dict.get("extra_info", {}).get("source_domain")
         if "validation_dataset" in row_dict.get("extra_info", {}):
             row_dict["validation_dataset"] = row_dict.get("extra_info", {}).get("validation_dataset")
+        if "prefix" in row_dict.get("extra_info", {}) and "prefix" not in row_dict:
+            row_dict["prefix"] = row_dict.get("extra_info", {}).get("prefix")
             
         return row_dict
 

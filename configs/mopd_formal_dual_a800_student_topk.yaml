@@ -52,6 +52,16 @@ actor:
   only_reverse_kl_advantages: true
   lambda_vals: 1.0
   multi_teacher_distill: true
+  distill_mode: chosen_token_reverse_kl
+  topk_distill_enabled: true
+  topk_distill_kl_direction: reverse
+  topk_distill_k: 5
+  topk_distill_support_source: student
+  topk_distill_tail_bucket: false
+  topk_distill_temperature: 1.0
+  topk_distill_loss_weight: 1.0
+  topk_distill_logprob_chunk_size: 16
+  topk_distill_logprob_mode: sparse
   ppo_mini_batch_size: 256
   ppo_micro_batch_size_per_gpu: 1
   use_kl_loss: true
@@ -91,7 +101,7 @@ rollout_correction:
 
 audit:
   enabled: true
-  output_dir: audit/formal_dual_a800
+  output_dir: audit/formal_dual_a800_student_topk
   domains:
     - math
     - code
@@ -154,12 +164,12 @@ paper_eval:
 
 trainer:
   project_name: on-policy-distillation
-  experiment_name: Qwen3-4B-Multi-Teacher-ExOPD-formal-dual-a800
+  experiment_name: Qwen3-4B-Multi-Teacher-ExOPD-formal-dual-a800-student-topk
   logger: '["console","tensorboard"]'
   n_gpus_per_node: 2
   nnodes: 1
   save_freq: -1
-  default_local_dir: checkpoints/formal_dual_a800
+  default_local_dir: checkpoints/formal_dual_a800_student_topk
   test_freq: -1
   total_epochs: 3
   total_training_steps: 10

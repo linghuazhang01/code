@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,26 @@ from typing import Any
 import numpy as np
 import torch
 
+from mopd_verl.topk_distill import (
+    TOPK_LOGPROB_MODE_SPARSE,
+    TOPK_RENORMALIZED_FORWARD_KL,
+    TOPK_SUPPORT_SOURCE_STUDENT,
+    TOPK_SUPPORT_SOURCE_TEACHER,
+    chosen_token_forward_kl_matrix,
+    is_topk_distill_enabled,
+    resolved_topk_distill_mode,
+    select_teacher_log_prob_tensor,
+    teacher_prefix_forward_weight,
+    teacher_prefix_masks,
+    topk_distill_include_tail,
+    topk_distill_logprob_chunk_size,
+    topk_distill_logprob_mode,
+    topk_distill_loss_matrix,
+    topk_distill_support_source,
+    topk_distill_temperature,
+    topk_distill_uses_renormalized_support,
+    topk_distill_weight,
+)
 from verl import DataProto
 from verl.utils.device import get_device_id, get_torch_device
 
@@ -114,9 +135,20 @@ def _all_reduce_sum(value: float) -> float:
 
 
 def _all_reduce_values_sum(values: list[float]) -> list[float]:
+    if not values:
+        return []
     tensor = torch.tensor(values, device=get_device_id(), dtype=torch.float64)
     if torch.distributed.is_initialized():
         torch.distributed.all_reduce(tensor, op=torch.distributed.ReduceOp.SUM)
+    return [float(value) for value in tensor.tolist()]
+
+
+def _all_reduce_values_max(values: list[float]) -> list[float]:
+    if not values:
+        return []
+    tensor = torch.tensor(values, device=get_device_id(), dtype=torch.float64)
+    if torch.distributed.is_initialized():
+        torch.distributed.all_reduce(tensor, op=torch.distributed.ReduceOp.MAX)
     return [float(value) for value in tensor.tolist()]
 
 
@@ -124,6 +156,17 @@ def _all_reduce_vector_sum(vector: torch.Tensor) -> torch.Tensor:
     if torch.distributed.is_initialized():
         torch.distributed.all_reduce(vector, op=torch.distributed.ReduceOp.SUM)
     return vector
+
+
+def _actor_no_sync_context(actor: Any) -> Any:
+    actor_module = getattr(actor, "actor_module", None)
+    no_sync = getattr(actor_module, "no_sync", None)
+    if callable(no_sync):
+        try:
+            return no_sync()
+        except Exception:
+            return nullcontext()
+    return nullcontext()
 
 
 def _all_gather_list(values: list[Any]) -> list[Any]:
@@ -479,6 +522,184 @@ def _parameter_grad_norm(
     return float(max(_all_reduce_sum(local_sumsq), 0.0) ** 0.5)
 
 
+def _target_map_matches_parameters(
+    parameters: tuple[torch.nn.Parameter, ...],
+    target_map: dict[str, tuple[tuple[torch.Tensor, ...], float]],
+) -> bool:
+    if not target_map:
+        return False
+    for target_chunks, _target_norm_sq in target_map.values():
+        if len(target_chunks) != len(parameters):
+            return False
+        for parameter, target in zip(parameters, target_chunks):
+            if int(parameter.numel()) != int(target.numel()):
+                return False
+    return True
+
+
+def _clear_parameter_grads(parameters: tuple[torch.nn.Parameter, ...]) -> None:
+    for parameter in parameters:
+        parameter.grad = None
+
+
+def _parameter_grad_dtypes(parameters: tuple[torch.nn.Parameter, ...]) -> tuple[torch.dtype | None, ...]:
+    return tuple(parameter.grad.dtype if parameter.grad is not None else None for parameter in parameters)
+
+
+def _snapshot_parameter_grads(
+    parameters: tuple[torch.nn.Parameter, ...],
+) -> tuple[torch.Tensor | None, ...]:
+    return tuple(
+        parameter.grad.detach().to(device="cpu", dtype=torch.float32).clone()
+        if parameter.grad is not None
+        else None
+        for parameter in parameters
+    )
+
+
+def _restore_parameter_grads_from_snapshot(
+    parameters: tuple[torch.nn.Parameter, ...],
+    grad_snapshot: tuple[torch.Tensor | None, ...],
+    grad_dtypes: tuple[torch.dtype | None, ...] | None = None,
+) -> None:
+    for param_idx, parameter in enumerate(parameters):
+        if param_idx >= len(grad_snapshot) or grad_snapshot[param_idx] is None:
+            parameter.grad = None
+            continue
+        snapshot = grad_snapshot[param_idx]
+        grad_dtype = (
+            grad_dtypes[param_idx]
+            if grad_dtypes is not None and param_idx < len(grad_dtypes)
+            else snapshot.dtype
+        )
+        try:
+            parameter.grad = snapshot.to(device=parameter.device, dtype=grad_dtype).clone()
+        except RuntimeError:
+            parameter.grad = snapshot.to(device=parameter.device, dtype=parameter.dtype).clone()
+
+
+def _parameter_grad_snapshot_diff_stats(
+    parameters: tuple[torch.nn.Parameter, ...],
+    grad_snapshot: tuple[torch.Tensor | None, ...],
+) -> dict[str, float]:
+    local_diff_sq = 0.0
+    local_snapshot_sq = 0.0
+    local_max_abs = 0.0
+    for param_idx, parameter in enumerate(parameters):
+        snapshot = grad_snapshot[param_idx] if param_idx < len(grad_snapshot) else None
+        if snapshot is None and parameter.grad is None:
+            continue
+        if snapshot is None:
+            current = parameter.grad.detach().reshape(-1).to(device="cpu", dtype=torch.float32)
+            reference = torch.zeros_like(current)
+        else:
+            reference = snapshot.detach().reshape(-1).to(device="cpu", dtype=torch.float32)
+            if parameter.grad is None:
+                current = torch.zeros_like(reference)
+            else:
+                current = parameter.grad.detach().reshape(-1).to(device="cpu", dtype=torch.float32)
+        if current.numel() != reference.numel():
+            return {
+                "rel_l2": float("inf"),
+                "max_abs": float("inf"),
+                "snapshot_norm": float("inf"),
+            }
+        diff = current - reference
+        diff_sq = _chunked_vector_dot(diff, diff)
+        snapshot_sq = _chunked_vector_dot(reference, reference)
+        if diff_sq is not None:
+            local_diff_sq += diff_sq
+        if snapshot_sq is not None:
+            local_snapshot_sq += snapshot_sq
+        if diff.numel() > 0:
+            local_max_abs = max(local_max_abs, float(diff.abs().max().item()))
+        del current, reference, diff
+
+    diff_sq = max(local_diff_sq, 0.0)
+    snapshot_sq = max(local_snapshot_sq, 0.0)
+    snapshot_norm = snapshot_sq**0.5
+    return {
+        "rel_l2": (diff_sq**0.5) / (snapshot_norm + 1e-12),
+        "max_abs": local_max_abs,
+        "snapshot_norm": snapshot_norm,
+    }
+
+
+def _parameter_grad_target_diff_stats(
+    parameters: tuple[torch.nn.Parameter, ...],
+    target_map: dict[str, tuple[tuple[torch.Tensor, ...], float]],
+) -> dict[str, float]:
+    local_diff_sq = 0.0
+    local_target_sq = 0.0
+    local_max_abs = 0.0
+    target_items = list(target_map.values())
+    for param_idx, parameter in enumerate(parameters):
+        target_total: torch.Tensor | None = None
+        for target_chunks, _target_norm_sq in target_items:
+            chunk = target_chunks[param_idx].detach().reshape(-1).float()
+            target_total = chunk.clone() if target_total is None else target_total.add(chunk)
+        if target_total is None:
+            continue
+        if parameter.grad is None:
+            current = torch.zeros_like(target_total)
+        else:
+            current = parameter.grad.detach().reshape(-1).to(device="cpu", dtype=torch.float32)
+        if current.numel() != target_total.numel():
+            return {
+                "rel_l2": float("inf"),
+                "max_abs": float("inf"),
+                "target_norm": float("inf"),
+            }
+        diff = current - target_total
+        diff_sq = _chunked_vector_dot(diff, diff)
+        target_sq = _chunked_vector_dot(target_total, target_total)
+        if diff_sq is not None:
+            local_diff_sq += diff_sq
+        if target_sq is not None:
+            local_target_sq += target_sq
+        if diff.numel() > 0:
+            local_max_abs = max(local_max_abs, float(diff.abs().max().item()))
+        del target_total, current, diff
+
+    diff_sq = max(local_diff_sq, 0.0)
+    target_sq = max(local_target_sq, 0.0)
+    target_norm = target_sq**0.5
+    return {
+        "rel_l2": (diff_sq**0.5) / (target_norm + 1e-12),
+        "max_abs": local_max_abs,
+        "target_norm": target_norm,
+    }
+
+
+def _restore_parameter_grads_from_targets(
+    parameters: tuple[torch.nn.Parameter, ...],
+    target_map: dict[str, tuple[tuple[torch.Tensor, ...], float]],
+    grad_dtypes: tuple[torch.dtype | None, ...] | None = None,
+) -> None:
+    target_items = list(target_map.values())
+    for param_idx, parameter in enumerate(parameters):
+        total_chunk: torch.Tensor | None = None
+        for target_chunks, _target_norm_sq in target_items:
+            chunk = target_chunks[param_idx].detach().reshape(-1).float()
+            total_chunk = chunk.clone() if total_chunk is None else total_chunk.add(chunk)
+        if total_chunk is None:
+            parameter.grad = None
+            continue
+        restore_dtype = parameter.dtype
+        if grad_dtypes is not None and param_idx < len(grad_dtypes):
+            original_grad_dtype = grad_dtypes[param_idx]
+            if original_grad_dtype is not None:
+                restore_dtype = original_grad_dtype
+        restored = total_chunk.reshape(parameter.shape).to(device=parameter.device, dtype=restore_dtype)
+        try:
+            parameter.grad = restored.clone()
+        except RuntimeError:
+            parameter.grad = total_chunk.reshape(parameter.shape).to(
+                device=parameter.device,
+                dtype=parameter.dtype,
+            ).clone()
+
+
 def _finite_values(values: list[float | None]) -> list[float]:
     return [float(value) for value in values if value is not None and math.isfinite(float(value))]
 
@@ -549,6 +770,72 @@ def _labels_from_inputs(model_inputs: dict[str, Any], batch_size: int) -> list[s
     return ["unknown" for _ in range(batch_size)]
 
 
+def _selected_teacher_topk_from_inputs(
+    model_inputs: dict[str, Any],
+    policy_loss_cfg: Any,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if "math_teacher_topk_ids" not in model_inputs or "math_teacher_topk_logprobs" not in model_inputs:
+        raise ValueError(
+            "Top-k distillation requires math_teacher_topk_ids and math_teacher_topk_logprobs in the batch."
+        )
+    math_ids = model_inputs["math_teacher_topk_ids"]
+    math_log_probs = model_inputs["math_teacher_topk_logprobs"]
+    code_ids = model_inputs.get("code_teacher_topk_ids", math_ids)
+    code_log_probs = model_inputs.get("code_teacher_topk_logprobs", math_log_probs)
+    if not bool(_cfg_get(policy_loss_cfg, "multi_teacher_distill", False)):
+        return math_ids, math_log_probs
+    labels = _labels_from_inputs(model_inputs, int(math_ids.shape[0]))
+    selected_ids = torch.empty_like(math_ids)
+    selected_log_probs = torch.empty_like(math_log_probs)
+    for idx, label in enumerate(labels):
+        if label == "code" and "code_teacher_topk_ids" in model_inputs:
+            selected_ids[idx] = code_ids[idx]
+            selected_log_probs[idx] = code_log_probs[idx]
+        else:
+            selected_ids[idx] = math_ids[idx]
+            selected_log_probs[idx] = math_log_probs[idx]
+    return selected_ids, selected_log_probs
+
+
+def _selected_student_topk_teacher_log_probs(
+    model_inputs: dict[str, Any],
+    policy_loss_cfg: Any,
+) -> torch.Tensor:
+    if "math_teacher_student_topk_logprobs" not in model_inputs:
+        raise ValueError(
+            "Student top-k distillation requires math_teacher_student_topk_logprobs in the batch."
+        )
+    math_log_probs = model_inputs["math_teacher_student_topk_logprobs"]
+    code_log_probs = model_inputs.get("code_teacher_student_topk_logprobs", math_log_probs)
+    if not bool(_cfg_get(policy_loss_cfg, "multi_teacher_distill", False)):
+        return math_log_probs
+    labels = _labels_from_inputs(model_inputs, int(math_log_probs.shape[0]))
+    selected_log_probs = torch.empty_like(math_log_probs)
+    for idx, label in enumerate(labels):
+        if label == "code" and "code_teacher_student_topk_logprobs" in model_inputs:
+            selected_log_probs[idx] = code_log_probs[idx]
+        else:
+            selected_log_probs[idx] = math_log_probs[idx]
+    return selected_log_probs
+
+
+def _selected_topk_support_from_inputs(
+    model_inputs: dict[str, Any],
+    policy_loss_cfg: Any,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    support_source = topk_distill_support_source(policy_loss_cfg)
+    if support_source == TOPK_SUPPORT_SOURCE_STUDENT:
+        if "student_topk_ids" not in model_inputs:
+            raise ValueError("Student top-k distillation requires student_topk_ids in the batch.")
+        return model_inputs["student_topk_ids"], _selected_student_topk_teacher_log_probs(
+            model_inputs,
+            policy_loss_cfg,
+        )
+    if support_source != TOPK_SUPPORT_SOURCE_TEACHER:
+        raise ValueError(f"Unsupported top-k support source: {support_source!r}.")
+    return _selected_teacher_topk_from_inputs(model_inputs, policy_loss_cfg)
+
+
 def _response_token_count_from_mask(mask: torch.Tensor) -> float:
     return float(mask.detach().sum().item())
 
@@ -577,6 +864,8 @@ def _actor_reverse_kl_advantages(actor: Any, model_inputs: dict[str, Any], old_l
     policy_loss_cfg = _cfg_get(actor.config, "policy_loss", {})
     if not bool(_cfg_get(policy_loss_cfg, "only_reverse_kl_advantages", False)):
         return model_inputs["advantages"]
+    if is_topk_distill_enabled(policy_loss_cfg):
+        return torch.zeros_like(old_log_prob)
 
     if "base_log_prob" in model_inputs and "code_teacher_log_prob" in model_inputs:
         lambda_vals = float(_cfg_get(policy_loss_cfg, "lambda_vals", 1.0))
@@ -623,6 +912,92 @@ def _actor_reverse_kl_advantages(actor: Any, model_inputs: dict[str, Any], old_l
     return -reverse_kl
 
 
+def _response_token_id_matrix_from_inputs(model_inputs: dict[str, Any], response_mask: torch.Tensor) -> torch.Tensor | None:
+    token_ids = None
+    for key in ("responses", "response_ids", "input_ids"):
+        if key in model_inputs:
+            token_ids = model_inputs[key]
+            break
+    if token_ids is None or not hasattr(token_ids, "detach") or len(token_ids.shape) != 2:
+        return None
+    response_len = int(response_mask.shape[-1])
+    if tuple(token_ids.shape) == tuple(response_mask.shape):
+        return token_ids.detach().long()
+    if int(token_ids.shape[0]) == int(response_mask.shape[0]) and int(token_ids.shape[-1]) >= response_len:
+        return token_ids[:, -response_len:].detach().long()
+    return None
+
+
+def _data_proto_tensor_device(data: DataProto) -> torch.device | None:
+    if data.batch is None:
+        return None
+    for tensor in data.batch.values():
+        if hasattr(tensor, "device"):
+            return tensor.device
+    return None
+
+
+def _copy_data_proto_rows_to_cpu(data: DataProto, indices: list[int]) -> DataProto | None:
+    if not indices:
+        return None
+    try:
+        device = _data_proto_tensor_device(data)
+        if device is None:
+            idxs = torch.tensor(indices, dtype=torch.long)
+        else:
+            idxs = torch.tensor(indices, dtype=torch.long, device=device)
+        return data.select_idxs(idxs).to("cpu")
+    except Exception:
+        return None
+
+
+def _token_contribution_scale(response_mask: torch.Tensor, sample_idx: int, loss_agg_mode: str) -> float:
+    active_tokens_total = float(response_mask.detach().sum().item())
+    active_tokens_sample = float(response_mask.detach()[sample_idx].sum().item())
+    active_sequences = float((response_mask.detach().sum(dim=-1) > 0).float().sum().item())
+    if active_tokens_sample <= 0.0:
+        return 0.0
+    if loss_agg_mode == "token-mean":
+        return 0.0 if active_tokens_total <= 0.0 else 1.0 / active_tokens_total
+    if loss_agg_mode == "seq-mean-token-sum":
+        return 0.0 if active_sequences <= 0.0 else 1.0 / active_sequences
+    if loss_agg_mode == "seq-mean-token-mean":
+        return 0.0 if active_sequences <= 0.0 else 1.0 / (active_sequences * active_tokens_sample)
+    if loss_agg_mode == "seq-mean-token-sum-norm":
+        return 1.0 / max(int(response_mask.shape[-1]), 1)
+    return 0.0 if active_tokens_total <= 0.0 else 1.0 / active_tokens_total
+
+
+def _token_mask_contribution_scale(
+    response_mask: torch.Tensor,
+    token_mask: torch.Tensor,
+    loss_agg_mode: str,
+) -> float:
+    response_mask = response_mask.detach().float()
+    token_mask = token_mask.detach().float() * response_mask
+    selected_tokens = float(token_mask.sum().item())
+    if selected_tokens <= 0.0:
+        return 0.0
+    active_tokens_total = float(response_mask.sum().item())
+    if loss_agg_mode == "token-mean":
+        return 0.0 if active_tokens_total <= 0.0 else selected_tokens / active_tokens_total
+    active_sequences = float((response_mask.sum(dim=-1) > 0).float().sum().item())
+    selected_sequences = float((token_mask.sum(dim=-1) > 0).float().sum().item())
+    if loss_agg_mode == "seq-mean-token-sum":
+        return 0.0 if active_sequences <= 0.0 else selected_sequences / active_sequences
+    if loss_agg_mode == "seq-mean-token-mean":
+        total = 0.0
+        for sample_idx in range(int(response_mask.shape[0])):
+            sample_selected = float(token_mask[sample_idx].sum().item())
+            sample_tokens = float(response_mask[sample_idx].sum().item())
+            if sample_selected > 0.0 and sample_tokens > 0.0:
+                total += sample_selected / sample_tokens
+        return 0.0 if active_sequences <= 0.0 else total / active_sequences
+    if loss_agg_mode == "seq-mean-token-sum-norm":
+        return selected_tokens / max(int(response_mask.shape[-1]), 1)
+    return 0.0 if active_tokens_total <= 0.0 else selected_tokens / active_tokens_total
+
+
 def _actor_micro_batch_loss(
     actor: Any,
     micro_batch: DataProto,
@@ -630,6 +1005,7 @@ def _actor_micro_batch_loss(
     loss_scale_factor: float,
     on_policy: bool,
     safe_logprob_backward: bool = False,
+    response_mask_override: torch.Tensor | None = None,
 ) -> torch.Tensor:
     from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
 
@@ -643,7 +1019,50 @@ def _actor_micro_batch_loss(
     }
     if safe_logprob_backward:
         forward_kwargs["inplace_backward"] = False
-    entropy, log_prob = actor._forward_micro_batch(model_inputs, **forward_kwargs)
+    policy_loss_cfg = _cfg_get(actor.config, "policy_loss", {})
+    topk_distill_active = is_topk_distill_enabled(policy_loss_cfg)
+    use_renormalized_support = (
+        topk_distill_active
+        and topk_distill_uses_renormalized_support(policy_loss_cfg)
+    )
+    effective_topk_logprob_mode = topk_distill_logprob_mode(policy_loss_cfg)
+    if use_renormalized_support:
+        effective_topk_logprob_mode = TOPK_LOGPROB_MODE_SPARSE
+    kl_coef = float(_cfg_get(actor.config, "kl_loss_coef", 0.0) or 0.0)
+    needs_log_probs = not topk_distill_active or (
+        bool(_cfg_get(actor.config, "use_kl_loss", False)) and kl_coef != 0.0
+    )
+    forward_kwargs["calculate_log_probs"] = needs_log_probs
+    topk_support_ids = None
+    teacher_support_log_probs = None
+    if topk_distill_active:
+        topk_support_ids, teacher_support_log_probs = _selected_topk_support_from_inputs(
+            model_inputs,
+            policy_loss_cfg,
+        )
+        forward_kwargs["gather_topk_ids"] = topk_support_ids
+        forward_kwargs["normalize_gathered_topk"] = not use_renormalized_support
+        forward_kwargs["topk_logprob_chunk_size"] = topk_distill_logprob_chunk_size(policy_loss_cfg)
+        forward_kwargs["topk_logprob_mode"] = effective_topk_logprob_mode
+        forward_kwargs["return_extra"] = True
+    forward_output = actor._forward_micro_batch(model_inputs, **forward_kwargs)
+    if topk_distill_active:
+        entropy, log_prob, _topk_ids, _topk_log_probs, student_topk_log_probs = forward_output
+    else:
+        entropy, log_prob = forward_output
+    if response_mask_override is not None:
+        response_mask = response_mask_override.to(device=log_prob.device, dtype=response_mask.dtype)
+    prefix_loss_mask, suffix_loss_mask, teacher_prefix_active = teacher_prefix_masks(
+        model_inputs,
+        response_mask,
+        policy_loss_cfg,
+    )
+    distill_response_mask = suffix_loss_mask if teacher_prefix_active else response_mask
+    loss_token_mask = (
+        (prefix_loss_mask + suffix_loss_mask).clamp(max=1.0)
+        if teacher_prefix_active
+        else response_mask
+    )
     if bool(_cfg_get(actor.config, "use_rollout_log_probs", False)):
         old_log_prob = model_inputs["old_log_probs"]
     elif on_policy:
@@ -651,28 +1070,65 @@ def _actor_micro_batch_loss(
     else:
         old_log_prob = model_inputs["old_log_probs"]
 
-    advantages = _actor_reverse_kl_advantages(actor, model_inputs, old_log_prob)
-    loss_mode = str(_cfg_get(_cfg_get(actor.config, "policy_loss", {}), "loss_mode", "vanilla"))
-    policy_loss_fn = get_policy_loss_fn(loss_mode)
-    pg_loss, _ = policy_loss_fn(
-        old_log_prob=old_log_prob,
-        log_prob=log_prob,
-        advantages=advantages,
-        response_mask=response_mask,
-        loss_agg_mode=str(_cfg_get(actor.config, "loss_agg_mode", "token-mean")),
-        config=actor.config,
-        rollout_is_weights=model_inputs.get("rollout_is_weights", None),
-    )
-    policy_loss = pg_loss
+    if topk_distill_active:
+        policy_loss = log_prob.new_zeros(())
+    else:
+        advantages = _actor_reverse_kl_advantages(actor, model_inputs, old_log_prob)
+        loss_mode = str(_cfg_get(_cfg_get(actor.config, "policy_loss", {}), "loss_mode", "vanilla"))
+        policy_loss_fn = get_policy_loss_fn(loss_mode)
+        pg_loss, _ = policy_loss_fn(
+            old_log_prob=old_log_prob,
+            log_prob=log_prob,
+            advantages=advantages,
+            response_mask=distill_response_mask,
+            loss_agg_mode=str(_cfg_get(actor.config, "loss_agg_mode", "token-mean")),
+            config=actor.config,
+            rollout_is_weights=model_inputs.get("rollout_is_weights", None),
+        )
+        policy_loss = pg_loss
     if entropy_coeff != 0 and entropy is not None:
         entropy_loss = agg_loss(
             loss_mat=entropy,
-            loss_mask=response_mask,
+            loss_mask=loss_token_mask,
             loss_agg_mode=str(_cfg_get(actor.config, "loss_agg_mode", "token-mean")),
         )
         policy_loss = policy_loss - entropy_loss * entropy_coeff
+    if topk_distill_active:
+        topk_loss_mat = topk_distill_loss_matrix(
+            student_topk_log_probs=student_topk_log_probs,
+            teacher_topk_log_probs=teacher_support_log_probs,
+            mode=resolved_topk_distill_mode(policy_loss_cfg),
+            include_tail=topk_distill_include_tail(policy_loss_cfg),
+            temperature=topk_distill_temperature(policy_loss_cfg),
+        )
+        topk_loss = agg_loss(
+            loss_mat=topk_loss_mat,
+            loss_mask=distill_response_mask,
+            loss_agg_mode=str(_cfg_get(actor.config, "loss_agg_mode", "token-mean")),
+        )
+        policy_loss = policy_loss + topk_loss * topk_distill_weight(policy_loss_cfg)
+    if teacher_prefix_active:
+        if topk_distill_active:
+            prefix_loss_mat = topk_distill_loss_matrix(
+                student_topk_log_probs=student_topk_log_probs,
+                teacher_topk_log_probs=teacher_support_log_probs,
+                mode=TOPK_RENORMALIZED_FORWARD_KL,
+                include_tail=False,
+                temperature=topk_distill_temperature(policy_loss_cfg),
+            )
+        else:
+            teacher_log_prob = select_teacher_log_prob_tensor(model_inputs, policy_loss_cfg)
+            prefix_loss_mat = chosen_token_forward_kl_matrix(
+                student_log_probs=log_prob,
+                teacher_log_probs=teacher_log_prob,
+            )
+        prefix_loss = agg_loss(
+            loss_mat=prefix_loss_mat,
+            loss_mask=prefix_loss_mask,
+            loss_agg_mode=str(_cfg_get(actor.config, "loss_agg_mode", "token-mean")),
+        )
+        policy_loss = policy_loss + prefix_loss * teacher_prefix_forward_weight(policy_loss_cfg)
     if bool(_cfg_get(actor.config, "use_kl_loss", False)) and "math_teacher_log_prob" in model_inputs:
-        kl_coef = float(_cfg_get(actor.config, "kl_loss_coef", 0.0) or 0.0)
         if kl_coef != 0:
             kld = kl_penalty(
                 logprob=log_prob,
@@ -681,7 +1137,7 @@ def _actor_micro_batch_loss(
             )
             kl_loss = agg_loss(
                 loss_mat=kld,
-                loss_mask=response_mask,
+                loss_mask=distill_response_mask,
                 loss_agg_mode=str(_cfg_get(actor.config, "loss_agg_mode", "token-mean")),
             )
             policy_loss = policy_loss + kl_loss * kl_coef
@@ -702,6 +1158,7 @@ class SequentialBackwardDomainGradientTracker:
         self._distributed_world_size = _distributed_world_size()
         requested_sample_norm = self.sample_gradient_enabled and bool(cfg.get("sample_gradient_norm_enabled", True))
         requested_sample_cos = self.sample_gradient_enabled and bool(cfg.get("sample_gradient_cos_enabled", False))
+        requested_token_gradient = bool(cfg.get("token_gradient_enabled", False))
         self._sample_gradient_uses_full_local_params = _actor_has_full_local_params_for_sample_gradient(actor)
         self._sample_gradient_norm_distributed_unsupported = (
             requested_sample_norm and not self._sample_gradient_uses_full_local_params
@@ -709,10 +1166,35 @@ class SequentialBackwardDomainGradientTracker:
         self._sample_gradient_cos_distributed_unsupported = (
             requested_sample_cos and not self._sample_gradient_uses_full_local_params
         )
+        self._token_gradient_distributed_unsupported = (
+            requested_token_gradient and not self._sample_gradient_uses_full_local_params
+        )
         self.sample_norm_enabled = requested_sample_norm and not self._sample_gradient_norm_distributed_unsupported
         self.sample_cos_enabled = requested_sample_cos and not self._sample_gradient_cos_distributed_unsupported
+        self.token_gradient_enabled = requested_token_gradient and not self._token_gradient_distributed_unsupported
+        # Deprecated token-gradient candidate caps kept for older config/meta payloads.
+        self.token_gradient_max_samples_per_domain = max(
+            1,
+            int(cfg.get("token_gradient_max_samples_per_domain", 8) or 8),
+        )
+        self.token_gradient_top_k_per_sample = max(
+            1,
+            int(cfg.get("token_gradient_top_k_per_sample", 4) or 4),
+        )
+        token_gradient_top_p = cfg.get("token_gradient_top_p", 0.10)
+        self.token_gradient_top_p = min(
+            1.0,
+            max(0.0, float(0.10 if token_gradient_top_p is None else token_gradient_top_p)),
+        )
+        self.token_gradient_min_teacher_diff = float(cfg.get("token_gradient_min_teacher_diff", 0.0) or 0.0)
+        self.token_gradient_strict_grad_restore = self.token_gradient_enabled and bool(
+            cfg.get("token_gradient_strict_grad_restore", False)
+        )
         self._sample_gradient_distributed_unsupported = not (
-            self.sample_norm_enabled or self.sample_cos_enabled or not (requested_sample_norm or requested_sample_cos)
+            self.sample_norm_enabled
+            or self.sample_cos_enabled
+            or self.token_gradient_enabled
+            or not (requested_sample_norm or requested_sample_cos or requested_token_gradient)
         )
         self.sample_log_sample_level = (
             bool(cfg.get("sample_gradient_log_sample_level", True))
@@ -724,14 +1206,19 @@ class SequentialBackwardDomainGradientTracker:
         self._expected_first_domain_samples: int | None = None
         self._started_at = 0.0
         self._domain_partition_meta = cfg.get("domain_partition", {})
-        self._prepared_supported = len(self.domains) == 2
+        self._prepared_supported = len(self.domains) in (1, 2)
         self._hook_handles: list[Any] = []
         self._active_norm_parts: list[torch.Tensor] | None = None
         self._active_norm_context: dict[str, Any] | None = None
         self._sample_records: list[dict[str, Any]] = []
         self._sample_candidates: dict[str, list[dict[str, Any]]] = {}
+        self._token_gradient_candidates: dict[str, list[dict[str, Any]]] = {}
+        self._token_gradient_selected_sample_ids: dict[str, set[str]] = {}
         self._micro_batch_index = 0
         self._sample_zero_norm_count = 0
+
+    def _domain_target_storage_dtype(self) -> str:
+        return self.storage_dtype
 
     def prepare_micro_batches(self, micro_batches: list[Any]) -> list[tuple[str | None, Any]]:
         original_micro_batches = list(micro_batches)
@@ -742,7 +1229,7 @@ class SequentialBackwardDomainGradientTracker:
             if partition_meta
             else self._distributed_world_size <= 1
         )
-        locally_supported = len(self.domains) == 2 and partition_aligned
+        locally_supported = len(self.domains) in (1, 2) and partition_aligned
         buckets: dict[str, list[tuple[str, Any]]] = {domain: [] for domain in self.domains}
         if locally_supported:
             for micro_batch in original_micro_batches:
@@ -802,6 +1289,8 @@ class SequentialBackwardDomainGradientTracker:
         self._started_at = time.perf_counter()
         self._sample_records = []
         self._sample_candidates = {}
+        self._token_gradient_candidates = {}
+        self._token_gradient_selected_sample_ids = {}
         self._micro_batch_index = 0
         self._sample_zero_norm_count = 0
         self._install_sample_norm_hooks()
@@ -814,7 +1303,7 @@ class SequentialBackwardDomainGradientTracker:
         loss_scale_factor: float,
         on_policy: bool,
     ) -> None:
-        if not self.sample_norm_enabled:
+        if not (self.sample_norm_enabled or self.token_gradient_enabled):
             return
         labels = _teacher_labels(micro_batch)
         resolved_domain = domain
@@ -826,7 +1315,7 @@ class SequentialBackwardDomainGradientTracker:
             fallback_prefix=f"step{self.step}:micro{self._micro_batch_index}",
         )
         sample_id = sample_ids[0] if sample_ids else f"step{self.step}:micro{self._micro_batch_index}"
-        self._active_norm_parts = []
+        self._active_norm_parts = [] if self.sample_norm_enabled else None
         self._active_norm_context = {
             "step": self.step,
             "domain": resolved_domain or "unknown",
@@ -839,7 +1328,7 @@ class SequentialBackwardDomainGradientTracker:
         }
 
     def after_backward(self, domain: str | None, sample_count: int, micro_batch: Any | None = None) -> None:
-        if self.sample_norm_enabled:
+        if self.sample_norm_enabled or self.token_gradient_enabled:
             self._finish_active_sample(micro_batch)
         self._micro_batch_index += 1
 
@@ -852,9 +1341,13 @@ class SequentialBackwardDomainGradientTracker:
             return
         expected_count = self._expected_first_domain_samples
         if expected_count is None or self._sample_counts[domain] >= expected_count:
-            self._first_domain_chunks = _snapshot_current_grad_chunks(self.actor, self.storage_dtype)
+            self._first_domain_chunks = _snapshot_current_grad_chunks(
+                self.actor,
+                self._domain_target_storage_dtype(),
+            )
 
     def finish_mini_batch(self) -> dict[str, float]:
+        finish_started_at = time.perf_counter()
         metrics: dict[str, float] = {
             "global/audit/full_gradient_autograd_unavailable": 0.0,
             "global/audit/full_gradient_true_backward_fallback": 0.0,
@@ -875,17 +1368,28 @@ class SequentialBackwardDomainGradientTracker:
             metrics["global/audit/sample_gradient_norm_distributed_unsupported"] = 1.0
         if self._sample_gradient_cos_distributed_unsupported:
             metrics["global/audit/sample_gradient_cos_distributed_unsupported"] = 1.0
+        if self._token_gradient_distributed_unsupported:
+            metrics["global/audit/token_gradient_distributed_unsupported"] = 1.0
         first_chunks = self._first_domain_chunks
         self._first_domain_chunks = None
         domain_targets: dict[str, tuple[tuple[torch.Tensor, ...], float]] = {}
 
-        if self.domain_gradient_enabled and self._prepared_supported and len(self.domains) == 2 and first_chunks is not None:
+        if self.domain_gradient_enabled and self._prepared_supported and len(self.domains) == 1 and first_chunks is not None:
+            domain_metrics, domain_targets = self._finish_single_domain_gradient_metrics(first_chunks)
+            metrics.update(domain_metrics)
+        elif self.domain_gradient_enabled and self._prepared_supported and len(self.domains) == 2 and first_chunks is not None:
+            domain_summary_started_at = time.perf_counter()
             domain_metrics, domain_targets = self._finish_domain_gradient_metrics(first_chunks)
+            metrics["global/full_grad_cost/domain_summary_seconds"] = (
+                time.perf_counter() - domain_summary_started_at
+            )
             metrics.update(domain_metrics)
 
         metrics.update(self._sample_norm_metrics())
         if self.sample_cos_enabled and domain_targets:
             metrics.update(self._sample_cos_metrics(domain_targets))
+        if self.token_gradient_enabled:
+            metrics.update(self._token_gradient_metrics(domain_targets))
         metrics["global/audit/sample_gradient_zero_norm_count"] = _all_reduce_sum(
             self._sample_zero_norm_count
         )
@@ -894,6 +1398,10 @@ class SequentialBackwardDomainGradientTracker:
         self._remove_sample_norm_hooks()
         self._active_norm_parts = None
         self._active_norm_context = None
+        self._sample_candidates = {}
+        self._token_gradient_candidates = {}
+        self._token_gradient_selected_sample_ids = {}
+        metrics["global/full_grad_cost/finish_mini_batch_seconds"] = time.perf_counter() - finish_started_at
         return metrics
 
     def _install_sample_norm_hooks(self) -> None:
@@ -919,35 +1427,101 @@ class SequentialBackwardDomainGradientTracker:
         parts = self._active_norm_parts
         self._active_norm_context = None
         self._active_norm_parts = None
-        if context is None or parts is None:
+        if context is None:
             return
-        local_sumsq = torch.stack(parts).sum().item() if parts else 0.0
-        scale = _current_grad_scale(self.actor)
-        if scale != 1.0:
-            local_sumsq /= scale * scale
-        if self._sample_gradient_uses_full_local_params:
-            norm_sumsq = local_sumsq
-        else:
-            norm_sumsq = _all_reduce_sum(local_sumsq)
-        grad_norm = float(max(norm_sumsq, 0.0) ** 0.5)
-        row = {
-            **context,
-            "sample_grad_norm": grad_norm,
-            "computed_for_cos": False,
-            "sample_to_domain_cos": None,
-            "sample_projection_share": None,
-        }
-        self._sample_records.append(row)
+        row: dict[str, Any] = {**context}
+        if self.sample_norm_enabled and parts is not None:
+            local_sumsq = torch.stack(parts).sum().item() if parts else 0.0
+            scale = _current_grad_scale(self.actor)
+            if scale != 1.0:
+                local_sumsq /= scale * scale
+            if self._sample_gradient_uses_full_local_params:
+                norm_sumsq = local_sumsq
+            else:
+                norm_sumsq = _all_reduce_sum(local_sumsq)
+            grad_norm = float(max(norm_sumsq, 0.0) ** 0.5)
+            row.update(
+                {
+                    "sample_grad_norm": grad_norm,
+                    "computed_for_cos": False,
+                    "sample_to_domain_cos": None,
+                    "sample_projection_share": None,
+                }
+            )
+            self._sample_records.append(row)
         domain = str(context["domain"])
-        if self.sample_cos_enabled and micro_batch is not None:
-            try:
-                stored_micro_batch = micro_batch.to("cpu")
-            except Exception:
-                stored_micro_batch = None
+        stored_micro_batch = None
+        if self.sample_cos_enabled and self.sample_norm_enabled and micro_batch is not None:
+            stored_micro_batch = _copy_data_proto_rows_to_cpu(
+                micro_batch,
+                list(range(len(micro_batch))),
+            )
             if stored_micro_batch is not None:
                 self._sample_candidates.setdefault(domain, []).append(
                     {"row": row, "micro_batch": stored_micro_batch}
                 )
+        if self.token_gradient_enabled and micro_batch is not None:
+            self._store_token_gradient_candidates(
+                domain,
+                micro_batch,
+                row,
+                stored_micro_batch=stored_micro_batch,
+            )
+
+    def _store_token_gradient_candidates(
+        self,
+        domain: str,
+        micro_batch: DataProto,
+        context: dict[str, Any],
+        *,
+        stored_micro_batch: DataProto | None = None,
+    ) -> None:
+        token_candidates = self._select_gap_abs_token_candidates(
+            micro_batch,
+            domain=domain,
+            fallback_prefix=str(context.get("sample_id", f"step{self.step}")),
+        )
+        if not token_candidates:
+            return
+
+        if stored_micro_batch is not None:
+            normalized_rows = []
+            for row in token_candidates:
+                normalized_row = dict(row)
+                normalized_row["original_sample_index"] = int(row["sample_index"])
+                normalized_row["source_micro_batch_index"] = int(context.get("micro_batch_index", 0) or 0)
+                normalized_rows.append(normalized_row)
+            self._token_gradient_candidates.setdefault(domain, []).append(
+                {
+                    "context": dict(context),
+                    "micro_batch": stored_micro_batch,
+                    "tokens": normalized_rows,
+                }
+            )
+            return
+
+        sample_indices = sorted({int(row["sample_index"]) for row in token_candidates})
+        if not sample_indices:
+            return
+        sample_micro_batch = _copy_data_proto_rows_to_cpu(micro_batch, sample_indices)
+        if sample_micro_batch is None:
+            return
+        index_map = {sample_idx: new_idx for new_idx, sample_idx in enumerate(sample_indices)}
+        normalized_rows = []
+        for row in token_candidates:
+            original_sample_index = int(row["sample_index"])
+            normalized_row = dict(row)
+            normalized_row["original_sample_index"] = original_sample_index
+            normalized_row["sample_index"] = index_map[original_sample_index]
+            normalized_row["source_micro_batch_index"] = int(context.get("micro_batch_index", 0) or 0)
+            normalized_rows.append(normalized_row)
+        self._token_gradient_candidates.setdefault(domain, []).append(
+            {
+                "context": dict(context),
+                "micro_batch": sample_micro_batch,
+                "tokens": normalized_rows,
+            }
+        )
 
     def _finish_domain_gradient_metrics(
         self,
@@ -955,10 +1529,11 @@ class SequentialBackwardDomainGradientTracker:
     ) -> tuple[dict[str, float], dict[str, tuple[tuple[torch.Tensor, ...], float]]]:
         metrics: dict[str, float] = {}
         domain_targets: dict[str, tuple[tuple[torch.Tensor, ...], float]] = {}
+        needs_domain_target_chunks = self.sample_cos_enabled or self.token_gradient_enabled
         snapshot = _current_grad_difference_snapshot(
             self.actor,
             first_chunks,
-            self.storage_dtype if self.sample_cos_enabled else None,
+            self._domain_target_storage_dtype() if needs_domain_target_chunks else None,
         )
         if snapshot is None:
             return metrics, domain_targets
@@ -1000,12 +1575,39 @@ class SequentialBackwardDomainGradientTracker:
             metrics[f"global/full_grad_contribution/{first_safe}_to_total/signed_projection_share"] = first_total_dot / total_norm_sq
             metrics[f"global/full_grad_contribution/{second_safe}_to_total/signed_projection_share"] = second_total_dot / total_norm_sq
 
-        if self.sample_cos_enabled and snapshot.second_chunks is not None:
+        if needs_domain_target_chunks and snapshot.second_chunks is not None:
             domain_targets[first_domain] = (first_chunks, first_norm_sq)
             second_target_norm_sq = snapshot.second_target_norm_sq
             if second_target_norm_sq is not None and second_target_norm_sq > 0.0:
                 domain_targets[second_domain] = (snapshot.second_chunks, second_target_norm_sq)
 
+        return metrics, domain_targets
+
+    def _finish_single_domain_gradient_metrics(
+        self,
+        domain_chunks: tuple[torch.Tensor, ...],
+    ) -> tuple[dict[str, float], dict[str, tuple[tuple[torch.Tensor, ...], float]]]:
+        metrics: dict[str, float] = {}
+        domain_targets: dict[str, tuple[tuple[torch.Tensor, ...], float]] = {}
+        if not self.domains:
+            return metrics, domain_targets
+        norm_sq = 0.0
+        for chunk in domain_chunks:
+            chunk_float = chunk.float()
+            norm_sq += _chunked_vector_dot(chunk_float, chunk_float) or 0.0
+            del chunk_float
+        norm_sq = _reduce_gradient_scalars(self.actor, [norm_sq])[0]
+        if norm_sq <= 0.0:
+            return metrics, domain_targets
+        domain = self.domains[0]
+        safe_domain = _safe_name(domain)
+        metrics["global/audit/full_gradient_domain_sequential_available"] = 1.0
+        metrics["global/audit/full_gradient_single_domain_target"] = 1.0
+        metrics[f"{safe_domain}/full_grad/grad_norm"] = norm_sq**0.5
+        metrics[f"{safe_domain}/full_grad/sample_count"] = _all_reduce_sum(
+            self._sample_counts.get(domain, 0)
+        )
+        domain_targets[domain] = (domain_chunks, norm_sq)
         return metrics, domain_targets
 
     def _sample_norm_metrics(self) -> dict[str, float]:
@@ -1051,6 +1653,7 @@ class SequentialBackwardDomainGradientTracker:
                         target_chunks=target_chunks,
                         target_norm=target_norm,
                         target_norm_sq=target_norm_sq,
+                        restore_target_map=domain_targets,
                         loss_scale_factor=float(row.get("loss_scale_factor", 1.0)),
                         on_policy=bool(row.get("on_policy", False)),
                     )
@@ -1123,7 +1726,7 @@ class SequentialBackwardDomainGradientTracker:
                     if self._sample_gradient_uses_full_local_params
                     else 1
                 )
-                projection_share_sum = projection_share_sum_across_replicas / max(replica_count, 1)
+                projection_share_sum = projection_share_sum_across_replicas
                 metrics[
                     f"{safe_domain}/sample_grad_contribution/projection_share_sum_across_replicas"
                 ] = projection_share_sum_across_replicas
@@ -1136,7 +1739,998 @@ class SequentialBackwardDomainGradientTracker:
                 )
         return metrics
 
+    def _token_gradient_metrics(
+        self,
+        domain_targets: dict[str, tuple[tuple[torch.Tensor, ...], float]],
+    ) -> dict[str, float]:
+        started_at = time.perf_counter()
+        metrics: dict[str, float] = {}
+        rows: list[dict[str, Any]] = []
+        local_rank = _distributed_rank()
+        world_size = self._distributed_world_size
+        parameters_for_final_restore = _trainable_parameters(self.actor)
+        final_grad_dtypes = _parameter_grad_dtypes(parameters_for_final_restore)
+        token_recompute_attempted = False
+        local_records_by_key: dict[tuple[int, int], dict[str, Any]] = {}
+        local_metadata: list[dict[str, Any]] = []
+        local_supported_targets = [str(domain) for domain in domain_targets]
+        supported_target_counts: dict[str, int] = {}
+        for domain in _all_gather_list(local_supported_targets):
+            supported_target_counts[str(domain)] = supported_target_counts.get(str(domain), 0) + 1
+        globally_supported_targets = {
+            domain for domain, count in supported_target_counts.items() if count == max(world_size, 1)
+        }
+
+        for domain, candidates in sorted(self._token_gradient_candidates.items()):
+            if domain not in globally_supported_targets:
+                continue
+            for candidate_index, candidate in enumerate(candidates):
+                micro_batch = candidate["micro_batch"]
+                for token_candidate in candidate.get("tokens", []):
+                    token_candidate = dict(token_candidate)
+                    token_candidate_id = len(local_metadata)
+                    token_candidate["candidate_index"] = candidate_index
+                    token_candidate["micro_batch"] = micro_batch
+                    token_candidate["loss_scale_factor"] = float(candidate["context"].get("loss_scale_factor", 1.0))
+                    token_candidate["on_policy"] = bool(candidate["context"].get("on_policy", False))
+                    token_candidate["owner_rank"] = local_rank
+                    token_candidate["token_candidate_id"] = token_candidate_id
+                    key = (local_rank, token_candidate_id)
+                    local_records_by_key[key] = token_candidate
+                    local_metadata.append(self._token_gradient_metadata(domain, token_candidate))
+
+        global_metadata = _all_gather_list(local_metadata)
+        domains = sorted(
+            {
+                str(row.get("domain"))
+                for row in global_metadata
+                if str(row.get("domain")) in globally_supported_targets
+            }
+        )
+        for domain in domains:
+            domain_rows: list[dict[str, Any]] = []
+            token_metadata = sorted(
+                (row for row in global_metadata if str(row.get("domain")) == domain),
+                key=lambda row: (
+                    -float(row.get("gap_abs", 0.0)),
+                    int(row.get("owner_rank", 0)),
+                    int(row.get("token_candidate_id", 0)),
+                ),
+            )
+            selected_samples_by_domain = len(
+                self._token_sample_keys(token_metadata)
+            )
+            total_gap_abs_mass = sum(float(row.get("gap_abs", 0.0)) for row in token_metadata)
+            for selection_name, selected_metadata in self._gap_abs_token_selections(token_metadata):
+                if not selected_metadata:
+                    continue
+                local_selected_tokens = self._local_tokens_for_global_selection(
+                    selected_metadata,
+                    local_records_by_key,
+                    local_rank=local_rank,
+                )
+                stats = self._recompute_token_selection_gradient_stats(
+                    local_selected_tokens,
+                    target_map=domain_targets,
+                    restore_grads=self.token_gradient_strict_grad_restore,
+                )
+                token_recompute_attempted = True
+                other_domain = self._other_domain(domain, domain_targets)
+                own_cos = stats.get(f"{_safe_name(domain)}_cos")
+                other_cos = stats.get(f"{_safe_name(other_domain)}_cos") if other_domain is not None else None
+                own_projection = stats.get(f"{_safe_name(domain)}_projection_share")
+                other_projection = (
+                    stats.get(f"{_safe_name(other_domain)}_projection_share")
+                    if other_domain is not None
+                    else None
+                )
+                selected_gap_abs_mass = sum(float(row.get("gap_abs", 0.0)) for row in selected_metadata)
+                rank_selected_token_counts = self._rank_token_counts(selected_metadata)
+                row = {
+                    "step": self.step,
+                    "domain": domain,
+                    "selection": selection_name,
+                    "selection_scope": "global",
+                    "rank": "global",
+                    "world_size": world_size,
+                    "other_domain": other_domain,
+                    "own_domain_cos": own_cos,
+                    "other_domain_cos": other_cos,
+                    "conflict_to_other": max(0.0, -float(other_cos)) if other_cos is not None else None,
+                    "own_projection_share": own_projection,
+                    "other_projection_share": other_projection,
+                    "selected_token_count": float(len(selected_metadata)),
+                    "selected_sample_count": float(len(self._token_sample_keys(selected_metadata))),
+                    "selected_rank_count": float(len(rank_selected_token_counts)),
+                    "rank_selected_token_counts": rank_selected_token_counts,
+                    "local_selected_token_count": float(len(local_selected_tokens)),
+                    "global_candidate_token_count": float(len(token_metadata)),
+                    "global_candidate_sample_count": float(selected_samples_by_domain),
+                    "global_candidate_gap_abs_mass": total_gap_abs_mass,
+                    "global_candidate_scope": "all_valid_response_tokens",
+                    "selected_gap_abs_mass": selected_gap_abs_mass,
+                    "selected_gap_abs_mass_frac": selected_gap_abs_mass / total_gap_abs_mass
+                    if total_gap_abs_mass > 0.0
+                    else 0.0,
+                    "selected_gap_abs_mean": selected_gap_abs_mass / max(len(selected_metadata), 1),
+                    **stats,
+                }
+                domain_rows.append(row)
+            rows.extend(domain_rows)
+            metrics.update(self._summarize_token_gradient_rows(domain, domain_rows))
+        if token_recompute_attempted and not self.token_gradient_strict_grad_restore:
+            _restore_parameter_grads_from_targets(
+                parameters_for_final_restore,
+                domain_targets,
+                grad_dtypes=final_grad_dtypes,
+            )
+        if rows and local_rank == 0:
+            _write_jsonl_rows(self.output_dir, "token_grad_metrics.jsonl", rows)
+        total_seconds = _all_reduce_values_max([time.perf_counter() - started_at])[0]
+        metrics.update(self._summarize_global_token_gradient_cost(rows, total_seconds))
+        return metrics
+
+    def _token_gradient_metadata(self, domain: str, token: dict[str, Any]) -> dict[str, Any]:
+        metadata_keys = (
+            "sample_id",
+            "sample_index",
+            "position",
+            "rank_in_sample",
+            "gap_signed",
+            "gap_abs",
+            "teacher_logp",
+            "student_logp",
+            "effective_tokens",
+            "token_id",
+            "original_sample_index",
+            "source_micro_batch_index",
+            "owner_rank",
+            "token_candidate_id",
+        )
+        metadata = {"domain": domain}
+        for key in metadata_keys:
+            if key in token:
+                metadata[key] = token[key]
+        return _json_safe(metadata)
+
+    def _local_tokens_for_global_selection(
+        self,
+        selected_metadata: list[dict[str, Any]],
+        local_records_by_key: dict[tuple[int, int], dict[str, Any]],
+        *,
+        local_rank: int,
+    ) -> list[dict[str, Any]]:
+        local_tokens: list[dict[str, Any]] = []
+        for row in selected_metadata:
+            owner_rank = int(row.get("owner_rank", -1))
+            if owner_rank != local_rank:
+                continue
+            key = (owner_rank, int(row.get("token_candidate_id", -1)))
+            token = local_records_by_key.get(key)
+            if token is not None:
+                local_tokens.append(token)
+        return local_tokens
+
+    def _rank_token_counts(self, selected_metadata: list[dict[str, Any]]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for row in selected_metadata:
+            rank = str(int(row.get("owner_rank", -1)))
+            counts[rank] = counts.get(rank, 0) + 1
+        return counts
+
+    def _token_sample_keys(self, token_metadata: list[dict[str, Any]]) -> set[tuple[str, ...]]:
+        keys: set[tuple[str, ...]] = set()
+        for row in token_metadata:
+            owner_rank = str(row.get("owner_rank", -1))
+            sample_id = str(row.get("sample_id", ""))
+            source_micro_batch_index = row.get("source_micro_batch_index")
+            original_sample_index = row.get("original_sample_index", row.get("sample_index"))
+            if source_micro_batch_index is not None and original_sample_index is not None:
+                keys.add((owner_rank, str(source_micro_batch_index), str(original_sample_index), sample_id))
+            elif sample_id:
+                keys.add((owner_rank, sample_id))
+            else:
+                keys.add((owner_rank, str(row.get("token_candidate_id", -1))))
+        return keys
+
+    def _gap_abs_token_selections(
+        self,
+        token_records: list[dict[str, Any]],
+    ) -> list[tuple[str, list[dict[str, Any]]]]:
+        if not token_records:
+            return []
+        top100 = token_records[: min(100, len(token_records))]
+        total_mass = sum(float(row.get("gap_abs", 0.0)) for row in token_records)
+        top_p_selection: list[dict[str, Any]] = []
+        top_p_threshold = total_mass * self.token_gradient_top_p
+        if total_mass > 0.0:
+            running = 0.0
+            for row in token_records:
+                top_p_selection.append(row)
+                running += float(row.get("gap_abs", 0.0))
+                if running >= top_p_threshold:
+                    break
+        else:
+            top_p_selection = token_records[:1]
+        return [("top100_gap_abs", top100), (self._gap_abs_top_p_selection_name(), top_p_selection)]
+
+    def _gap_abs_top_p_selection_name(self) -> str:
+        percent = self.token_gradient_top_p * 100.0
+        rounded = round(percent)
+        if abs(percent - rounded) < 1e-6:
+            percent_label = str(int(rounded))
+        else:
+            percent_label = f"{percent:.2f}".rstrip("0").rstrip(".").replace(".", "p")
+        return f"topp{percent_label}_gap_abs_mass"
+
+    def _select_gap_abs_token_candidates(
+        self,
+        micro_batch: DataProto,
+        *,
+        domain: str,
+        fallback_prefix: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if micro_batch.batch is None:
+            return []
+        model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
+        if "old_log_probs" not in model_inputs or "math_teacher_log_prob" not in model_inputs:
+            return []
+        old_log_probs = model_inputs["old_log_probs"].detach().float()
+        response_mask = model_inputs["response_mask"].detach().float()
+        math_teacher = model_inputs["math_teacher_log_prob"].detach().float()
+        code_teacher = model_inputs.get("code_teacher_log_prob", math_teacher)
+        if hasattr(code_teacher, "detach"):
+            code_teacher = code_teacher.detach().float()
+        else:
+            code_teacher = math_teacher
+        labels = _labels_from_inputs(model_inputs, int(old_log_probs.shape[0]))
+        sample_ids = _sample_ids(micro_batch, self.step, fallback_prefix=fallback_prefix)
+        token_ids = _response_token_id_matrix_from_inputs(model_inputs, response_mask)
+        rows: list[dict[str, Any]] = []
+        for sample_idx, label in enumerate(labels):
+            if label != domain:
+                continue
+            selected_teacher = code_teacher[sample_idx] if label == "code" else math_teacher[sample_idx]
+            gap_signed = (selected_teacher - old_log_probs[sample_idx]) * response_mask[sample_idx]
+            gap_abs = gap_signed.abs()
+            valid_positions = torch.nonzero(response_mask[sample_idx] > 0, as_tuple=False).reshape(-1)
+            if valid_positions.numel() == 0:
+                continue
+            valid_scores = gap_abs[valid_positions]
+            sorted_offsets = torch.argsort(valid_scores, descending=True)
+            for rank, offset in enumerate(sorted_offsets.tolist(), start=1):
+                position = int(valid_positions[offset].item())
+                gap_abs_value = float(valid_scores[offset].detach().cpu().item())
+                gap_signed_value = float(gap_signed[position].detach().cpu().item())
+                row: dict[str, Any] = {
+                    "sample_id": sample_ids[sample_idx],
+                    "sample_index": int(sample_idx),
+                    "position": position,
+                    "rank_in_sample": rank,
+                    "gap_signed": gap_signed_value,
+                    "gap_abs": gap_abs_value,
+                    "teacher_logp": float(selected_teacher[position].detach().cpu().item()),
+                    "student_logp": float(old_log_probs[sample_idx, position].detach().cpu().item()),
+                    "effective_tokens": float(response_mask[sample_idx].sum().detach().cpu().item()),
+                }
+                if token_ids is not None:
+                    row["token_id"] = int(token_ids[sample_idx, position].detach().cpu().item())
+                rows.append(row)
+        return rows
+
+    def _other_domain(
+        self,
+        domain: str,
+        domain_targets: dict[str, tuple[tuple[torch.Tensor, ...], float]],
+    ) -> str | None:
+        for candidate in self.domains:
+            if candidate != domain and candidate in domain_targets:
+                return candidate
+        for candidate in sorted(domain_targets):
+            if candidate != domain:
+                return candidate
+        return None
+
+    def _recompute_token_gradient_stats(
+        self,
+        micro_batch: DataProto,
+        *,
+        token_mask: torch.Tensor,
+        target_map: dict[str, tuple[tuple[torch.Tensor, ...], float]],
+        loss_scale_factor: float,
+        on_policy: bool,
+    ) -> dict[str, Any]:
+        started_at = time.perf_counter()
+        parameters = _trainable_parameters(self.actor)
+        loss_agg_mode = str(_cfg_get(self.actor.config, "loss_agg_mode", "token-mean"))
+        active_position = torch.nonzero(token_mask.detach() > 0, as_tuple=False)
+        if active_position.numel() == 0:
+            return {
+                "token_grad_available": 0.0,
+                "token_grad_norm": None,
+                "token_grad_autograd_error": "empty_token_mask",
+                "token_grad_seconds": time.perf_counter() - started_at,
+            }
+        contribution_scale = _token_mask_contribution_scale(
+            micro_batch.batch["response_mask"],
+            token_mask,
+            loss_agg_mode,
+        )
+        if contribution_scale <= 0.0:
+            return {
+                "token_grad_available": 0.0,
+                "token_grad_norm": None,
+                "token_grad_autograd_error": "zero_contribution_scale",
+                "token_grad_seconds": time.perf_counter() - started_at,
+            }
+        autograd_started_at = time.perf_counter()
+        try:
+            loss = _actor_micro_batch_loss(
+                self.actor,
+                micro_batch,
+                loss_scale_factor=loss_scale_factor * contribution_scale,
+                on_policy=on_policy,
+                safe_logprob_backward=True,
+                response_mask_override=token_mask,
+            )
+            gradients = torch.autograd.grad(loss, parameters, retain_graph=False, allow_unused=True)
+            autograd_error: str | None = None
+        except Exception as exc:
+            gradients = tuple(None for _ in parameters)
+            autograd_error = type(exc).__name__
+        autograd_seconds = time.perf_counter() - autograd_started_at
+        non_none_grad_count = sum(gradient is not None for gradient in gradients)
+        if non_none_grad_count == 0 and autograd_error is None:
+            autograd_error = "all_parameters_disconnected"
+        fallback_stats: tuple[float | None, dict[str, float] | None] | None = None
+        fallback_seconds = 0.0
+        fallback_used = 0.0
+        restore_diff_stats: dict[str, float] = {}
+        if non_none_grad_count == 0 and _target_map_matches_parameters(parameters, target_map):
+            fallback_started_at = time.perf_counter()
+            (
+                fallback_local_norm_sq,
+                fallback_local_dots,
+                fallback_non_none_count,
+                fallback_error,
+                restore_diff_stats,
+            ) = self._recompute_token_gradient_stats_with_backward(
+                micro_batch,
+                token_mask=token_mask,
+                target_map=target_map,
+                loss_scale_factor=loss_scale_factor * contribution_scale,
+                on_policy=on_policy,
+            )
+            fallback_seconds = time.perf_counter() - fallback_started_at
+            if fallback_non_none_count > 0:
+                non_none_grad_count = fallback_non_none_count
+                autograd_error = None
+                fallback_stats = (fallback_local_norm_sq, fallback_local_dots)
+                fallback_used = 1.0
+            elif fallback_error is not None:
+                autograd_error = fallback_error
+        if fallback_stats is None:
+            local_norm_sq, local_dots = self._grad_multi_target_stats_from_tensors(gradients, target_map)
+        else:
+            local_norm_sq, local_dots = fallback_stats
+        if local_norm_sq is None or local_dots is None:
+            return {
+                "token_grad_available": 0.0,
+                "token_grad_norm": None,
+                "token_grad_non_none_grad_count": float(non_none_grad_count),
+                "token_grad_autograd_error": autograd_error or "parameter_target_mismatch",
+                "token_loss_contribution_scale": contribution_scale,
+                "token_grad_seconds": time.perf_counter() - started_at,
+                "token_grad_autograd_seconds": autograd_seconds,
+                "token_grad_backward_fallback_seconds": fallback_seconds,
+                "token_grad_backward_fallback_used": fallback_used,
+                **restore_diff_stats,
+            }
+        if self._sample_gradient_uses_full_local_params:
+            norm_sq = max(local_norm_sq, 0.0)
+            dots = local_dots
+        else:
+            norm_sq = max(_all_reduce_sum(local_norm_sq), 0.0)
+            dots = {target_domain: _all_reduce_sum(dot) for target_domain, dot in local_dots.items()}
+        token_norm = norm_sq**0.5
+        available = non_none_grad_count > 0 and token_norm > 0.0
+        stats: dict[str, Any] = {
+            "token_grad_available": float(available),
+            "token_grad_norm": token_norm if available else None,
+            "token_grad_non_none_grad_count": float(non_none_grad_count),
+            "token_grad_autograd_error": autograd_error,
+            "token_loss_contribution_scale": contribution_scale,
+            "token_grad_seconds": time.perf_counter() - started_at,
+            "token_grad_autograd_seconds": autograd_seconds,
+            "token_grad_backward_fallback_seconds": fallback_seconds,
+            "token_grad_backward_fallback_used": fallback_used,
+            **restore_diff_stats,
+        }
+        for target_domain, dot in dots.items():
+            _chunks, target_norm_sq = target_map[target_domain]
+            target_norm = target_norm_sq**0.5
+            safe_domain = _safe_name(target_domain)
+            cosine = dot / (token_norm * target_norm) if available and target_norm > 0.0 else None
+            projection_share = dot / target_norm_sq if available and target_norm_sq > 0.0 else None
+            stats[f"{safe_domain}_cos"] = cosine
+            stats[f"{safe_domain}_projection_share"] = projection_share
+        return stats
+
+    def _recompute_token_gradient_stats_with_backward(
+        self,
+        micro_batch: DataProto,
+        *,
+        token_mask: torch.Tensor,
+        target_map: dict[str, tuple[tuple[torch.Tensor, ...], float]],
+        loss_scale_factor: float,
+        on_policy: bool,
+    ) -> tuple[float | None, dict[str, float] | None, int, str | None, dict[str, float]]:
+        parameters = _trainable_parameters(self.actor)
+        grad_dtypes = _parameter_grad_dtypes(parameters)
+        debug_restore_diff = self.token_gradient_strict_grad_restore
+        grad_snapshot = (
+            _snapshot_parameter_grads(parameters)
+            if debug_restore_diff
+            else None
+        )
+        pre_diff = _parameter_grad_target_diff_stats(parameters, target_map) if debug_restore_diff else {}
+        post_diff: dict[str, float] = {}
+        original_diff: dict[str, float] | None = None
+        local_norm_sq: float | None = None
+        local_dots: dict[str, float] | None = None
+        non_none_grad_count = 0
+        error: str | None = None
+        _clear_parameter_grads(parameters)
+        try:
+            with _actor_no_sync_context(self.actor):
+                loss = _actor_micro_batch_loss(
+                    self.actor,
+                    micro_batch,
+                    loss_scale_factor=loss_scale_factor,
+                    on_policy=on_policy,
+                    safe_logprob_backward=False,
+                    response_mask_override=token_mask,
+                )
+                loss.backward()
+            gradients = tuple(parameter.grad for parameter in parameters)
+            non_none_grad_count = sum(gradient is not None for gradient in gradients)
+            local_norm_sq, local_dots = self._grad_multi_target_stats_from_tensors(gradients, target_map)
+            del gradients
+        except Exception as exc:
+            error = f"backward_{type(exc).__name__}"
+        finally:
+            if grad_snapshot is not None:
+                _restore_parameter_grads_from_snapshot(parameters, grad_snapshot, grad_dtypes=grad_dtypes)
+                if debug_restore_diff:
+                    original_diff = _parameter_grad_snapshot_diff_stats(parameters, grad_snapshot)
+            else:
+                _restore_parameter_grads_from_targets(parameters, target_map, grad_dtypes=grad_dtypes)
+            if debug_restore_diff:
+                post_diff = _parameter_grad_target_diff_stats(parameters, target_map)
+        restore_stats = {
+            "token_grad_restore_pre_target_rel_l2": pre_diff["rel_l2"],
+            "token_grad_restore_pre_target_max_abs": pre_diff["max_abs"],
+            "token_grad_restore_post_target_rel_l2": post_diff["rel_l2"],
+            "token_grad_restore_post_target_max_abs": post_diff["max_abs"],
+            "token_grad_restore_target_norm": pre_diff["target_norm"],
+        }
+        if original_diff is not None:
+            restore_stats.update(
+                {
+                    "token_grad_restore_original_rel_l2": original_diff["rel_l2"],
+                    "token_grad_restore_original_max_abs": original_diff["max_abs"],
+                    "token_grad_restore_original_norm": original_diff["snapshot_norm"],
+                }
+            )
+        return local_norm_sq, local_dots, non_none_grad_count, error, restore_stats
+
+    def _recompute_token_selection_gradient_stats(
+        self,
+        selected_tokens: list[dict[str, Any]],
+        *,
+        target_map: dict[str, tuple[tuple[torch.Tensor, ...], float]],
+        restore_grads: bool = True,
+    ) -> dict[str, Any]:
+        started_at = time.perf_counter()
+        parameters = _trainable_parameters(self.actor)
+        grad_dtypes = _parameter_grad_dtypes(parameters) if selected_tokens else tuple()
+        grad_snapshot = (
+            _snapshot_parameter_grads(parameters)
+            if selected_tokens and self.token_gradient_strict_grad_restore and restore_grads
+            else None
+        )
+        pre_diff = (
+            _parameter_grad_target_diff_stats(parameters, target_map)
+            if selected_tokens and restore_grads
+            else {}
+        )
+        post_diff: dict[str, float] = {}
+        original_diff: dict[str, float] | None = None
+        local_norm_sq: float | None = 0.0
+        local_dots: dict[str, float] | None = {domain: 0.0 for domain in target_map}
+        non_none_grad_count = 0
+        autograd_error: str | None = None
+        autograd_started_at = time.perf_counter()
+        loss_agg_mode = str(_cfg_get(self.actor.config, "loss_agg_mode", "token-mean"))
+
+        grouped: dict[int, dict[str, Any]] = {}
+        for token in selected_tokens:
+            group_key = int(token["candidate_index"])
+            group = grouped.setdefault(
+                group_key,
+                {
+                    "micro_batch": token["micro_batch"],
+                    "loss_scale_factor": float(token.get("loss_scale_factor", 1.0)),
+                    "on_policy": bool(token.get("on_policy", False)),
+                    "positions": [],
+                },
+                )
+            group["positions"].append((int(token["sample_index"]), int(token["position"])))
+
+        used_micro_batches: list[DataProto] = []
+        if selected_tokens:
+            _clear_parameter_grads(parameters)
+            try:
+                with _actor_no_sync_context(self.actor):
+                    for group in grouped.values():
+                        micro_batch = group["micro_batch"]
+                        used_micro_batches.append(micro_batch)
+                        token_mask = torch.zeros_like(micro_batch.batch["response_mask"], dtype=torch.float32)
+                        for sample_idx, position in group["positions"]:
+                            token_mask[sample_idx, position] = 1.0
+                        contribution_scale = _token_mask_contribution_scale(
+                            micro_batch.batch["response_mask"],
+                            token_mask,
+                            loss_agg_mode,
+                        )
+                        if contribution_scale <= 0.0:
+                            continue
+                        loss = _actor_micro_batch_loss(
+                            self.actor,
+                            micro_batch,
+                            loss_scale_factor=float(group["loss_scale_factor"]) * contribution_scale,
+                            on_policy=bool(group["on_policy"]),
+                            safe_logprob_backward=False,
+                            response_mask_override=token_mask,
+                        )
+                        loss.backward()
+                gradients = tuple(parameter.grad for parameter in parameters)
+                non_none_grad_count = sum(gradient is not None for gradient in gradients)
+                local_norm_sq, local_dots = self._grad_multi_target_stats_from_tensors(gradients, target_map)
+                del gradients
+            except Exception as exc:
+                autograd_error = f"backward_{type(exc).__name__}"
+            finally:
+                if restore_grads:
+                    if grad_snapshot is not None:
+                        _restore_parameter_grads_from_snapshot(parameters, grad_snapshot, grad_dtypes=grad_dtypes)
+                        original_diff = _parameter_grad_snapshot_diff_stats(parameters, grad_snapshot)
+                    else:
+                        _restore_parameter_grads_from_targets(parameters, target_map, grad_dtypes=grad_dtypes)
+                    post_diff = _parameter_grad_target_diff_stats(parameters, target_map)
+                for micro_batch in used_micro_batches:
+                    try:
+                        micro_batch.to("cpu")
+                    except Exception:
+                        pass
+
+        autograd_seconds = time.perf_counter() - autograd_started_at
+        restore_stats = {
+            "token_grad_restore_pre_target_rel_l2": pre_diff.get("rel_l2", 0.0),
+            "token_grad_restore_pre_target_max_abs": pre_diff.get("max_abs", 0.0),
+            "token_grad_restore_post_target_rel_l2": post_diff.get("rel_l2", 0.0),
+            "token_grad_restore_post_target_max_abs": post_diff.get("max_abs", 0.0),
+            "token_grad_restore_target_norm": pre_diff.get("target_norm", 0.0),
+        }
+        if original_diff is not None:
+            restore_stats.update(
+                {
+                    "token_grad_restore_original_rel_l2": original_diff["rel_l2"],
+                    "token_grad_restore_original_max_abs": original_diff["max_abs"],
+                    "token_grad_restore_original_norm": original_diff["snapshot_norm"],
+                }
+            )
+        else:
+            restore_stats.update(
+                {
+                    "token_grad_restore_original_rel_l2": 0.0,
+                    "token_grad_restore_original_max_abs": 0.0,
+                    "token_grad_restore_original_norm": 0.0,
+                }
+            )
+        local_error = autograd_error
+        if local_norm_sq is None or local_dots is None:
+            local_error = autograd_error or "parameter_target_mismatch"
+            local_norm_sq = 0.0
+            local_dots = {domain: 0.0 for domain in target_map}
+
+        target_domains = sorted(target_map)
+        reduced_values = _all_reduce_values_sum(
+            [float(max(local_norm_sq, 0.0)), float(non_none_grad_count)]
+            + [float(local_dots.get(domain, 0.0)) for domain in target_domains]
+        )
+        norm_sq = max(reduced_values[0], 0.0)
+        global_non_none_grad_count = reduced_values[1]
+        dots = {
+            domain: reduced_values[2 + idx]
+            for idx, domain in enumerate(target_domains)
+        }
+        max_keys = [
+            "token_grad_seconds",
+            "token_grad_autograd_seconds",
+            "token_grad_restore_pre_target_rel_l2",
+            "token_grad_restore_pre_target_max_abs",
+            "token_grad_restore_post_target_rel_l2",
+            "token_grad_restore_post_target_max_abs",
+            "token_grad_restore_target_norm",
+            "token_grad_restore_original_rel_l2",
+            "token_grad_restore_original_max_abs",
+            "token_grad_restore_original_norm",
+        ]
+        local_timing_and_restore = {
+            "token_grad_seconds": time.perf_counter() - started_at,
+            "token_grad_autograd_seconds": autograd_seconds,
+            **restore_stats,
+        }
+        max_values = _all_reduce_values_max([float(local_timing_and_restore.get(key, 0.0)) for key in max_keys])
+        reduced_max = {key: max_values[idx] for idx, key in enumerate(max_keys)}
+        global_errors = sorted(set(str(error) for error in _all_gather_list([local_error] if local_error else [])))
+
+        token_norm = norm_sq**0.5
+        available = not global_errors and global_non_none_grad_count > 0 and token_norm > 0.0
+        stats: dict[str, Any] = {
+            "token_grad_available": float(available),
+            "token_grad_norm": token_norm if available else None,
+            "token_grad_non_none_grad_count": float(global_non_none_grad_count),
+            "token_grad_autograd_error": ";".join(global_errors) if global_errors else None,
+            "token_grad_backward_fallback_seconds": 0.0,
+            "token_grad_backward_fallback_used": 0.0,
+            **reduced_max,
+        }
+        for target_domain, dot in dots.items():
+            _chunks, target_norm_sq = target_map[target_domain]
+            target_norm = target_norm_sq**0.5
+            safe_domain = _safe_name(target_domain)
+            stats[f"{safe_domain}_cos"] = dot / (token_norm * target_norm) if available and target_norm > 0.0 else None
+            stats[f"{safe_domain}_projection_share"] = (
+                dot / target_norm_sq if available and target_norm_sq > 0.0 else None
+            )
+        return stats
+
+    def _grad_multi_target_stats_from_tensors(
+        self,
+        gradients: tuple[torch.Tensor | None, ...],
+        target_map: dict[str, tuple[tuple[torch.Tensor, ...], float]],
+    ) -> tuple[float | None, dict[str, float] | None]:
+        local_norm_sq = 0.0
+        local_dots = {domain: 0.0 for domain in target_map}
+        for param_idx, gradient in enumerate(gradients):
+            if gradient is None:
+                continue
+            gradient_gpu = gradient.detach().reshape(-1).float()
+            gradient_norm_sq = _chunked_vector_dot(gradient_gpu, gradient_gpu)
+            if gradient_norm_sq is None:
+                return None, None
+            local_norm_sq += gradient_norm_sq
+            for domain, (target_chunks, _target_norm_sq) in target_map.items():
+                if param_idx >= len(target_chunks):
+                    return None, None
+                target = target_chunks[param_idx]
+                if gradient_gpu.numel() != target.numel():
+                    return None, None
+                target_gpu = target.reshape(-1).to(device=gradient_gpu.device, dtype=torch.float32)
+                gradient_target_dot = _chunked_vector_dot(gradient_gpu, target_gpu)
+                if gradient_target_dot is None:
+                    return None, None
+                local_dots[domain] += gradient_target_dot
+        return local_norm_sq, local_dots
+
+    def _summarize_token_gradient_rows(
+        self,
+        domain: str,
+        rows: list[dict[str, Any]],
+    ) -> dict[str, float]:
+        safe_domain = _safe_name(domain)
+        finite_norms = _finite_values([row.get("token_grad_norm") for row in rows])
+        other_cos: list[float] = []
+        own_projection: list[float] = []
+        other_projection: list[float] = []
+        seconds = _finite_values([row.get("token_grad_seconds") for row in rows])
+        autograd_seconds = _finite_values([row.get("token_grad_autograd_seconds") for row in rows])
+        fallback_seconds = _finite_values([row.get("token_grad_backward_fallback_seconds") for row in rows])
+        fallback_used = _finite_values([row.get("token_grad_backward_fallback_used") for row in rows])
+        availability = _finite_values([row.get("token_grad_available") for row in rows])
+        pre_restore_rel_l2 = _finite_values([row.get("token_grad_restore_pre_target_rel_l2") for row in rows])
+        post_restore_rel_l2 = _finite_values([row.get("token_grad_restore_post_target_rel_l2") for row in rows])
+        pre_restore_max_abs = _finite_values([row.get("token_grad_restore_pre_target_max_abs") for row in rows])
+        post_restore_max_abs = _finite_values([row.get("token_grad_restore_post_target_max_abs") for row in rows])
+        original_restore_rel_l2 = _finite_values([row.get("token_grad_restore_original_rel_l2") for row in rows])
+        original_restore_max_abs = _finite_values([row.get("token_grad_restore_original_max_abs") for row in rows])
+        for row in rows:
+            other_domain = row.get("other_domain")
+            if other_domain is not None:
+                other_cos.extend(_finite_values([row.get(f"{_safe_name(other_domain)}_cos")]))
+                other_projection.extend(_finite_values([row.get(f"{_safe_name(other_domain)}_projection_share")]))
+            own_projection.extend(_finite_values([row.get(f"{safe_domain}_projection_share")]))
+        selected_token_total = sum(
+            float(row.get("selected_token_count", 1.0) or 0.0) for row in rows
+        )
+        selected_sample_total = sum(
+            float(row.get("selected_sample_count", 0.0) or 0.0) for row in rows
+        )
+        global_candidate_token_count = max(
+            _finite_values([row.get("global_candidate_token_count") for row in rows]) or [0.0]
+        )
+        global_candidate_sample_count = max(
+            _finite_values([row.get("global_candidate_sample_count") for row in rows]) or [0.0]
+        )
+        global_candidate_gap_abs_mass = max(
+            _finite_values([row.get("global_candidate_gap_abs_mass") for row in rows]) or [0.0]
+        )
+        metrics: dict[str, float] = {
+            f"{safe_domain}/token_grad/selected_sample_count": float(selected_sample_total),
+            f"{safe_domain}/token_grad/selected_token_count": float(selected_token_total),
+            f"{safe_domain}/token_grad/global_candidate_sample_count": float(global_candidate_sample_count),
+            f"{safe_domain}/token_grad/global_candidate_token_count": float(global_candidate_token_count),
+            f"{safe_domain}/token_grad/global_candidate_gap_abs_mass": float(global_candidate_gap_abs_mass),
+        }
+        for row in rows:
+            selection = row.get("selection")
+            if selection is None:
+                continue
+            selection_key = _safe_name(selection)
+            own_cos = row.get(f"{safe_domain}_cos")
+            own_projection_value = row.get(f"{safe_domain}_projection_share")
+            if own_cos is not None:
+                metrics[f"{safe_domain}/token_grad/{selection_key}_cos_to_domain"] = float(own_cos)
+            if own_projection_value is not None:
+                metrics[
+                    f"{safe_domain}/token_grad_contribution/{selection_key}_projection_share"
+                ] = float(own_projection_value)
+            metrics[f"{safe_domain}/token_grad/{selection_key}_selected_token_count"] = float(
+                row.get("selected_token_count", 0.0) or 0.0
+            )
+            metrics[f"{safe_domain}/token_grad/{selection_key}_selected_sample_count"] = float(
+                row.get("selected_sample_count", 0.0) or 0.0
+            )
+            metrics[f"{safe_domain}/token_grad/{selection_key}_gap_abs_mass"] = float(
+                row.get("selected_gap_abs_mass", 0.0) or 0.0
+            )
+            metrics[f"{safe_domain}/token_grad/{selection_key}_gap_abs_mass_frac"] = float(
+                row.get("selected_gap_abs_mass_frac", 0.0) or 0.0
+            )
+        if availability:
+            available_count = sum(value > 0.5 for value in availability)
+            metrics[f"{safe_domain}/token_grad_cost/available_token_count"] = float(available_count)
+            metrics[f"{safe_domain}/token_grad_cost/unavailable_token_count"] = float(
+                len(availability) - available_count
+            )
+            metrics[f"{safe_domain}/token_grad_cost/valid_frac"] = available_count / len(availability)
+        if seconds:
+            seconds_sum = sum(seconds)
+            metrics[f"{safe_domain}/token_grad_cost/seconds_sum"] = seconds_sum
+            metrics[f"{safe_domain}/token_grad_cost/seconds_mean"] = _mean(seconds) or 0.0
+            metrics[f"{safe_domain}/token_grad_cost/seconds_per_selected_token"] = seconds_sum / max(
+                selected_token_total,
+                1.0,
+            )
+        if autograd_seconds:
+            metrics[f"{safe_domain}/token_grad_cost/autograd_seconds_sum"] = sum(autograd_seconds)
+        if fallback_seconds:
+            metrics[f"{safe_domain}/token_grad_cost/backward_fallback_seconds_sum"] = sum(fallback_seconds)
+        if fallback_used:
+            metrics[f"{safe_domain}/token_grad_cost/backward_fallback_count"] = float(
+                sum(value > 0.5 for value in fallback_used)
+            )
+        if pre_restore_rel_l2:
+            metrics[f"{safe_domain}/token_grad_cost/restore_pre_target_rel_l2_max"] = max(pre_restore_rel_l2)
+        if post_restore_rel_l2:
+            metrics[f"{safe_domain}/token_grad_cost/restore_post_target_rel_l2_max"] = max(post_restore_rel_l2)
+        if pre_restore_max_abs:
+            metrics[f"{safe_domain}/token_grad_cost/restore_pre_target_max_abs_max"] = max(pre_restore_max_abs)
+        if post_restore_max_abs:
+            metrics[f"{safe_domain}/token_grad_cost/restore_post_target_max_abs_max"] = max(post_restore_max_abs)
+        if original_restore_rel_l2:
+            metrics[f"{safe_domain}/token_grad_cost/restore_original_rel_l2_max"] = max(original_restore_rel_l2)
+        if original_restore_max_abs:
+            metrics[f"{safe_domain}/token_grad_cost/restore_original_max_abs_max"] = max(original_restore_max_abs)
+        if finite_norms:
+            metrics[f"{safe_domain}/token_grad/norm_mean"] = _mean(finite_norms) or 0.0
+            metrics[f"{safe_domain}/token_grad/norm_p95"] = _percentile(finite_norms, 95.0) or 0.0
+            metrics[f"{safe_domain}/token_grad/norm_max"] = max(finite_norms)
+        if other_cos:
+            conflicts = [max(0.0, -value) for value in other_cos]
+            metrics[f"{safe_domain}/token_grad_conflict/other_cos_mean"] = _mean(other_cos) or 0.0
+            metrics[f"{safe_domain}/token_grad_conflict/other_cos_p05"] = _percentile(other_cos, 5.0) or 0.0
+            metrics[f"{safe_domain}/token_grad_conflict/other_cos_negative_frac"] = float(
+                np.mean([value < 0.0 for value in other_cos])
+            )
+            metrics[f"{safe_domain}/token_grad_conflict/conflict_to_other_mean"] = _mean(conflicts) or 0.0
+            metrics[f"{safe_domain}/token_grad_conflict/conflict_to_other_max"] = max(conflicts)
+        if own_projection:
+            metrics[f"{safe_domain}/token_grad_contribution/own_projection_share_mean"] = (
+                _mean(own_projection) or 0.0
+            )
+            metrics[f"{safe_domain}/token_grad_contribution/own_projection_share_sum"] = sum(own_projection)
+        if other_projection:
+            metrics[f"{safe_domain}/token_grad_contribution/other_projection_share_mean"] = (
+                _mean(other_projection) or 0.0
+            )
+            metrics[f"{safe_domain}/token_grad_contribution/negative_other_projection_share_sum"] = sum(
+                max(0.0, -value) for value in other_projection
+            )
+        return metrics
+
+    def _summarize_global_token_gradient_cost(
+        self,
+        rows: list[dict[str, Any]],
+        total_seconds: float,
+    ) -> dict[str, float]:
+        selected_token_total = sum(
+            float(row.get("selected_token_count", 1.0) or 0.0) for row in rows
+        )
+        metrics: dict[str, float] = {
+            "global/token_grad_cost/seconds": float(total_seconds),
+            "global/token_grad_cost/selected_token_count": float(selected_token_total),
+            "global/token_grad_cost/max_memory_allocated_gb": _max_memory_allocated_gb(),
+        }
+        candidate_token_counts: dict[str, float] = {}
+        candidate_sample_counts: dict[str, float] = {}
+        candidate_gap_abs_mass: dict[str, float] = {}
+        for row in rows:
+            domain = str(row.get("domain", "unknown"))
+            candidate_token_counts[domain] = max(
+                candidate_token_counts.get(domain, 0.0),
+                float(row.get("global_candidate_token_count", 0.0) or 0.0),
+            )
+            candidate_sample_counts[domain] = max(
+                candidate_sample_counts.get(domain, 0.0),
+                float(row.get("global_candidate_sample_count", 0.0) or 0.0),
+            )
+            candidate_gap_abs_mass[domain] = max(
+                candidate_gap_abs_mass.get(domain, 0.0),
+                float(row.get("global_candidate_gap_abs_mass", 0.0) or 0.0),
+            )
+        if candidate_token_counts:
+            metrics["global/token_grad_cost/global_candidate_token_count"] = float(
+                sum(candidate_token_counts.values())
+            )
+            metrics["global/token_grad_cost/global_candidate_sample_count"] = float(
+                sum(candidate_sample_counts.values())
+            )
+            metrics["global/token_grad_cost/global_candidate_gap_abs_mass"] = float(
+                sum(candidate_gap_abs_mass.values())
+            )
+        metrics["global/token_grad_cost/selected_sample_count"] = float(
+            sum(float(row.get("selected_sample_count", 0.0) or 0.0) for row in rows)
+        )
+        if selected_token_total > 0.0:
+            metrics["global/token_grad_cost/seconds_per_selected_token"] = float(total_seconds) / selected_token_total
+
+        availability = _finite_values([row.get("token_grad_available") for row in rows])
+        if availability:
+            available_count = sum(value > 0.5 for value in availability)
+            metrics["global/token_grad_cost/available_token_count"] = float(available_count)
+            metrics["global/token_grad_cost/unavailable_token_count"] = float(
+                len(availability) - available_count
+            )
+            metrics["global/token_grad_cost/valid_frac"] = available_count / len(availability)
+
+        autograd_seconds = _finite_values([row.get("token_grad_autograd_seconds") for row in rows])
+        if autograd_seconds:
+            metrics["global/token_grad_cost/autograd_seconds_sum"] = sum(autograd_seconds)
+
+        fallback_seconds = _finite_values([row.get("token_grad_backward_fallback_seconds") for row in rows])
+        if fallback_seconds:
+            metrics["global/token_grad_cost/backward_fallback_seconds_sum"] = sum(fallback_seconds)
+
+        fallback_used = _finite_values([row.get("token_grad_backward_fallback_used") for row in rows])
+        if fallback_used:
+            metrics["global/token_grad_cost/backward_fallback_count"] = float(
+                sum(value > 0.5 for value in fallback_used)
+            )
+        pre_restore_rel_l2 = _finite_values([row.get("token_grad_restore_pre_target_rel_l2") for row in rows])
+        if pre_restore_rel_l2:
+            metrics["global/token_grad_cost/restore_pre_target_rel_l2_max"] = max(pre_restore_rel_l2)
+        post_restore_rel_l2 = _finite_values([row.get("token_grad_restore_post_target_rel_l2") for row in rows])
+        if post_restore_rel_l2:
+            metrics["global/token_grad_cost/restore_post_target_rel_l2_max"] = max(post_restore_rel_l2)
+        pre_restore_max_abs = _finite_values([row.get("token_grad_restore_pre_target_max_abs") for row in rows])
+        if pre_restore_max_abs:
+            metrics["global/token_grad_cost/restore_pre_target_max_abs_max"] = max(pre_restore_max_abs)
+        post_restore_max_abs = _finite_values([row.get("token_grad_restore_post_target_max_abs") for row in rows])
+        if post_restore_max_abs:
+            metrics["global/token_grad_cost/restore_post_target_max_abs_max"] = max(post_restore_max_abs)
+        original_restore_rel_l2 = _finite_values([row.get("token_grad_restore_original_rel_l2") for row in rows])
+        if original_restore_rel_l2:
+            metrics["global/token_grad_cost/restore_original_rel_l2_max"] = max(original_restore_rel_l2)
+        original_restore_max_abs = _finite_values([row.get("token_grad_restore_original_max_abs") for row in rows])
+        if original_restore_max_abs:
+            metrics["global/token_grad_cost/restore_original_max_abs_max"] = max(original_restore_max_abs)
+        return metrics
+
     def _recompute_sample_to_domain_stats(
+        self,
+        micro_batch: DataProto,
+        *,
+        target_chunks: tuple[torch.Tensor, ...],
+        target_norm: float,
+        target_norm_sq: float,
+        restore_target_map: dict[str, tuple[tuple[torch.Tensor, ...], float]],
+        loss_scale_factor: float,
+        on_policy: bool,
+    ) -> dict[str, float | None]:
+        parameters = _trainable_parameters(self.actor)
+        if len(parameters) != len(target_chunks):
+            return {
+                "sample_to_domain_cos": None,
+                "sample_projection_share": None,
+                "sample_recompute_grad_norm": None,
+                "sample_recompute_non_none_grad_count": 0.0,
+                "sample_recompute_available": 0.0,
+                "sample_recompute_autograd_error": "parameter_target_mismatch",
+            }
+        try:
+            grad_dtypes = _parameter_grad_dtypes(parameters)
+            _clear_parameter_grads(parameters)
+            with _actor_no_sync_context(self.actor):
+                loss = _actor_micro_batch_loss(
+                    self.actor,
+                    micro_batch,
+                    loss_scale_factor=loss_scale_factor,
+                    on_policy=on_policy,
+                    safe_logprob_backward=False,
+                )
+                loss.backward()
+            gradients = tuple(parameter.grad for parameter in parameters)
+            local_norm_sq, local_dot = self._grad_stats_from_tensors(gradients, target_chunks)
+            non_none_grad_count = sum(gradient is not None for gradient in gradients)
+            autograd_error: str | None = None
+        except Exception as exc:
+            gradients = tuple(None for _ in parameters)
+            local_norm_sq, local_dot = None, None
+            non_none_grad_count = 0
+            autograd_error = f"backward_{type(exc).__name__}"
+        finally:
+            if "grad_dtypes" in locals():
+                _restore_parameter_grads_from_targets(
+                    parameters,
+                    restore_target_map,
+                    grad_dtypes=grad_dtypes,
+                )
+        if non_none_grad_count == 0 and autograd_error is None:
+            autograd_error = "all_parameters_disconnected"
+        if local_norm_sq is None or local_dot is None:
+            return {
+                "sample_to_domain_cos": None,
+                "sample_projection_share": None,
+                "sample_recompute_grad_norm": None,
+                "sample_recompute_non_none_grad_count": float(non_none_grad_count),
+                "sample_recompute_available": 0.0,
+                "sample_recompute_autograd_error": autograd_error,
+            }
+        if self._sample_gradient_uses_full_local_params:
+            norm_sq = max(local_norm_sq, 0.0)
+            dot = local_dot
+        else:
+            norm_sq = max(_all_reduce_sum(local_norm_sq), 0.0)
+            dot = _all_reduce_sum(local_dot)
+        if non_none_grad_count > 0 and norm_sq <= 0.0:
+            self._sample_zero_norm_count += 1
+        sample_norm = norm_sq**0.5
+        available = non_none_grad_count > 0 and sample_norm > 0.0 and target_norm > 0.0
+        cosine = dot / (sample_norm * target_norm) if available else None
+        projection_share = dot / target_norm_sq if available and target_norm_sq > 0.0 else None
+        return {
+            "sample_to_domain_cos": cosine,
+            "sample_projection_share": projection_share,
+            "sample_recompute_grad_norm": sample_norm,
+            "sample_recompute_non_none_grad_count": float(non_none_grad_count),
+            "sample_recompute_available": float(available),
+            "sample_recompute_autograd_error": autograd_error,
+        }
+
+    def _recompute_sample_to_domain_stats_autograd(
         self,
         micro_batch: DataProto,
         *,

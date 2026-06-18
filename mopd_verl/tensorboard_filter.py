@@ -24,6 +24,13 @@ DIRECT_AUDIT_CATEGORIES = {
     "sample_grad_contribution",
     "sample_grad_cos",
     "teacher",
+    "entropy",
+    "token_conflict",
+    "token_gap",
+    "token_grad",
+    "token_grad_conflict",
+    "token_grad_contribution",
+    "token_grad_cost",
     "calibration",
     "coverage",
 }
@@ -73,6 +80,96 @@ CORE_GLOBAL_LOSS = {
 }
 CORE_GLOBAL_OPTIMIZATION = {"learning_rate"}
 CORE_DOMAIN_TEACHER = {"teacher_confidence_mean", "teacher_student_gap_mean"}
+CORE_TOKEN_GAP = {
+    "gap_abs_mean",
+    "gap_abs_p95",
+    "gap_abs_sum",
+    "gap_signed_mean",
+    "gap_signed_p05",
+    "gap_signed_p50",
+    "gap_signed_p95",
+}
+CORE_DOMAIN_ENTROPY = {
+    "cross_entropy_available",
+    "entropy_distribution_available",
+    "student_entropy_mean",
+    "student_entropy_p50",
+    "student_entropy_p95",
+    "student_entropy_std",
+    "sum_student_entropy",
+    "sum_teacher_entropy",
+    "sum_teacher_student_cross_entropy",
+    "teacher_entropy_mean",
+    "teacher_entropy_p50",
+    "teacher_entropy_p95",
+    "teacher_entropy_std",
+    "teacher_student_cross_entropy_mean",
+    "teacher_student_cross_entropy_p50",
+    "teacher_student_cross_entropy_p95",
+    "teacher_student_cross_entropy_std",
+}
+CORE_TOKEN_CONFLICT = {
+    "combined_diff_mass",
+    "combined_diff_mean",
+    "combined_diff_mass_frac",
+    "combined_diff_p95",
+    "combined_diff_max",
+    "opd_signal_abs_mean",
+    "proxy_mass",
+    "proxy_mean",
+    "proxy_mass_frac",
+    "student_teacher_diff_mass",
+    "student_teacher_diff_mean",
+    "student_teacher_diff_p95",
+    "student_teacher_diff_max",
+    "teacher_disagreement_mean",
+    "teacher_teacher_diff_mass",
+    "teacher_teacher_diff_mean",
+    "teacher_teacher_diff_mass_frac",
+    "teacher_teacher_diff_p95",
+    "teacher_teacher_diff_max",
+    "token_abs_opd_loss_mean",
+    "top1_teacher_diff_share",
+    "top10_teacher_diff_share",
+    "top1_token_share",
+    "top10_token_share",
+    "unique_token_count",
+}
+CORE_TOKEN_GRAD = {"norm_mean", "norm_p95", "norm_max", "selected_sample_count", "selected_token_count"}
+CORE_TOKEN_GRAD_CONFLICT = {
+    "conflict_to_other_max",
+    "conflict_to_other_mean",
+    "other_cos_mean",
+    "other_cos_negative_frac",
+    "other_cos_p05",
+}
+CORE_TOKEN_GRAD_CONTRIBUTION = {
+    "negative_other_projection_share_sum",
+    "other_projection_share_mean",
+    "own_projection_share_mean",
+    "own_projection_share_sum",
+}
+CORE_TOKEN_GRAD_COST = {
+    "autograd_seconds_sum",
+    "available_token_count",
+    "backward_fallback_count",
+    "backward_fallback_seconds_sum",
+    "max_memory_allocated_gb",
+    "restore_original_max_abs_max",
+    "restore_original_rel_l2_max",
+    "restore_post_target_max_abs_max",
+    "restore_post_target_rel_l2_max",
+    "restore_pre_target_max_abs_max",
+    "restore_pre_target_rel_l2_max",
+    "seconds",
+    "seconds_mean",
+    "seconds_per_selected_token",
+    "seconds_sum",
+    "selected_sample_count",
+    "selected_token_count",
+    "unavailable_token_count",
+    "valid_frac",
+}
 CORE_DOMAIN_REWARD = {"training_accuracy", "training_reward_mean"}
 CORE_DOMAIN_COVERAGE = {"duplicate_rate"}
 CORE_FULL_GRAD = {"grad_norm", "sample_count"}
@@ -95,6 +192,7 @@ CORE_AUDIT = {
     "sample_gradient_norm_distributed_unsupported",
     "sample_gradient_distributed_world_size",
     "sample_gradient_zero_norm_count",
+    "token_gradient_distributed_unsupported",
     "wall_time_step",
 }
 CORE_GLOBAL_DATA = {"domain_mix_entropy", "total_samples", "total_tokens"}
@@ -106,6 +204,12 @@ CORE_ACTOR = {
     "actor/pg_clipfrac",
     "actor/pg_loss",
     "actor/ppo_kl",
+    "actor/tail_student_mass_on_teacher_ids",
+    "actor/tail_teacher_mass",
+    "actor/topk_distill_loss",
+    "actor/topk_distill_weight",
+    "actor/topk_student_mass_on_teacher_ids",
+    "actor/topk_teacher_mass",
 }
 CORE_ROLLOUT_CORR = {
     "kl",
@@ -179,7 +283,14 @@ def _keep_global(category: str, metric: str, parts: list[str]) -> bool:
     if category == "cost":
         return metric in CORE_GLOBAL_COST
     if category == "full_grad_cost":
-        return metric in {"backward_seconds", "max_memory_allocated_gb"}
+        return metric in {
+            "backward_seconds",
+            "domain_summary_seconds",
+            "finish_mini_batch_seconds",
+            "max_memory_allocated_gb",
+        }
+    if category == "token_grad_cost":
+        return metric in CORE_TOKEN_GRAD_COST
     if category == "full_grad_alignment":
         return metric in CORE_FULL_GRAD_ALIGNMENT
     if category == "full_grad_contribution":
@@ -220,6 +331,28 @@ def _keep_domain(category: str, metric: str, parts: list[str]) -> bool:
         return metric in CORE_FULL_GRAD
     if category == "teacher":
         return metric in CORE_DOMAIN_TEACHER
+    if category == "token_gap":
+        return metric in CORE_TOKEN_GAP
+    if category == "entropy":
+        return metric in CORE_DOMAIN_ENTROPY
+    if category == "token_conflict":
+        return metric in CORE_TOKEN_CONFLICT
+    if category == "token_grad":
+        return metric in CORE_TOKEN_GRAD or metric.endswith(
+            (
+                "_cos_to_domain",
+                "_gap_abs_mass",
+                "_gap_abs_mass_frac",
+                "_selected_sample_count",
+                "_selected_token_count",
+            )
+        )
+    if category == "token_grad_conflict":
+        return metric in CORE_TOKEN_GRAD_CONFLICT
+    if category == "token_grad_contribution":
+        return metric in CORE_TOKEN_GRAD_CONTRIBUTION or metric.endswith("_projection_share")
+    if category == "token_grad_cost":
+        return metric in CORE_TOKEN_GRAD_COST
     if category == "reward":
         return metric in CORE_DOMAIN_REWARD
     if category == "calibration":

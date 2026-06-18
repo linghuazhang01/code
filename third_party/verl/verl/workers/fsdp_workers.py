@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import warnings
+from contextlib import nullcontext
 from dataclasses import asdict
 from typing import Any, Optional
 
@@ -1011,8 +1012,17 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             loop.run_until_complete(self.rollout_mode())
             log_gpu_memory_usage("After switch to rollout mode", logger=logger)
 
+        rollout_kwargs = {}
+        max_tokens = prompts.meta_info.get("max_tokens", None)
+        if max_tokens is not None:
+            max_tokens = int(max_tokens)
+            if self.config.rollout.name in {"vllm", "sglang"}:
+                rollout_kwargs["max_tokens"] = max_tokens
+            else:
+                prompts.meta_info["response_length"] = max_tokens
+
         with simple_timer("generate_sequences", timing_generate):
-            output = self.rollout.generate_sequences(prompts=prompts)
+            output = self.rollout.generate_sequences(prompts=prompts, **rollout_kwargs)
 
         if self._is_actor:
             loop.run_until_complete(self.trainer_mode())
@@ -1060,11 +1070,24 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         # perform recompute log_prob
         with self.ulysses_sharding_manager:
             with adapter_ctx:
-                output, entropys = self.actor.compute_log_prob(data=data, calculate_entropy=True)
-            output = DataProto.from_dict(
-                tensors={"old_log_probs": output, "entropys": entropys},
-                meta_info={"temperature": self.config.rollout.temperature},
-            )
+                student_topk_k = data.meta_info.get("student_topk_k", None)
+                student_topk_k = None if student_topk_k is None else int(student_topk_k)
+                if student_topk_k is None:
+                    output, entropys = self.actor.compute_log_prob(data=data, calculate_entropy=True)
+                    tensors = {"old_log_probs": output, "entropys": entropys}
+                else:
+                    output, entropys, topk_ids, topk_log_probs = self.actor.compute_log_prob(
+                        data=data,
+                        calculate_entropy=True,
+                        topk=student_topk_k,
+                    )
+                    tensors = {
+                        "old_log_probs": output,
+                        "entropys": entropys,
+                        "student_topk_ids": topk_ids,
+                        "student_topk_logprobs": topk_log_probs,
+                    }
+            output = DataProto.from_dict(tensors=tensors, meta_info={"temperature": self.config.rollout.temperature})
 
         output = output.to("cpu")
 
@@ -1098,10 +1121,40 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         data.meta_info["temperature"] = self.config.rollout.temperature
         data.meta_info["max_token_len"] = self.config.ref.log_prob_max_token_len_per_gpu
         data.meta_info["use_dynamic_bsz"] = self.config.ref.log_prob_use_dynamic_bsz
+        teacher_topk_k = data.meta_info.get("teacher_topk_k", None)
+        teacher_topk_k = None if teacher_topk_k is None else int(teacher_topk_k)
+        support_source = str(data.meta_info.get("topk_distill_support_source", "teacher")).lower()
+        use_student_topk_support = support_source == "student" and "student_topk_ids" in data.batch
+        calculate_entropy = bool(data.meta_info.get("mopd_compute_teacher_entropy", False))
         with self.ulysses_sharding_manager:
             data = data.to("cpu")  # data will to device with each micro batch on ref.compute_log_prob
-            output, _ = self.ref_policy.compute_log_prob(data=data, calculate_entropy=False)
-            output = DataProto.from_dict(tensors={"math_teacher_log_prob": output})
+            if use_student_topk_support:
+                output, entropys, student_support_log_probs = self.ref_policy.compute_log_prob(
+                    data=data,
+                    calculate_entropy=calculate_entropy,
+                    gather_topk_ids_key="student_topk_ids",
+                )
+                tensors = {
+                    "math_teacher_log_prob": output,
+                    "math_teacher_student_topk_logprobs": student_support_log_probs,
+                }
+            elif teacher_topk_k is None:
+                output, entropys = self.ref_policy.compute_log_prob(data=data, calculate_entropy=calculate_entropy)
+                tensors = {"math_teacher_log_prob": output}
+            else:
+                output, entropys, topk_ids, topk_log_probs = self.ref_policy.compute_log_prob(
+                    data=data,
+                    calculate_entropy=calculate_entropy,
+                    topk=teacher_topk_k,
+                )
+                tensors = {
+                    "math_teacher_log_prob": output,
+                    "math_teacher_topk_ids": topk_ids,
+                    "math_teacher_topk_logprobs": topk_log_probs,
+                }
+            if calculate_entropy and entropys is not None:
+                tensors["math_teacher_entropy"] = entropys
+            output = DataProto.from_dict(tensors=tensors)
 
         output = output.to("cpu")
 
@@ -1170,17 +1223,114 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         data.meta_info["temperature"] = self.config.rollout.temperature
         data.meta_info["max_token_len"] = self.config.ref.log_prob_max_token_len_per_gpu
         data.meta_info["use_dynamic_bsz"] = self.config.ref.log_prob_use_dynamic_bsz
+        teacher_topk_k = data.meta_info.get("teacher_topk_k", None)
+        teacher_topk_k = None if teacher_topk_k is None else int(teacher_topk_k)
+        support_source = str(data.meta_info.get("topk_distill_support_source", "teacher")).lower()
+        use_student_topk_support = support_source == "student" and "student_topk_ids" in data.batch
+        calculate_entropy = bool(data.meta_info.get("mopd_compute_teacher_entropy", False))
         
         with self.ulysses_sharding_manager:
             data = data.to("cpu")  # data will to device with each micro batch
-            output, _ = self.base_ref_policy.compute_log_prob(data=data, calculate_entropy=False)
-            output = DataProto.from_dict(tensors={"code_teacher_log_prob": output})
+            if use_student_topk_support:
+                output, entropys, student_support_log_probs = self.base_ref_policy.compute_log_prob(
+                    data=data,
+                    calculate_entropy=calculate_entropy,
+                    gather_topk_ids_key="student_topk_ids",
+                )
+                tensors = {
+                    "code_teacher_log_prob": output,
+                    "code_teacher_student_topk_logprobs": student_support_log_probs,
+                }
+            elif teacher_topk_k is None:
+                output, entropys = self.base_ref_policy.compute_log_prob(
+                    data=data,
+                    calculate_entropy=calculate_entropy,
+                )
+                tensors = {"code_teacher_log_prob": output}
+            else:
+                output, entropys, topk_ids, topk_log_probs = self.base_ref_policy.compute_log_prob(
+                    data=data,
+                    calculate_entropy=calculate_entropy,
+                    topk=teacher_topk_k,
+                )
+                tensors = {
+                    "code_teacher_log_prob": output,
+                    "code_teacher_topk_ids": topk_ids,
+                    "code_teacher_topk_logprobs": topk_log_probs,
+                }
+            if calculate_entropy and entropys is not None:
+                tensors["code_teacher_entropy"] = entropys
+            output = DataProto.from_dict(tensors=tensors)
 
         output = output.to("cpu")
 
         # unshard the root FSDP module
         if self.world_size > 1:
             _reshard_fsdp_module(self.base_ref_policy.actor_module)
+
+        return output
+
+    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
+    @DistProfiler.annotate(color="purple", role="teacher_student_cross_entropy")
+    def compute_teacher_student_cross_entropy(self, data: DataProto):
+        assert self._is_actor
+        if self._is_offload_param:
+            load_fsdp_model_to_gpu(self.actor_module_fsdp)
+
+        data.meta_info["micro_batch_size"] = self.config.rollout.log_prob_micro_batch_size_per_gpu
+        data.meta_info["temperature"] = self.config.rollout.temperature
+        data.meta_info["max_token_len"] = self.config.rollout.log_prob_max_token_len_per_gpu
+        data.meta_info["use_dynamic_bsz"] = self.config.rollout.log_prob_use_dynamic_bsz
+        include_tail = bool(data.meta_info.get("topk_distill_include_tail", True))
+        distill_temperature = float(data.meta_info.get("topk_distill_temperature", 1.0))
+        support_source = str(data.meta_info.get("topk_distill_support_source", "teacher")).lower()
+        tensors = {}
+
+        with self.ulysses_sharding_manager:
+            data = data.to("cpu")
+            if support_source == "student" and "student_topk_ids" in data.batch:
+                if "math_teacher_student_topk_logprobs" in data.batch:
+                    tensors["math_teacher_student_cross_entropy"] = self.actor.compute_teacher_student_cross_entropy(
+                        data=data,
+                        teacher_topk_ids_key="student_topk_ids",
+                        teacher_topk_logprobs_key="math_teacher_student_topk_logprobs",
+                        include_tail=include_tail,
+                        distill_temperature=distill_temperature,
+                    )
+                if "code_teacher_student_topk_logprobs" in data.batch:
+                    tensors["code_teacher_student_cross_entropy"] = self.actor.compute_teacher_student_cross_entropy(
+                        data=data,
+                        teacher_topk_ids_key="student_topk_ids",
+                        teacher_topk_logprobs_key="code_teacher_student_topk_logprobs",
+                        include_tail=include_tail,
+                        distill_temperature=distill_temperature,
+                    )
+            elif "math_teacher_topk_ids" in data.batch and "math_teacher_topk_logprobs" in data.batch:
+                tensors["math_teacher_student_cross_entropy"] = self.actor.compute_teacher_student_cross_entropy(
+                    data=data,
+                    teacher_topk_ids_key="math_teacher_topk_ids",
+                    teacher_topk_logprobs_key="math_teacher_topk_logprobs",
+                    include_tail=include_tail,
+                    distill_temperature=distill_temperature,
+                )
+            if "code_teacher_topk_ids" in data.batch and "code_teacher_topk_logprobs" in data.batch:
+                tensors["code_teacher_student_cross_entropy"] = self.actor.compute_teacher_student_cross_entropy(
+                    data=data,
+                    teacher_topk_ids_key="code_teacher_topk_ids",
+                    teacher_topk_logprobs_key="code_teacher_topk_logprobs",
+                    include_tail=include_tail,
+                    distill_temperature=distill_temperature,
+                )
+            output = DataProto.from_dict(tensors=tensors)
+
+        output = output.to("cpu")
+
+        if self.world_size > 1 and fsdp_version(self.actor.actor_module) == 1:
+            _reshard_fsdp_module(self.actor.actor_module)
+
+        if self._is_offload_param:
+            offload_fsdp_model_to_cpu(self.actor_module_fsdp)
+            log_gpu_memory_usage("After offload actor model during compute_teacher_student_cross_entropy", logger=logger)
 
         return output
 

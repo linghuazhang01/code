@@ -92,9 +92,19 @@ audit:
   max_samples_per_domain: 32
   high_variance_cv_threshold: 1.0
   log_sample_level: true
+  log_sample_level_freq_steps: 1
   log_validation_metrics: true
+  log_validation_metrics_freq_steps: 1
   tier2_window_size: 20
   calibration_bins: 10
+  token_gap_enabled: true
+  token_gap_freq_steps: 1
+  entropy_enabled: true
+  entropy_freq_steps: 1
+  token_conflict_enabled: true
+  token_conflict_freq_steps: 1
+  token_conflict_top_k: 50
+  token_gradient_top_p: 0.10
 
 paper_eval:
   enabled: false

@@ -19,6 +19,7 @@ This trainer supports model-agonistic model initialization with huggingface
 """
 
 import json
+import logging
 import os
 import uuid
 from collections import defaultdict
@@ -37,6 +38,24 @@ from tqdm import tqdm
 
 from verl import DataProto
 from mopd_verl.paper_eval import run_paper_eval_from_config
+from mopd_verl.teacher_prefix import (
+    build_dataset_teacher_prefix,
+    build_student_suffix_prompts,
+    merge_teacher_prefix_and_student_suffix,
+    teacher_prefix_dataset_key,
+    teacher_prefix_length,
+    teacher_prefix_rollin_metrics,
+    teacher_prefix_sampling_enabled,
+)
+from mopd_verl.topk_distill import (
+    TOPK_SUPPORT_SOURCE_STUDENT,
+    TOPK_SUPPORT_SOURCE_TEACHER,
+    is_topk_distill_enabled,
+    topk_distill_include_tail,
+    topk_distill_k,
+    topk_distill_support_source,
+    topk_distill_temperature,
+)
 from mopd_verl.verl_audit import MOPDAuditLogger
 from verl.experimental.dataset.sampler import AbstractCurriculumSampler
 from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
@@ -61,6 +80,8 @@ from verl.utils.rollout_skip import RolloutSkip
 from verl.utils.seqlen_balancing import calculate_workload, get_seqlen_balanced_partitions, log_seqlen_unbalance
 from verl.utils.torch_functional import masked_mean
 from verl.utils.tracking import ValidationGenerationsLogger
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -604,6 +625,76 @@ class RayPPOTrainer:
             gen_batch.non_tensor_batch.update(batch.non_tensor_batch)
 
         return gen_batch
+
+    def _generate_sequences_with_teacher_prefix(self, prompts: DataProto) -> DataProto:
+        rollout_config = self.config.actor_rollout_ref.rollout
+        response_length = int(self.config.data.max_response_length)
+        prefix_length = teacher_prefix_length(rollout_config, response_length)
+        if prefix_length <= 0 or not teacher_prefix_sampling_enabled(rollout_config):
+            return self.actor_rollout_wg.generate_sequences(prompts)
+        if not bool(self.config.actor_rollout_ref.actor.policy_loss.get("teacher_prefix_enabled", False)):
+            raise ValueError(
+                "dataset teacher prefix requires "
+                "actor_rollout_ref.actor.policy_loss.teacher_prefix_enabled=true."
+            )
+        if self.async_rollout_mode:
+            raise ValueError("dataset teacher prefix is not supported with async rollout mode yet.")
+        rollout_corr_config = self.config.algorithm.get("rollout_correction", None)
+        if rollout_corr_config and rollout_corr_config.get("bypass_mode", False):
+            raise ValueError("dataset teacher prefix requires recomputed old_log_probs; disable bypass_mode.")
+
+        pad_token_id = self.tokenizer.pad_token_id
+        if pad_token_id is None:
+            pad_token_id = self.tokenizer.eos_token_id if self.tokenizer.eos_token_id is not None else 0
+
+        prefix_ids, prefix_mask = build_dataset_teacher_prefix(
+            prompts=prompts,
+            tokenizer=self.tokenizer,
+            prefix_key=teacher_prefix_dataset_key(rollout_config),
+            prefix_length=prefix_length,
+            pad_token_id=int(pad_token_id),
+        )
+        selected = prefix_mask.detach().cpu().bool().any(dim=-1).numpy()
+        if not bool(selected.any()):
+            output = self.actor_rollout_wg.generate_sequences(prompts)
+            output.meta_info["teacher_prefix_metrics"] = {
+                "teacher_prefix/sample_frac": 0.0,
+                "teacher_prefix/mean_len": 0.0,
+                "teacher_prefix/max_len": 0.0,
+                "teacher_prefix/suffix_mean_len": float(response_length),
+            }
+            return output
+
+        suffix_prompts = build_student_suffix_prompts(
+            prompts=prompts,
+            teacher_prefix_ids=prefix_ids,
+            teacher_prefix_mask=prefix_mask,
+            pad_token_id=int(pad_token_id),
+        )
+        min_prefix_len = int(prefix_mask.detach().sum(dim=-1).min().item())
+        suffix_prompts.meta_info["max_tokens"] = max(0, response_length - min_prefix_len)
+
+        suffix_output = None
+        if int(suffix_prompts.meta_info["max_tokens"]) > 0:
+            suffix_output = self.actor_rollout_wg.generate_sequences(suffix_prompts)
+
+        output = merge_teacher_prefix_and_student_suffix(
+            original_prompts=prompts,
+            teacher_prefix_ids=prefix_ids,
+            teacher_prefix_mask=prefix_mask,
+            student_suffix_output=suffix_output,
+            student_suffix_max_tokens=int(suffix_prompts.meta_info["max_tokens"]),
+            max_response_length=response_length,
+            pad_token_id=int(pad_token_id),
+        )
+        output.meta_info["timing"] = suffix_output.meta_info.get("timing", {}) if suffix_output is not None else {}
+        metrics = teacher_prefix_rollin_metrics(
+            teacher_prefix_mask=output.batch["teacher_prefix_mask"],
+            student_suffix_mask=output.batch["student_suffix_mask"],
+            selected=selected,
+        )
+        output.meta_info["teacher_prefix_metrics"] = metrics
+        return output
 
     def _validate(self):
         data_source_lst = []
@@ -1160,13 +1251,25 @@ class RayPPOTrainer:
                         _progress_log(
                             f"generate_start global_step={self.global_steps}/{self.total_training_steps}"
                         )
-                        if not self.async_rollout_mode:
+                        if self.async_rollout_mode and teacher_prefix_sampling_enabled(
+                            self.config.actor_rollout_ref.rollout
+                        ):
+                            raise ValueError("dataset teacher prefix is not supported with async rollout mode yet.")
+                        if (
+                            not self.async_rollout_mode
+                            and teacher_prefix_sampling_enabled(self.config.actor_rollout_ref.rollout)
+                        ):
+                            gen_batch_output = self._generate_sequences_with_teacher_prefix(gen_batch_output)
+                        elif not self.async_rollout_mode:
                             gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch_output)
                         else:
                             gen_batch_output = self.async_rollout_manager.generate_sequences(gen_batch_output)
 
                         timing_raw.update(gen_batch_output.meta_info["timing"])
                         gen_batch_output.meta_info.pop("timing", None)
+                        teacher_prefix_metrics = gen_batch_output.meta_info.pop("teacher_prefix_metrics", None)
+                        if teacher_prefix_metrics:
+                            metrics.update(teacher_prefix_metrics)
                         _progress_log(
                             f"generate_done global_step={self.global_steps}/{self.total_training_steps}"
                         )
@@ -1221,6 +1324,24 @@ class RayPPOTrainer:
 
                     # compute global_valid tokens
                     batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
+                    policy_loss_config = self.config.actor_rollout_ref.actor.policy_loss
+                    if is_topk_distill_enabled(policy_loss_config):
+                        support_source = topk_distill_support_source(policy_loss_config)
+                        batch.meta_info["topk_distill_support_source"] = support_source
+                        if support_source == TOPK_SUPPORT_SOURCE_STUDENT:
+                            batch.meta_info["student_topk_k"] = topk_distill_k(policy_loss_config)
+                            batch.meta_info.pop("teacher_topk_k", None)
+                        else:
+                            batch.meta_info["teacher_topk_k"] = topk_distill_k(policy_loss_config)
+                            batch.meta_info.pop("student_topk_k", None)
+                    else:
+                        support_source = TOPK_SUPPORT_SOURCE_TEACHER
+                        batch.meta_info.pop("teacher_topk_k", None)
+                        batch.meta_info.pop("student_topk_k", None)
+                        batch.meta_info["topk_distill_support_source"] = support_source
+                    batch.meta_info["mopd_compute_teacher_entropy"] = bool(
+                        self.mopd_audit_logger.should_log_entropy(self.global_steps)
+                    )
 
                     with marked_timer("reward", timing_raw, color="yellow"):
                         # compute reward model score
@@ -1241,6 +1362,10 @@ class RayPPOTrainer:
                     #   Note: π_old computed once per data batch, serves as stable reference during mini-batch updates
                     rollout_corr_config = self.config.algorithm.get("rollout_correction", None)
                     bypass_recomputing_logprobs = rollout_corr_config and rollout_corr_config.get("bypass_mode", False)
+                    if bypass_recomputing_logprobs and support_source == TOPK_SUPPORT_SOURCE_STUDENT:
+                        raise ValueError(
+                            "student top-k distillation requires recomputed old_log_probs; disable bypass_mode."
+                        )
                     if bypass_recomputing_logprobs:  # Use `rollout_log_probs`
                         from verl.trainer.ppo.rollout_corr_helper import apply_rollout_correction
 
@@ -1260,6 +1385,7 @@ class RayPPOTrainer:
                             )
                             old_log_prob_metrics = {"actor/entropy": entropy_agg.detach().item()}
                             metrics.update(old_log_prob_metrics)
+                            old_log_prob.batch["student_entropy"] = entropys
                             old_log_prob.batch.pop("entropys")
                             batch = batch.union(old_log_prob)
                             if "rollout_log_probs" in batch.batch.keys():
@@ -1377,10 +1503,29 @@ class RayPPOTrainer:
                             code_teacher_log_prob_shape = (
                                 batch.batch["code_teacher_log_prob"].shape if "code_teacher_log_prob" in batch.batch else None
                             )
-                            print(
-                                f"Computed base log probs: base_log_prob shape={base_log_prob_shape}, "
-                                f"code_teacher_log_prob shape={code_teacher_log_prob_shape}"
-                            ) 
+                            LOGGER.info(
+                                "Computed base log probs: base_log_prob shape=%s, code_teacher_log_prob shape=%s",
+                                base_log_prob_shape,
+                                code_teacher_log_prob_shape,
+                            )
+
+                    if (
+                        self.mopd_audit_logger.enabled
+                        and self.mopd_audit_logger.should_log_entropy(self.global_steps)
+                        and is_topk_distill_enabled(policy_loss_config)
+                        and (
+                            "math_teacher_topk_ids" in batch.batch
+                            or (
+                                "student_topk_ids" in batch.batch
+                                and "math_teacher_student_topk_logprobs" in batch.batch
+                            )
+                        )
+                    ):
+                        with marked_timer("teacher_student_ce", timing_raw, color="purple"):
+                            batch.meta_info["topk_distill_include_tail"] = topk_distill_include_tail(policy_loss_config)
+                            batch.meta_info["topk_distill_temperature"] = topk_distill_temperature(policy_loss_config)
+                            teacher_student_ce = self.actor_rollout_wg.compute_teacher_student_cross_entropy(batch)
+                            batch = batch.union(teacher_student_ce)
                     
                     # compute values
                     if self.use_critic:

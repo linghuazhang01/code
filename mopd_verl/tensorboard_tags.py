@@ -61,6 +61,55 @@ def _is_domain_teacher_metric(key: str) -> bool:
     return key in {"teacher_confidence_mean", "teacher_student_gap_mean"}
 
 
+def _is_domain_token_conflict_metric(key: str) -> bool:
+    return key in {
+        "combined_diff_mass",
+        "combined_diff_mean",
+        "combined_diff_mass_frac",
+        "combined_diff_p95",
+        "combined_diff_max",
+        "opd_signal_abs_mean",
+        "proxy_mass",
+        "proxy_mean",
+        "proxy_mass_frac",
+        "student_teacher_diff_mass",
+        "student_teacher_diff_mean",
+        "student_teacher_diff_p95",
+        "student_teacher_diff_max",
+        "teacher_disagreement_mean",
+        "teacher_teacher_diff_mass",
+        "teacher_teacher_diff_mean",
+        "teacher_teacher_diff_mass_frac",
+        "teacher_teacher_diff_p95",
+        "teacher_teacher_diff_max",
+        "token_abs_opd_loss_mean",
+        "top1_teacher_diff_share",
+        "top10_teacher_diff_share",
+        "top1_token_share",
+        "top10_token_share",
+        "unique_token_count",
+    }
+
+
+def _is_domain_token_gap_metric(key: str) -> bool:
+    return key.startswith("gap_signed_") or key.startswith("gap_abs_")
+
+
+def _is_domain_entropy_metric(key: str) -> bool:
+    return (
+        key.startswith("student_entropy_")
+        or key.startswith("teacher_entropy_")
+        or key.startswith("teacher_student_cross_entropy_")
+        or key in {
+            "cross_entropy_available",
+            "entropy_distribution_available",
+            "sum_student_entropy",
+            "sum_teacher_entropy",
+            "sum_teacher_student_cross_entropy",
+        }
+    )
+
+
 def _is_domain_reward_metric(key: str) -> bool:
     return key in {"training_accuracy", "training_reward_mean"}
 
@@ -84,6 +133,12 @@ def domain_metric_category(key: str) -> str:
         return "reward"
     if _is_domain_teacher_metric(key):
         return "teacher"
+    if _is_domain_token_gap_metric(key):
+        return "token_gap"
+    if _is_domain_entropy_metric(key):
+        return "entropy"
+    if _is_domain_token_conflict_metric(key):
+        return "token_conflict"
     if key.startswith("calibration"):
         return "calibration"
     if key == "duplicate_rate":

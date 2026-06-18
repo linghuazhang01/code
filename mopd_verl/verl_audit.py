@@ -109,6 +109,31 @@ def _masked_token_stats(matrix: Any, mask: Any) -> dict[str, float | None]:
     }
 
 
+def _token_distribution_stats(values: Any, prefix: str) -> dict[str, float | None]:
+    import torch
+
+    if values is None or int(values.numel()) == 0:
+        return {
+            f"{prefix}_mean": None,
+            f"{prefix}_std": None,
+            f"{prefix}_p05": None,
+            f"{prefix}_p50": None,
+            f"{prefix}_p95": None,
+            f"{prefix}_max": None,
+            f"{prefix}_sum": None,
+        }
+    values = values.detach().float()
+    return {
+        f"{prefix}_mean": float(values.mean().detach().cpu().item()),
+        f"{prefix}_std": float(values.std(unbiased=False).detach().cpu().item()),
+        f"{prefix}_p05": float(torch.quantile(values, 0.05).detach().cpu().item()),
+        f"{prefix}_p50": float(torch.quantile(values, 0.50).detach().cpu().item()),
+        f"{prefix}_p95": float(torch.quantile(values, 0.95).detach().cpu().item()),
+        f"{prefix}_max": float(values.max().detach().cpu().item()),
+        f"{prefix}_sum": float(values.sum().detach().cpu().item()),
+    }
+
+
 def _sample_value_stats(values: list[float]) -> dict[str, float | None]:
     return {
         "mean": _mean(values),
@@ -119,6 +144,213 @@ def _sample_value_stats(values: list[float]) -> dict[str, float | None]:
 
 def _tensor_to_float_list(tensor: Any) -> list[float]:
     return [float(x) for x in tensor.detach().float().cpu().tolist()]
+
+
+def _response_token_id_matrix(tensor_batch: Any, batch_keys: set[str], response_mask: Any) -> Any | None:
+    if "responses" in batch_keys:
+        token_ids = tensor_batch["responses"]
+    elif "response_ids" in batch_keys:
+        token_ids = tensor_batch["response_ids"]
+    elif "input_ids" in batch_keys:
+        token_ids = tensor_batch["input_ids"]
+    else:
+        return None
+
+    if not hasattr(token_ids, "detach") or len(token_ids.shape) != 2:
+        return None
+
+    response_len = int(response_mask.shape[-1])
+    if tuple(token_ids.shape) == tuple(response_mask.shape):
+        return token_ids.detach().long().cpu()
+    if int(token_ids.shape[0]) == int(response_mask.shape[0]) and int(token_ids.shape[-1]) >= response_len:
+        return token_ids[:, -response_len:].detach().long().cpu()
+    return None
+
+
+def _token_conflict_attribution(
+    *,
+    labels: list[str],
+    domains: list[str],
+    token_ids: Any | None,
+    response_mask: Any,
+    reverse_kl: Any,
+    teacher_teacher_diff: Any,
+    student_teacher_diff: Any,
+    combined_diff: Any,
+    top_k: int,
+) -> tuple[dict[str, dict[str, float]], list[dict[str, Any]]]:
+    import torch
+
+    scores = combined_diff.detach().float() * response_mask
+    abs_losses = reverse_kl.detach().float().abs() * response_mask
+    teacher_diffs = teacher_teacher_diff.detach().float() * response_mask
+    student_diffs = student_teacher_diff.detach().float() * response_mask
+    total_proxy = float(scores.sum().detach().cpu().item())
+    total_teacher_diff = float(teacher_diffs.sum().detach().cpu().item())
+    summaries: dict[str, dict[str, float]] = {}
+    rows: list[dict[str, Any]] = []
+
+    seq_len = int(response_mask.shape[-1])
+    positions = torch.arange(seq_len, dtype=torch.float32, device=response_mask.device)
+    configured_domains = list(dict.fromkeys(domains + sorted(set(labels))))
+
+    for domain in configured_domains:
+        indices = [idx for idx, label in enumerate(labels) if label == domain]
+        if not indices:
+            continue
+
+        valid = response_mask[indices].detach().bool()
+        token_count = int(valid.sum().detach().cpu().item())
+        domain_scores = scores[indices]
+        domain_abs_losses = abs_losses[indices]
+        domain_teacher_diffs = teacher_diffs[indices]
+        domain_student_diffs = student_diffs[indices]
+        proxy_mass = float(domain_scores.sum().detach().cpu().item())
+        teacher_diff_mass = float(domain_teacher_diffs.sum().detach().cpu().item())
+        student_diff_mass = float(domain_student_diffs.sum().detach().cpu().item())
+        valid_teacher_diffs = domain_teacher_diffs[valid] if token_count else None
+        valid_student_diffs = domain_student_diffs[valid] if token_count else None
+        valid_scores = domain_scores[valid] if token_count else None
+        valid_abs_losses = domain_abs_losses[valid] if token_count else None
+        summary = {
+            "proxy_mass": proxy_mass,
+            "proxy_mean": proxy_mass / token_count if token_count else 0.0,
+            "proxy_mass_frac": proxy_mass / total_proxy if total_proxy > 0.0 else 0.0,
+            "combined_diff_mass": proxy_mass,
+            "combined_diff_mean": proxy_mass / token_count if token_count else 0.0,
+            "combined_diff_mass_frac": proxy_mass / total_proxy if total_proxy > 0.0 else 0.0,
+            "combined_diff_p95": 0.0
+            if valid_scores is None
+            else float(torch.quantile(valid_scores.float(), 0.95).detach().cpu().item()),
+            "combined_diff_max": 0.0
+            if valid_scores is None
+            else float(valid_scores.max().detach().cpu().item()),
+            "teacher_teacher_diff_mass": teacher_diff_mass,
+            "teacher_teacher_diff_mean": teacher_diff_mass / token_count if token_count else 0.0,
+            "teacher_teacher_diff_mass_frac": teacher_diff_mass / total_teacher_diff if total_teacher_diff > 0.0 else 0.0,
+            "teacher_teacher_diff_p95": 0.0
+            if valid_teacher_diffs is None
+            else float(torch.quantile(valid_teacher_diffs.float(), 0.95).detach().cpu().item()),
+            "teacher_teacher_diff_max": 0.0
+            if valid_teacher_diffs is None
+            else float(valid_teacher_diffs.max().detach().cpu().item()),
+            "student_teacher_diff_mass": student_diff_mass,
+            "student_teacher_diff_mean": student_diff_mass / token_count if token_count else 0.0,
+            "student_teacher_diff_p95": 0.0
+            if valid_student_diffs is None
+            else float(torch.quantile(valid_student_diffs.float(), 0.95).detach().cpu().item()),
+            "student_teacher_diff_max": 0.0
+            if valid_student_diffs is None
+            else float(valid_student_diffs.max().detach().cpu().item()),
+            "teacher_disagreement_mean": 0.0
+            if token_count == 0
+            else float(valid_teacher_diffs.mean().detach().cpu().item()),
+            "token_abs_opd_loss_mean": 0.0
+            if token_count == 0
+            else float(valid_abs_losses.mean().detach().cpu().item()),
+            "opd_signal_abs_mean": 0.0
+            if token_count == 0
+            else float(valid_abs_losses.mean().detach().cpu().item()),
+            "top1_token_share": 0.0,
+            "top10_token_share": 0.0,
+            "unique_token_count": 0.0,
+        }
+
+        if token_ids is not None and token_count > 0 and (proxy_mass > 0.0 or teacher_diff_mass > 0.0):
+            domain_token_ids = token_ids[indices]
+            flat_ids = domain_token_ids[valid.cpu()].long()
+            flat_scores = domain_scores.detach().cpu()[valid.cpu()].float()
+            flat_abs_losses = domain_abs_losses.detach().cpu()[valid.cpu()].float()
+            flat_teacher_diffs = domain_teacher_diffs.detach().cpu()[valid.cpu()].float()
+            flat_student_diffs = domain_student_diffs.detach().cpu()[valid.cpu()].float()
+            flat_positions = positions.expand(len(indices), -1).detach().cpu()[valid.cpu()].float()
+            positive_scores = (flat_scores > 0) | (flat_teacher_diffs > 0)
+            flat_ids = flat_ids[positive_scores]
+            flat_scores = flat_scores[positive_scores]
+            flat_abs_losses = flat_abs_losses[positive_scores]
+            flat_teacher_diffs = flat_teacher_diffs[positive_scores]
+            flat_student_diffs = flat_student_diffs[positive_scores]
+            flat_positions = flat_positions[positive_scores]
+            if flat_ids.numel() > 0:
+                unique_ids, inverse = torch.unique(flat_ids, sorted=True, return_inverse=True)
+                unique_count = int(unique_ids.numel())
+                score_sums = torch.zeros(unique_count, dtype=torch.float64)
+                teacher_diff_sums = torch.zeros(unique_count, dtype=torch.float64)
+                count_sums = torch.zeros(unique_count, dtype=torch.float64)
+                loss_sums = torch.zeros(unique_count, dtype=torch.float64)
+                student_diff_sums = torch.zeros(unique_count, dtype=torch.float64)
+                position_sums = torch.zeros(unique_count, dtype=torch.float64)
+                ones = torch.ones_like(flat_scores, dtype=torch.float64)
+                score_sums.scatter_add_(0, inverse, flat_scores.double())
+                teacher_diff_sums.scatter_add_(0, inverse, flat_teacher_diffs.double())
+                count_sums.scatter_add_(0, inverse, ones)
+                loss_sums.scatter_add_(0, inverse, flat_abs_losses.double())
+                student_diff_sums.scatter_add_(0, inverse, flat_student_diffs.double())
+                position_sums.scatter_add_(0, inverse, flat_positions.double())
+
+                top_count = min(max(1, top_k), unique_count)
+                top_teacher_scores, top_indices = torch.topk(teacher_diff_sums, top_count)
+                top_score_values = [float(value) for value in torch.topk(score_sums, top_count).values.tolist()]
+                summary["unique_token_count"] = float(unique_count)
+                summary["top1_token_share"] = (
+                    top_score_values[0] / proxy_mass if proxy_mass > 0.0 and top_score_values else 0.0
+                )
+                summary["top10_token_share"] = (
+                    sum(top_score_values[:10]) / proxy_mass if proxy_mass > 0.0 else 0.0
+                )
+                summary["top1_teacher_diff_share"] = (
+                    float(top_teacher_scores[0].item()) / teacher_diff_mass
+                    if teacher_diff_mass > 0.0 and top_teacher_scores.numel() > 0
+                    else 0.0
+                )
+                summary["top10_teacher_diff_share"] = (
+                    float(top_teacher_scores[:10].sum().item()) / teacher_diff_mass
+                    if teacher_diff_mass > 0.0
+                    else 0.0
+                )
+                for rank, token_index in enumerate(top_indices.tolist(), start=1):
+                    token_count_value = float(count_sums[token_index].item())
+                    score_sum = float(score_sums[token_index].item())
+                    teacher_diff_sum = float(teacher_diff_sums[token_index].item())
+                    rows.append(
+                        {
+                            "domain": domain,
+                            "rank": rank,
+                            "token_id": int(unique_ids[token_index].item()),
+                            "token_count": token_count_value,
+                            "conflict_proxy_sum": score_sum,
+                            "conflict_proxy_mean": score_sum / token_count_value if token_count_value else 0.0,
+                            "conflict_proxy_frac": score_sum / proxy_mass if proxy_mass > 0.0 else 0.0,
+                            "combined_diff_sum": score_sum,
+                            "combined_diff_mean": score_sum / token_count_value if token_count_value else 0.0,
+                            "combined_diff_frac": score_sum / proxy_mass if proxy_mass > 0.0 else 0.0,
+                            "teacher_teacher_diff_sum": teacher_diff_sum,
+                            "teacher_teacher_diff_mean": teacher_diff_sum / token_count_value
+                            if token_count_value
+                            else 0.0,
+                            "teacher_teacher_diff_frac": teacher_diff_sum / teacher_diff_mass
+                            if teacher_diff_mass > 0.0
+                            else 0.0,
+                            "student_teacher_diff_mean": float(student_diff_sums[token_index].item() / token_count_value)
+                            if token_count_value
+                            else 0.0,
+                            "token_abs_opd_loss_mean": float(loss_sums[token_index].item() / token_count_value)
+                            if token_count_value
+                            else 0.0,
+                            "teacher_disagreement_mean": float(
+                                teacher_diff_sums[token_index].item() / token_count_value
+                            )
+                            if token_count_value
+                            else 0.0,
+                            "response_position_mean": float(position_sums[token_index].item() / token_count_value)
+                            if token_count_value
+                            else 0.0,
+                        }
+                    )
+
+        summaries[domain] = summary
+
+    return summaries, rows
 
 
 def _scalar_float(value: Any) -> float | None:
@@ -183,7 +415,15 @@ class MOPDAuditLogger:
         self.max_samples_per_domain = int(_cfg_get(audit_config, "max_samples_per_domain", 32))
         self.high_variance_cv_threshold = float(_cfg_get(audit_config, "high_variance_cv_threshold", 1.0))
         self.log_sample_level = bool(_cfg_get(audit_config, "log_sample_level", True))
+        self.log_sample_level_freq_steps = max(
+            1,
+            int(_cfg_get(audit_config, "log_sample_level_freq_steps", 1)),
+        )
         self.log_validation = bool(_cfg_get(audit_config, "log_validation_metrics", True))
+        self.log_validation_freq_steps = max(
+            1,
+            int(_cfg_get(audit_config, "log_validation_metrics_freq_steps", 1)),
+        )
         self.tier2_window_size = max(2, int(_cfg_get(audit_config, "tier2_window_size", 20)))
         self.calibration_bins = max(1, int(_cfg_get(audit_config, "calibration_bins", 10)))
         self.full_gradient_enabled = bool(_cfg_get(audit_config, "full_gradient_enabled", False))
@@ -197,6 +437,7 @@ class MOPDAuditLogger:
         )
         self.full_gradient_storage_dtype = str(_cfg_get(audit_config, "full_gradient_storage_dtype", "float32"))
         self.sample_gradient_enabled = bool(_cfg_get(audit_config, "sample_gradient_enabled", False))
+        self.sample_gradient_freq_steps = max(1, int(_cfg_get(audit_config, "sample_gradient_freq_steps", 1)))
         self.sample_gradient_norm_enabled = bool(_cfg_get(audit_config, "sample_gradient_norm_enabled", True))
         self.sample_gradient_cos_enabled = bool(_cfg_get(audit_config, "sample_gradient_cos_enabled", False))
         self.sample_gradient_cos_freq_steps = max(
@@ -206,8 +447,40 @@ class MOPDAuditLogger:
         self.sample_gradient_log_sample_level = bool(
             _cfg_get(audit_config, "sample_gradient_log_sample_level", True)
         )
+        self.sample_gradient_log_sample_level_freq_steps = max(
+            1,
+            int(_cfg_get(audit_config, "sample_gradient_log_sample_level_freq_steps", 1)),
+        )
         self.full_gradient_offload_domain_gradients = bool(
             _cfg_get(audit_config, "full_gradient_offload_domain_gradients", True)
+        )
+        self.token_gap_enabled = bool(_cfg_get(audit_config, "token_gap_enabled", True))
+        self.token_gap_freq_steps = max(1, int(_cfg_get(audit_config, "token_gap_freq_steps", 1)))
+        self.entropy_enabled = bool(_cfg_get(audit_config, "entropy_enabled", True))
+        self.entropy_freq_steps = max(1, int(_cfg_get(audit_config, "entropy_freq_steps", 1)))
+        self.token_conflict_enabled = bool(_cfg_get(audit_config, "token_conflict_enabled", True))
+        self.token_conflict_freq_steps = max(1, int(_cfg_get(audit_config, "token_conflict_freq_steps", 1)))
+        self.token_conflict_top_k = max(1, int(_cfg_get(audit_config, "token_conflict_top_k", 50)))
+        self.token_gradient_enabled = bool(_cfg_get(audit_config, "token_gradient_enabled", False))
+        self.token_gradient_freq_steps = max(1, int(_cfg_get(audit_config, "token_gradient_freq_steps", 10)))
+        self.token_gradient_max_samples_per_domain = max(
+            1,
+            int(_cfg_get(audit_config, "token_gradient_max_samples_per_domain", 8)),
+        )
+        self.token_gradient_top_k_per_sample = max(
+            1,
+            int(_cfg_get(audit_config, "token_gradient_top_k_per_sample", 4)),
+        )
+        token_gradient_top_p = _cfg_get(audit_config, "token_gradient_top_p", 0.10)
+        self.token_gradient_top_p = min(
+            1.0,
+            max(0.0, float(0.10 if token_gradient_top_p is None else token_gradient_top_p)),
+        )
+        self.token_gradient_min_teacher_diff = float(
+            _cfg_get(audit_config, "token_gradient_min_teacher_diff", 0.0)
+        )
+        self.token_gradient_strict_grad_restore = bool(
+            _cfg_get(audit_config, "token_gradient_strict_grad_restore", False)
         )
         policy_loss = _cfg_get(_cfg_get(_cfg_get(config, "actor_rollout_ref", {}), "actor", {}), "policy_loss", {})
         self.lambda_vals = float(_cfg_get(policy_loss, "lambda_vals", 1.0))
@@ -259,19 +532,51 @@ class MOPDAuditLogger:
 
         return _filter_tensorboard_metrics(metrics, self.tensorboard_prune_mode)
 
+    def _freq_active(self, enabled: bool, freq_steps: int, step: int) -> bool:
+        return self.enabled and enabled and step % max(1, int(freq_steps)) == 0
+
+    def should_log_sample_level(self, step: int) -> bool:
+        return self._freq_active(self.log_sample_level, self.log_sample_level_freq_steps, step)
+
+    def should_log_validation_metrics(self, step: int) -> bool:
+        return self._freq_active(self.log_validation, self.log_validation_freq_steps, step)
+
+    def should_log_token_gap(self, step: int) -> bool:
+        return self._freq_active(self.token_gap_enabled, self.token_gap_freq_steps, step)
+
+    def should_log_entropy(self, step: int) -> bool:
+        return self._freq_active(self.entropy_enabled, self.entropy_freq_steps, step)
+
+    def should_log_token_conflict(self, step: int) -> bool:
+        return self._freq_active(self.token_conflict_enabled, self.token_conflict_freq_steps, step)
+
+    def should_compute_sample_gradient(self, step: int) -> bool:
+        return self._freq_active(self.sample_gradient_enabled, self.sample_gradient_freq_steps, step)
+
+    def should_log_sample_gradient_level(self, step: int) -> bool:
+        return self._freq_active(
+            self.sample_gradient_log_sample_level,
+            self.sample_gradient_log_sample_level_freq_steps,
+            step,
+        )
+
     def should_compute_full_gradient(self, step: int) -> bool:
         full_gradient_active = self.should_compute_domain_gradient(step)
-        sample_gradient_active = self.sample_gradient_enabled and (
+        sample_gradient_active = self.should_compute_sample_gradient(step) and (
             self.sample_gradient_norm_enabled
             or (
                 self.sample_gradient_cos_enabled
                 and step % self.sample_gradient_cos_freq_steps == 0
             )
         )
-        return self.enabled and (full_gradient_active or sample_gradient_active)
+        return self.enabled and (full_gradient_active or sample_gradient_active or self.should_compute_token_gradient(step))
 
     def should_compute_domain_gradient(self, step: int) -> bool:
-        return self.enabled and self.full_gradient_enabled and step % self.full_gradient_freq_steps == 0
+        full_gradient_active = self.full_gradient_enabled and step % self.full_gradient_freq_steps == 0
+        return self.enabled and (full_gradient_active or self.should_compute_token_gradient(step))
+
+    def should_compute_token_gradient(self, step: int) -> bool:
+        return self._freq_active(self.token_gradient_enabled, self.token_gradient_freq_steps, step)
 
     def balance_domain_gradient_batch(
         self,
@@ -394,14 +699,23 @@ class MOPDAuditLogger:
                 "micro_batch_size_per_gpu": self.full_gradient_micro_batch_size_per_gpu,
                 "storage_dtype": self.full_gradient_storage_dtype,
                 "learning_rate": self._current_learning_rate_value(),
-                "sample_gradient_enabled": self.sample_gradient_enabled and mode == "train",
+                "sample_gradient_enabled": self.should_compute_sample_gradient(step) and mode == "train",
+                "sample_gradient_freq_steps": self.sample_gradient_freq_steps,
                 "sample_gradient_norm_enabled": self.sample_gradient_norm_enabled,
                 "sample_gradient_cos_enabled": self.sample_gradient_cos_enabled
                 and mode == "train"
                 and step % self.sample_gradient_cos_freq_steps == 0,
                 "sample_gradient_cos_freq_steps": self.sample_gradient_cos_freq_steps,
-                "sample_gradient_log_sample_level": self.sample_gradient_log_sample_level,
+                "sample_gradient_log_sample_level": self.should_log_sample_gradient_level(step),
+                "sample_gradient_log_sample_level_freq_steps": self.sample_gradient_log_sample_level_freq_steps,
                 "offload_domain_gradients": self.full_gradient_offload_domain_gradients,
+                "token_gradient_enabled": self.should_compute_token_gradient(step) and mode == "train",
+                "token_gradient_freq_steps": self.token_gradient_freq_steps,
+                "token_gradient_max_samples_per_domain": self.token_gradient_max_samples_per_domain,
+                "token_gradient_top_k_per_sample": self.token_gradient_top_k_per_sample,
+                "token_gradient_top_p": self.token_gradient_top_p,
+                "token_gradient_min_teacher_diff": self.token_gradient_min_teacher_diff,
+                "token_gradient_strict_grad_restore": self.token_gradient_strict_grad_restore,
                 "domain_partition": domain_partition or {},
             }
         }
@@ -441,7 +755,15 @@ class MOPDAuditLogger:
 
         started_at = time.perf_counter()
         try:
-            metrics, domain_rows, variance_rows, sample_rows = self._compute_training_rows(batch, step, lr)
+            (
+                metrics,
+                domain_rows,
+                variance_rows,
+                sample_rows,
+                token_conflict_rows,
+                token_gap_rows,
+                entropy_distribution_rows,
+            ) = self._compute_training_rows(batch, step, lr)
         except Exception as exc:  # pragma: no cover - defensive remote logging
             self._write_jsonl("audit_errors.jsonl", [{"step": step, "stage": "training", "error": repr(exc)}])
             return {self._global_tag("audit", "error"): 1.0}
@@ -450,15 +772,25 @@ class MOPDAuditLogger:
         self._write_jsonl("domain_step_metrics.jsonl", domain_rows)
         self._write_jsonl("loss_variance_domain_step.jsonl", variance_rows)
         self._write_jsonl("loss_variance_sample.jsonl", sample_rows)
+        if token_conflict_rows:
+            self._write_jsonl("token_conflict_attribution.jsonl", token_conflict_rows)
+        if token_gap_rows:
+            self._write_jsonl("token_gap_vectors.jsonl", token_gap_rows)
+        if entropy_distribution_rows:
+            self._write_jsonl("entropy_distribution_vectors.jsonl", entropy_distribution_rows)
         return metrics
 
     def log_validation_metrics(self, val_metrics: dict[str, Any], step: int) -> dict[str, float]:
+        if not self.should_log_validation_metrics(step):
+            return {}
         return _log_validation_metrics(self, val_metrics, step)
 
     def log_training_cost(self, metrics: dict[str, Any], step: int, n_gpus: int = 1) -> dict[str, float]:
         return _log_training_cost(self, metrics, step, n_gpus)
 
-    def _compute_training_rows(self, batch: Any, step: int, lr: Any) -> tuple[dict[str, float], list, list, list]:
+    def _compute_training_rows(
+        self, batch: Any, step: int, lr: Any
+    ) -> tuple[dict[str, float], list, list, list, list, list, list]:
         import torch
 
         tensor_batch = batch.batch
@@ -477,9 +809,18 @@ class MOPDAuditLogger:
         sample_ids = extract_sample_ids(non_tensor, batch_size, step)
 
         teacher_log_probs = torch.zeros_like(old_log_probs)
+        teacher_teacher_diff = torch.zeros_like(old_log_probs)
+        student_teacher_diff = torch.zeros_like(old_log_probs)
         reverse_kl = torch.zeros_like(old_log_probs)
+        has_alternate_teacher = "code_teacher_log_prob" in batch_keys
         for idx, label in enumerate(labels):
             teacher_log_prob = code_teacher_log_prob[idx] if label == "code" else math_teacher_log_prob[idx]
+            if has_alternate_teacher:
+                alternate_teacher_log_prob = math_teacher_log_prob[idx] if label == "code" else code_teacher_log_prob[idx]
+                teacher_teacher_diff[idx] = (teacher_log_prob - alternate_teacher_log_prob).abs()
+            else:
+                teacher_teacher_diff[idx] = (teacher_log_prob - old_log_probs[idx]).abs()
+            student_teacher_diff[idx] = (old_log_probs[idx] - teacher_log_prob).abs()
             teacher_log_probs[idx] = teacher_log_prob
             if self.lambda_vals == 1.0:
                 reverse_kl[idx] = old_log_probs[idx] - teacher_log_prob
@@ -489,6 +830,41 @@ class MOPDAuditLogger:
                     - base_log_prob[idx]
                     - (teacher_log_prob - base_log_prob[idx]) * self.lambda_vals
                 )
+        combined_diff = student_teacher_diff * teacher_teacher_diff
+        gap_signed = teacher_log_probs - old_log_probs
+        gap_abs = gap_signed.abs()
+
+        student_entropy = (
+            tensor_batch["student_entropy"].detach().float() if "student_entropy" in batch_keys else None
+        )
+        teacher_entropy = None
+        if "math_teacher_entropy" in batch_keys:
+            math_teacher_entropy = tensor_batch["math_teacher_entropy"].detach().float()
+            code_teacher_entropy = (
+                tensor_batch["code_teacher_entropy"].detach().float()
+                if "code_teacher_entropy" in batch_keys
+                else math_teacher_entropy
+            )
+            teacher_entropy = torch.zeros_like(old_log_probs)
+            for idx, label in enumerate(labels):
+                teacher_entropy[idx] = code_teacher_entropy[idx] if label == "code" else math_teacher_entropy[idx]
+        teacher_student_cross_entropy = None
+        if "math_teacher_student_cross_entropy" in batch_keys:
+            math_teacher_student_cross_entropy = tensor_batch["math_teacher_student_cross_entropy"].detach().float()
+            code_teacher_student_cross_entropy = (
+                tensor_batch["code_teacher_student_cross_entropy"].detach().float()
+                if "code_teacher_student_cross_entropy" in batch_keys
+                else math_teacher_student_cross_entropy
+            )
+            teacher_student_cross_entropy = torch.zeros_like(old_log_probs)
+            for idx, label in enumerate(labels):
+                teacher_student_cross_entropy[idx] = (
+                    code_teacher_student_cross_entropy[idx]
+                    if label == "code"
+                    else math_teacher_student_cross_entropy[idx]
+                )
+        elif "teacher_student_cross_entropy" in batch_keys:
+            teacher_student_cross_entropy = tensor_batch["teacher_student_cross_entropy"].detach().float()
 
         sample_token_opd_loss_mean = _mask_mean(reverse_kl, response_mask)
         sample_opd_loss = (reverse_kl * response_mask).sum(dim=-1)
@@ -518,6 +894,13 @@ class MOPDAuditLogger:
         domain_rows: list[dict[str, Any]] = []
         variance_rows: list[dict[str, Any]] = []
         sample_rows: list[dict[str, Any]] = []
+        token_conflict_rows: list[dict[str, Any]] = []
+        token_gap_rows: list[dict[str, Any]] = []
+        entropy_distribution_rows: list[dict[str, Any]] = []
+        token_gap_active = self.should_log_token_gap(step)
+        entropy_active = self.should_log_entropy(step)
+        token_conflict_active = self.should_log_token_conflict(step)
+        sample_level_active = self.should_log_sample_level(step)
 
         opd_losses = _tensor_to_float_list(sample_opd_loss)
         sample_token_opd_loss_means = _tensor_to_float_list(sample_token_opd_loss_mean)
@@ -537,6 +920,23 @@ class MOPDAuditLogger:
             domain: sum(token_counts[idx] for idx in indices) for domain, indices in indices_by_domain.items()
         }
         sample_count_by_domain = {domain: len(indices) for domain, indices in indices_by_domain.items()}
+        token_conflict_summaries: dict[str, dict[str, float]] = {}
+        if token_conflict_active:
+            token_ids = _response_token_id_matrix(tensor_batch, batch_keys, response_mask)
+            token_conflict_summaries, token_conflict_rows = _token_conflict_attribution(
+                labels=labels,
+                domains=configured_domains,
+                token_ids=token_ids,
+                response_mask=response_mask,
+                reverse_kl=reverse_kl,
+                teacher_teacher_diff=teacher_teacher_diff,
+                student_teacher_diff=student_teacher_diff,
+                combined_diff=combined_diff,
+                top_k=self.token_conflict_top_k,
+            )
+            for token_row in token_conflict_rows:
+                token_row["step"] = step
+                token_row["learning_rate"] = learning_rate
 
         for domain in configured_domains:
             indices = indices_by_domain[domain]
@@ -556,6 +956,80 @@ class MOPDAuditLogger:
                 if indices
                 else {"mean": None, "std": None, "variance": None}
             )
+            signed_gap_stats: dict[str, float | None] = {}
+            abs_gap_stats: dict[str, float | None] = {}
+            if token_gap_active:
+                domain_gap_vector = None
+                domain_gap_abs_vector = None
+                if indices:
+                    domain_valid_mask = response_mask[indices].detach().bool()
+                    domain_gap_vector = gap_signed[indices][domain_valid_mask]
+                    domain_gap_abs_vector = gap_abs[indices][domain_valid_mask]
+                signed_gap_stats = _token_distribution_stats(domain_gap_vector, "gap_signed")
+                abs_gap_stats = _token_distribution_stats(domain_gap_abs_vector, "gap_abs")
+                if domain_gap_vector is not None and int(domain_gap_vector.numel()) > 0:
+                    token_gap_rows.append(
+                        {
+                            "step": step,
+                            "domain": domain,
+                            "learning_rate": learning_rate,
+                            "token_count": int(domain_gap_vector.numel()),
+                            "gap_signed_vector_domain": _tensor_to_float_list(domain_gap_vector),
+                            "gap_abs_vector_domain": _tensor_to_float_list(domain_gap_abs_vector),
+                            "gap_vector_domain": _tensor_to_float_list(domain_gap_vector),
+                        }
+                    )
+            entropy_metrics: dict[str, float | None] = {}
+            teacher_entropy_stats: dict[str, float | None] = {}
+            student_entropy_stats: dict[str, float | None] = {}
+            cross_entropy_stats: dict[str, float | None] = {}
+            if entropy_active:
+                teacher_entropy_vector = None
+                student_entropy_vector = None
+                cross_entropy_vector = None
+                if indices:
+                    domain_response_mask = response_mask[indices]
+                    domain_valid_mask = domain_response_mask.detach().bool()
+                    if teacher_entropy is not None:
+                        teacher_entropy_vector = teacher_entropy[indices][domain_valid_mask]
+                    if student_entropy is not None:
+                        student_entropy_vector = student_entropy[indices][domain_valid_mask]
+                    if teacher_student_cross_entropy is not None:
+                        cross_entropy_vector = teacher_student_cross_entropy[indices][domain_valid_mask]
+                teacher_entropy_stats = _token_distribution_stats(teacher_entropy_vector, "teacher_entropy")
+                student_entropy_stats = _token_distribution_stats(student_entropy_vector, "student_entropy")
+                cross_entropy_stats = _token_distribution_stats(
+                    cross_entropy_vector,
+                    "teacher_student_cross_entropy",
+                )
+                teacher_entropy_sum = teacher_entropy_stats["teacher_entropy_sum"]
+                student_entropy_sum = student_entropy_stats["student_entropy_sum"]
+                cross_entropy_sum = cross_entropy_stats["teacher_student_cross_entropy_sum"]
+                entropy_metrics = {
+                    "sum_teacher_entropy": teacher_entropy_sum,
+                    "sum_student_entropy": student_entropy_sum,
+                    "sum_teacher_student_cross_entropy": cross_entropy_sum,
+                    "entropy_distribution_available": float(
+                        teacher_entropy_sum is not None or student_entropy_sum is not None
+                    ),
+                    "cross_entropy_available": float(cross_entropy_sum is not None),
+                }
+                entropy_row: dict[str, Any] = {
+                    "step": step,
+                    "domain": domain,
+                    "learning_rate": learning_rate,
+                    "token_count": int(domain_token_count),
+                }
+                if teacher_entropy_vector is not None and int(teacher_entropy_vector.numel()) > 0:
+                    entropy_row["teacher_entropy_vector_domain"] = _tensor_to_float_list(teacher_entropy_vector)
+                if student_entropy_vector is not None and int(student_entropy_vector.numel()) > 0:
+                    entropy_row["student_entropy_vector_domain"] = _tensor_to_float_list(student_entropy_vector)
+                if cross_entropy_vector is not None and int(cross_entropy_vector.numel()) > 0:
+                    entropy_row["teacher_student_cross_entropy_vector_domain"] = _tensor_to_float_list(
+                        cross_entropy_vector
+                    )
+                if len(entropy_row) > 4:
+                    entropy_distribution_rows.append(entropy_row)
             domain_sample_losses = [opd_losses[idx] for idx in indices]
             domain_sample_stats = _sample_value_stats(domain_sample_losses)
 
@@ -601,6 +1075,13 @@ class MOPDAuditLogger:
                 "calibration_error": calibration_error,
                 "duplicate_rate": duplicate_rate,
             }
+            row.update(signed_gap_stats)
+            row.update(abs_gap_stats)
+            row.update(entropy_metrics)
+            row.update(teacher_entropy_stats)
+            row.update(student_entropy_stats)
+            row.update(cross_entropy_stats)
+            row.update(token_conflict_summaries.get(domain, {}))
             domain_rows.append(row)
             variance_rows.append(
                 {
@@ -643,13 +1124,78 @@ class MOPDAuditLogger:
                 "teacher_confidence_mean",
                 "calibration_error",
                 "duplicate_rate",
+                "gap_signed_mean",
+                "gap_signed_std",
+                "gap_signed_p05",
+                "gap_signed_p50",
+                "gap_signed_p95",
+                "gap_signed_max",
+                "gap_signed_sum",
+                "gap_abs_mean",
+                "gap_abs_std",
+                "gap_abs_p05",
+                "gap_abs_p50",
+                "gap_abs_p95",
+                "gap_abs_max",
+                "gap_abs_sum",
+                "sum_teacher_entropy",
+                "sum_student_entropy",
+                "sum_teacher_student_cross_entropy",
+                "teacher_entropy_mean",
+                "teacher_entropy_std",
+                "teacher_entropy_p05",
+                "teacher_entropy_p50",
+                "teacher_entropy_p95",
+                "teacher_entropy_max",
+                "teacher_entropy_sum",
+                "student_entropy_mean",
+                "student_entropy_std",
+                "student_entropy_p05",
+                "student_entropy_p50",
+                "student_entropy_p95",
+                "student_entropy_max",
+                "student_entropy_sum",
+                "teacher_student_cross_entropy_mean",
+                "teacher_student_cross_entropy_std",
+                "teacher_student_cross_entropy_p05",
+                "teacher_student_cross_entropy_p50",
+                "teacher_student_cross_entropy_p95",
+                "teacher_student_cross_entropy_max",
+                "teacher_student_cross_entropy_sum",
+                "entropy_distribution_available",
+                "cross_entropy_available",
+                "proxy_mass",
+                "proxy_mean",
+                "proxy_mass_frac",
+                "teacher_disagreement_mean",
+                "token_abs_opd_loss_mean",
+                "opd_signal_abs_mean",
+                "combined_diff_mass",
+                "combined_diff_mean",
+                "combined_diff_mass_frac",
+                "combined_diff_p95",
+                "combined_diff_max",
+                "teacher_teacher_diff_mass",
+                "teacher_teacher_diff_mean",
+                "teacher_teacher_diff_mass_frac",
+                "teacher_teacher_diff_p95",
+                "teacher_teacher_diff_max",
+                "student_teacher_diff_mass",
+                "student_teacher_diff_mean",
+                "student_teacher_diff_p95",
+                "student_teacher_diff_max",
+                "top1_teacher_diff_share",
+                "top10_teacher_diff_share",
+                "top1_token_share",
+                "top10_token_share",
+                "unique_token_count",
             }
             for key in domain_metric_keys:
                 numeric = finite_float(row.get(key))
                 if numeric is not None:
                     metrics[self._domain_tag(safe_domain, domain_metric_category(key), key)] = numeric
 
-            if self.log_sample_level and indices:
+            if sample_level_active and indices:
                 for idx in indices[: self.max_samples_per_domain]:
                     sample_rows.append(
                         {
@@ -689,4 +1235,12 @@ class MOPDAuditLogger:
             metrics[self._global_tag("data", "total_tokens")] = total_tokens
             metrics[self._global_tag("data", "total_samples")] = total_samples
 
-        return metrics, domain_rows, variance_rows, sample_rows
+        return (
+            metrics,
+            domain_rows,
+            variance_rows,
+            sample_rows,
+            token_conflict_rows,
+            token_gap_rows,
+            entropy_distribution_rows,
+        )

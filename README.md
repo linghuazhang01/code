@@ -25,6 +25,10 @@ The current remote default is `/root/autodl-tmp/opd_mopd/OPD-code`, but that is 
 - `scripts/start_general_reasoner_mopd_training.sh`: remote shortcut for `configs/mopd_general_reasoner.yaml`.
 - `scripts/prepare_general_reasoner_data.sh`: prepares WebInstruct-verified train/eval parquet for the General-Reasoner MOPD path.
 
+For a focused Chinese guide to the YAML profiles, distillation objective
+switches, audit knobs, and common overrides, see
+[`CONFIG_GUIDE.zh.md`](CONFIG_GUIDE.zh.md).
+
 ## From Scratch
 
 ### 1. Sync Code And Data
@@ -243,15 +247,46 @@ tail -f "$(cat logs/opd_target_log)"
 - `data.max_response_length=16384`
 - `actor.ppo_mini_batch_size=512`
 - `actor.ppo_micro_batch_size_per_gpu=1`
-- `rollout.gpu_memory_utilization=0.8`
+- `actor.use_dynamic_bsz=false` in base profiles. Turn it on for heavy
+  top-k/audit runs so actor update micro-batches are grouped by token count
+  instead of fixed sample count.
+- `rollout.gpu_memory_utilization=0.8` in multi-GPU base profiles
+  (`0.9` for the single-A800 base). Lower it for heavy top-k/audit runs when
+  rollout KV cache competes with actor backward memory.
 - `trainer.logger=["console","tensorboard"]`
+- `audit.log_sample_level_freq_steps=1`
+- `audit.log_validation_metrics_freq_steps=1`
 - `audit.full_gradient_enabled=true`
 - `audit.full_gradient_freq_steps=1`
 - `audit.full_gradient_train_max_samples_per_domain=null`
 - `audit.full_gradient_micro_batch_size_per_gpu=1`
 - `audit.sample_gradient_enabled=true`
+- `audit.sample_gradient_freq_steps=1`
 - `audit.sample_gradient_norm_enabled=true`
-- `audit.sample_gradient_cos_enabled=true`
+- `audit.sample_gradient_cos_enabled=false`
+- `audit.sample_gradient_log_sample_level_freq_steps=1`
+- `audit.token_gap_enabled=true` / `audit.token_gap_freq_steps=1`: records per-domain `teacher_logp - student_logp` and `abs(teacher_logp - student_logp)` distribution stats, plus raw per-domain vectors in `token_gap_vectors.jsonl`.
+- `audit.entropy_enabled=true` / `audit.entropy_freq_steps=1`: records per-domain teacher entropy, student entropy, and teacher-student cross-entropy sums and distribution stats, plus raw vectors in `entropy_distribution_vectors.jsonl`. When top-k distillation is active, the teacher-student cross entropy uses the same local support selected by `actor.topk_distill_support_source` and the same renormalization as the top-k objective.
+- `audit.token_conflict_enabled=true` / `audit.token_conflict_freq_steps=1`: records token-level teacher/student disagreement summaries and top token rows in `token_conflict_attribution.jsonl`.
+- `audit.token_gradient_enabled=false` by default. When enabled, the tracker first collects the per-domain global distribution of all valid response tokens in the current step using `gap_abs = abs(teacher_logp - student_logp)`, then runs extra gradient recompute only for `top100_gap_abs` and the configured top-p mass token set. If `autograd.grad()` is disconnected, the tracker falls back to a safe backward diagnostic. When enabled, domain target chunks are temporarily stored in FP32 to reduce restore `.grad` quantization error. For small debug runs, `audit.token_gradient_strict_grad_restore=true` additionally snapshots the original `.grad` and restores that exact snapshot after fallback.
+- `audit.token_gradient_freq_steps=10` in the base profile.
+- `audit.token_gradient_top_p=0.10`: for token-gradient audit, aggregate both `top100_gap_abs` and the smallest token set covering this fraction of domain `gap_abs` mass.
+- `actor.topk_distill_enabled=false` by default. Enabling it uses local-support matching with renormalized KL over `actor.topk_distill_k` selected tokens. `actor.topk_distill_support_source=teacher` uses teacher top-k ids; `student` uses old actor/student top-k ids and gathers teacher/current-student logprobs on that same support. The default KL direction is reverse; set `actor.topk_distill_kl_direction=forward` for the forward-KL ablation, or use `actor.distill_mode=topk_forward_kl_with_tail` / `topk_reverse_kl_with_tail` for the older tail-bucket objective.
+- `rollout.teacher_prefix_sampling_enabled=false` by default. When enabled,
+  the trainer reads `rollout.teacher_prefix_dataset_key` from each sample,
+  tokenizes and truncates it to `rollout.teacher_prefix_length`, then lets the
+  student continue from `prompt + teacher_prefix`. The launcher automatically
+  enables `actor.teacher_prefix_enabled` so teacher-prefix masks are routed
+  correctly. By default `actor.teacher_prefix_loss_region=suffix_only`, so
+  teacher-prefix tokens are context only and do not contribute loss; student
+  suffix tokens keep the configured OPD/top-k objective. Set
+  `actor.teacher_prefix_loss_region=prefix_and_suffix` to also train prefix
+  tokens with forward-KL.
+- For top-k distillation at `max_response_length=16384`, `actor.use_dynamic_bsz=true`
+  reduces mixed-length actor backward peaks, but it cannot split one very long
+  response across multiple backward passes. If a debug run samples near-16K
+  responses, use a shorter launch override such as `data.max_response_length=8192`
+  or `4096` before turning every gradient audit on.
 - Formal single-GPU profiles use `audit.full_gradient_storage_dtype=bfloat16`. The sequential tracker keeps only the two domain targets on CPU; dot, norm, and cosine accumulation remain FP32.
 - `paper_eval.enabled=false`
 
@@ -288,6 +323,15 @@ cost metrics remain enabled. Full-parameter auditing and sample gradient norms
 remain enabled. Sample-to-domain cosine is disabled until the two-pass FSDP
 implementation is ready.
 
+Three dual-A800 ablation configs are available for comparing the training
+objective while keeping the same model/data/rollout profile:
+
+| Config | Objective | Top-k support |
+| --- | --- | --- |
+| `configs/mopd_formal_dual_a800_pg_loss.yaml` | chosen-token OPD / PG-style loss | off |
+| `configs/mopd_formal_dual_a800_teacher_topk.yaml` | top-k local support matching, reverse-KL, `k=5` | teacher top-k |
+| `configs/mopd_formal_dual_a800_student_topk.yaml` | top-k local support matching, reverse-KL, `k=5` | old actor/student top-k |
+
 ```bash
 cd /root/OPD-code
 GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
@@ -300,6 +344,7 @@ External paper eval remains available through `eval/scripts/run_paper_eval_suite
 For the current metric definitions, use [`metrics_zh.md`](metrics_zh.md) as the source of truth. The formal config logs these audit families:
 
 - per-domain data, OPD loss, teacher confidence/gap, calibration, reward, advantage sign, and response length metrics;
+- token-level conflict attribution summaries and top-token JSONL rows;
 - full-parameter train gradient metrics: per-domain grad norm, math-vs-code cosine/conflict, domain-vs-total cosine, and signed projection share;
 - sampled per-example gradient metrics: sample grad norm for every sample in the actor update mini-batch; sample-to-domain cosine and projection share are disabled in the dual-A800 profile;
 - cost metrics such as step seconds, tokens/sec, peak memory, and full-gradient backward time.
@@ -329,6 +374,84 @@ GPU_IDS=0,1,2,3,4,5,6,7 bash scripts/start_remote_mopd_training.sh \
   configs/mopd_formal_8gpu_a800.yaml \
   --run-id mopd_8gpu_a800_$(date +%Y%m%d_%H%M%S)
 ```
+
+## Formal A800 Audit Overrides
+
+The base 1/2/4/8-card A800 configs keep the standard training/audit setup:
+gap, entropy, token-conflict, full-gradient, and sample-gradient norm are on;
+sample-gradient cosine, token-gradient audit, and top-k distillation are off.
+The dedicated `*_audit_all.yaml` / `*_audit_light.yaml` copies have been
+removed; use the base config plus Hydra overrides after `--`.
+
+`audit_all` means `log_sample_level`, `log_validation_metrics`,
+`full_gradient_enabled`, sample gradient norm and cosine, token-gradient audit
+every step, and teacher-top-5 distillation. To run the student-top-k variant,
+change `topk_distill_support_source` to `student`:
+
+```bash
+GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
+  configs/mopd_formal_dual_a800.yaml \
+  --run-id mopd_dual_audit_all \
+  -- \
+  mopd_audit.log_sample_level=true \
+  mopd_audit.log_validation_metrics=true \
+  mopd_audit.full_gradient_enabled=true \
+  mopd_audit.sample_gradient_enabled=true \
+  mopd_audit.sample_gradient_norm_enabled=true \
+  mopd_audit.sample_gradient_cos_enabled=true \
+  mopd_audit.token_gap_enabled=true \
+  mopd_audit.entropy_enabled=true \
+  mopd_audit.token_conflict_enabled=true \
+  mopd_audit.token_gradient_enabled=true \
+  mopd_audit.full_gradient_freq_steps=1 \
+  mopd_audit.sample_gradient_freq_steps=1 \
+  mopd_audit.sample_gradient_cos_freq_steps=1 \
+  mopd_audit.sample_gradient_log_sample_level_freq_steps=1 \
+  mopd_audit.token_gap_freq_steps=1 \
+  mopd_audit.entropy_freq_steps=1 \
+  mopd_audit.token_conflict_freq_steps=1 \
+  mopd_audit.token_gradient_freq_steps=1 \
+  actor_rollout_ref.actor.use_dynamic_bsz=True \
+  actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+  actor_rollout_ref.actor.policy_loss.distill_mode=chosen_token_reverse_kl \
+  actor_rollout_ref.actor.policy_loss.topk_distill_enabled=true \
+  actor_rollout_ref.actor.policy_loss.topk_distill_kl_direction=reverse \
+  actor_rollout_ref.actor.policy_loss.topk_distill_k=5 \
+  actor_rollout_ref.actor.policy_loss.topk_distill_support_source=teacher \
+  actor_rollout_ref.actor.policy_loss.topk_distill_tail_bucket=false
+```
+
+All heavy audit families are independently throttled by their `*_freq_steps`
+fields. Frequency checks use `step % freq_steps == 0`; setting a larger value
+keeps the feature enabled but runs/writes it less often. Top-k distillation is a
+training objective, so it is controlled by `actor.topk_distill_enabled` rather
+than an audit frequency.
+
+`token_gradient_max_samples_per_domain`, `token_gradient_top_k_per_sample`, and `token_gradient_min_teacher_diff` remain in the config for compatibility with older launch files, but token-gradient audit no longer uses them to truncate the candidate pool; candidate rows use `global_candidate_scope=all_valid_response_tokens`.
+
+`audit_light` disables the extra audit outputs requested for ablation:
+
+```bash
+scripts/run_mopd.sh configs/mopd_formal_single_a800.yaml -- \
+  mopd_audit.log_sample_level=false \
+  mopd_audit.log_validation_metrics=false \
+  mopd_audit.full_gradient_enabled=false \
+  mopd_audit.sample_gradient_enabled=false \
+  mopd_audit.sample_gradient_norm_enabled=false \
+  mopd_audit.sample_gradient_cos_enabled=false \
+  mopd_audit.token_gap_enabled=false \
+  mopd_audit.entropy_enabled=false \
+  mopd_audit.token_conflict_enabled=false \
+  mopd_audit.token_gradient_enabled=false \
+  actor_rollout_ref.actor.policy_loss.topk_distill_enabled=false
+```
+
+With `audit_light`, audit still keeps the core per-domain rows and cost rows:
+data/token counts, OPD loss mean/std/variance, advantage sign, response length,
+reward/accuracy when available, calibration, duplicate rate, the legacy
+`teacher_student_gap_mean` and `teacher_confidence_mean`, global loss/data
+summary, and `training_cost.jsonl`. For a pure no-audit run, additionally set
+`audit.enabled=false`.
 
 ## Formal Single-H200 Config
 
@@ -392,6 +515,13 @@ math/advantage/positive_frac
 math/sample_grad/norm_mean
 math/sample_grad_cos/domain_cos_mean
 math/sample_grad_contribution/projection_share_mean
+math/token_conflict/teacher_teacher_diff_mean
+math/token_conflict/combined_diff_mass
+math/token_gap/gap_abs_p95
+math/entropy/teacher_entropy_p50
+math/token_grad_conflict/other_cos_negative_frac
+math/token_grad/top100_gap_abs_gap_abs_mass_frac
+math/token_grad/topp10_gap_abs_mass_gap_abs_mass_frac
 global/full_grad_conflict/math_vs_code/full_grad_cosine_train_i_k
 global/full_grad_contribution/math_to_total/signed_projection_share
 ```
@@ -402,4 +532,4 @@ The JSONL audit files are written under:
 audit/formal_single_a800/
 ```
 
-Important files include `domain_step_metrics.jsonl`, `loss_variance_sample.jsonl`, `sample_grad_metrics.jsonl`, `validation_probe.jsonl`, `validation_gain_variance.jsonl`, `training_cost.jsonl`, and `audit_errors.jsonl`.
+Important files include `domain_step_metrics.jsonl`, `loss_variance_sample.jsonl`, `token_gap_vectors.jsonl`, `entropy_distribution_vectors.jsonl`, `token_conflict_attribution.jsonl`, `token_grad_metrics.jsonl`, `sample_grad_metrics.jsonl`, `validation_probe.jsonl`, `validation_gain_variance.jsonl`, `training_cost.jsonl`, and `audit_errors.jsonl`.

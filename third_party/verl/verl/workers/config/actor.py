@@ -55,6 +55,19 @@ class PolicyLossConfig(BaseConfig):
     only_reverse_kl_advantages: bool = False
     lambda_vals: float = 1.0
     multi_teacher_distill: bool = False
+    distill_mode: str = "chosen_token_reverse_kl"
+    topk_distill_enabled: bool = False
+    topk_distill_kl_direction: str = "reverse"
+    topk_distill_k: int = 8
+    topk_distill_support_source: str = "teacher"
+    topk_distill_tail_bucket: bool = True
+    topk_distill_temperature: float = 1.0
+    topk_distill_loss_weight: float = 1.0
+    topk_distill_logprob_chunk_size: int = 16
+    topk_distill_logprob_mode: str = "sparse"
+    teacher_prefix_enabled: bool = False
+    teacher_prefix_loss_region: str = "suffix_only"
+    teacher_prefix_forward_kl_weight: float = 1.0
 
 
 @dataclass
