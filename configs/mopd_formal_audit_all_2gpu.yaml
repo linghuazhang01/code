@@ -1,7 +1,7 @@
-# Formal-data MOPD/ExOPD run adapted for the current single-A800 remote.
-# This is not the paper-exact 8-GPU setting. It uses the official G-OPD
-# math+code data, a 4B student/training model, and 4B teacher models, while
-# reducing parallelism and batch sizes so the job can launch on one 80GB GPU.
+# Formal math+code MOPD/ExOPD profile for two NVIDIA A800 80GB GPUs.
+# Canonical all-audit profile: teacher top-k distillation is enabled so
+# teacher-student cross entropy is available, and every MOPD audit family is on.
+# Use configs/mopd_formal_audit_off_2gpu.yaml for the same objective without audit.
 
 runtime:
   python_bin: python
@@ -27,7 +27,7 @@ data:
     - eval/domains/code/data/HumanEvalPlus/test.parquet
     - eval/domains/code/data/MBPPPlus/test.parquet
     # - eval/domains/code/data/LiveCodeBench/test.parquet
-  train_batch_size: 512
+  train_batch_size: 256
   max_prompt_length: 2048
   max_response_length: 16384
   val_batch_size: 1024
@@ -51,7 +51,17 @@ actor:
   only_reverse_kl_advantages: true
   lambda_vals: 1.0
   multi_teacher_distill: true
-  ppo_mini_batch_size: 512
+  distill_mode: chosen_token_reverse_kl
+  topk_distill_enabled: true
+  topk_distill_kl_direction: reverse
+  topk_distill_k: 5
+  topk_distill_support_source: teacher
+  topk_distill_tail_bucket: false
+  topk_distill_temperature: 1.0
+  topk_distill_loss_weight: 1.0
+  topk_distill_logprob_chunk_size: 16
+  topk_distill_logprob_mode: sparse
+  ppo_mini_batch_size: 256
   ppo_micro_batch_size_per_gpu: 1
   use_kl_loss: true
   kl_loss_coef: 0
@@ -62,13 +72,14 @@ actor:
   param_offload: false
   optimizer_offload: false
   fsdp_size: 1
+  use_dynamic_bsz: true
 
 rollout:
   calculate_log_probs: true
   log_prob_micro_batch_size_per_gpu: 1
-  tensor_model_parallel_size: 1
+  tensor_model_parallel_size: 2
   name: vllm
-  gpu_memory_utilization: 0.9
+  gpu_memory_utilization: 0.6
   enforce_eager: true
   enable_chunked_prefill: false
   n: 1
@@ -90,7 +101,7 @@ rollout_correction:
 
 audit:
   enabled: true
-  output_dir: audit/formal_single_a800
+  output_dir: audit/formal_audit_all_2gpu
   domains:
     - math
     - code
@@ -114,30 +125,36 @@ audit:
   sample_gradient_enabled: true
   sample_gradient_freq_steps: 1
   sample_gradient_norm_enabled: true
-  sample_gradient_cos_enabled: false
+  sample_gradient_cos_enabled: true
   sample_gradient_cos_freq_steps: 1
   sample_gradient_log_sample_level: true
   sample_gradient_log_sample_level_freq_steps: 1
   token_gap_enabled: true
   token_gap_freq_steps: 1
+  token_gap_vocab_vector_enabled: true
+  token_gap_vocab_vector_freq_steps: 1
+  token_gap_vocab_size: null
   entropy_enabled: true
   entropy_freq_steps: 1
+  entropy_vocab_vector_enabled: true
+  entropy_vocab_vector_freq_steps: 1
   token_conflict_enabled: true
   token_conflict_freq_steps: 1
   token_conflict_top_k: 50
-  token_gradient_enabled: false
-  token_gradient_freq_steps: 10
-  token_gradient_max_samples_per_domain: 8
-  token_gradient_top_k_per_sample: 50
+  token_gradient_enabled: true
+  token_gradient_freq_steps: 1
+  token_gradient_gap_selection_enabled: true
+  token_gradient_gap_abs_selection_enabled: true
+  token_gradient_loss_abs_selection_enabled: true
+  token_gradient_top_k: 100
   token_gradient_top_p: 0.10
-  token_gradient_min_teacher_diff: 0.0
   token_gradient_strict_grad_restore: false
 
 paper_eval:
   enabled: false
   script_path: eval/scripts/run_paper_eval_suite.sh
   model_path: null
-  output_dir: eval_outputs/paper_suite/formal_single_a800
+  output_dir: eval_outputs/paper_suite/formal_audit_all_2gpu
   datasets:
     - aime24
     - aime25
@@ -153,15 +170,15 @@ paper_eval:
 
 trainer:
   project_name: on-policy-distillation
-  experiment_name: Qwen3-4B-Multi-Teacher-ExOPD-formal-single-a800
+  experiment_name: Qwen3-4B-Multi-Teacher-ExOPD-formal-audit-all-2gpu
   logger: '["console","tensorboard"]'
-  n_gpus_per_node: 1
+  n_gpus_per_node: 2
   nnodes: 1
-  save_freq: 500
-  default_local_dir: checkpoints/formal_single_a800
+  save_freq: -1
+  default_local_dir: checkpoints/formal_audit_all_2gpu
   test_freq: -1
   total_epochs: 3
-  total_training_steps: null
+  total_training_steps: 10
   max_actor_ckpt_to_keep: 2
   max_critic_ckpt_to_keep: 1
   critic_warmup: 0

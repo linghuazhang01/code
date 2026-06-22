@@ -25,6 +25,7 @@ DIRECT_AUDIT_CATEGORIES = {
     "sample_grad_cos",
     "teacher",
     "entropy",
+    "entropy_vocab_cosine",
     "token_conflict",
     "token_gap",
     "token_gap_vocab_cosine",
@@ -94,6 +95,10 @@ CORE_TOKEN_GAP_VOCAB_COSINE = {
     "gap_abs_sum_cosine",
     "gap_signed_sum_cosine",
 }
+CORE_ENTROPY_VOCAB_COSINE = {
+    "student_entropy_sum_cosine",
+    "teacher_student_cross_entropy_sum_cosine",
+}
 CORE_DOMAIN_ENTROPY = {
     "cross_entropy_available",
     "entropy_distribution_available",
@@ -140,7 +145,18 @@ CORE_TOKEN_CONFLICT = {
     "top10_token_share",
     "unique_token_count",
 }
-CORE_TOKEN_GRAD = {"norm_mean", "norm_p95", "norm_max", "selected_sample_count", "selected_token_count"}
+CORE_TOKEN_GRAD = {
+    "global_candidate_gap_mass",
+    "global_candidate_gap_abs_mass",
+    "global_candidate_loss_abs_mass",
+    "global_candidate_sample_count",
+    "global_candidate_token_count",
+    "norm_mean",
+    "norm_p95",
+    "norm_max",
+    "selected_sample_count",
+    "selected_token_count",
+}
 CORE_TOKEN_GRAD_CONFLICT = {
     "conflict_to_other_max",
     "conflict_to_other_mean",
@@ -159,6 +175,11 @@ CORE_TOKEN_GRAD_COST = {
     "available_token_count",
     "backward_fallback_count",
     "backward_fallback_seconds_sum",
+    "global_candidate_gap_mass",
+    "global_candidate_gap_abs_mass",
+    "global_candidate_loss_abs_mass",
+    "global_candidate_sample_count",
+    "global_candidate_token_count",
     "max_memory_allocated_gb",
     "restore_original_max_abs_max",
     "restore_original_rel_l2_max",
@@ -308,6 +329,8 @@ def _keep_global(category: str, metric: str, parts: list[str]) -> bool:
         return metric in CORE_GLOBAL_LOSS
     if category == "token_gap_vocab_cosine":
         return metric in CORE_TOKEN_GAP_VOCAB_COSINE
+    if category == "entropy_vocab_cosine":
+        return metric in CORE_ENTROPY_VOCAB_COSINE
     if category == "optimization":
         return metric in CORE_GLOBAL_OPTIMIZATION
     if category == "validation":
@@ -348,8 +371,14 @@ def _keep_domain(category: str, metric: str, parts: list[str]) -> bool:
         return metric in CORE_TOKEN_GRAD or metric.endswith(
             (
                 "_cos_to_domain",
+                "_gap_mass",
+                "_gap_mass_frac",
                 "_gap_abs_mass",
                 "_gap_abs_mass_frac",
+                "_loss_abs_mass",
+                "_loss_abs_mass_frac",
+                "_score_mass",
+                "_score_mass_frac",
                 "_selected_sample_count",
                 "_selected_token_count",
             )

@@ -7,10 +7,10 @@ Usage:
   scripts/run_mopd.sh [config] [--dry-run] [-- <hydra overrides...>]
 
 Examples:
-  scripts/run_mopd.sh configs/mopd_general_reasoner.yaml --dry-run
+  scripts/run_mopd.sh configs/mopd_formal_audit_all_2gpu.yaml --dry-run
 
-  scripts/run_mopd.sh configs/mopd_general_reasoner.yaml -- \
-    trainer.experiment_name=greasoner_14b_manual
+  scripts/run_mopd.sh configs/mopd_formal_audit_off_2gpu.yaml -- \
+    trainer.experiment_name=mopd_audit_off_manual
 
 Environment:
   MOPD_CONFIG=<default config when config arg is omitted>
@@ -21,7 +21,8 @@ USAGE
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-CONFIG_PATH="${MOPD_CONFIG:-${CODE_DIR}/configs/mopd_math_code.yaml}"
+DEFAULT_CONFIG="${CODE_DIR}/configs/mopd_formal_audit_all_2gpu.yaml"
+CONFIG_PATH="${MOPD_CONFIG:-${DEFAULT_CONFIG}}"
 PYTHON_BIN="${PYTHON_BIN:-}"
 VERL_RUNTIME_DIR="${VERL_RUNTIME_DIR:-${CODE_DIR}/third_party/verl}"
 DRY_RUN_FLAG=0
@@ -48,7 +49,7 @@ while [[ $# -gt 0 ]]; do
       exit 2
       ;;
     *)
-      if [[ "${CONFIG_PATH}" != "${MOPD_CONFIG:-${CODE_DIR}/configs/mopd_math_code.yaml}" ]]; then
+      if [[ "${CONFIG_PATH}" != "${MOPD_CONFIG:-${DEFAULT_CONFIG}}" ]]; then
         echo "Only one config path is allowed." >&2
         exit 2
       fi

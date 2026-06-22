@@ -7,12 +7,12 @@ Usage:
   scripts/start_remote_mopd_training.sh <config> [--run-id RUN_ID] [--foreground] [--tail] [--dry-run] [-- <hydra overrides...>]
 
 Examples:
-  scripts/start_remote_mopd_training.sh configs/mopd_formal_single_a800.yaml
+  scripts/start_remote_mopd_training.sh configs/mopd_formal_audit_all_2gpu.yaml
 
-  scripts/start_remote_mopd_training.sh configs/mopd_formal_single_a800.yaml \
+  scripts/start_remote_mopd_training.sh configs/mopd_formal_audit_all_4gpu.yaml \
     --run-id mopd_manual_test
 
-  scripts/start_remote_mopd_training.sh configs/mopd_formal_single_a800.yaml \
+  scripts/start_remote_mopd_training.sh configs/mopd_formal_audit_off_2gpu.yaml \
     --run-id mopd_bsz128 \
     -- data.train_batch_size=128 data.val_batch_size=128 trainer.val_before_train=false
 
@@ -27,7 +27,7 @@ Environment:
   CONDA_SH=<auto-detected conda.sh when available>
   CONDA_ENV=mopd-verl
   PYTHON_BIN=<active python after conda activation>
-  GPU_IDS=0                  # comma- or space-separated visible physical GPUs
+  GPU_IDS=0,1                # comma- or space-separated visible physical GPUs
   GPU_ID=0                   # legacy alias used only when GPU_IDS is unset
   LOG_DIR=$CODE_DIR/logs
   STOP_STALE_RAY=1
@@ -56,7 +56,7 @@ if [[ -z "${CONDA_SH:-}" ]]; then
 fi
 CONDA_ENV="${CONDA_ENV:-mopd-verl}"
 PYTHON_BIN="${PYTHON_BIN:-}"
-GPU_IDS="${GPU_IDS:-${GPU_ID:-0}}"
+GPU_IDS="${GPU_IDS:-${GPU_ID:-0,1}}"
 LOG_DIR="${LOG_DIR:-${CODE_DIR}/logs}"
 STOP_STALE_RAY="${STOP_STALE_RAY:-1}"
 GPU_IDLE_MEMORY_LIMIT_MB="${GPU_IDLE_MEMORY_LIMIT_MB:-1000}"

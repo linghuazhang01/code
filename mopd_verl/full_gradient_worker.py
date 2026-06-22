@@ -38,6 +38,7 @@ from verl.utils.device import get_device_id, get_torch_device
 
 
 _VECTOR_REDUCTION_CHUNK_SIZE = 1 << 26
+_DOMAIN_LABEL_KEYS = ("opd_teacher", "domain", "source_domain", "ability")
 
 
 def _cfg_get(config: Any, key: str, default: Any = None) -> Any:
@@ -68,13 +69,35 @@ def _non_tensor_list(value: Any, length: int, default: Any = None) -> list[Any]:
     return [value for _ in range(length)]
 
 
-def _teacher_labels(data: DataProto) -> list[str]:
-    batch_size = len(data)
-    for key in ("opd_teacher", "domain", "source_domain", "ability"):
-        labels = _non_tensor_list(data.non_tensor_batch.get(key), batch_size)
+def _label_from_extra_info(extra_info: Any) -> Any:
+    if isinstance(extra_info, str):
+        try:
+            extra_info = json.loads(extra_info)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(extra_info, dict):
+        return None
+    for key in _DOMAIN_LABEL_KEYS:
+        value = extra_info.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _labels_from_mapping(mapping: dict[str, Any], batch_size: int) -> list[str]:
+    for key in _DOMAIN_LABEL_KEYS:
+        labels = _non_tensor_list(mapping.get(key), batch_size)
         if not all(label is None for label in labels):
             return [str(label if label is not None else "unknown") for label in labels]
+    extra_infos = _non_tensor_list(mapping.get("extra_info"), batch_size)
+    labels = [_label_from_extra_info(extra_info) for extra_info in extra_infos]
+    if not all(label is None for label in labels):
+        return [str(label if label is not None else "unknown") for label in labels]
     return ["unknown" for _ in range(batch_size)]
+
+
+def _teacher_labels(data: DataProto) -> list[str]:
+    return _labels_from_mapping(data.non_tensor_batch, len(data))
 
 
 def _sample_ids(data: DataProto, step: int, fallback_prefix: str | None = None) -> list[str]:
@@ -763,11 +786,7 @@ def _trainable_parameters(actor: Any) -> tuple[torch.nn.Parameter, ...]:
 
 
 def _labels_from_inputs(model_inputs: dict[str, Any], batch_size: int) -> list[str]:
-    for key in ("opd_teacher", "domain", "source_domain", "ability"):
-        labels = _non_tensor_list(model_inputs.get(key), batch_size)
-        if not all(label is None for label in labels):
-            return [str(label if label is not None else "unknown") for label in labels]
-    return ["unknown" for _ in range(batch_size)]
+    return _labels_from_mapping(model_inputs, batch_size)
 
 
 def _selected_teacher_topk_from_inputs(
@@ -1144,6 +1163,116 @@ def _actor_micro_batch_loss(
     return policy_loss * float(loss_scale_factor)
 
 
+def _actor_micro_batch_token_loss_scores(
+    actor: Any,
+    micro_batch: DataProto,
+    *,
+    on_policy: bool,
+) -> tuple[torch.Tensor | None, str]:
+    """Return a detached per-response-token loss score matrix for token selection."""
+
+    from verl.trainer.ppo.core_algos import kl_penalty
+
+    try:
+        with torch.no_grad():
+            micro_batch = micro_batch.to(get_device_id())
+            model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
+            response_mask = model_inputs["response_mask"]
+            policy_loss_cfg = _cfg_get(actor.config, "policy_loss", {})
+            topk_distill_active = is_topk_distill_enabled(policy_loss_cfg)
+            use_renormalized_support = (
+                topk_distill_active
+                and topk_distill_uses_renormalized_support(policy_loss_cfg)
+            )
+            effective_topk_logprob_mode = topk_distill_logprob_mode(policy_loss_cfg)
+            if use_renormalized_support:
+                effective_topk_logprob_mode = TOPK_LOGPROB_MODE_SPARSE
+            kl_coef = float(_cfg_get(actor.config, "kl_loss_coef", 0.0) or 0.0)
+            needs_log_probs = not topk_distill_active or (
+                bool(_cfg_get(actor.config, "use_kl_loss", False)) and kl_coef != 0.0
+            )
+            forward_kwargs = {
+                "temperature": float(micro_batch.meta_info.get("temperature", 1.0)),
+                "calculate_entropy": False,
+                "calculate_log_probs": needs_log_probs,
+            }
+            topk_support_ids = None
+            teacher_support_log_probs = None
+            if topk_distill_active:
+                topk_support_ids, teacher_support_log_probs = _selected_topk_support_from_inputs(
+                    model_inputs,
+                    policy_loss_cfg,
+                )
+                forward_kwargs["gather_topk_ids"] = topk_support_ids
+                forward_kwargs["normalize_gathered_topk"] = not use_renormalized_support
+                forward_kwargs["topk_logprob_chunk_size"] = topk_distill_logprob_chunk_size(policy_loss_cfg)
+                forward_kwargs["topk_logprob_mode"] = effective_topk_logprob_mode
+                forward_kwargs["return_extra"] = True
+
+            forward_output = actor._forward_micro_batch(model_inputs, **forward_kwargs)
+            if topk_distill_active:
+                _entropy, log_prob, _topk_ids, _topk_log_probs, student_topk_log_probs = forward_output
+            else:
+                _entropy, log_prob = forward_output
+
+            prefix_loss_mask, suffix_loss_mask, teacher_prefix_active = teacher_prefix_masks(
+                model_inputs,
+                response_mask,
+                policy_loss_cfg,
+            )
+            distill_response_mask = suffix_loss_mask if teacher_prefix_active else response_mask
+
+            if topk_distill_active:
+                loss_mat = topk_distill_loss_matrix(
+                    student_topk_log_probs=student_topk_log_probs,
+                    teacher_topk_log_probs=teacher_support_log_probs,
+                    mode=resolved_topk_distill_mode(policy_loss_cfg),
+                    include_tail=topk_distill_include_tail(policy_loss_cfg),
+                    temperature=topk_distill_temperature(policy_loss_cfg),
+                )
+                loss_mat = loss_mat * topk_distill_weight(policy_loss_cfg)
+                source = "topk_distill_loss"
+            else:
+                if bool(_cfg_get(actor.config, "use_rollout_log_probs", False)):
+                    old_log_prob = model_inputs["old_log_probs"]
+                elif on_policy:
+                    old_log_prob = log_prob.detach()
+                else:
+                    old_log_prob = model_inputs["old_log_probs"]
+                teacher_log_prob = select_teacher_log_prob_tensor(model_inputs, policy_loss_cfg)
+                loss_mat = old_log_prob.float() - teacher_log_prob.float()
+                source = "chosen_token_reverse_kl_proxy"
+
+            if teacher_prefix_active and prefix_loss_mask.detach().sum().item() > 0:
+                if topk_distill_active:
+                    prefix_loss_mat = topk_distill_loss_matrix(
+                        student_topk_log_probs=student_topk_log_probs,
+                        teacher_topk_log_probs=teacher_support_log_probs,
+                        mode=TOPK_RENORMALIZED_FORWARD_KL,
+                        include_tail=False,
+                        temperature=topk_distill_temperature(policy_loss_cfg),
+                    )
+                else:
+                    teacher_log_prob = select_teacher_log_prob_tensor(model_inputs, policy_loss_cfg)
+                    prefix_loss_mat = chosen_token_forward_kl_matrix(
+                        student_log_probs=log_prob,
+                        teacher_log_probs=teacher_log_prob,
+                    )
+                loss_mat = loss_mat + prefix_loss_mat * prefix_loss_mask * teacher_prefix_forward_weight(policy_loss_cfg)
+
+            if bool(_cfg_get(actor.config, "use_kl_loss", False)) and kl_coef != 0.0 and "math_teacher_log_prob" in model_inputs:
+                kld = kl_penalty(
+                    logprob=log_prob,
+                    ref_logprob=model_inputs["math_teacher_log_prob"],
+                    kl_penalty=str(_cfg_get(actor.config, "kl_loss_type", "kl")),
+                )
+                loss_mat = loss_mat + kld * kl_coef
+
+            return (loss_mat.detach().float() * distill_response_mask.detach().float()).cpu(), source
+    except Exception as exc:
+        return None, f"unavailable_{type(exc).__name__}"
+
+
 class SequentialBackwardDomainGradientTracker:
     """Track domain and sample gradient geometry from the real actor backward pass."""
 
@@ -1172,21 +1301,24 @@ class SequentialBackwardDomainGradientTracker:
         self.sample_norm_enabled = requested_sample_norm and not self._sample_gradient_norm_distributed_unsupported
         self.sample_cos_enabled = requested_sample_cos and not self._sample_gradient_cos_distributed_unsupported
         self.token_gradient_enabled = requested_token_gradient and not self._token_gradient_distributed_unsupported
-        # Deprecated token-gradient candidate caps kept for older config/meta payloads.
-        self.token_gradient_max_samples_per_domain = max(
+        self.token_gradient_top_k = max(
             1,
-            int(cfg.get("token_gradient_max_samples_per_domain", 8) or 8),
+            int(cfg.get("token_gradient_top_k", 100) or 100),
         )
-        self.token_gradient_top_k_per_sample = max(
-            1,
-            int(cfg.get("token_gradient_top_k_per_sample", 4) or 4),
+        self.token_gradient_gap_selection_enabled = bool(
+            cfg.get("token_gradient_gap_selection_enabled", True)
+        )
+        self.token_gradient_gap_abs_selection_enabled = bool(
+            cfg.get("token_gradient_gap_abs_selection_enabled", True)
+        )
+        self.token_gradient_loss_abs_selection_enabled = bool(
+            cfg.get("token_gradient_loss_abs_selection_enabled", True)
         )
         token_gradient_top_p = cfg.get("token_gradient_top_p", 0.10)
         self.token_gradient_top_p = min(
             1.0,
             max(0.0, float(0.10 if token_gradient_top_p is None else token_gradient_top_p)),
         )
-        self.token_gradient_min_teacher_diff = float(cfg.get("token_gradient_min_teacher_diff", 0.0) or 0.0)
         self.token_gradient_strict_grad_restore = self.token_gradient_enabled and bool(
             cfg.get("token_gradient_strict_grad_restore", False)
         )
@@ -1220,10 +1352,20 @@ class SequentialBackwardDomainGradientTracker:
     def _domain_target_storage_dtype(self) -> str:
         return self.storage_dtype
 
-    def prepare_micro_batches(self, micro_batches: list[Any]) -> list[tuple[str | None, Any]]:
+    def prepare_micro_batches(
+        self,
+        micro_batches: list[Any],
+        *,
+        batch_idx_list: list[list[int]] | None = None,
+    ) -> list[tuple[str | None, Any]]:
         original_micro_batches = list(micro_batches)
         self._expected_first_domain_samples = None
         partition_meta = self._domain_partition_meta if isinstance(self._domain_partition_meta, dict) else {}
+        self._inject_partition_labels(
+            original_micro_batches,
+            partition_meta,
+            batch_idx_list=batch_idx_list,
+        )
         partition_aligned = (
             bool(partition_meta.get("aligned", False))
             if partition_meta
@@ -1282,6 +1424,51 @@ class SequentialBackwardDomainGradientTracker:
         for domain in self.domains:
             ordered.extend(buckets[domain])
         return ordered
+
+    def _inject_partition_labels(
+        self,
+        micro_batches: list[Any],
+        partition_meta: dict[str, Any],
+        *,
+        batch_idx_list: list[list[int]] | None,
+    ) -> None:
+        if not partition_meta or not bool(partition_meta.get("aligned", False)):
+            return
+        if not batch_idx_list or len(batch_idx_list) != len(micro_batches):
+            return
+        domains = list(partition_meta.get("domain_order") or self.domains)
+        counts_by_domain = partition_meta.get("domain_block_sample_counts", {})
+        if not domains or not isinstance(counts_by_domain, dict):
+            return
+        boundaries: list[tuple[int, int, str]] = []
+        start = 0
+        for domain in domains:
+            count = int(counts_by_domain.get(domain, 0) or 0)
+            if count <= 0:
+                continue
+            end = start + count
+            boundaries.append((start, end, str(domain)))
+            start = end
+        if not boundaries:
+            return
+        for micro_batch, indices in zip(micro_batches, batch_idx_list):
+            labels: list[str] = []
+            for index in indices:
+                label = None
+                idx = int(index)
+                for start, end, domain in boundaries:
+                    if start <= idx < end:
+                        label = domain
+                        break
+                labels.append(label or "unknown")
+            if not labels or all(label == "unknown" for label in labels):
+                continue
+            current_labels = _teacher_labels(micro_batch)
+            if any(label != "unknown" for label in current_labels):
+                continue
+            label_array = np.array(labels, dtype=object)
+            micro_batch.non_tensor_batch["opd_teacher"] = label_array
+            micro_batch.non_tensor_batch["domain"] = label_array.copy()
 
     def start_mini_batch(self) -> None:
         self._sample_counts = {}
@@ -1461,12 +1648,17 @@ class SequentialBackwardDomainGradientTracker:
                     {"row": row, "micro_batch": stored_micro_batch}
                 )
         if self.token_gradient_enabled and micro_batch is not None:
-            self._store_token_gradient_candidates(
-                domain,
-                micro_batch,
-                row,
-                stored_micro_batch=stored_micro_batch,
-            )
+            token_domains = [domain] if domain in self.domains else []
+            if not token_domains:
+                labels = set(_teacher_labels(micro_batch))
+                token_domains = [candidate for candidate in self.domains if candidate in labels]
+            for token_domain in token_domains:
+                self._store_token_gradient_candidates(
+                    token_domain,
+                    micro_batch,
+                    row,
+                    stored_micro_batch=stored_micro_batch,
+                )
 
     def _store_token_gradient_candidates(
         self,
@@ -1476,10 +1668,11 @@ class SequentialBackwardDomainGradientTracker:
         *,
         stored_micro_batch: DataProto | None = None,
     ) -> None:
-        token_candidates = self._select_gap_abs_token_candidates(
+        token_candidates = self._select_token_gradient_candidates(
             micro_batch,
             domain=domain,
             fallback_prefix=str(context.get("sample_id", f"step{self.step}")),
+            on_policy=bool(context.get("on_policy", False)),
         )
         if not token_candidates:
             return
@@ -1789,19 +1982,18 @@ class SequentialBackwardDomainGradientTracker:
         )
         for domain in domains:
             domain_rows: list[dict[str, Any]] = []
-            token_metadata = sorted(
-                (row for row in global_metadata if str(row.get("domain")) == domain),
-                key=lambda row: (
-                    -float(row.get("gap_abs", 0.0)),
-                    int(row.get("owner_rank", 0)),
-                    int(row.get("token_candidate_id", 0)),
-                ),
-            )
+            token_metadata = [
+                row for row in global_metadata if str(row.get("domain")) == domain
+            ]
             selected_samples_by_domain = len(
                 self._token_sample_keys(token_metadata)
             )
+            total_gap_mass = sum(
+                self._token_score_mass_value(row, "gap") for row in token_metadata
+            )
             total_gap_abs_mass = sum(float(row.get("gap_abs", 0.0)) for row in token_metadata)
-            for selection_name, selected_metadata in self._gap_abs_token_selections(token_metadata):
+            total_loss_abs_mass = sum(float(row.get("loss_abs", 0.0) or 0.0) for row in token_metadata)
+            for selection_name, selection_score_key, selected_metadata in self._token_score_selections(token_metadata):
                 if not selected_metadata:
                     continue
                 local_selected_tokens = self._local_tokens_for_global_selection(
@@ -1824,12 +2016,23 @@ class SequentialBackwardDomainGradientTracker:
                     if other_domain is not None
                     else None
                 )
+                selected_gap_mass = sum(
+                    self._token_score_mass_value(row, "gap") for row in selected_metadata
+                )
                 selected_gap_abs_mass = sum(float(row.get("gap_abs", 0.0)) for row in selected_metadata)
+                selected_loss_abs_mass = sum(float(row.get("loss_abs", 0.0) or 0.0) for row in selected_metadata)
+                selected_score_mass = sum(
+                    self._token_score_mass_value(row, selection_score_key) for row in selected_metadata
+                )
+                total_score_mass = sum(
+                    self._token_score_mass_value(row, selection_score_key) for row in token_metadata
+                )
                 rank_selected_token_counts = self._rank_token_counts(selected_metadata)
                 row = {
                     "step": self.step,
                     "domain": domain,
                     "selection": selection_name,
+                    "selection_score": selection_score_key,
                     "selection_scope": "global",
                     "rank": "global",
                     "world_size": world_size,
@@ -1846,13 +2049,31 @@ class SequentialBackwardDomainGradientTracker:
                     "local_selected_token_count": float(len(local_selected_tokens)),
                     "global_candidate_token_count": float(len(token_metadata)),
                     "global_candidate_sample_count": float(selected_samples_by_domain),
+                    "global_candidate_gap_mass": total_gap_mass,
                     "global_candidate_gap_abs_mass": total_gap_abs_mass,
+                    "global_candidate_loss_abs_mass": total_loss_abs_mass,
+                    "global_candidate_score_mass": total_score_mass,
                     "global_candidate_scope": "all_valid_response_tokens",
+                    "selected_gap_mass": selected_gap_mass,
+                    "selected_gap_mass_frac": selected_gap_mass / total_gap_mass
+                    if total_gap_mass > 0.0
+                    else 0.0,
+                    "selected_gap_mean": selected_gap_mass / max(len(selected_metadata), 1),
                     "selected_gap_abs_mass": selected_gap_abs_mass,
                     "selected_gap_abs_mass_frac": selected_gap_abs_mass / total_gap_abs_mass
                     if total_gap_abs_mass > 0.0
                     else 0.0,
                     "selected_gap_abs_mean": selected_gap_abs_mass / max(len(selected_metadata), 1),
+                    "selected_loss_abs_mass": selected_loss_abs_mass,
+                    "selected_loss_abs_mass_frac": selected_loss_abs_mass / total_loss_abs_mass
+                    if total_loss_abs_mass > 0.0
+                    else 0.0,
+                    "selected_loss_abs_mean": selected_loss_abs_mass / max(len(selected_metadata), 1),
+                    "selected_score_mass": selected_score_mass,
+                    "selected_score_mass_frac": selected_score_mass / total_score_mass
+                    if total_score_mass > 0.0
+                    else 0.0,
+                    "selected_score_mean": selected_score_mass / max(len(selected_metadata), 1),
                     **stats,
                 }
                 domain_rows.append(row)
@@ -1876,10 +2097,14 @@ class SequentialBackwardDomainGradientTracker:
             "sample_index",
             "position",
             "rank_in_sample",
+            "gap",
             "gap_signed",
             "gap_abs",
             "teacher_logp",
             "student_logp",
+            "loss_signed",
+            "loss_abs",
+            "loss_score_source",
             "effective_tokens",
             "token_id",
             "original_sample_index",
@@ -1933,59 +2158,112 @@ class SequentialBackwardDomainGradientTracker:
                 keys.add((owner_rank, str(row.get("token_candidate_id", -1))))
         return keys
 
+    def _token_score_selections(
+        self,
+        token_records: list[dict[str, Any]],
+    ) -> list[tuple[str, str, list[dict[str, Any]]]]:
+        if not token_records:
+            return []
+        selections: list[tuple[str, str, list[dict[str, Any]]]] = []
+        score_keys: list[str] = []
+        if self.token_gradient_gap_selection_enabled:
+            score_keys.append("gap")
+        if self.token_gradient_gap_abs_selection_enabled:
+            score_keys.append("gap_abs")
+        if self.token_gradient_loss_abs_selection_enabled:
+            score_keys.append("loss_abs")
+        for score_key in score_keys:
+            scored_records = [
+                row
+                for row in token_records
+                if row.get(score_key) is not None and math.isfinite(float(row.get(score_key, 0.0)))
+            ]
+            if not scored_records:
+                continue
+            sorted_records = sorted(
+                scored_records,
+                key=lambda row: (
+                    -float(row.get(score_key, 0.0)),
+                    int(row.get("owner_rank", 0)),
+                    int(row.get("token_candidate_id", 0)),
+                ),
+            )
+            top_k = sorted_records[: min(self.token_gradient_top_k, len(sorted_records))]
+            total_mass = sum(self._token_score_mass_value(row, score_key) for row in sorted_records)
+            top_p_selection: list[dict[str, Any]] = []
+            top_p_threshold = total_mass * self.token_gradient_top_p
+            if total_mass > 0.0:
+                running = 0.0
+                for row in sorted_records:
+                    top_p_selection.append(row)
+                    running += self._token_score_mass_value(row, score_key)
+                    if running >= top_p_threshold:
+                        break
+            else:
+                top_p_selection = sorted_records[:1]
+            selections.append((f"top{self.token_gradient_top_k}_{score_key}", score_key, top_k))
+            selections.append((self._top_p_selection_name(score_key), score_key, top_p_selection))
+        return selections
+
+    def _token_score_mass_value(self, row: dict[str, Any], score_key: str) -> float:
+        value = float(row.get(score_key, 0.0) or 0.0)
+        if score_key == "gap":
+            return max(0.0, value)
+        return value
+
     def _gap_abs_token_selections(
         self,
         token_records: list[dict[str, Any]],
     ) -> list[tuple[str, list[dict[str, Any]]]]:
-        if not token_records:
-            return []
-        top100 = token_records[: min(100, len(token_records))]
-        total_mass = sum(float(row.get("gap_abs", 0.0)) for row in token_records)
-        top_p_selection: list[dict[str, Any]] = []
-        top_p_threshold = total_mass * self.token_gradient_top_p
-        if total_mass > 0.0:
-            running = 0.0
-            for row in token_records:
-                top_p_selection.append(row)
-                running += float(row.get("gap_abs", 0.0))
-                if running >= top_p_threshold:
-                    break
-        else:
-            top_p_selection = token_records[:1]
-        return [("top100_gap_abs", top100), (self._gap_abs_top_p_selection_name(), top_p_selection)]
+        return [
+            (selection, rows)
+            for selection, score_key, rows in self._token_score_selections(token_records)
+            if score_key == "gap_abs"
+        ]
 
-    def _gap_abs_top_p_selection_name(self) -> str:
+    def _top_p_selection_name(self, score_key: str) -> str:
         percent = self.token_gradient_top_p * 100.0
         rounded = round(percent)
         if abs(percent - rounded) < 1e-6:
             percent_label = str(int(rounded))
         else:
             percent_label = f"{percent:.2f}".rstrip("0").rstrip(".").replace(".", "p")
-        return f"topp{percent_label}_gap_abs_mass"
+        return f"topp{percent_label}_{score_key}_mass"
 
-    def _select_gap_abs_token_candidates(
+    def _select_token_gradient_candidates(
         self,
         micro_batch: DataProto,
         *,
         domain: str,
         fallback_prefix: str | None = None,
+        on_policy: bool = False,
     ) -> list[dict[str, Any]]:
         if micro_batch.batch is None:
             return []
         model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
         if "old_log_probs" not in model_inputs or "math_teacher_log_prob" not in model_inputs:
             return []
-        old_log_probs = model_inputs["old_log_probs"].detach().float()
-        response_mask = model_inputs["response_mask"].detach().float()
-        math_teacher = model_inputs["math_teacher_log_prob"].detach().float()
+        old_log_probs = model_inputs["old_log_probs"].detach().float().cpu()
+        response_mask = model_inputs["response_mask"].detach().float().cpu()
+        math_teacher = model_inputs["math_teacher_log_prob"].detach().float().cpu()
         code_teacher = model_inputs.get("code_teacher_log_prob", math_teacher)
         if hasattr(code_teacher, "detach"):
-            code_teacher = code_teacher.detach().float()
+            code_teacher = code_teacher.detach().float().cpu()
         else:
             code_teacher = math_teacher
         labels = _labels_from_inputs(model_inputs, int(old_log_probs.shape[0]))
         sample_ids = _sample_ids(micro_batch, self.step, fallback_prefix=fallback_prefix)
         token_ids = _response_token_id_matrix_from_inputs(model_inputs, response_mask)
+        loss_scores = None
+        loss_score_source = "disabled"
+        if self.token_gradient_loss_abs_selection_enabled:
+            loss_scores, loss_score_source = _actor_micro_batch_token_loss_scores(
+                self.actor,
+                micro_batch,
+                on_policy=on_policy,
+            )
+        if loss_scores is not None:
+            loss_scores = loss_scores.to(dtype=torch.float32, device=response_mask.device)
         rows: list[dict[str, Any]] = []
         for sample_idx, label in enumerate(labels):
             if label != domain:
@@ -2007,12 +2285,18 @@ class SequentialBackwardDomainGradientTracker:
                     "sample_index": int(sample_idx),
                     "position": position,
                     "rank_in_sample": rank,
+                    "gap": gap_signed_value,
                     "gap_signed": gap_signed_value,
                     "gap_abs": gap_abs_value,
                     "teacher_logp": float(selected_teacher[position].detach().cpu().item()),
                     "student_logp": float(old_log_probs[sample_idx, position].detach().cpu().item()),
                     "effective_tokens": float(response_mask[sample_idx].sum().detach().cpu().item()),
                 }
+                if loss_scores is not None and tuple(loss_scores.shape) == tuple(response_mask.shape):
+                    loss_signed_value = float(loss_scores[sample_idx, position].detach().cpu().item())
+                    row["loss_signed"] = loss_signed_value
+                    row["loss_abs"] = abs(loss_signed_value)
+                    row["loss_score_source"] = loss_score_source
                 if token_ids is not None:
                     row["token_id"] = int(token_ids[sample_idx, position].detach().cpu().item())
                 rows.append(row)
@@ -2464,15 +2748,23 @@ class SequentialBackwardDomainGradientTracker:
         global_candidate_sample_count = max(
             _finite_values([row.get("global_candidate_sample_count") for row in rows]) or [0.0]
         )
+        global_candidate_gap_mass = max(
+            _finite_values([row.get("global_candidate_gap_mass") for row in rows]) or [0.0]
+        )
         global_candidate_gap_abs_mass = max(
             _finite_values([row.get("global_candidate_gap_abs_mass") for row in rows]) or [0.0]
+        )
+        global_candidate_loss_abs_mass = max(
+            _finite_values([row.get("global_candidate_loss_abs_mass") for row in rows]) or [0.0]
         )
         metrics: dict[str, float] = {
             f"{safe_domain}/token_grad/selected_sample_count": float(selected_sample_total),
             f"{safe_domain}/token_grad/selected_token_count": float(selected_token_total),
             f"{safe_domain}/token_grad/global_candidate_sample_count": float(global_candidate_sample_count),
             f"{safe_domain}/token_grad/global_candidate_token_count": float(global_candidate_token_count),
+            f"{safe_domain}/token_grad/global_candidate_gap_mass": float(global_candidate_gap_mass),
             f"{safe_domain}/token_grad/global_candidate_gap_abs_mass": float(global_candidate_gap_abs_mass),
+            f"{safe_domain}/token_grad/global_candidate_loss_abs_mass": float(global_candidate_loss_abs_mass),
         }
         for row in rows:
             selection = row.get("selection")
@@ -2493,11 +2785,29 @@ class SequentialBackwardDomainGradientTracker:
             metrics[f"{safe_domain}/token_grad/{selection_key}_selected_sample_count"] = float(
                 row.get("selected_sample_count", 0.0) or 0.0
             )
+            metrics[f"{safe_domain}/token_grad/{selection_key}_gap_mass"] = float(
+                row.get("selected_gap_mass", 0.0) or 0.0
+            )
+            metrics[f"{safe_domain}/token_grad/{selection_key}_gap_mass_frac"] = float(
+                row.get("selected_gap_mass_frac", 0.0) or 0.0
+            )
             metrics[f"{safe_domain}/token_grad/{selection_key}_gap_abs_mass"] = float(
                 row.get("selected_gap_abs_mass", 0.0) or 0.0
             )
             metrics[f"{safe_domain}/token_grad/{selection_key}_gap_abs_mass_frac"] = float(
                 row.get("selected_gap_abs_mass_frac", 0.0) or 0.0
+            )
+            metrics[f"{safe_domain}/token_grad/{selection_key}_loss_abs_mass"] = float(
+                row.get("selected_loss_abs_mass", 0.0) or 0.0
+            )
+            metrics[f"{safe_domain}/token_grad/{selection_key}_loss_abs_mass_frac"] = float(
+                row.get("selected_loss_abs_mass_frac", 0.0) or 0.0
+            )
+            metrics[f"{safe_domain}/token_grad/{selection_key}_score_mass"] = float(
+                row.get("selected_score_mass", 0.0) or 0.0
+            )
+            metrics[f"{safe_domain}/token_grad/{selection_key}_score_mass_frac"] = float(
+                row.get("selected_score_mass_frac", 0.0) or 0.0
             )
         if availability:
             available_count = sum(value > 0.5 for value in availability)
@@ -2576,7 +2886,9 @@ class SequentialBackwardDomainGradientTracker:
         }
         candidate_token_counts: dict[str, float] = {}
         candidate_sample_counts: dict[str, float] = {}
+        candidate_gap_mass: dict[str, float] = {}
         candidate_gap_abs_mass: dict[str, float] = {}
+        candidate_loss_abs_mass: dict[str, float] = {}
         for row in rows:
             domain = str(row.get("domain", "unknown"))
             candidate_token_counts[domain] = max(
@@ -2587,9 +2899,17 @@ class SequentialBackwardDomainGradientTracker:
                 candidate_sample_counts.get(domain, 0.0),
                 float(row.get("global_candidate_sample_count", 0.0) or 0.0),
             )
+            candidate_gap_mass[domain] = max(
+                candidate_gap_mass.get(domain, 0.0),
+                float(row.get("global_candidate_gap_mass", 0.0) or 0.0),
+            )
             candidate_gap_abs_mass[domain] = max(
                 candidate_gap_abs_mass.get(domain, 0.0),
                 float(row.get("global_candidate_gap_abs_mass", 0.0) or 0.0),
+            )
+            candidate_loss_abs_mass[domain] = max(
+                candidate_loss_abs_mass.get(domain, 0.0),
+                float(row.get("global_candidate_loss_abs_mass", 0.0) or 0.0),
             )
         if candidate_token_counts:
             metrics["global/token_grad_cost/global_candidate_token_count"] = float(
@@ -2598,8 +2918,14 @@ class SequentialBackwardDomainGradientTracker:
             metrics["global/token_grad_cost/global_candidate_sample_count"] = float(
                 sum(candidate_sample_counts.values())
             )
+            metrics["global/token_grad_cost/global_candidate_gap_mass"] = float(
+                sum(candidate_gap_mass.values())
+            )
             metrics["global/token_grad_cost/global_candidate_gap_abs_mass"] = float(
                 sum(candidate_gap_abs_mass.values())
+            )
+            metrics["global/token_grad_cost/global_candidate_loss_abs_mass"] = float(
+                sum(candidate_loss_abs_mass.values())
             )
         metrics["global/token_grad_cost/selected_sample_count"] = float(
             sum(float(row.get("selected_sample_count", 0.0) or 0.0) for row in rows)

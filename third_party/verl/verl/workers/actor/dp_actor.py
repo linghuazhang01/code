@@ -893,17 +893,40 @@ class DataParallelPPOActor(BasePPOActor):
         # MOPD audit: domain-gradient tracker end
         for _ in range(self.config.ppo_epochs):
             for batch_idx, mini_batch in enumerate(mini_batches):
-                if self.config.use_dynamic_bsz:
-                    max_token_len = self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
-                    micro_batches, _ = prepare_dynamic_batch(mini_batch, max_token_len=max_token_len)
-                else:
-                    self.gradient_accumulation = (
-                        self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size_per_gpu
+                mopd_static_micro_batch_size = None
+                if (
+                    mopd_gradient_tracker is not None
+                    and bool(mopd_full_gradient_cfg.get("domain_gradient_enabled", False))
+                ):
+                    mopd_static_micro_batch_size = max(
+                        1,
+                        int(
+                            mopd_full_gradient_cfg.get("micro_batch_size_per_gpu")
+                            or self.config.ppo_micro_batch_size_per_gpu
+                        ),
                     )
-                    micro_batches = mini_batch.split(self.config.ppo_micro_batch_size_per_gpu)
+                use_dynamic_micro_batch = self.config.use_dynamic_bsz and mopd_static_micro_batch_size is None
+                if use_dynamic_micro_batch:
+                    max_token_len = self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
+                    micro_batches, batch_idx_list = prepare_dynamic_batch(mini_batch, max_token_len=max_token_len)
+                else:
+                    micro_batch_size = mopd_static_micro_batch_size or self.config.ppo_micro_batch_size_per_gpu
+                    self.gradient_accumulation = (
+                        self.config.ppo_mini_batch_size // micro_batch_size
+                    )
+                    micro_batches = mini_batch.split(micro_batch_size)
+                    batch_idx_list = []
+                    start_idx = 0
+                    for micro_batch in micro_batches:
+                        end_idx = start_idx + len(micro_batch)
+                        batch_idx_list.append(list(range(start_idx, end_idx)))
+                        start_idx = end_idx
                 micro_batches = list(micro_batches)
                 if mopd_gradient_tracker is not None:
-                    tracked_micro_batches = mopd_gradient_tracker.prepare_micro_batches(micro_batches)
+                    tracked_micro_batches = mopd_gradient_tracker.prepare_micro_batches(
+                        micro_batches,
+                        batch_idx_list=batch_idx_list,
+                    )
                 else:
                     tracked_micro_batches = [(None, micro_batch) for micro_batch in micro_batches]
 
@@ -924,7 +947,7 @@ class DataParallelPPOActor(BasePPOActor):
                     entropy_coeff = self.config.entropy_coeff
                     loss_agg_mode = self.config.loss_agg_mode
 
-                    if self.config.use_dynamic_bsz:
+                    if use_dynamic_micro_batch:
                         loss_scale_factor = response_mask.shape[0] / self.config.ppo_mini_batch_size
                     else:
                         loss_scale_factor = 1 / self.gradient_accumulation

@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import numpy as np
+
+
+DOMAIN_LABEL_KEYS = ("opd_teacher", "domain", "source_domain", "ability")
 
 
 def _non_tensor_list(value: Any, length: int, default: Any = None) -> list[Any]:
@@ -17,11 +21,30 @@ def _non_tensor_list(value: Any, length: int, default: Any = None) -> list[Any]:
     return [value for _ in range(length)]
 
 
+def _label_from_extra_info(extra_info: Any) -> Any:
+    if isinstance(extra_info, str):
+        try:
+            extra_info = json.loads(extra_info)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(extra_info, dict):
+        return None
+    for key in DOMAIN_LABEL_KEYS:
+        value = extra_info.get(key)
+        if value is not None:
+            return value
+    return None
+
+
 def extract_teacher_domains(non_tensor: dict[str, Any], batch_size: int) -> list[str]:
-    for key in ("opd_teacher", "domain", "source_domain", "ability"):
+    for key in DOMAIN_LABEL_KEYS:
         labels = _non_tensor_list(non_tensor.get(key), batch_size)
         if not all(label is None for label in labels):
             return [str(label if label is not None else "unknown") for label in labels]
+    extra_infos = _non_tensor_list(non_tensor.get("extra_info"), batch_size)
+    labels = [_label_from_extra_info(extra_info) for extra_info in extra_infos]
+    if not all(label is None for label in labels):
+        return [str(label if label is not None else "unknown") for label in labels]
     return ["unknown" for _ in range(batch_size)]
 
 

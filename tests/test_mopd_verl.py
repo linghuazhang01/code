@@ -166,17 +166,79 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertEqual(extract_teacher_domains(non_tensor, 2), ["math", "code"])
         self.assertEqual(extract_validation_datasets(non_tensor, 2), ["AIME2024", "codeforces"])
 
+    def test_teacher_domains_fall_back_to_extra_info(self) -> None:
+        non_tensor = {
+            "extra_info": [
+                {"opd_teacher": "math"},
+                {"domain": "code"},
+                json.dumps({"source_domain": "math"}),
+            ]
+        }
+
+        self.assertEqual(extract_teacher_domains(non_tensor, 3), ["math", "code", "math"])
+
+    def test_full_gradient_labels_fall_back_to_extra_info(self) -> None:
+        try:
+            from mopd_verl.full_gradient_worker import (
+                SequentialBackwardDomainGradientTracker,
+                _labels_from_inputs,
+                _teacher_labels,
+            )
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            if exc.name == "torch":
+                self.skipTest(f"torch is not installed: {exc}")
+            raise
+
+        class SyntheticBatch:
+            non_tensor_batch = {
+                "extra_info": [
+                    {"opd_teacher": "math"},
+                    {"domain": "code"},
+                ]
+            }
+
+            def __len__(self) -> int:
+                return 2
+
+        self.assertEqual(_teacher_labels(SyntheticBatch()), ["math", "code"])
+        self.assertEqual(
+            _labels_from_inputs(
+                {"extra_info": [{"source_domain": "math"}, {"ability": "code"}]},
+                2,
+            ),
+            ["math", "code"],
+        )
+
+        tracker = object.__new__(SequentialBackwardDomainGradientTracker)
+        tracker.domains = ["math", "code"]
+        first = SyntheticBatch()
+        second = SyntheticBatch()
+        first.non_tensor_batch = {}
+        second.non_tensor_batch = {}
+        tracker._inject_partition_labels(
+            [first, second],
+            {
+                "aligned": True,
+                "domain_order": ["math", "code"],
+                "domain_block_sample_counts": {"math": 2, "code": 2},
+            },
+            batch_idx_list=[[0, 3], [1, 2]],
+        )
+
+        self.assertEqual(_teacher_labels(first), ["math", "code"])
+        self.assertEqual(_teacher_labels(second), ["math", "code"])
+
     def test_default_command_contains_multi_teacher_setting(self) -> None:
-        config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_math_code.yaml"
+        config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_formal_audit_all_2gpu.yaml"
         config = load_config(config_path)
         command = build_command(config)
         rendered = format_command(command)
 
-        self.assertIn("actor_rollout_ref.model.path=Qwen/Qwen3-4B", rendered)
-        self.assertIn("+actor_rollout_ref.ref.model.path=Qwen3-4B-Non-Thinking-RL-Math", rendered)
-        self.assertIn("+actor_rollout_ref.ref.model.base_model_path=Qwen3-4B-Non-Thinking-RL-Code", rendered)
+        self.assertIn("actor_rollout_ref.model.path=../models/Qwen3-4B", rendered)
+        self.assertIn("+actor_rollout_ref.ref.model.path=../models/Qwen3-4B-Non-Thinking-RL-Math-Step500", rendered)
+        self.assertIn("+actor_rollout_ref.ref.model.base_model_path=../models/Qwen3-4B-Non-Thinking-RL-Code-Step300", rendered)
         self.assertIn("actor_rollout_ref.actor.policy_loss.multi_teacher_distill=true", rendered)
-        self.assertIn("actor_rollout_ref.actor.policy_loss.lambda_vals=1.25", rendered)
+        self.assertIn("actor_rollout_ref.actor.policy_loss.lambda_vals=1.0", rendered)
         self.assertIn("+data.domain_sampling_weights={math: 0.5, code: 0.5}", rendered)
         self.assertIn("+data.domain_sampling_replacement=true", rendered)
         self.assertIn("+data.domain_train_files=", rendered)
@@ -187,10 +249,10 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("eval/domains/math/data/HMMT25Nov/test.parquet", rendered)
         self.assertIn("eval/domains/code/data/HumanEvalPlus/test.parquet", rendered)
         self.assertIn("eval/domains/code/data/MBPPPlus/test.parquet", rendered)
-        self.assertIn("eval/domains/code/data/LiveCodeBench/test.parquet", rendered)
+        self.assertNotIn("eval/domains/code/data/LiveCodeBench/test.parquet", rendered)
 
     def test_topk_distillation_command_is_config_controlled(self) -> None:
-        config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_math_code.yaml"
+        config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_formal_audit_all_2gpu.yaml"
         config = load_config(config_path)
         topk_config = replace(
             config,
@@ -214,7 +276,7 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("actor_rollout_ref.actor.policy_loss.topk_distill_loss_weight=0.5", rendered)
 
     def test_teacher_prefix_command_is_config_controlled(self) -> None:
-        config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_math_code.yaml"
+        config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_formal_audit_all_2gpu.yaml"
         config = load_config(config_path)
         prefix_config = replace(
             config,
@@ -537,24 +599,6 @@ class MOPDVerlTests(unittest.TestCase):
         expected_gathered_logits = logits.gather(dim=-1, index=gather_ids)
         self.assertTrue(torch.allclose(gathered_logits, expected_gathered_logits, atol=1e-6))
 
-    def test_searchqa_command_enables_tool_rollout(self) -> None:
-        config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_searchqa.yaml"
-        config = load_config(config_path)
-        rendered = format_command(build_command(config))
-
-        self.assertIn("actor_rollout_ref.model.path=Qwen/Qwen3-4B", rendered)
-        self.assertIn("+actor_rollout_ref.ref.model.path=Qwen3-4B-Non-Thinking-RL-SearchQA", rendered)
-        self.assertIn("+actor_rollout_ref.ref.model.base_model_path=Qwen/Qwen3-4B", rendered)
-        self.assertIn("+data.domain_sampling_weights={search: 1}", rendered)
-        self.assertIn("+data.domain_train_files=", rendered)
-        self.assertIn("data/SearchQA/train.parquet", rendered)
-        self.assertIn("actor_rollout_ref.rollout.name=sglang", rendered)
-        self.assertIn("actor_rollout_ref.rollout.mode=sync", rendered)
-        self.assertIn("actor_rollout_ref.rollout.max_model_len=20480", rendered)
-        self.assertIn("actor_rollout_ref.rollout.multi_turn.enable=true", rendered)
-        self.assertIn("actor_rollout_ref.rollout.multi_turn.tool_config_path=configs/tool_config/search_tool_config.yaml", rendered)
-        self.assertIn("+data.need_tools_kwargs=True", rendered)
-
     def test_toolrl_command_uses_custom_reward(self) -> None:
         config_path = Path(__file__).resolve().parents[1] / "grpo" / "configs" / "toolrl.yaml"
         config = load_config(config_path)
@@ -582,25 +626,6 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("+reward_model.worker.name=RewardModelWorker", rendered)
         self.assertIn("reward_model.model.path=TIGER-Lab/general-verifier", rendered)
 
-    def test_general_reasoner_command_uses_reasoning_teacher(self) -> None:
-        config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_general_reasoner.yaml"
-        config = load_config(config_path)
-        rendered = format_command(build_command(config))
-
-        self.assertIn("actor_rollout_ref.model.path=../models/Qwen3-4B", rendered)
-        self.assertIn("+actor_rollout_ref.model.base_model_path=../models/Qwen3-4B", rendered)
-        self.assertEqual(config.model.reasoning_teacher_path, "../models/General-Reasoner-Qwen3-14B")
-        self.assertIn("+actor_rollout_ref.ref.model.path=../models/General-Reasoner-Qwen3-14B", rendered)
-        self.assertIsNone(config.model.secondary_teacher_path)
-        self.assertNotIn("+actor_rollout_ref.ref.model.base_model_path=Qwen/Qwen3-14B", rendered)
-        self.assertIn("+data.domain_sampling_weights={reasoning: 1}", rendered)
-        self.assertIn("data/GeneralReasoner/WebInstructVerified/train.parquet", rendered)
-        self.assertIn("eval/domains/greasoner/data/WebInstructVerified/test.parquet", rendered)
-        self.assertIn("+data.apply_chat_template_kwargs.enable_thinking=True", rendered)
-        self.assertIn("+data.need_tools_kwargs=False", rendered)
-        self.assertIn("trainer.experiment_name=Qwen3-4B-GeneralReasoner-Qwen3-14B-MOPD", rendered)
-        self.assertNotIn("actor_rollout_ref.rollout.multi_turn.tool_config_path", rendered)
-
     def test_dp_actor_routes_non_code_teacher_labels_through_primary_ref(self) -> None:
         source_path = Path(__file__).resolve().parents[1] / "third_party" / "verl" / "verl" / "workers" / "actor" / "dp_actor.py"
         source = source_path.read_text(encoding="utf-8")
@@ -619,25 +644,6 @@ class MOPDVerlTests(unittest.TestCase):
             "                                            reverse_kl[i] = old_log_prob[i] - model_inputs[\"base_log_prob\"][i]",
             source,
         )
-
-    def test_audit_smoke_command_contains_tensorboard_and_audit_settings(self) -> None:
-        config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_audit_smoke.yaml"
-        config = load_config(config_path)
-        rendered = format_command(build_command(config))
-
-        self.assertIn('trainer.logger=["console","tensorboard"]', rendered)
-        self.assertIn("data.validation_shuffle=False", rendered)
-        self.assertNotIn("actor_rollout_ref.rollout.seed", rendered)
-        self.assertIn("actor_rollout_ref.rollout.enable_chunked_prefill=False", rendered)
-        self.assertIn("actor_rollout_ref.rollout.val_kwargs.do_sample=False", rendered)
-        self.assertIn("+mopd_audit.enabled=true", rendered)
-        self.assertIn("+mopd_audit.output_dir=audit/smoke", rendered)
-        self.assertIn("+mopd_audit.tensorboard_layout=domain_category", rendered)
-        self.assertIn("+mopd_audit.tensorboard_prune_mode=core", rendered)
-        self.assertIn("+mopd_audit.max_samples_per_domain=8", rendered)
-        self.assertIn("+data.domain_sampling_weights={math: 0.5, code: 0.5}", rendered)
-        self.assertIn("+mopd_audit.full_gradient_enabled=false", rendered)
-        self.assertIn("+mopd_audit.full_gradient_train_max_samples_per_domain=null", rendered)
 
     def test_audit_logs_domain_gap_and_entropy_distribution_vectors(self) -> None:
         try:
@@ -704,6 +710,7 @@ class MOPDVerlTests(unittest.TestCase):
                         "log_sample_level": False,
                         "token_gap_vocab_vector_enabled": True,
                         "token_gap_vocab_size": 8,
+                        "entropy_vocab_vector_enabled": True,
                     },
                     "actor_rollout_ref": {
                         "actor": {"policy_loss": {"lambda_vals": 1.0}},
@@ -724,6 +731,10 @@ class MOPDVerlTests(unittest.TestCase):
                 json.loads(line)
                 for line in (Path(tmpdir) / "token_gap_vocab_vectors.jsonl").read_text(encoding="utf-8").splitlines()
             ]
+            entropy_vocab_rows = [
+                json.loads(line)
+                for line in (Path(tmpdir) / "entropy_vocab_vectors.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
 
         self.assertAlmostEqual(metrics["math/token_gap/gap_abs_sum"], 2.0)
         self.assertAlmostEqual(metrics["math/token_gap/gap_signed_mean"], 0.0)
@@ -738,6 +749,19 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertAlmostEqual(
             metrics["global/token_gap_vocab_cosine/math_vs_code/gap_abs_sum_cosine"],
             2**-0.5,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            metrics[
+                "global/entropy_vocab_cosine/math_vs_code/"
+                "teacher_student_cross_entropy_sum_cosine"
+            ],
+            4.5 / 9.75,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            metrics["global/entropy_vocab_cosine/math_vs_code/student_entropy_sum_cosine"],
+            0.75 / ((0.61 * 3.06) ** 0.5),
             places=5,
         )
         self.assertNotIn("global/token_gap_vocab_cosine/math_vs_code/gap_signed_sum_cosine", metrics)
@@ -762,6 +786,30 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertEqual(vocab_vectors["code"]["token_count_vector_vocab"][5], 2.0)
         self.assertEqual(vocab_vectors["code"]["gap_signed_sum_vector_vocab"][5], 0.0)
         self.assertEqual(vocab_vectors["code"]["gap_abs_sum_vector_vocab"][5], 2.0)
+        entropy_vocab_vectors = {row["domain"]: row for row in entropy_vocab_rows}
+        self.assertEqual(entropy_vocab_vectors["math"]["vocab_size"], 8)
+        self.assertEqual(entropy_vocab_vectors["math"]["vocab_size_source"], "config")
+        self.assertEqual(entropy_vocab_vectors["math"]["nonzero_token_ids"], [2, 5])
+        self.assertEqual(
+            entropy_vocab_vectors["math"]["teacher_student_cross_entropy_sum_vector_vocab"][2],
+            1.5,
+        )
+        self.assertEqual(
+            entropy_vocab_vectors["math"]["teacher_student_cross_entropy_sum_vector_vocab"][5],
+            1.0,
+        )
+        self.assertAlmostEqual(entropy_vocab_vectors["math"]["student_entropy_sum_vector_vocab"][2], 0.6)
+        self.assertAlmostEqual(entropy_vocab_vectors["math"]["student_entropy_sum_vector_vocab"][5], 0.5)
+        self.assertEqual(
+            entropy_vocab_vectors["code"]["teacher_student_cross_entropy_sum_vector_vocab"][5],
+            4.5,
+        )
+        self.assertEqual(
+            entropy_vocab_vectors["code"]["teacher_student_cross_entropy_mean_vector_vocab"][5],
+            2.25,
+        )
+        self.assertAlmostEqual(entropy_vocab_vectors["code"]["student_entropy_sum_vector_vocab"][5], 1.5)
+        self.assertAlmostEqual(entropy_vocab_vectors["code"]["student_entropy_mean_vector_vocab"][5], 0.75)
         entropy_vectors = {row["domain"]: row for row in entropy_rows}
         self.assertEqual(
             [round(value, 1) for value in entropy_vectors["math"]["teacher_entropy_vector_domain"]],
@@ -775,6 +823,63 @@ class MOPDVerlTests(unittest.TestCase):
             [round(value, 1) for value in entropy_vectors["code"]["teacher_student_cross_entropy_vector_domain"]],
             [2.0, 2.5, 3.0],
         )
+
+    def test_vocab_vectors_prefer_model_config_vocab_size(self) -> None:
+        try:
+            import torch
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"torch is not installed: {exc}")
+
+        class ShortTokenizer:
+            vocab_size = 8
+
+            def __len__(self) -> int:
+                return 8
+
+        class SyntheticBatch:
+            def __init__(self) -> None:
+                self.batch = {
+                    "old_log_probs": torch.tensor([[-3.0, -4.0]], dtype=torch.float32),
+                    "math_teacher_log_prob": torch.tensor([[-2.5, -4.5]], dtype=torch.float32),
+                    "response_mask": torch.tensor([[1.0, 1.0]], dtype=torch.float32),
+                    "responses": torch.tensor([[2, 10]], dtype=torch.long),
+                }
+                self.non_tensor_batch = {
+                    "opd_teacher": ["math"],
+                    "sample_id": ["m0"],
+                }
+
+        with tempfile.TemporaryDirectory() as model_dir, tempfile.TemporaryDirectory() as tmpdir:
+            (Path(model_dir) / "config.json").write_text(
+                json.dumps({"vocab_size": 12}),
+                encoding="utf-8",
+            )
+            logger = MOPDAuditLogger(
+                {
+                    "mopd_audit": {
+                        "enabled": True,
+                        "output_dir": tmpdir,
+                        "domains": ["math"],
+                        "log_sample_level": False,
+                        "token_gap_vocab_vector_enabled": True,
+                    },
+                    "actor_rollout_ref": {
+                        "model": {"path": model_dir},
+                        "actor": {"policy_loss": {"lambda_vals": 1.0}},
+                    },
+                },
+                tokenizer=ShortTokenizer(),
+            )
+            logger.log_training_step(SyntheticBatch(), step=1, lr=0.01)
+            vocab_row = json.loads(
+                (Path(tmpdir) / "token_gap_vocab_vectors.jsonl").read_text(encoding="utf-8").splitlines()[0]
+            )
+
+        self.assertEqual(vocab_row["vocab_size"], 12)
+        self.assertEqual(vocab_row["vocab_size_source"], "model_config")
+        self.assertEqual(len(vocab_row["token_count_vector_vocab"]), 12)
+        self.assertEqual(vocab_row["nonzero_token_ids"], [2, 10])
+        self.assertEqual(vocab_row["dropped_token_count"], 0)
 
     def test_audit_can_disable_gap_entropy_and_token_conflict_outputs(self) -> None:
         try:
@@ -823,6 +928,7 @@ class MOPDVerlTests(unittest.TestCase):
             ]
             token_gap_file_exists = (output_dir / "token_gap_vectors.jsonl").exists()
             entropy_file_exists = (output_dir / "entropy_distribution_vectors.jsonl").exists()
+            entropy_vocab_file_exists = (output_dir / "entropy_vocab_vectors.jsonl").exists()
             token_conflict_file_exists = (output_dir / "token_conflict_attribution.jsonl").exists()
 
         self.assertNotIn("math/token_gap/gap_abs_sum", metrics)
@@ -830,6 +936,7 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertNotIn("math/token_conflict/proxy_mass", metrics)
         self.assertFalse(token_gap_file_exists)
         self.assertFalse(entropy_file_exists)
+        self.assertFalse(entropy_vocab_file_exists)
         self.assertFalse(token_conflict_file_exists)
         self.assertNotIn("gap_abs_sum", domain_rows[0])
         self.assertNotIn("sum_teacher_entropy", domain_rows[0])
@@ -873,6 +980,8 @@ class MOPDVerlTests(unittest.TestCase):
                         "token_gap_freq_steps": 2,
                         "entropy_enabled": True,
                         "entropy_freq_steps": 2,
+                        "entropy_vocab_vector_enabled": True,
+                        "entropy_vocab_vector_freq_steps": 2,
                         "token_conflict_enabled": True,
                         "token_conflict_freq_steps": 2,
                     },
@@ -887,6 +996,7 @@ class MOPDVerlTests(unittest.TestCase):
             self.assertFalse((output_dir / "loss_variance_sample.jsonl").exists())
             self.assertFalse((output_dir / "token_gap_vectors.jsonl").exists())
             self.assertFalse((output_dir / "entropy_distribution_vectors.jsonl").exists())
+            self.assertFalse((output_dir / "entropy_vocab_vectors.jsonl").exists())
             self.assertFalse((output_dir / "token_conflict_attribution.jsonl").exists())
             self.assertNotIn("math/token_gap/gap_abs_sum", step1_metrics)
             self.assertNotIn("math/entropy/sum_teacher_entropy", step1_metrics)
@@ -909,6 +1019,10 @@ class MOPDVerlTests(unittest.TestCase):
                 json.loads(line)
                 for line in (output_dir / "entropy_distribution_vectors.jsonl").read_text(encoding="utf-8").splitlines()
             ]
+            entropy_vocab_rows = [
+                json.loads(line)
+                for line in (output_dir / "entropy_vocab_vectors.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
             token_conflict_rows = [
                 json.loads(line)
                 for line in (output_dir / "token_conflict_attribution.jsonl").read_text(encoding="utf-8").splitlines()
@@ -920,6 +1034,7 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertEqual([row["step"] for row in sample_rows], [2])
         self.assertEqual([row["step"] for row in token_gap_rows], [2])
         self.assertEqual([row["step"] for row in entropy_rows], [2])
+        self.assertEqual([row["step"] for row in entropy_vocab_rows], [2])
         self.assertEqual({row["step"] for row in token_conflict_rows}, {2})
         self.assertEqual([row["step"] for row in domain_rows], [1, 2])
         self.assertNotIn("gap_abs_sum", domain_rows[0])
@@ -965,7 +1080,7 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertAlmostEqual(rows[1]["gain"], 0.3)
 
     def test_formal_command_enables_full_parameter_gradient_audit(self) -> None:
-        config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_formal_single_a800.yaml"
+        config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_formal_audit_all_2gpu.yaml"
         config = load_config(config_path)
         rendered = format_command(build_command(config))
 
@@ -979,22 +1094,31 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("+mopd_audit.sample_gradient_enabled=true", rendered)
         self.assertIn("+mopd_audit.sample_gradient_freq_steps=1", rendered)
         self.assertIn("+mopd_audit.sample_gradient_norm_enabled=true", rendered)
-        self.assertIn("+mopd_audit.sample_gradient_cos_enabled=false", rendered)
+        self.assertIn("+mopd_audit.sample_gradient_cos_enabled=true", rendered)
         self.assertIn("+mopd_audit.sample_gradient_cos_freq_steps=1", rendered)
         self.assertIn("+mopd_audit.sample_gradient_log_sample_level_freq_steps=1", rendered)
         self.assertIn("+mopd_audit.token_gap_enabled=true", rendered)
         self.assertIn("+mopd_audit.token_gap_freq_steps=1", rendered)
-        self.assertIn("+mopd_audit.token_gap_vocab_vector_enabled=false", rendered)
+        self.assertIn("+mopd_audit.token_gap_vocab_vector_enabled=true", rendered)
         self.assertIn("+mopd_audit.token_gap_vocab_vector_freq_steps=1", rendered)
         self.assertIn("+mopd_audit.token_gap_vocab_size=null", rendered)
         self.assertIn("+mopd_audit.entropy_enabled=true", rendered)
         self.assertIn("+mopd_audit.entropy_freq_steps=1", rendered)
+        self.assertIn("+mopd_audit.entropy_vocab_vector_enabled=true", rendered)
+        self.assertIn("+mopd_audit.entropy_vocab_vector_freq_steps=1", rendered)
         self.assertIn("+mopd_audit.token_conflict_enabled=true", rendered)
         self.assertIn("+mopd_audit.token_conflict_freq_steps=1", rendered)
-        self.assertIn("+mopd_audit.token_gradient_freq_steps=10", rendered)
-        self.assertIn("+mopd_audit.token_gradient_top_k_per_sample=50", rendered)
+        self.assertIn("+mopd_audit.token_gradient_enabled=true", rendered)
+        self.assertIn("+mopd_audit.token_gradient_freq_steps=1", rendered)
+        self.assertIn("+mopd_audit.token_gradient_gap_selection_enabled=true", rendered)
+        self.assertIn("+mopd_audit.token_gradient_gap_abs_selection_enabled=true", rendered)
+        self.assertIn("+mopd_audit.token_gradient_loss_abs_selection_enabled=true", rendered)
+        self.assertIn("+mopd_audit.token_gradient_top_k=100", rendered)
         self.assertIn("+mopd_audit.token_gradient_top_p=0.1", rendered)
         self.assertIn("+mopd_audit.token_gradient_strict_grad_restore=false", rendered)
+        self.assertNotIn("token_gradient_top_k_per_sample", rendered)
+        self.assertNotIn("token_gradient_max_samples_per_domain", rendered)
+        self.assertNotIn("token_gradient_min_teacher_diff", rendered)
         self.assertIn("actor_rollout_ref.actor.fsdp_config.fsdp_size=1", rendered)
         self.assertNotIn("sample_gradient_cos_max_samples_per_domain", rendered)
         self.assertNotIn("sample_gradient_cos_selection", rendered)
@@ -1009,41 +1133,14 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("eval/domains/math/data/HMMT25Nov/test.parquet", rendered)
         self.assertIn("eval/domains/code/data/MBPPPlus/test.parquet", rendered)
         self.assertNotIn("eval/domains/code/data/LiveCodeBench/test.parquet", rendered)
-        self.assertIn("trainer.default_local_dir=checkpoints/formal_single_a800", rendered)
+        self.assertIn("trainer.default_local_dir=checkpoints/formal_audit_all_2gpu", rendered)
         self.assertNotIn("/root/autodl-tmp/opd_mopd/G-OPD/G-OPD-Training-Data", rendered)
         self.assertNotIn("/root/autodl-tmp/opd_mopd/OPD-code", rendered)
         self.assertNotIn("+paper_eval.enabled=true", rendered)
         self.assertNotIn("run_paper_eval_suite.sh", rendered)
 
-    def test_single_h200_profile_preserves_math_code_semantics(self) -> None:
-        config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_formal_single_h200.yaml"
-        config = load_config(config_path)
-        rendered = format_command(build_command(config))
-
-        self.assertEqual(config.data.train_batch_size, 1024)
-        self.assertEqual(config.actor.ppo_mini_batch_size, 1024)
-        self.assertEqual(config.actor.ppo_micro_batch_size_per_gpu, 1)
-        self.assertFalse(config.actor.optimizer_offload)
-        self.assertEqual(config.rollout.log_prob_micro_batch_size_per_gpu, 2)
-        self.assertFalse(config.rollout.enforce_eager)
-        self.assertEqual(config.rollout.max_num_batched_tokens, 65536)
-        self.assertEqual(config.rollout.max_num_seqs, 16)
-        self.assertEqual(config.trainer.n_gpus_per_node, 1)
-        self.assertEqual(config.trainer.save_freq, 50)
-        self.assertEqual(config.ray_kwargs.ray_init.num_cpus, 8)
-        self.assertIn("actor_rollout_ref.rollout.gpu_memory_utilization=0.8", rendered)
-        self.assertIn("eval/domains/math/data/AIME25/test.parquet", rendered)
-        self.assertIn("eval/domains/code/data/HumanEvalPlus/test.parquet", rendered)
-        self.assertNotIn(
-            "data.val_files=['data/G-OPD-Training-Data/Eurus/code_train.parquet']",
-            rendered,
-        )
-        self.assertIn("trainer.default_local_dir=checkpoints/formal_single_h200", rendered)
-        self.assertIn("+mopd_audit.output_dir=audit/formal_single_h200", rendered)
-        self.assertIn("+mopd_audit.full_gradient_storage_dtype=bfloat16", rendered)
-
-    def test_dual_a800_profile_uses_replicated_two_gpu_gradient_audit(self) -> None:
-        config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_formal_dual_a800.yaml"
+    def test_audit_all_profile_uses_replicated_two_gpu_gradient_audit(self) -> None:
+        config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_formal_audit_all_2gpu.yaml"
         config = load_config(config_path)
         rendered = format_command(build_command(config))
 
@@ -1053,14 +1150,17 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertEqual(config.actor.ppo_micro_batch_size_per_gpu, 1)
         self.assertTrue(config.actor.gradient_checkpointing)
         self.assertEqual(config.rollout.tensor_model_parallel_size, 2)
-        self.assertEqual(config.rollout.gpu_memory_utilization, 0.8)
+        self.assertEqual(config.rollout.gpu_memory_utilization, 0.6)
         self.assertEqual(config.trainer.n_gpus_per_node, 2)
         self.assertTrue(config.audit.enabled)
         self.assertEqual(config.actor.fsdp_size, 1)
         self.assertTrue(config.audit.full_gradient_enabled)
         self.assertTrue(config.audit.sample_gradient_enabled)
         self.assertTrue(config.audit.sample_gradient_norm_enabled)
-        self.assertFalse(config.audit.sample_gradient_cos_enabled)
+        self.assertTrue(config.audit.sample_gradient_cos_enabled)
+        self.assertTrue(config.audit.token_gap_vocab_vector_enabled)
+        self.assertTrue(config.audit.entropy_vocab_vector_enabled)
+        self.assertTrue(config.audit.token_gradient_enabled)
         self.assertEqual(config.trainer.total_training_steps, 10)
         self.assertIn("trainer.n_gpus_per_node=2", rendered)
         self.assertIn("data.train_batch_size=256", rendered)
@@ -1068,17 +1168,17 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("actor_rollout_ref.actor.ppo_mini_batch_size=256", rendered)
         self.assertIn("actor_rollout_ref.model.enable_gradient_checkpointing=True", rendered)
         self.assertIn("actor_rollout_ref.rollout.tensor_model_parallel_size=2", rendered)
-        self.assertIn("actor_rollout_ref.rollout.gpu_memory_utilization=0.8", rendered)
+        self.assertIn("actor_rollout_ref.rollout.gpu_memory_utilization=0.6", rendered)
         self.assertIn("actor_rollout_ref.actor.fsdp_config.fsdp_size=1", rendered)
-        self.assertIn("+mopd_audit.output_dir=audit/formal_dual_a800", rendered)
+        self.assertIn("+mopd_audit.output_dir=audit/formal_audit_all_2gpu", rendered)
         self.assertIn("+mopd_audit.full_gradient_enabled=true", rendered)
         self.assertIn("+mopd_audit.sample_gradient_enabled=true", rendered)
         self.assertIn("+mopd_audit.sample_gradient_norm_enabled=true", rendered)
-        self.assertIn("+mopd_audit.sample_gradient_cos_enabled=false", rendered)
-        self.assertIn("trainer.default_local_dir=checkpoints/formal_dual_a800", rendered)
+        self.assertIn("+mopd_audit.sample_gradient_cos_enabled=true", rendered)
+        self.assertIn("trainer.default_local_dir=checkpoints/formal_audit_all_2gpu", rendered)
 
-    def test_dual_a800_audit_all_overrides_enable_dynamic_actor_batching(self) -> None:
-        config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_formal_dual_a800.yaml"
+    def test_audit_all_2gpu_overrides_enable_dynamic_actor_batching(self) -> None:
+        config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_formal_audit_all_2gpu.yaml"
         config = load_config(config_path)
         extra_args = [
             "mopd_audit.token_gradient_enabled=true",
@@ -1092,11 +1192,11 @@ class MOPDVerlTests(unittest.TestCase):
         ]
         rendered = format_command(build_command(config, extra_args=extra_args))
 
-        self.assertFalse(config.actor.topk_distill_enabled)
-        self.assertEqual(config.actor.topk_distill_k, 8)
-        self.assertFalse(config.actor.use_dynamic_bsz)
+        self.assertTrue(config.actor.topk_distill_enabled)
+        self.assertEqual(config.actor.topk_distill_k, 5)
+        self.assertTrue(config.actor.use_dynamic_bsz)
         self.assertFalse(config.actor.optimizer_offload)
-        self.assertEqual(config.rollout.gpu_memory_utilization, 0.8)
+        self.assertEqual(config.rollout.gpu_memory_utilization, 0.6)
         self.assertIn("mopd_audit.token_gradient_enabled=true", rendered)
         self.assertIn("mopd_audit.sample_gradient_cos_enabled=true", rendered)
         self.assertIn("mopd_audit.token_gradient_freq_steps=1", rendered)
@@ -1238,6 +1338,8 @@ class MOPDVerlTests(unittest.TestCase):
             "math/token_gap/gap_abs_sum": 3.0,
             "math/token_gap/gap_signed_p95": 0.8,
             "global/token_gap_vocab_cosine/math_vs_code/gap_abs_sum_cosine": 0.7,
+            "global/entropy_vocab_cosine/math_vs_code/teacher_student_cross_entropy_sum_cosine": 0.6,
+            "global/entropy_vocab_cosine/math_vs_code/student_entropy_sum_cosine": 0.5,
             "math/entropy/sum_teacher_entropy": 12.0,
             "math/entropy/teacher_entropy_mean": 0.7,
             "math/entropy/teacher_entropy_p95": 1.1,
@@ -1258,12 +1360,19 @@ class MOPDVerlTests(unittest.TestCase):
             "global/token_grad_cost/seconds": 24.0,
             "global/token_grad_cost/seconds_per_selected_token": 3.0,
             "global/token_grad_cost/backward_fallback_seconds_sum": 20.0,
+            "global/token_grad_cost/global_candidate_gap_mass": 21.0,
+            "global/token_grad_cost/global_candidate_loss_abs_mass": 42.0,
             "global/token_grad_cost/valid_frac": 1.0,
             "global/token_grad_cost/restore_post_target_rel_l2_max": 1e-6,
             "global/token_grad_cost/restore_original_rel_l2_max": 0.0,
             "math/token_grad_cost/restore_post_target_max_abs_max": 1e-7,
             "math/token_grad_cost/restore_original_max_abs_max": 0.0,
+            "math/token_grad/global_candidate_gap_mass": 21.0,
+            "math/token_grad/global_candidate_loss_abs_mass": 42.0,
+            "math/token_grad/top100_gap_gap_mass_frac": 0.31,
             "math/token_grad/top100_gap_abs_gap_abs_mass_frac": 0.54,
+            "math/token_grad/top100_loss_abs_loss_abs_mass_frac": 0.62,
+            "math/token_grad/top100_loss_abs_score_mass_frac": 0.62,
             "math/reward/training_reward_mean": 0.5,
             "math/reward/training_accuracy": 0.5,
             "math/coverage/duplicate_rate": 0.0,
@@ -1311,6 +1420,11 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("math/token_gap/gap_abs_sum", filtered)
         self.assertIn("math/token_gap/gap_signed_p95", filtered)
         self.assertIn("global/token_gap_vocab_cosine/math_vs_code/gap_abs_sum_cosine", filtered)
+        self.assertIn(
+            "global/entropy_vocab_cosine/math_vs_code/teacher_student_cross_entropy_sum_cosine",
+            filtered,
+        )
+        self.assertIn("global/entropy_vocab_cosine/math_vs_code/student_entropy_sum_cosine", filtered)
         self.assertIn("math/entropy/sum_teacher_entropy", filtered)
         self.assertIn("math/entropy/teacher_entropy_mean", filtered)
         self.assertIn("math/entropy/teacher_entropy_p95", filtered)
@@ -1331,12 +1445,19 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("global/token_grad_cost/seconds", filtered)
         self.assertIn("global/token_grad_cost/seconds_per_selected_token", filtered)
         self.assertIn("global/token_grad_cost/backward_fallback_seconds_sum", filtered)
+        self.assertIn("global/token_grad_cost/global_candidate_gap_mass", filtered)
+        self.assertIn("global/token_grad_cost/global_candidate_loss_abs_mass", filtered)
         self.assertIn("global/token_grad_cost/valid_frac", filtered)
         self.assertIn("global/token_grad_cost/restore_post_target_rel_l2_max", filtered)
         self.assertIn("global/token_grad_cost/restore_original_rel_l2_max", filtered)
         self.assertIn("math/token_grad_cost/restore_post_target_max_abs_max", filtered)
         self.assertIn("math/token_grad_cost/restore_original_max_abs_max", filtered)
+        self.assertIn("math/token_grad/global_candidate_gap_mass", filtered)
+        self.assertIn("math/token_grad/global_candidate_loss_abs_mass", filtered)
+        self.assertIn("math/token_grad/top100_gap_gap_mass_frac", filtered)
         self.assertIn("math/token_grad/top100_gap_abs_gap_abs_mass_frac", filtered)
+        self.assertIn("math/token_grad/top100_loss_abs_loss_abs_mass_frac", filtered)
+        self.assertIn("math/token_grad/top100_loss_abs_score_mass_frac", filtered)
         self.assertIn("math/reward/training_reward_mean", filtered)
         self.assertIn("math/reward/training_accuracy", filtered)
         self.assertIn("math/coverage/duplicate_rate", filtered)
@@ -1902,6 +2023,9 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertFalse(inactive_meta["mopd_full_gradient"]["token_gradient_enabled"])
         self.assertTrue(active_meta["mopd_full_gradient"]["token_gradient_enabled"])
         self.assertEqual(active_meta["mopd_full_gradient"]["token_gradient_freq_steps"], 4)
+        self.assertTrue(active_meta["mopd_full_gradient"]["token_gradient_gap_selection_enabled"])
+        self.assertTrue(active_meta["mopd_full_gradient"]["token_gradient_gap_abs_selection_enabled"])
+        self.assertTrue(active_meta["mopd_full_gradient"]["token_gradient_loss_abs_selection_enabled"])
         self.assertFalse(logger.should_compute_domain_gradient(3))
         self.assertTrue(logger.should_compute_domain_gradient(4))
 
@@ -1933,16 +2057,91 @@ class MOPDVerlTests(unittest.TestCase):
             },
         )
         records = [
-            {"gap_abs": 60.0},
-            {"gap_abs": 30.0},
-            {"gap_abs": 10.0},
+            {"gap": 6.0, "gap_abs": 60.0, "loss_abs": 5.0, "token_id": 1},
+            {"gap": 3.0, "gap_abs": 30.0, "loss_abs": 90.0, "token_id": 2},
+            {"gap": -10.0, "gap_abs": 10.0, "loss_abs": 5.0, "token_id": 3},
         ]
 
         selections = dict(tracker._gap_abs_token_selections(records))
+        score_selections = {
+            (selection, score_key): rows
+            for selection, score_key, rows in tracker._token_score_selections(records)
+        }
 
         self.assertIn("topp80_gap_abs_mass", selections)
         self.assertEqual(len(selections["topp80_gap_abs_mass"]), 2)
         self.assertEqual(len(selections["top100_gap_abs"]), 3)
+        self.assertIn(("topp80_gap_mass", "gap"), score_selections)
+        self.assertEqual(len(score_selections[("topp80_gap_mass", "gap")]), 2)
+        self.assertEqual(len(score_selections[("top100_gap", "gap")]), 3)
+        self.assertIn(("topp80_loss_abs_mass", "loss_abs"), score_selections)
+        self.assertEqual(len(score_selections[("topp80_loss_abs_mass", "loss_abs")]), 1)
+        self.assertEqual(score_selections[("topp80_loss_abs_mass", "loss_abs")][0]["token_id"], 2)
+        self.assertEqual(len(score_selections[("top100_loss_abs", "loss_abs")]), 3)
+
+    def test_token_gradient_selection_switches_control_score_families(self) -> None:
+        try:
+            from torch import nn
+
+            from mopd_verl.full_gradient_worker import SequentialBackwardDomainGradientTracker
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ActorConfig:
+            fsdp_config = {"fsdp_size": 1}
+
+            def get(self, key: str, default: object = None) -> object:
+                return getattr(self, key, default)
+
+        class ToyActor:
+            def __init__(self) -> None:
+                self.actor_module = nn.Linear(2, 1, bias=False)
+                self.config = ActorConfig()
+
+        records = [
+            {"gap": 10.0, "gap_abs": 10.0, "loss_abs": 1.0},
+            {"gap": -10.0, "gap_abs": 1.0, "loss_abs": 10.0},
+        ]
+        signed_gap_only = SequentialBackwardDomainGradientTracker(
+            ToyActor(),
+            {
+                "domains": ["math"],
+                "token_gradient_enabled": True,
+                "token_gradient_gap_selection_enabled": True,
+                "token_gradient_gap_abs_selection_enabled": False,
+                "token_gradient_loss_abs_selection_enabled": False,
+            },
+        )
+        gap_abs_only = SequentialBackwardDomainGradientTracker(
+            ToyActor(),
+            {
+                "domains": ["math"],
+                "token_gradient_enabled": True,
+                "token_gradient_gap_selection_enabled": False,
+                "token_gradient_gap_abs_selection_enabled": True,
+                "token_gradient_loss_abs_selection_enabled": False,
+            },
+        )
+        loss_only = SequentialBackwardDomainGradientTracker(
+            ToyActor(),
+            {
+                "domains": ["math"],
+                "token_gradient_enabled": True,
+                "token_gradient_gap_selection_enabled": False,
+                "token_gradient_gap_abs_selection_enabled": False,
+                "token_gradient_loss_abs_selection_enabled": True,
+            },
+        )
+
+        signed_gap_scores = {
+            score_key for _selection, score_key, _rows in signed_gap_only._token_score_selections(records)
+        }
+        gap_abs_scores = {score_key for _selection, score_key, _rows in gap_abs_only._token_score_selections(records)}
+        loss_scores = {score_key for _selection, score_key, _rows in loss_only._token_score_selections(records)}
+
+        self.assertEqual(signed_gap_scores, {"gap"})
+        self.assertEqual(gap_abs_scores, {"gap_abs"})
+        self.assertEqual(loss_scores, {"loss_abs"})
 
     def test_token_gradient_uses_global_gap_abs_selection_counts(self) -> None:
         try:
@@ -1969,6 +2168,7 @@ class MOPDVerlTests(unittest.TestCase):
                 {
                     "domains": ["math"],
                     "token_gradient_enabled": True,
+                    "token_gradient_gap_selection_enabled": False,
                     "token_gradient_top_p": 0.5,
                 },
             )
@@ -2075,12 +2275,11 @@ class MOPDVerlTests(unittest.TestCase):
             {
                 "domains": ["math"],
                 "token_gradient_enabled": True,
-                "token_gradient_max_samples_per_domain": 1,
-                "token_gradient_top_k_per_sample": 1,
+                "token_gradient_top_k": 100,
             },
         )
 
-        rows = tracker._select_gap_abs_token_candidates(FakeMicroBatch(), domain="math")
+        rows = tracker._select_token_gradient_candidates(FakeMicroBatch(), domain="math")
 
         self.assertEqual(len(rows), 6)
         self.assertEqual({row["sample_id"] for row in rows}, {"sample-0", "sample-1"})
@@ -2109,7 +2308,6 @@ class MOPDVerlTests(unittest.TestCase):
             {
                 "domains": ["math"],
                 "token_gradient_enabled": True,
-                "token_gradient_max_samples_per_domain": 2,
             },
         )
         tracker.start_mini_batch()
@@ -2128,7 +2326,7 @@ class MOPDVerlTests(unittest.TestCase):
 
         with patch.object(
             tracker,
-            "_select_gap_abs_token_candidates",
+            "_select_token_gradient_candidates",
             return_value=token_rows,
         ), patch(
             "mopd_verl.full_gradient_worker._copy_data_proto_rows_to_cpu",

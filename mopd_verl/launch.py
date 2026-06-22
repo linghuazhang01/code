@@ -107,15 +107,21 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"+mopd_audit.token_gap_vocab_size={_hydra_scalar(audit.token_gap_vocab_size)}",
         f"+mopd_audit.entropy_enabled={str(audit.entropy_enabled).lower()}",
         f"+mopd_audit.entropy_freq_steps={audit.entropy_freq_steps}",
+        f"+mopd_audit.entropy_vocab_vector_enabled={str(audit.entropy_vocab_vector_enabled).lower()}",
+        f"+mopd_audit.entropy_vocab_vector_freq_steps={audit.entropy_vocab_vector_freq_steps}",
         f"+mopd_audit.token_conflict_enabled={str(audit.token_conflict_enabled).lower()}",
         f"+mopd_audit.token_conflict_freq_steps={audit.token_conflict_freq_steps}",
         f"+mopd_audit.token_conflict_top_k={audit.token_conflict_top_k}",
         f"+mopd_audit.token_gradient_enabled={str(audit.token_gradient_enabled).lower()}",
         f"+mopd_audit.token_gradient_freq_steps={audit.token_gradient_freq_steps}",
-        f"+mopd_audit.token_gradient_max_samples_per_domain={audit.token_gradient_max_samples_per_domain}",
-        f"+mopd_audit.token_gradient_top_k_per_sample={audit.token_gradient_top_k_per_sample}",
+        f"+mopd_audit.token_gradient_gap_selection_enabled="
+        f"{str(audit.token_gradient_gap_selection_enabled).lower()}",
+        f"+mopd_audit.token_gradient_gap_abs_selection_enabled="
+        f"{str(audit.token_gradient_gap_abs_selection_enabled).lower()}",
+        f"+mopd_audit.token_gradient_loss_abs_selection_enabled="
+        f"{str(audit.token_gradient_loss_abs_selection_enabled).lower()}",
+        f"+mopd_audit.token_gradient_top_k={audit.token_gradient_top_k}",
         f"+mopd_audit.token_gradient_top_p={audit.token_gradient_top_p}",
-        f"+mopd_audit.token_gradient_min_teacher_diff={audit.token_gradient_min_teacher_diff}",
         f"+mopd_audit.token_gradient_strict_grad_restore="
         f"{str(audit.token_gradient_strict_grad_restore).lower()}",
     ]
@@ -312,7 +318,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--config",
-        default=str(Path(__file__).resolve().parents[1] / "configs" / "mopd_math_code.yaml"),
+        default=str(Path(__file__).resolve().parents[1] / "configs" / "mopd_formal_audit_all_2gpu.yaml"),
         help="Path to a MOPD YAML config.",
     )
     parser.add_argument("--dry-run", action="store_true", help="Print the verl command without executing it.")

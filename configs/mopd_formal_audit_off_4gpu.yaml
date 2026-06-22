@@ -1,8 +1,6 @@
-# Formal math+code MOPD/ExOPD profile for two NVIDIA A800 80GB GPUs.
-# The global batch and optimization semantics match the single-A800 profile.
-# Actor FSDP uses shard groups of size 1 so each GPU owns a full parameter
-# vector; vLLM uses tensor parallelism across the two GPUs while actor gradient
-# audit metrics remain in a replicated-parameter coordinate system.
+# Formal math+code MOPD/ExOPD profile for four NVIDIA A800 80GB GPUs.
+# Same teacher top-k training objective as mopd_formal_audit_all_4gpu, but all MOPD
+# audit logging and diagnostic JSONL outputs are disabled.
 
 runtime:
   python_bin: python
@@ -28,7 +26,7 @@ data:
     - eval/domains/code/data/HumanEvalPlus/test.parquet
     - eval/domains/code/data/MBPPPlus/test.parquet
     # - eval/domains/code/data/LiveCodeBench/test.parquet
-  train_batch_size: 256
+  train_batch_size: 512
   max_prompt_length: 2048
   max_response_length: 16384
   val_batch_size: 1024
@@ -53,7 +51,7 @@ actor:
   lambda_vals: 1.0
   multi_teacher_distill: true
   distill_mode: chosen_token_reverse_kl
-  topk_distill_enabled: false
+  topk_distill_enabled: true
   topk_distill_kl_direction: reverse
   topk_distill_k: 5
   topk_distill_support_source: teacher
@@ -62,7 +60,7 @@ actor:
   topk_distill_loss_weight: 1.0
   topk_distill_logprob_chunk_size: 16
   topk_distill_logprob_mode: sparse
-  ppo_mini_batch_size: 256
+  ppo_mini_batch_size: 512
   ppo_micro_batch_size_per_gpu: 1
   use_kl_loss: true
   kl_loss_coef: 0
@@ -77,14 +75,14 @@ actor:
 rollout:
   calculate_log_probs: true
   log_prob_micro_batch_size_per_gpu: 1
-  tensor_model_parallel_size: 2
+  tensor_model_parallel_size: 4
   name: vllm
   gpu_memory_utilization: 0.8
   enforce_eager: true
   enable_chunked_prefill: false
   n: 1
   max_num_batched_tokens: 32768
-  max_num_seqs: 8
+  max_num_seqs: 16
   temperature: 1.0
   top_p: 1.0
   val_n: 1
@@ -100,8 +98,8 @@ rollout_correction:
   bypass_mode: false
 
 audit:
-  enabled: true
-  output_dir: audit/formal_dual_a800_pg_loss
+  enabled: false
+  output_dir: audit/formal_audit_off_4gpu
   domains:
     - math
     - code
@@ -111,44 +109,50 @@ audit:
   loss_variance_signal: opd_loss_token
   max_samples_per_domain: 16
   high_variance_cv_threshold: 1.0
-  log_sample_level: true
+  log_sample_level: false
   log_sample_level_freq_steps: 1
-  log_validation_metrics: true
+  log_validation_metrics: false
   log_validation_metrics_freq_steps: 1
   tier2_window_size: 20
   calibration_bins: 10
-  full_gradient_enabled: true
+  full_gradient_enabled: false
   full_gradient_freq_steps: 1
   full_gradient_train_max_samples_per_domain: null
   full_gradient_micro_batch_size_per_gpu: 1
   full_gradient_storage_dtype: bfloat16
-  sample_gradient_enabled: true
+  sample_gradient_enabled: false
   sample_gradient_freq_steps: 1
-  sample_gradient_norm_enabled: true
+  sample_gradient_norm_enabled: false
   sample_gradient_cos_enabled: false
   sample_gradient_cos_freq_steps: 1
-  sample_gradient_log_sample_level: true
+  sample_gradient_log_sample_level: false
   sample_gradient_log_sample_level_freq_steps: 1
-  token_gap_enabled: true
+  token_gap_enabled: false
   token_gap_freq_steps: 1
-  entropy_enabled: true
+  token_gap_vocab_vector_enabled: false
+  token_gap_vocab_vector_freq_steps: 1
+  token_gap_vocab_size: null
+  entropy_enabled: false
   entropy_freq_steps: 1
-  token_conflict_enabled: true
+  entropy_vocab_vector_enabled: false
+  entropy_vocab_vector_freq_steps: 1
+  token_conflict_enabled: false
   token_conflict_freq_steps: 1
   token_conflict_top_k: 50
   token_gradient_enabled: false
   token_gradient_freq_steps: 10
-  token_gradient_max_samples_per_domain: 8
-  token_gradient_top_k_per_sample: 50
+  token_gradient_gap_selection_enabled: true
+  token_gradient_gap_abs_selection_enabled: true
+  token_gradient_loss_abs_selection_enabled: true
+  token_gradient_top_k: 100
   token_gradient_top_p: 0.10
-  token_gradient_min_teacher_diff: 0.0
   token_gradient_strict_grad_restore: false
 
 paper_eval:
   enabled: false
   script_path: eval/scripts/run_paper_eval_suite.sh
   model_path: null
-  output_dir: eval_outputs/paper_suite/formal_dual_a800
+  output_dir: eval_outputs/paper_suite/formal_audit_off_4gpu
   datasets:
     - aime24
     - aime25
@@ -164,12 +168,12 @@ paper_eval:
 
 trainer:
   project_name: on-policy-distillation
-  experiment_name: Qwen3-4B-Multi-Teacher-ExOPD-formal-dual-a800-pg-loss
-  logger: '["console","tensorboard"]'
-  n_gpus_per_node: 2
+  experiment_name: Qwen3-4B-Multi-Teacher-ExOPD-formal-audit-off-4gpu
+  logger: '["console"]'
+  n_gpus_per_node: 4
   nnodes: 1
   save_freq: -1
-  default_local_dir: checkpoints/formal_dual_a800_pg_loss
+  default_local_dir: checkpoints/formal_audit_off_4gpu
   test_freq: -1
   total_epochs: 3
   total_training_steps: 10
@@ -182,4 +186,4 @@ trainer:
 ray_kwargs:
   ray_init:
     include_dashboard: false
-    num_cpus: 8
+    num_cpus: 16

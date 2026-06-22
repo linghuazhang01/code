@@ -10,9 +10,9 @@ Usage:
 Examples:
   scripts/sync_and_start_remote_mopd.sh --sync-only
 
-  scripts/sync_and_start_remote_mopd.sh configs/mopd_formal_single_a800.yaml --run-id mopd_manual_test
+  scripts/sync_and_start_remote_mopd.sh configs/mopd_formal_audit_all_2gpu.yaml --run-id mopd_manual_test
 
-  scripts/sync_and_start_remote_mopd.sh configs/mopd_formal_single_a800.yaml \
+  scripts/sync_and_start_remote_mopd.sh configs/mopd_formal_audit_off_2gpu.yaml \
     --run-id mopd_bsz128 \
     -- data.train_batch_size=128 data.val_batch_size=128 trainer.val_before_train=false
 
@@ -25,7 +25,7 @@ Notes:
   - Extra Hydra overrides are passed exactly after '--'; the script does not add hidden training overrides.
 
 Environment:
-  GPU_IDS=0                  # comma- or space-separated visible physical GPUs
+  GPU_IDS=0,1                # comma- or space-separated visible physical GPUs
   GPU_ID=0                   # legacy alias used only when GPU_IDS is unset
 USAGE
 }
@@ -44,7 +44,7 @@ REMOTE_CODE_DIR="${REMOTE_CODE_DIR:-${REMOTE_ROOT}/OPD-code}"
 CONDA_SH="${CONDA_SH:-}"
 CONDA_ENV="${CONDA_ENV:-mopd-verl}"
 PYTHON_BIN="${PYTHON_BIN:-}"
-GPU_IDS="${GPU_IDS:-${GPU_ID:-0}}"
+GPU_IDS="${GPU_IDS:-${GPU_ID:-0,1}}"
 LOG_DIR="${LOG_DIR:-${REMOTE_CODE_DIR}/logs}"
 STOP_STALE_RAY="${STOP_STALE_RAY:-1}"
 ASSUME_YES="${ASSUME_YES:-0}"

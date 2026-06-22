@@ -37,6 +37,7 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 from tqdm import tqdm
 
 from verl import DataProto
+from mopd_verl.audit_proxy import extract_teacher_domains
 from mopd_verl.paper_eval import run_paper_eval_from_config
 from mopd_verl.teacher_prefix import (
     build_dataset_teacher_prefix,
@@ -94,6 +95,15 @@ def _env_flag(name: str, default: bool) -> bool:
 def _progress_log(message: str) -> None:
     if _env_flag("MOPD_STEP_PROGRESS", True):
         print(f"[MOPD progress] {message}", flush=True)
+
+
+def _materialize_mopd_teacher_domains(batch: DataProto) -> None:
+    labels = extract_teacher_domains(batch.non_tensor_batch, len(batch))
+    if not labels or all(label == "unknown" for label in labels):
+        return
+    label_array = np.array(labels, dtype=object)
+    batch.non_tensor_batch["opd_teacher"] = label_array
+    batch.non_tensor_batch["domain"] = label_array.copy()
 
 
 @dataclass
@@ -1308,6 +1318,7 @@ class RayPPOTrainer:
 
                     if "response_mask" not in batch.batch.keys():
                         batch.batch["response_mask"] = compute_response_mask(batch)
+                    _materialize_mopd_teacher_domains(batch)
                     # Balance the number of valid tokens across DP ranks.
                     # NOTE: This usually changes the order of data in the `batch`,
                     # which won't affect the advantage calculation (since it's based on uid),

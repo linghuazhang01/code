@@ -166,15 +166,18 @@ class AuditConfig:
     token_gap_vocab_size: int | None = None
     entropy_enabled: bool = True
     entropy_freq_steps: int = 1
+    entropy_vocab_vector_enabled: bool = False
+    entropy_vocab_vector_freq_steps: int = 1
     token_conflict_enabled: bool = True
     token_conflict_freq_steps: int = 1
     token_conflict_top_k: int = 50
     token_gradient_enabled: bool = False
     token_gradient_freq_steps: int = 10
-    token_gradient_max_samples_per_domain: int = 8
-    token_gradient_top_k_per_sample: int = 50
+    token_gradient_gap_selection_enabled: bool = True
+    token_gradient_gap_abs_selection_enabled: bool = True
+    token_gradient_loss_abs_selection_enabled: bool = True
+    token_gradient_top_k: int = 100
     token_gradient_top_p: float = 0.10
-    token_gradient_min_teacher_diff: float = 0.0
     token_gradient_strict_grad_restore: bool = False
 
 
