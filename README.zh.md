@@ -36,7 +36,7 @@
 - math teacher: `../models/Qwen3-4B-Non-Thinking-RL-Math-Step500`
 - code teacher: `../models/Qwen3-4B-Non-Thinking-RL-Code-Step300`
 - train files: `DeepMath-103K/train_filtered_level6.parquet` 与 `Eurus/code_train.parquet`
-- teacher top-k local-support distillation，`topk_distill_k=5`
+- teacher top-k local-support distillation，`topk_distill_k=32`
 
 卡数 scaling：
 

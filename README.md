@@ -38,7 +38,7 @@ All profiles use:
 - math teacher: `../models/Qwen3-4B-Non-Thinking-RL-Math-Step500`
 - code teacher: `../models/Qwen3-4B-Non-Thinking-RL-Code-Step300`
 - train files under `data/G-OPD-Training-Data/DeepMath-103K/` and `data/G-OPD-Training-Data/Eurus/`
-- teacher top-k local-support distillation with `topk_distill_k=5`
+- teacher top-k local-support distillation with `topk_distill_k=32`
 
 GPU scaling:
 

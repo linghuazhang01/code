@@ -49,7 +49,7 @@ class MOPDProfileTests(unittest.TestCase):
         self.assertEqual(config.ray_kwargs.ray_init.num_cpus, cpu_count)
         self.assertTrue(config.actor.topk_distill_enabled)
         self.assertEqual(config.actor.topk_distill_support_source, "teacher")
-        self.assertEqual(config.actor.topk_distill_k, 5)
+        self.assertEqual(config.actor.topk_distill_k, 32)
         self.assertFalse(config.actor.topk_distill_tail_bucket)
         self.assertIn(f"data.train_batch_size={train_batch_size}", rendered)
         self.assertIn(f"actor_rollout_ref.actor.ppo_mini_batch_size={train_batch_size}", rendered)

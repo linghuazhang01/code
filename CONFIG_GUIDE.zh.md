@@ -62,7 +62,7 @@ actor:
   topk_distill_enabled: true
   topk_distill_support_source: teacher
   topk_distill_kl_direction: reverse
-  topk_distill_k: 5
+  topk_distill_k: 32
   topk_distill_tail_bucket: false
 ```
 

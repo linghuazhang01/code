@@ -1187,13 +1187,13 @@ class MOPDVerlTests(unittest.TestCase):
             "actor_rollout_ref.actor.use_dynamic_bsz=True",
             "actor_rollout_ref.rollout.gpu_memory_utilization=0.6",
             "actor_rollout_ref.actor.policy_loss.topk_distill_enabled=true",
-            "actor_rollout_ref.actor.policy_loss.topk_distill_k=5",
+            "actor_rollout_ref.actor.policy_loss.topk_distill_k=32",
             "actor_rollout_ref.actor.policy_loss.topk_distill_tail_bucket=false",
         ]
         rendered = format_command(build_command(config, extra_args=extra_args))
 
         self.assertTrue(config.actor.topk_distill_enabled)
-        self.assertEqual(config.actor.topk_distill_k, 5)
+        self.assertEqual(config.actor.topk_distill_k, 32)
         self.assertTrue(config.actor.use_dynamic_bsz)
         self.assertFalse(config.actor.optimizer_offload)
         self.assertEqual(config.rollout.gpu_memory_utilization, 0.6)
@@ -1201,7 +1201,7 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("mopd_audit.sample_gradient_cos_enabled=true", rendered)
         self.assertIn("mopd_audit.token_gradient_freq_steps=1", rendered)
         self.assertIn("actor_rollout_ref.actor.policy_loss.topk_distill_enabled=true", rendered)
-        self.assertIn("actor_rollout_ref.actor.policy_loss.topk_distill_k=5", rendered)
+        self.assertIn("actor_rollout_ref.actor.policy_loss.topk_distill_k=32", rendered)
         self.assertIn("actor_rollout_ref.actor.policy_loss.topk_distill_tail_bucket=false", rendered)
         self.assertIn("actor_rollout_ref.actor.use_dynamic_bsz=True", rendered)
         self.assertIn("actor_rollout_ref.actor.fsdp_config.optimizer_offload=False", rendered)
