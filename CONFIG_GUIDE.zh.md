@@ -9,10 +9,14 @@
 | `configs/mopd_formal_audit_all_2gpu.yaml` | 2 卡正式诊断训练 | 4B student，math/code 4B teachers，teacher top-k distillation，所有 audit 开启 |
 | `configs/mopd_formal_audit_all_4gpu.yaml` | 4 卡正式诊断训练 | 同 objective，batch 按卡数放大 |
 | `configs/mopd_formal_audit_all_8gpu.yaml` | 8 卡正式诊断训练 | TP=4，8 卡 batch |
+| `configs/mopd_formal_audit_loss_only_2gpu.yaml` | 2 卡 loss-only 诊断训练 | 同 all-audit surface，但 token-gradient selection 只用 loss |
+| `configs/mopd_formal_audit_loss_only_4gpu.yaml` | 4 卡 loss-only 诊断训练 | 同 objective，batch 按卡数放大 |
+| `configs/mopd_formal_audit_loss_only_8gpu.yaml` | 8 卡 loss-only 诊断训练 | TP=4，8 卡 batch |
 | `configs/mopd_formal_audit_off_2gpu.yaml` | 2 卡无 audit 训练 | 同样的模型、数据和 objective，关闭所有 MOPD audit 输出 |
 | `configs/mopd_formal_audit_off_4gpu.yaml` | 4 卡无 audit 训练 | 同 objective，batch 按卡数放大 |
 | `configs/mopd_formal_audit_off_8gpu.yaml` | 8 卡无 audit 训练 | TP=4，8 卡 batch |
 | `configs/mopd_formal_audit_all_smoke.yaml` | 指标 smoke 测试 | 2 卡 one-step，保持正式 response 长度，所有 audit 与 full-vocab vector 开启 |
+| `configs/mopd_formal_audit_loss_only_smoke.yaml` | loss-only 指标 smoke 测试 | 2 卡 one-step，token-gradient selection 只用 loss |
 
 卡数 scaling：
 
@@ -102,6 +106,33 @@ rollout:
 
 这给 full/sample/token gradient audit 留出更多 actor backward 显存余量。
 
+## Audit Loss Only
+
+`configs/mopd_formal_audit_loss_only_*gpu.yaml` 用于隔离 “high-loss token” 的 token-gradient 贡献。它不关闭其他 audit family；除了 token-gradient selection 的分数来源外，其他设置与 all-audit profile 保持一致：
+
+```yaml
+audit:
+  enabled: true
+  output_dir: audit/formal_audit_loss_only_<gpu>
+  full_gradient_enabled: true
+  sample_gradient_enabled: true
+  sample_gradient_norm_enabled: true
+  sample_gradient_cos_enabled: true
+  token_gap_enabled: true
+  token_gap_vocab_vector_enabled: true
+  entropy_enabled: true
+  entropy_vocab_vector_enabled: true
+  token_conflict_enabled: true
+  token_gradient_enabled: true
+  token_gradient_gap_selection_enabled: false
+  token_gradient_gap_abs_selection_enabled: false
+  token_gradient_loss_abs_selection_enabled: true
+  token_gradient_top_k: 100
+  token_gradient_top_p: 0.10
+```
+
+因此 `token_grad_metrics.jsonl` 仍会生成，但候选 token 只来自 `loss_abs` top-k/top-p，而不会再额外生成 signed-gap 或 gap-abs selector 的 token-gradient 样本。
+
 ## 指标 Smoke
 
 `configs/mopd_formal_audit_all_smoke.yaml` 用于快速验证 TensorBoard scalar、JSONL audit 文件、full-vocab token gap vector 和 entropy vector 的记录逻辑。它保持 all-audit 开关：
@@ -125,6 +156,17 @@ audit:
 ```
 
 其中 `token_gap_vocab_size: null` 表示使用 tokenizer 的完整词表维度，不是压缩到小词表的假 smoke。
+
+`configs/mopd_formal_audit_loss_only_smoke.yaml` 使用同样的 one-step smoke 设置，但把 token-gradient selector 改成 loss-only：
+
+```yaml
+audit:
+  output_dir: audit/formal_audit_loss_only_smoke
+  token_gradient_enabled: true
+  token_gradient_gap_selection_enabled: false
+  token_gradient_gap_abs_selection_enabled: false
+  token_gradient_loss_abs_selection_enabled: true
+```
 
 ## Audit Off
 
@@ -168,6 +210,12 @@ GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
 ```
 
 ```bash
+GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
+  configs/mopd_formal_audit_loss_only_2gpu.yaml \
+  --run-id mopd_audit_loss_only_2gpu_$(date +%Y%m%d_%H%M%S)
+```
+
+```bash
 GPU_IDS=0,1,2,3 bash scripts/start_remote_mopd_training.sh \
   configs/mopd_formal_audit_all_4gpu.yaml \
   --run-id mopd_audit_all_4gpu_$(date +%Y%m%d_%H%M%S)
@@ -183,6 +231,10 @@ GPU_IDS=0,1,2,3,4,5,6,7 bash scripts/start_remote_mopd_training.sh \
 GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
   configs/mopd_formal_audit_all_smoke.yaml \
   --run-id mopd_metrics_smoke_$(date +%Y%m%d_%H%M%S)
+
+GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
+  configs/mopd_formal_audit_loss_only_smoke.yaml \
+  --run-id mopd_metrics_loss_only_smoke_$(date +%Y%m%d_%H%M%S)
 ```
 
 详细 metric 口径见 [metrics_zh.md](metrics_zh.md)。

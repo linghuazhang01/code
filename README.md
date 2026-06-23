@@ -16,17 +16,21 @@ This checkout is the current OPD/MOPD training entrypoint. The training runtime 
 
 ## Configs
 
-Two formal MOPD variants are kept with 2/4/8 GPU profiles, plus one metrics smoke profile:
+Three formal MOPD variants are kept with 2/4/8 GPU profiles, plus metrics smoke profiles:
 
 | Config | Purpose |
 | --- | --- |
 | `configs/mopd_formal_audit_all_2gpu.yaml` | 2-GPU formal 4B math/code run with every MOPD audit family enabled. |
 | `configs/mopd_formal_audit_all_4gpu.yaml` | 4-GPU all-audit run, same objective with a larger global batch. |
 | `configs/mopd_formal_audit_all_8gpu.yaml` | 8-GPU all-audit run, TP=4 with two rollout data-parallel groups. |
+| `configs/mopd_formal_audit_loss_only_2gpu.yaml` | 2-GPU all-audit run where token-gradient selection only uses loss magnitude. |
+| `configs/mopd_formal_audit_loss_only_4gpu.yaml` | 4-GPU loss-only token-gradient audit run. |
+| `configs/mopd_formal_audit_loss_only_8gpu.yaml` | 8-GPU loss-only token-gradient audit run. |
 | `configs/mopd_formal_audit_off_2gpu.yaml` | 2-GPU run with the same model/data/objective and all audit disabled. |
 | `configs/mopd_formal_audit_off_4gpu.yaml` | 4-GPU audit-off run. |
 | `configs/mopd_formal_audit_off_8gpu.yaml` | 8-GPU audit-off run. |
 | `configs/mopd_formal_audit_all_smoke.yaml` | 2-GPU one-step metrics smoke run with all audit outputs and full-vocab vectors enabled. |
+| `configs/mopd_formal_audit_loss_only_smoke.yaml` | 2-GPU one-step smoke run with loss-only token-gradient selection. |
 
 All profiles use:
 
@@ -54,9 +58,11 @@ GPU scaling:
 - token conflict attribution
 - token-gradient audit with domain-level signed-gap, gap-abs, and loss top-k/top-p selections
 
+`mopd_formal_audit_loss_only_*gpu.yaml` keeps the same audit surface as the all-audit profiles, including full/sample gradients, token gap vectors, entropy vectors, token conflict, and token-gradient logging. The only difference is token-gradient candidate selection: `token_gradient_gap_selection_enabled=false`, `token_gradient_gap_abs_selection_enabled=false`, and `token_gradient_loss_abs_selection_enabled=true`.
+
 `mopd_formal_audit_off_*gpu.yaml` sets `audit.enabled=false` and explicitly turns off all audit subfamilies.
 
-`mopd_formal_audit_all_smoke.yaml` is tracked as the metrics test profile. It uses `data.train_batch_size=32`, `actor.ppo_mini_batch_size=32`, and `trainer.total_training_steps=1`, while keeping the formal `data.max_response_length=16384` and full-vocab token gap and entropy vectors enabled.
+The smoke profiles are tracked as metrics test profiles. They use `data.train_batch_size=32`, `actor.ppo_mini_batch_size=32`, and `trainer.total_training_steps=1`, while keeping the formal `data.max_response_length=16384` and full-vocab token gap and entropy vectors enabled.
 
 ## Launch
 
@@ -75,6 +81,14 @@ Run the audit-off profile:
 GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
   configs/mopd_formal_audit_off_2gpu.yaml \
   --run-id mopd_audit_off_2gpu_$(date +%Y%m%d_%H%M%S)
+```
+
+Run the loss-only token-gradient audit profile:
+
+```bash
+GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
+  configs/mopd_formal_audit_loss_only_2gpu.yaml \
+  --run-id mopd_audit_loss_only_2gpu_$(date +%Y%m%d_%H%M%S)
 ```
 
 Use the matching GPU list for larger profiles:
@@ -101,6 +115,10 @@ Metrics smoke:
 GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
   configs/mopd_formal_audit_all_smoke.yaml \
   --run-id mopd_metrics_smoke_$(date +%Y%m%d_%H%M%S)
+
+GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
+  configs/mopd_formal_audit_loss_only_smoke.yaml \
+  --run-id mopd_metrics_loss_only_smoke_$(date +%Y%m%d_%H%M%S)
 ```
 
 Sync from local without launching:
@@ -119,7 +137,7 @@ ASSUME_YES=1 bash scripts/sync_and_start_remote_mopd.sh \
 
 ## Audit Files
 
-When an `mopd_formal_audit_all_*gpu.yaml` config is used, JSONL audit files are written under the matching directory, for example `audit/formal_audit_all_2gpu/`.
+When an `mopd_formal_audit_all_*gpu.yaml` or `mopd_formal_audit_loss_only_*gpu.yaml` config is used, JSONL audit files are written under the matching directory, for example `audit/formal_audit_all_2gpu/` or `audit/formal_audit_loss_only_2gpu/`.
 
 Important files include:
 
