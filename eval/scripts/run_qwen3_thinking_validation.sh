@@ -11,8 +11,6 @@ if [[ -f "${CODE_DIR}/logs/env.sh" ]]; then
   source "${CODE_DIR}/logs/env.sh"
 fi
 
-CONDA_ROOT="${CONDA_ROOT:-${HOME}/miniconda3}"
-ENV_NAME="${ENV_NAME:-mopd-verl}"
 MODEL_PATH="${MODEL_PATH:-${REMOTE_ROOT}/models/Qwen3-4B}"
 RUN_ID="${RUN_ID:-qwen3_4b_thinking_$(date +%Y%m%d_%H%M%S)}"
 OUTPUT_DIR="${OUTPUT_DIR:-${EVAL_DIR}/results/${RUN_ID}}"
@@ -32,7 +30,6 @@ BATCH_SIZE="${BATCH_SIZE:-8}"
 TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-1}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.9}"
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
-HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 HF_HOME="${HF_HOME:-${REMOTE_ROOT}/hf_home}"
 SCORE_CODE="${SCORE_CODE:-1}"
 SAVE_COMPLETIONS="${SAVE_COMPLETIONS:-1}"
@@ -44,18 +41,9 @@ INCLUDE_TOOLRL="${INCLUDE_TOOLRL:-1}"
 TOOLRL_DATA_FILES="${TOOLRL_DATA_FILES:-${CODE_DIR}/eval/domains/toolrl/data/BFCL/test.parquet ${CODE_DIR}/eval/domains/toolrl/data/API-Bank/test.parquet ${CODE_DIR}/eval/domains/toolrl/data/Bamboogle/test.parquet}"
 
 export CUDA_VISIBLE_DEVICES
-export HF_ENDPOINT
 export HF_HOME
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 export PYTHONPATH="${CODE_DIR}:${CODE_DIR}/third_party/verl:${PYTHONPATH:-}"
-
-if [[ -f "${CONDA_ROOT}/etc/profile.d/conda.sh" ]]; then
-  # shellcheck disable=SC1090
-  source "${CONDA_ROOT}/etc/profile.d/conda.sh"
-  conda activate "${ENV_NAME}"
-fi
-
-PYTHON_BIN="${PYTHON_BIN:-$(command -v python3 || command -v python)}"
 DATA_FILES=(
   "${CODE_DIR}/eval/domains/math/data/AIME24/test.parquet"
   "${CODE_DIR}/eval/domains/math/data/AIME25/test.parquet"
@@ -134,8 +122,8 @@ if [[ "${SAVE_COMPLETIONS}" == "1" ]]; then
 fi
 
 cd "${CODE_DIR}"
-"${PYTHON_BIN}" "${ARGS[@]}"
-"${PYTHON_BIN}" -m eval.report \
+python "${ARGS[@]}"
+python -m eval.report \
   --output-dir "${OUTPUT_DIR}" \
   --run-id "${RUN_ID}" \
   --model-path "${MODEL_PATH}" \

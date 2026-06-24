@@ -238,8 +238,10 @@ def build_overrides(config: MOPDConfig) -> list[str]:
         f"actor_rollout_ref.actor.entropy_coeff={actor.entropy_coeff}",
         f"actor_rollout_ref.actor.ppo_max_token_len_per_gpu={actor.ppo_max_token_len_per_gpu}",
         f"actor_rollout_ref.model.enable_gradient_checkpointing={_bool(actor.gradient_checkpointing)}",
+        "actor_rollout_ref.model.override_config.attn_implementation=eager",
         f"actor_rollout_ref.actor.fsdp_config.param_offload={_bool(actor.param_offload)}",
         f"actor_rollout_ref.actor.fsdp_config.optimizer_offload={_bool(actor.optimizer_offload)}",
+        "actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16",
         *(
             [f"actor_rollout_ref.actor.fsdp_config.fsdp_size={actor.fsdp_size}"]
             if actor.fsdp_size is not None
@@ -266,6 +268,7 @@ def build_overrides(config: MOPDConfig) -> list[str]:
         f"actor_rollout_ref.rollout.val_kwargs.n={rollout.val_n}",
         "actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1",
         "actor_rollout_ref.ref.fsdp_config.param_offload=True",
+        "actor_rollout_ref.ref.fsdp_config.model_dtype=bfloat16",
         "algorithm.use_kl_in_reward=False",
         "reward_model.reward_manager=naive",
         f"trainer.critic_warmup={trainer.critic_warmup}",

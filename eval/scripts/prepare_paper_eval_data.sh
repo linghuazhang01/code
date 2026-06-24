@@ -6,16 +6,6 @@ EVAL_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CODE_DIR="$(cd "${EVAL_DIR}/.." && pwd)"
 
 REMOTE_ROOT="${REMOTE_ROOT:-$(cd "${CODE_DIR}/.." && pwd)}"
-if [[ -z "${CONDA_ROOT:-}" ]]; then
-  if [[ -x "${HOME}/miniconda3/bin/conda" ]]; then
-    CONDA_ROOT="${HOME}/miniconda3"
-  elif [[ -x "/root/miniconda3/bin/conda" ]]; then
-    CONDA_ROOT="/root/miniconda3"
-  else
-    CONDA_ROOT="${HOME}/miniconda3"
-  fi
-fi
-ENV_NAME="${ENV_NAME:-mopd-verl}"
 G_OPD_DIR="${G_OPD_DIR:-${REMOTE_ROOT}/G-OPD}"
 HF_HOME="${HF_HOME:-${CODE_DIR}/hf_home}"
 LCB_DIR="${LCB_DIR:-${G_OPD_DIR}/code_eval/coding/LiveCodeBench/code_generation_lite}"
@@ -29,17 +19,12 @@ elif [[ -f "${REMOTE_ROOT}/env.sh" ]]; then
   source "${REMOTE_ROOT}/env.sh"
 fi
 
-export PATH="${CONDA_ROOT}/bin:${PATH}"
 export CODE_DIR
 export HF_HOME="${HF_HOME}"
-export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 export HF_XET_HIGH_PERFORMANCE="${HF_XET_HIGH_PERFORMANCE:-1}"
 export PYTHONPATH="${CODE_DIR}:${G_OPD_DIR}/verl:${PYTHONPATH:-}"
 export PYTHONINTMAXSTRDIGITS="${PYTHONINTMAXSTRDIGITS:-0}"
 export PIP_ROOT_USER_ACTION="${PIP_ROOT_USER_ACTION:-ignore}"
-
-source "${CONDA_ROOT}/etc/profile.d/conda.sh"
-conda activate "${ENV_NAME}"
 
 python "${CODE_DIR}/scripts/apply_gopd_audit_patch.py" "${G_OPD_DIR}"
 

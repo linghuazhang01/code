@@ -41,9 +41,6 @@ REMOTE_HOST="${REMOTE_HOST:-root@connect.nma1.seetacloud.com}"
 REMOTE_PORT="${REMOTE_PORT:-30885}"
 REMOTE_ROOT="${REMOTE_ROOT:-/root/autodl-tmp/opd_mopd}"
 REMOTE_CODE_DIR="${REMOTE_CODE_DIR:-${REMOTE_ROOT}/OPD-code}"
-CONDA_SH="${CONDA_SH:-}"
-CONDA_ENV="${CONDA_ENV:-mopd-verl}"
-PYTHON_BIN="${PYTHON_BIN:-}"
 GPU_IDS="${GPU_IDS:-${GPU_ID:-0,1}}"
 LOG_DIR="${LOG_DIR:-${REMOTE_CODE_DIR}/logs}"
 STOP_STALE_RAY="${STOP_STALE_RAY:-1}"
@@ -322,9 +319,6 @@ echo "== Launching remote screen =="
 REMOTE_CMD=$(cat <<REMOTE
 set -euo pipefail
 cd $(quote "${REMOTE_CODE_DIR}")
-export CONDA_SH=$(quote "${CONDA_SH}")
-export CONDA_ENV=$(quote "${CONDA_ENV}")
-export PYTHON_BIN=$(quote "${PYTHON_BIN}")
 export GPU_IDS=$(quote "${GPU_IDS}")
 export LOG_DIR=$(quote "${LOG_DIR}")
 export STOP_STALE_RAY=$(quote "${STOP_STALE_RAY}")

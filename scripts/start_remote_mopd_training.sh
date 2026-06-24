@@ -24,9 +24,6 @@ Notes:
 
 Environment:
   REMOTE_ROOT=<parent of OPD-code>
-  CONDA_SH=<auto-detected conda.sh when available>
-  CONDA_ENV=mopd-verl
-  PYTHON_BIN=<active python after conda activation>
   GPU_IDS=0,1                # comma- or space-separated visible physical GPUs
   GPU_ID=0                   # legacy alias used only when GPU_IDS is unset
   LOG_DIR=$CODE_DIR/logs
@@ -45,17 +42,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 REMOTE_ROOT="${REMOTE_ROOT:-$(cd "${CODE_DIR}/.." && pwd)}"
-if [[ -z "${CONDA_SH:-}" ]]; then
-  if [[ -f "${HOME}/miniconda3/etc/profile.d/conda.sh" ]]; then
-    CONDA_SH="${HOME}/miniconda3/etc/profile.d/conda.sh"
-  elif [[ -f "/root/miniconda3/etc/profile.d/conda.sh" ]]; then
-    CONDA_SH="/root/miniconda3/etc/profile.d/conda.sh"
-  else
-    CONDA_SH=""
-  fi
-fi
-CONDA_ENV="${CONDA_ENV:-mopd-verl}"
-PYTHON_BIN="${PYTHON_BIN:-}"
 GPU_IDS="${GPU_IDS:-${GPU_ID:-0,1}}"
 LOG_DIR="${LOG_DIR:-${CODE_DIR}/logs}"
 STOP_STALE_RAY="${STOP_STALE_RAY:-1}"
@@ -170,34 +156,9 @@ if [[ ! -f "${VERL_RUNTIME_DIR}/verl/trainer/main_ppo.py" ]]; then
   exit 2
 fi
 
-if [[ -n "${CONDA_SH}" && -f "${CONDA_SH}" ]]; then
-  # shellcheck disable=SC1090
-  source "${CONDA_SH}"
-  conda activate "${CONDA_ENV}"
-fi
-
-if [[ -z "${PYTHON_BIN}" ]]; then
-  if command -v python >/dev/null 2>&1; then
-    PYTHON_BIN="$(command -v python)"
-  else
-    PYTHON_BIN="python3"
-  fi
-fi
-
-if [[ ! -x "${PYTHON_BIN}" ]]; then
-  echo "Python interpreter not executable: ${PYTHON_BIN}" >&2
-  exit 2
-fi
-
 export PYTHONPATH="${CODE_DIR}:${VERL_RUNTIME_DIR}:${PYTHONPATH:-}"
-if ! "${PYTHON_BIN}" -c "import yaml, verl; import verl.trainer.main_ppo" >/dev/null 2>&1; then
-  echo "Python environment cannot import yaml or vendored verl." >&2
-  echo "PYTHON_BIN=${PYTHON_BIN}" >&2
-  echo "PYTHONPATH=${PYTHONPATH}" >&2
-  exit 2
-fi
 
-"${PYTHON_BIN}" - "${CONFIG_PATH}" "${CODE_DIR}" <<'PY'
+python - "${CONFIG_PATH}" "${CODE_DIR}" <<'PY'
 from pathlib import Path
 import sys
 import yaml
@@ -255,7 +216,7 @@ if missing:
     raise SystemExit(2)
 PY
 
-REQUIRED_GPUS="$("${PYTHON_BIN}" - "${CONFIG_PATH}" "${EXTRA_ARGS[@]}" <<'PY'
+REQUIRED_GPUS="$(python - "${CONFIG_PATH}" "${EXTRA_ARGS[@]}" <<'PY'
 from pathlib import Path
 import sys
 import yaml
@@ -349,10 +310,6 @@ fi
 cat > "${LAUNCH_FILE}" <<LAUNCH
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ -n $(quote "${CONDA_SH}") && -f $(quote "${CONDA_SH}") ]]; then
-  source $(quote "${CONDA_SH}")
-  conda activate $(quote "${CONDA_ENV}")
-fi
 cd $(quote "${CODE_DIR}")
 export CUDA_VISIBLE_DEVICES=$(quote "${GPU_IDS}")
 export PYTHONUNBUFFERED=1
@@ -382,7 +339,7 @@ trap 'kill \${GPU_MONITOR_PID} 2>/dev/null || true' EXIT
   echo CUDA_VISIBLE_DEVICES=$(quote "${GPU_IDS}")
   echo LOG_FILE=$(quote "${LOG_FILE}")
   echo START_TS=\$(date -Is)
-  $(printf "%s" "${DRY_RUN_ENV}")PYTHON_BIN=$(quote "${PYTHON_BIN}") bash scripts/run_mopd.sh $(quote "${CONFIG_PATH}")${RUN_MOPD_EXTRA_ARGS_Q}
+  $(printf "%s" "${DRY_RUN_ENV}")bash scripts/run_mopd.sh $(quote "${CONFIG_PATH}")${RUN_MOPD_EXTRA_ARGS_Q}
 } 2>&1 | tee -a $(quote "${LOG_FILE}")
 LAUNCH
 chmod +x "${LAUNCH_FILE}"

@@ -5,15 +5,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EVAL_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CODE_DIR="$(cd "${EVAL_DIR}/.." && pwd)"
 REMOTE_ROOT="${REMOTE_ROOT:-$(cd "${CODE_DIR}/.." && pwd)}"
-if [[ -z "${PAPER_EVAL_CONDA_ROOT:-}" ]]; then
-  if [[ -x "${HOME}/miniconda3/bin/conda" ]]; then
-    PAPER_EVAL_CONDA_ROOT="${HOME}/miniconda3"
-  elif [[ -x "/root/miniconda3/bin/conda" ]]; then
-    PAPER_EVAL_CONDA_ROOT="/root/miniconda3"
-  fi
-fi
-CONDA_ROOT="${PAPER_EVAL_CONDA_ROOT:-${HOME}/miniconda3}"
-ENV_NAME="${PAPER_EVAL_ENV_NAME:-mopd-verl}"
 G_OPD_DIR="${G_OPD_DIR:-${REMOTE_ROOT}/G-OPD}"
 OPD_CODE_DIR="${OPD_CODE_DIR:-${CODE_DIR}}"
 
@@ -49,22 +40,12 @@ LCB_TEMPERATURE="${LCB_TEMPERATURE:-1.0}"
 LCB_TOP_P="${LCB_TOP_P:-1.0}"
 LCB_MAX_TOKENS="${LCB_MAX_TOKENS:-16384}"
 
-export PATH="${CONDA_ROOT}/bin:${PATH}"
 export PYTHONPATH="${OPD_CODE_DIR}:${G_OPD_DIR}/verl:${PYTHONPATH:-}"
-export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 export HF_HOME="${HF_HOME:-${REMOTE_ROOT}/hf_home}"
 export CUDA_VISIBLE_DEVICES
 export EVAL_OUTPUT_DIR
 export MODEL_PATH
 export PAPER_EVAL_DATASETS
-
-source "${CONDA_ROOT}/etc/profile.d/conda.sh"
-conda activate "${ENV_NAME}"
-PYTHON_BIN="${CONDA_ROOT}/envs/${ENV_NAME}/bin/python"
-if [[ ! -x "${PYTHON_BIN}" ]]; then
-  PYTHON_BIN="$(command -v python)"
-fi
-export PATH="$(dirname "${PYTHON_BIN}"):${CONDA_ROOT}/bin:${PATH}"
 
 mkdir -p "${EVAL_OUTPUT_DIR}"
 cd "${G_OPD_DIR}"
@@ -79,7 +60,7 @@ run_math_eval() {
   local input_file="$2"
   local output_file="${EVAL_OUTPUT_DIR}/${dataset_key}_${SAFE_MODEL_NAME}.jsonl"
   echo "[paper-eval] math ${dataset_key}: ${input_file}"
-  "${PYTHON_BIN}" math_eval/eval_math.py \
+  python math_eval/eval_math.py \
     --input_file "${input_file}" \
     --model_path "${MODEL_PATH}" \
     --output_file "${output_file}" \
@@ -113,7 +94,7 @@ run_lcb() {
     --trust_remote_code \
     --scenario codegeneration \
     --release_version "${LCB_RELEASE_VERSION}" \
-    --tensor_parallel_size "$("${PYTHON_BIN}" - <<'PY'
+    --tensor_parallel_size "$(python - <<'PY'
 import torch
 print(max(torch.cuda.device_count(), 1))
 PY
@@ -152,7 +133,7 @@ if contains_dataset "lcb"; then
   run_lcb
 fi
 
-"${PYTHON_BIN}" - <<'PY'
+python - <<'PY'
 import json
 import os
 from pathlib import Path

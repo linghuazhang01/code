@@ -14,7 +14,6 @@ Examples:
 
 Environment:
   MOPD_CONFIG=<default config when config arg is omitted>
-  PYTHON_BIN=<python interpreter in the training environment>
   VERL_RUNTIME_DIR=<vendored verl runtime dir>
 USAGE
 }
@@ -23,7 +22,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DEFAULT_CONFIG="${CODE_DIR}/configs/mopd_formal_audit_all_2gpu.yaml"
 CONFIG_PATH="${MOPD_CONFIG:-${DEFAULT_CONFIG}}"
-PYTHON_BIN="${PYTHON_BIN:-}"
 VERL_RUNTIME_DIR="${VERL_RUNTIME_DIR:-${CODE_DIR}/third_party/verl}"
 DRY_RUN_FLAG=0
 EXTRA_ARGS=()
@@ -68,14 +66,6 @@ if [[ ! -f "${CONFIG_PATH}" ]]; then
   exit 2
 fi
 
-if [[ -z "${PYTHON_BIN}" ]]; then
-  if command -v python >/dev/null 2>&1; then
-    PYTHON_BIN="$(command -v python)"
-  else
-    PYTHON_BIN="python3"
-  fi
-fi
-
 if [[ ! -f "${VERL_RUNTIME_DIR}/verl/trainer/main_ppo.py" ]]; then
   echo "Vendored verl runtime not found at '${VERL_RUNTIME_DIR}'." >&2
   echo "Expected '${VERL_RUNTIME_DIR}/verl/trainer/main_ppo.py'." >&2
@@ -86,12 +76,6 @@ fi
 export PYTHONPATH="${CODE_DIR}:${VERL_RUNTIME_DIR}:${PYTHONPATH:-}"
 export PYTHONINTMAXSTRDIGITS="${PYTHONINTMAXSTRDIGITS:-0}"
 
-if ! "${PYTHON_BIN}" -c "import yaml" >/dev/null 2>&1; then
-  echo "Python interpreter '${PYTHON_BIN}' cannot import yaml." >&2
-  echo "Install requirements.txt or set PYTHON_BIN to the training environment." >&2
-  exit 2
-fi
-
 ARGS=(--config "${CONFIG_PATH}")
 if [[ "${DRY_RUN:-0}" == "1" || "${DRY_RUN_FLAG}" == "1" ]]; then
   ARGS+=(--dry-run)
@@ -100,4 +84,4 @@ if [[ "${#EXTRA_ARGS[@]}" -gt 0 ]]; then
   ARGS+=(-- "${EXTRA_ARGS[@]}")
 fi
 
-exec "${PYTHON_BIN}" -m mopd_verl.launch "${ARGS[@]}"
+exec python -m mopd_verl.launch "${ARGS[@]}"
