@@ -9,15 +9,18 @@ from mopd_verl.settings import load_config
 
 class MOPDProfileTests(unittest.TestCase):
     FORMAL_PROFILE_SPECS = (
-        ("all", 2, 256, 2, 8),
-        ("all", 4, 512, 4, 16),
-        ("all", 8, 1024, 4, 32),
-        ("loss_only", 2, 256, 2, 8),
-        ("loss_only", 4, 512, 4, 16),
-        ("loss_only", 8, 1024, 4, 32),
-        ("off", 2, 256, 2, 8),
-        ("off", 4, 512, 4, 16),
-        ("off", 8, 1024, 4, 32),
+        ("all", 2, 256, 2, 0.7, 8, 8),
+        ("all", 4, 512, 4, 0.7, 16, 16),
+        ("all", 6, 768, 2, 0.6, 24, 24),
+        ("all", 8, 1024, 4, 0.7, 16, 32),
+        ("loss_only", 2, 256, 2, 0.7, 8, 8),
+        ("loss_only", 4, 512, 4, 0.7, 16, 16),
+        ("loss_only", 6, 768, 2, 0.6, 24, 24),
+        ("loss_only", 8, 1024, 4, 0.7, 16, 32),
+        ("off", 2, 256, 2, 0.7, 8, 8),
+        ("off", 4, 512, 4, 0.7, 16, 16),
+        ("off", 6, 768, 2, 0.6, 24, 24),
+        ("off", 8, 1024, 4, 0.7, 16, 32),
     )
 
     def assert_formal_profile(
@@ -26,6 +29,8 @@ class MOPDProfileTests(unittest.TestCase):
         gpu_count: int,
         train_batch_size: int,
         tensor_parallel_size: int,
+        gpu_memory_utilization: float,
+        max_num_seqs: int,
         cpu_count: int,
     ) -> None:
         suffix = f"{gpu_count}gpu"
@@ -34,6 +39,8 @@ class MOPDProfileTests(unittest.TestCase):
         config_path = Path(__file__).resolve().parents[1] / "configs" / config_name
         config = load_config(config_path)
         rendered = format_command(build_command(config))
+        expected_steps = 200
+        expected_save_freq = 5
 
         self.assertEqual(config.data.train_batch_size, train_batch_size)
         self.assertEqual(config.data.max_response_length, 16384)
@@ -42,11 +49,14 @@ class MOPDProfileTests(unittest.TestCase):
         self.assertTrue(config.actor.gradient_checkpointing)
         self.assertEqual(config.actor.fsdp_size, 1)
         self.assertEqual(config.rollout.tensor_model_parallel_size, tensor_parallel_size)
-        self.assertEqual(config.rollout.gpu_memory_utilization, 0.7)
-        self.assertEqual(config.rollout.max_num_seqs, 8 if gpu_count == 2 else 16)
+        self.assertEqual(config.rollout.gpu_memory_utilization, gpu_memory_utilization)
+        self.assertEqual(config.rollout.max_num_seqs, max_num_seqs)
         self.assertEqual(config.trainer.n_gpus_per_node, gpu_count)
-        self.assertEqual(config.trainer.total_training_steps, 10)
+        self.assertEqual(config.trainer.total_training_steps, expected_steps)
+        self.assertEqual(config.trainer.save_freq, expected_save_freq)
         self.assertEqual(config.ray_kwargs.ray_init.num_cpus, cpu_count)
+        self.assertIsNone(config.audit.max_samples_per_domain)
+        self.assertIsNone(config.audit.token_conflict_top_k)
         self.assertTrue(config.actor.topk_distill_enabled)
         self.assertEqual(config.actor.topk_distill_support_source, "teacher")
         self.assertEqual(config.actor.topk_distill_k, 32)
@@ -54,9 +64,13 @@ class MOPDProfileTests(unittest.TestCase):
         self.assertIn(f"data.train_batch_size={train_batch_size}", rendered)
         self.assertIn(f"actor_rollout_ref.actor.ppo_mini_batch_size={train_batch_size}", rendered)
         self.assertIn(f"trainer.n_gpus_per_node={gpu_count}", rendered)
+        self.assertIn(f"trainer.save_freq={expected_save_freq}", rendered)
+        self.assertIn(f"trainer.total_training_steps={expected_steps}", rendered)
         self.assertIn(f"actor_rollout_ref.rollout.tensor_model_parallel_size={tensor_parallel_size}", rendered)
         if audit_mode in {"all", "loss_only"}:
             self.assertIn(f"+mopd_audit.output_dir=audit/{output_name}", rendered)
+            self.assertIn("+mopd_audit.max_samples_per_domain=null", rendered)
+            self.assertIn("+mopd_audit.token_conflict_top_k=null", rendered)
         else:
             self.assertNotIn("+mopd_audit.", rendered)
         self.assertIn(f"trainer.default_local_dir=checkpoints/{output_name}", rendered)
@@ -69,7 +83,7 @@ class MOPDProfileTests(unittest.TestCase):
     def test_audit_all_profile_enables_all_audit_families(self) -> None:
         config_dir = Path(__file__).resolve().parents[1] / "configs"
 
-        for gpu_count in (2, 4, 8):
+        for gpu_count in (2, 4, 6, 8):
             with self.subTest(gpu_count=gpu_count):
                 config = load_config(config_dir / f"mopd_formal_audit_all_{gpu_count}gpu.yaml")
                 self.assertTrue(config.audit.enabled)
@@ -86,13 +100,15 @@ class MOPDProfileTests(unittest.TestCase):
                 self.assertTrue(config.audit.token_gradient_gap_selection_enabled)
                 self.assertTrue(config.audit.token_gradient_gap_abs_selection_enabled)
                 self.assertTrue(config.audit.token_gradient_loss_abs_selection_enabled)
+                self.assertIsNone(config.audit.max_samples_per_domain)
+                self.assertIsNone(config.audit.token_conflict_top_k)
                 self.assertEqual(config.audit.token_gradient_top_k, 100)
                 self.assertEqual(config.audit.token_gradient_top_p, 0.10)
 
     def test_loss_only_profile_uses_only_loss_token_gradient_selection(self) -> None:
         config_dir = Path(__file__).resolve().parents[1] / "configs"
 
-        for gpu_count in (2, 4, 8):
+        for gpu_count in (2, 4, 6, 8):
             with self.subTest(gpu_count=gpu_count):
                 config = load_config(config_dir / f"mopd_formal_audit_loss_only_{gpu_count}gpu.yaml")
                 rendered = format_command(build_command(config))
@@ -111,6 +127,8 @@ class MOPDProfileTests(unittest.TestCase):
                 self.assertFalse(config.audit.token_gradient_gap_selection_enabled)
                 self.assertFalse(config.audit.token_gradient_gap_abs_selection_enabled)
                 self.assertTrue(config.audit.token_gradient_loss_abs_selection_enabled)
+                self.assertIsNone(config.audit.max_samples_per_domain)
+                self.assertIsNone(config.audit.token_conflict_top_k)
                 self.assertEqual(config.audit.token_gradient_top_k, 100)
                 self.assertEqual(config.audit.token_gradient_top_p, 0.10)
                 self.assertIn("+mopd_audit.token_gradient_gap_selection_enabled=false", rendered)
@@ -143,6 +161,8 @@ class MOPDProfileTests(unittest.TestCase):
         self.assertTrue(config.audit.token_gradient_gap_selection_enabled)
         self.assertTrue(config.audit.token_gradient_gap_abs_selection_enabled)
         self.assertTrue(config.audit.token_gradient_loss_abs_selection_enabled)
+        self.assertIsNone(config.audit.max_samples_per_domain)
+        self.assertIsNone(config.audit.token_conflict_top_k)
         self.assertEqual(config.audit.token_gradient_top_k, 100)
         self.assertEqual(config.audit.token_gradient_top_p, 0.10)
         self.assertIsNone(config.audit.token_gap_vocab_size)
@@ -150,10 +170,12 @@ class MOPDProfileTests(unittest.TestCase):
         self.assertIn("data.max_response_length=16384", rendered)
         self.assertIn("actor_rollout_ref.actor.ppo_mini_batch_size=32", rendered)
         self.assertIn("+mopd_audit.output_dir=audit/formal_audit_all_smoke", rendered)
+        self.assertIn("+mopd_audit.max_samples_per_domain=null", rendered)
         self.assertIn("+mopd_audit.token_gradient_gap_selection_enabled=true", rendered)
         self.assertIn("+mopd_audit.token_gradient_gap_abs_selection_enabled=true", rendered)
         self.assertIn("+mopd_audit.token_gradient_loss_abs_selection_enabled=true", rendered)
         self.assertIn("+mopd_audit.token_gradient_top_k=100", rendered)
+        self.assertIn("+mopd_audit.token_conflict_top_k=null", rendered)
         self.assertNotIn("token_gradient_top_k_per_sample", rendered)
         self.assertNotIn("token_gradient_max_samples_per_domain", rendered)
         self.assertNotIn("token_gradient_min_teacher_diff", rendered)
@@ -184,6 +206,8 @@ class MOPDProfileTests(unittest.TestCase):
         self.assertFalse(config.audit.token_gradient_gap_selection_enabled)
         self.assertFalse(config.audit.token_gradient_gap_abs_selection_enabled)
         self.assertTrue(config.audit.token_gradient_loss_abs_selection_enabled)
+        self.assertIsNone(config.audit.max_samples_per_domain)
+        self.assertIsNone(config.audit.token_conflict_top_k)
         self.assertEqual(config.audit.token_gradient_top_k, 100)
         self.assertEqual(config.audit.token_gradient_top_p, 0.10)
         self.assertIsNone(config.audit.token_gap_vocab_size)
@@ -191,10 +215,12 @@ class MOPDProfileTests(unittest.TestCase):
         self.assertIn("data.max_response_length=16384", rendered)
         self.assertIn("actor_rollout_ref.actor.ppo_mini_batch_size=32", rendered)
         self.assertIn("+mopd_audit.output_dir=audit/formal_audit_loss_only_smoke", rendered)
+        self.assertIn("+mopd_audit.max_samples_per_domain=null", rendered)
         self.assertIn("+mopd_audit.token_gradient_gap_selection_enabled=false", rendered)
         self.assertIn("+mopd_audit.token_gradient_gap_abs_selection_enabled=false", rendered)
         self.assertIn("+mopd_audit.token_gradient_loss_abs_selection_enabled=true", rendered)
         self.assertIn("+mopd_audit.token_gradient_top_k=100", rendered)
+        self.assertIn("+mopd_audit.token_conflict_top_k=null", rendered)
         self.assertNotIn("token_gradient_top_k_per_sample", rendered)
         self.assertNotIn("token_gradient_max_samples_per_domain", rendered)
         self.assertNotIn("token_gradient_min_teacher_diff", rendered)
@@ -202,7 +228,7 @@ class MOPDProfileTests(unittest.TestCase):
     def test_audit_off_profile_disables_audit_families(self) -> None:
         config_dir = Path(__file__).resolve().parents[1] / "configs"
 
-        for gpu_count in (2, 4, 8):
+        for gpu_count in (2, 4, 6, 8):
             with self.subTest(gpu_count=gpu_count):
                 config = load_config(config_dir / f"mopd_formal_audit_off_{gpu_count}gpu.yaml")
                 self.assertFalse(config.audit.enabled)

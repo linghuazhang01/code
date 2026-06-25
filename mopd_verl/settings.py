@@ -138,7 +138,7 @@ class AuditConfig:
     tensorboard_layout: str = "domain_category"
     tensorboard_prune_mode: str = "none"
     loss_variance_signal: str = "opd_loss_token"
-    max_samples_per_domain: int = 32
+    max_samples_per_domain: int | None = None
     high_variance_cv_threshold: float = 1.0
     log_sample_level: bool = True
     log_sample_level_freq_steps: int = 1
@@ -170,7 +170,7 @@ class AuditConfig:
     entropy_vocab_vector_freq_steps: int = 1
     token_conflict_enabled: bool = True
     token_conflict_freq_steps: int = 1
-    token_conflict_top_k: int = 50
+    token_conflict_top_k: int | None = None
     token_gradient_enabled: bool = False
     token_gradient_freq_steps: int = 10
     token_gradient_gap_selection_enabled: bool = True

@@ -78,7 +78,7 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"+mopd_audit.tensorboard_layout={audit.tensorboard_layout}",
         f"+mopd_audit.tensorboard_prune_mode={audit.tensorboard_prune_mode}",
         f"+mopd_audit.loss_variance_signal={audit.loss_variance_signal}",
-        f"+mopd_audit.max_samples_per_domain={audit.max_samples_per_domain}",
+        f"+mopd_audit.max_samples_per_domain={_hydra_scalar(audit.max_samples_per_domain)}",
         f"+mopd_audit.high_variance_cv_threshold={audit.high_variance_cv_threshold}",
         f"+mopd_audit.log_sample_level={str(audit.log_sample_level).lower()}",
         f"+mopd_audit.log_sample_level_freq_steps={audit.log_sample_level_freq_steps}",
@@ -112,7 +112,7 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"+mopd_audit.entropy_vocab_vector_freq_steps={audit.entropy_vocab_vector_freq_steps}",
         f"+mopd_audit.token_conflict_enabled={str(audit.token_conflict_enabled).lower()}",
         f"+mopd_audit.token_conflict_freq_steps={audit.token_conflict_freq_steps}",
-        f"+mopd_audit.token_conflict_top_k={audit.token_conflict_top_k}",
+        f"+mopd_audit.token_conflict_top_k={_hydra_scalar(audit.token_conflict_top_k)}",
         f"+mopd_audit.token_gradient_enabled={str(audit.token_gradient_enabled).lower()}",
         f"+mopd_audit.token_gradient_freq_steps={audit.token_gradient_freq_steps}",
         f"+mopd_audit.token_gradient_gap_selection_enabled="

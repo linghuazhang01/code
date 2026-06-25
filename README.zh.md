@@ -14,18 +14,21 @@
 
 ## 配置文件
 
-现在保留三个正式 MOPD 版本，每个版本提供 2/4/8 卡配置；另外保留指标 smoke profile：
+现在保留三个正式 MOPD 版本，每个版本提供 2/4/6/8 卡配置；另外保留指标 smoke profile：
 
 | 配置 | 用途 |
 | --- | --- |
 | `configs/mopd_formal_audit_all_2gpu.yaml` | 2 卡正式 4B math/code 训练，启用全部 MOPD audit。 |
 | `configs/mopd_formal_audit_all_4gpu.yaml` | 4 卡 all-audit 训练，同 objective，放大全局 batch。 |
+| `configs/mopd_formal_audit_all_6gpu.yaml` | 6 卡 all-audit 训练，TP=2，三个 rollout data-parallel group。 |
 | `configs/mopd_formal_audit_all_8gpu.yaml` | 8 卡 all-audit 训练，TP=4，并保留两个 rollout data-parallel group。 |
 | `configs/mopd_formal_audit_loss_only_2gpu.yaml` | 2 卡 all-audit 训练，但 token-gradient selection 只用 loss magnitude。 |
 | `configs/mopd_formal_audit_loss_only_4gpu.yaml` | 4 卡 loss-only token-gradient audit 训练。 |
+| `configs/mopd_formal_audit_loss_only_6gpu.yaml` | 6 卡 loss-only token-gradient audit 训练。 |
 | `configs/mopd_formal_audit_loss_only_8gpu.yaml` | 8 卡 loss-only token-gradient audit 训练。 |
 | `configs/mopd_formal_audit_off_2gpu.yaml` | 2 卡同模型/数据/objective，关闭全部 audit。 |
 | `configs/mopd_formal_audit_off_4gpu.yaml` | 4 卡 audit-off 训练。 |
+| `configs/mopd_formal_audit_off_6gpu.yaml` | 6 卡 audit-off 训练，使用 TP=2 的显存安全配置。 |
 | `configs/mopd_formal_audit_off_8gpu.yaml` | 8 卡 audit-off 训练。 |
 | `configs/mopd_formal_audit_all_smoke.yaml` | 2 卡 one-step 指标 smoke，打开全部 audit 输出和 full-vocab vectors。 |
 | `configs/mopd_formal_audit_loss_only_smoke.yaml` | 2 卡 one-step smoke，token-gradient selection 只用 loss magnitude。 |
@@ -44,6 +47,7 @@
 | --- | --- | --- | --- | --- |
 | 2 | `_2gpu` | 256 | 2 | 8 |
 | 4 | `_4gpu` | 512 | 4 | 16 |
+| 6 | `_6gpu` | 768 | 2 | 24 |
 | 8 | `_8gpu` | 1024 | 4 | 32 |
 
 `mopd_formal_audit_all_*gpu.yaml` 额外打开：
@@ -95,6 +99,10 @@ GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
 GPU_IDS=0,1,2,3 bash scripts/start_remote_mopd_training.sh \
   configs/mopd_formal_audit_all_4gpu.yaml \
   --run-id mopd_audit_all_4gpu_$(date +%Y%m%d_%H%M%S)
+
+GPU_IDS=0,1,2,3,4,5 bash scripts/start_remote_mopd_training.sh \
+  configs/mopd_formal_audit_all_6gpu.yaml \
+  --run-id mopd_audit_all_6gpu_$(date +%Y%m%d_%H%M%S)
 
 GPU_IDS=0,1,2,3,4,5,6,7 bash scripts/start_remote_mopd_training.sh \
   configs/mopd_formal_audit_all_8gpu.yaml \

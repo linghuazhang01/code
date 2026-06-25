@@ -1,6 +1,7 @@
-# One-step metrics smoke profile for two NVIDIA A800 80GB GPUs.
-# It keeps the all-audit/full-vocab metric surface and formal response length,
-# but uses a small batch and one training step for metric validation.
+# Formal math+code MOPD/ExOPD profile for six NVIDIA A800 80GB GPUs.
+# Canonical all-audit profile: teacher top-k distillation is enabled so
+# teacher-student cross entropy is available, and every MOPD audit family is on.
+# Uses the same memory-safe 6-GPU rollout shape as mopd_formal_audit_off_6gpu.
 
 runtime:
   python_bin: python
@@ -26,10 +27,10 @@ data:
     - eval/domains/code/data/HumanEvalPlus/test.parquet
     - eval/domains/code/data/MBPPPlus/test.parquet
     # - eval/domains/code/data/LiveCodeBench/test.parquet
-  train_batch_size: 32
+  train_batch_size: 768
   max_prompt_length: 2048
   max_response_length: 16384
-  val_batch_size: 32
+  val_batch_size: 1024
   filter_overlong_prompts: true
   truncation: error
   shuffle: true
@@ -60,7 +61,7 @@ actor:
   topk_distill_loss_weight: 1.0
   topk_distill_logprob_chunk_size: 16
   topk_distill_logprob_mode: sparse
-  ppo_mini_batch_size: 32
+  ppo_mini_batch_size: 768
   ppo_micro_batch_size_per_gpu: 1
   use_kl_loss: true
   kl_loss_coef: 0
@@ -78,12 +79,12 @@ rollout:
   log_prob_micro_batch_size_per_gpu: 1
   tensor_model_parallel_size: 2
   name: vllm
-  gpu_memory_utilization: 0.7
+  gpu_memory_utilization: 0.6
   enforce_eager: true
   enable_chunked_prefill: false
   n: 1
   max_num_batched_tokens: 32768
-  max_num_seqs: 8
+  max_num_seqs: 24
   temperature: 1.0
   top_p: 1.0
   val_n: 1
@@ -100,7 +101,7 @@ rollout_correction:
 
 audit:
   enabled: true
-  output_dir: audit/formal_audit_all_smoke
+  output_dir: audit/formal_audit_all_6gpu
   domains:
     - math
     - code
@@ -153,7 +154,7 @@ paper_eval:
   enabled: false
   script_path: eval/scripts/run_paper_eval_suite.sh
   model_path: null
-  output_dir: eval_outputs/paper_suite/formal_audit_all_smoke
+  output_dir: eval_outputs/paper_suite/formal_audit_all_6gpu
   datasets:
     - aime24
     - aime25
@@ -169,15 +170,15 @@ paper_eval:
 
 trainer:
   project_name: on-policy-distillation
-  experiment_name: Qwen3-4B-Multi-Teacher-ExOPD-formal-audit-all-smoke
+  experiment_name: Qwen3-4B-Multi-Teacher-ExOPD-formal-audit-all-6gpu
   logger: '["console","tensorboard"]'
-  n_gpus_per_node: 2
+  n_gpus_per_node: 6
   nnodes: 1
-  save_freq: -1
-  default_local_dir: checkpoints/formal_audit_all_smoke
+  save_freq: 5
+  default_local_dir: checkpoints/formal_audit_all_6gpu
   test_freq: -1
-  total_epochs: 1
-  total_training_steps: 1
+  total_epochs: 3
+  total_training_steps: 200
   max_actor_ckpt_to_keep: 2
   max_critic_ckpt_to_keep: 1
   critic_warmup: 0
@@ -187,4 +188,4 @@ trainer:
 ray_kwargs:
   ray_init:
     include_dashboard: false
-    num_cpus: 8
+    num_cpus: 24

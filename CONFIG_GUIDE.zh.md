@@ -8,12 +8,15 @@
 | --- | --- | --- |
 | `configs/mopd_formal_audit_all_2gpu.yaml` | 2 卡正式诊断训练 | 4B student，math/code 4B teachers，teacher top-k distillation，所有 audit 开启 |
 | `configs/mopd_formal_audit_all_4gpu.yaml` | 4 卡正式诊断训练 | 同 objective，batch 按卡数放大 |
+| `configs/mopd_formal_audit_all_6gpu.yaml` | 6 卡正式诊断训练 | TP=2，6 卡 batch，沿用 audit-off 实测显存安全 profile |
 | `configs/mopd_formal_audit_all_8gpu.yaml` | 8 卡正式诊断训练 | TP=4，8 卡 batch |
 | `configs/mopd_formal_audit_loss_only_2gpu.yaml` | 2 卡 loss-only 诊断训练 | 同 all-audit surface，但 token-gradient selection 只用 loss |
 | `configs/mopd_formal_audit_loss_only_4gpu.yaml` | 4 卡 loss-only 诊断训练 | 同 objective，batch 按卡数放大 |
+| `configs/mopd_formal_audit_loss_only_6gpu.yaml` | 6 卡 loss-only 诊断训练 | TP=2，6 卡 batch，token-gradient selection 只用 loss |
 | `configs/mopd_formal_audit_loss_only_8gpu.yaml` | 8 卡 loss-only 诊断训练 | TP=4，8 卡 batch |
 | `configs/mopd_formal_audit_off_2gpu.yaml` | 2 卡无 audit 训练 | 同样的模型、数据和 objective，关闭所有 MOPD audit 输出 |
 | `configs/mopd_formal_audit_off_4gpu.yaml` | 4 卡无 audit 训练 | 同 objective，batch 按卡数放大 |
+| `configs/mopd_formal_audit_off_6gpu.yaml` | 6 卡无 audit 训练 | TP=2，vLLM memory 0.6，max_num_seqs 24 |
 | `configs/mopd_formal_audit_off_8gpu.yaml` | 8 卡无 audit 训练 | TP=4，8 卡 batch |
 | `configs/mopd_formal_audit_all_smoke.yaml` | 指标 smoke 测试 | 2 卡 one-step，保持正式 response 长度，所有 audit 与 full-vocab vector 开启 |
 | `configs/mopd_formal_audit_loss_only_smoke.yaml` | loss-only 指标 smoke 测试 | 2 卡 one-step，token-gradient selection 只用 loss |
@@ -27,6 +30,7 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | 2 | `_2gpu` | 2 | 2 | 256 | 256 | 8 |
 | 4 | `_4gpu` | 4 | 4 | 512 | 512 | 16 |
+| 6 | `_6gpu` | 6 | 2 | 768 | 768 | 24 |
 | 8 | `_8gpu` | 8 | 4 | 1024 | 1024 | 32 |
 
 指标 smoke profile 使用独立设置：`trainer.n_gpus_per_node=2`、`rollout.tensor_model_parallel_size=2`、`data.train_batch_size=32`、`actor.ppo_mini_batch_size=32`、`trainer.total_training_steps=1`；response 长度保持正式配置的 `data.max_response_length=16384`。
@@ -99,12 +103,12 @@ audit:
 
 ```yaml
 actor:
-  use_dynamic_bsz: true
+  use_dynamic_bsz: false
 rollout:
   gpu_memory_utilization: 0.6
 ```
 
-这给 full/sample/token gradient audit 留出更多 actor backward 显存余量。
+这让 full/sample/token gradient audit 的统计路径保持固定 micro-batch，避免 dynamic batching 影响 domain-gradient 对比。
 
 ## Audit Loss Only
 
@@ -219,6 +223,10 @@ GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
 GPU_IDS=0,1,2,3 bash scripts/start_remote_mopd_training.sh \
   configs/mopd_formal_audit_all_4gpu.yaml \
   --run-id mopd_audit_all_4gpu_$(date +%Y%m%d_%H%M%S)
+
+GPU_IDS=0,1,2,3,4,5 bash scripts/start_remote_mopd_training.sh \
+  configs/mopd_formal_audit_all_6gpu.yaml \
+  --run-id mopd_audit_all_6gpu_$(date +%Y%m%d_%H%M%S)
 
 GPU_IDS=0,1,2,3,4,5,6,7 bash scripts/start_remote_mopd_training.sh \
   configs/mopd_formal_audit_all_8gpu.yaml \

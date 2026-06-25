@@ -372,7 +372,7 @@ def _token_conflict_attribution(
     teacher_teacher_diff: Any,
     student_teacher_diff: Any,
     combined_diff: Any,
-    top_k: int,
+    top_k: int | None,
 ) -> tuple[dict[str, dict[str, float]], list[dict[str, Any]]]:
     import torch
 
@@ -483,7 +483,7 @@ def _token_conflict_attribution(
                 student_diff_sums.scatter_add_(0, inverse, flat_student_diffs.double())
                 position_sums.scatter_add_(0, inverse, flat_positions.double())
 
-                top_count = min(max(1, top_k), unique_count)
+                top_count = unique_count if top_k is None else min(max(1, top_k), unique_count)
                 top_teacher_scores, top_indices = torch.topk(teacher_diff_sums, top_count)
                 top_score_values = [float(value) for value in torch.topk(score_sums, top_count).values.tolist()]
                 summary["unique_token_count"] = float(unique_count)
@@ -608,7 +608,7 @@ class MOPDAuditLogger:
         self.prefix = str(_cfg_get(audit_config, "tensorboard_prefix", "mopd"))
         self.tensorboard_layout = str(_cfg_get(audit_config, "tensorboard_layout", "domain_category"))
         self.tensorboard_prune_mode = str(_cfg_get(audit_config, "tensorboard_prune_mode", "none")).lower()
-        self.max_samples_per_domain = int(_cfg_get(audit_config, "max_samples_per_domain", 32))
+        self.max_samples_per_domain = _optional_positive_int(_cfg_get(audit_config, "max_samples_per_domain", None))
         self.high_variance_cv_threshold = float(_cfg_get(audit_config, "high_variance_cv_threshold", 1.0))
         self.log_sample_level = bool(_cfg_get(audit_config, "log_sample_level", True))
         self.log_sample_level_freq_steps = max(
@@ -680,7 +680,7 @@ class MOPDAuditLogger:
         )
         self.token_conflict_enabled = bool(_cfg_get(audit_config, "token_conflict_enabled", True))
         self.token_conflict_freq_steps = max(1, int(_cfg_get(audit_config, "token_conflict_freq_steps", 1)))
-        self.token_conflict_top_k = max(1, int(_cfg_get(audit_config, "token_conflict_top_k", 50)))
+        self.token_conflict_top_k = _optional_positive_int(_cfg_get(audit_config, "token_conflict_top_k", None))
         self.token_gradient_enabled = bool(_cfg_get(audit_config, "token_gradient_enabled", False))
         self.token_gradient_freq_steps = max(1, int(_cfg_get(audit_config, "token_gradient_freq_steps", 10)))
         self.token_gradient_gap_selection_enabled = bool(
@@ -1504,7 +1504,12 @@ class MOPDAuditLogger:
                     metrics[self._domain_tag(safe_domain, domain_metric_category(key), key)] = numeric
 
             if sample_level_active and indices:
-                for idx in indices[: self.max_samples_per_domain]:
+                sample_indices = (
+                    indices
+                    if self.max_samples_per_domain is None
+                    else indices[: self.max_samples_per_domain]
+                )
+                for idx in sample_indices:
                     sample_rows.append(
                         {
                             "step": step,

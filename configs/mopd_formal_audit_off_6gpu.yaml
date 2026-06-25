@@ -74,6 +74,7 @@ actor:
   param_offload: true
   optimizer_offload: true
   fsdp_size: 1
+  use_dynamic_bsz: false
 
 rollout:
   calculate_log_probs: true
@@ -110,7 +111,7 @@ audit:
   tensorboard_layout: domain_category
   tensorboard_prune_mode: core
   loss_variance_signal: opd_loss_token
-  max_samples_per_domain: 16
+  max_samples_per_domain: null
   high_variance_cv_threshold: 1.0
   log_sample_level: false
   log_sample_level_freq_steps: 1
@@ -141,7 +142,7 @@ audit:
   entropy_vocab_vector_freq_steps: 1
   token_conflict_enabled: false
   token_conflict_freq_steps: 1
-  token_conflict_top_k: 50
+  token_conflict_top_k: null
   token_gradient_enabled: false
   token_gradient_freq_steps: 10
   token_gradient_gap_selection_enabled: true
@@ -175,11 +176,11 @@ trainer:
   logger: '["console","tensorboard"]'
   n_gpus_per_node: 6
   nnodes: 1
-  save_freq: -1
+  save_freq: 5
   default_local_dir: checkpoints/formal_audit_off_6gpu
   test_freq: -1
   total_epochs: 3
-  total_training_steps: 10
+  total_training_steps: 200
   max_actor_ckpt_to_keep: 2
   max_critic_ckpt_to_keep: 1
   critic_warmup: 0

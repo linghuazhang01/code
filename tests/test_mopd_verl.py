@@ -1044,6 +1044,63 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertNotIn("proxy_mass", domain_rows[0])
         self.assertIn("proxy_mass", domain_rows[1])
 
+    def test_null_audit_caps_log_full_sample_and_token_details(self) -> None:
+        try:
+            import torch
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"torch is not installed: {exc}")
+
+        class SyntheticBatch:
+            def __init__(self) -> None:
+                self.batch = {
+                    "old_log_probs": torch.full((3, 2), -2.0, dtype=torch.float32),
+                    "math_teacher_log_prob": torch.tensor(
+                        [[-1.0, -1.5], [-1.25, -1.75], [-1.1, -1.6]],
+                        dtype=torch.float32,
+                    ),
+                    "base_log_prob": torch.full((3, 2), -2.0, dtype=torch.float32),
+                    "response_mask": torch.ones((3, 2), dtype=torch.float32),
+                    "responses": torch.tensor([[101, 102], [103, 104], [105, 106]], dtype=torch.long),
+                    "advantages": torch.ones((3, 2), dtype=torch.float32),
+                    "token_level_scores": torch.ones((3, 2), dtype=torch.float32),
+                }
+                self.non_tensor_batch = {
+                    "opd_teacher": ["math", "math", "math"],
+                    "sample_id": ["m0", "m1", "m2"],
+                }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = MOPDAuditLogger(
+                {
+                    "mopd_audit": {
+                        "enabled": True,
+                        "output_dir": tmpdir,
+                        "domains": ["math"],
+                        "max_samples_per_domain": None,
+                        "token_conflict_top_k": None,
+                        "token_gap_enabled": False,
+                        "entropy_enabled": False,
+                    },
+                    "actor_rollout_ref": {
+                        "actor": {"policy_loss": {"lambda_vals": 1.0}},
+                    },
+                }
+            )
+            logger.log_training_step(SyntheticBatch(), step=1, lr=0.01)
+            output_dir = Path(tmpdir)
+            sample_rows = [
+                json.loads(line)
+                for line in (output_dir / "loss_variance_sample.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+            token_conflict_rows = [
+                json.loads(line)
+                for line in (output_dir / "token_conflict_attribution.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+
+        self.assertEqual([row["sample_id"] for row in sample_rows], ["m0", "m1", "m2"])
+        self.assertEqual(len(token_conflict_rows), 6)
+        self.assertEqual({row["token_id"] for row in token_conflict_rows}, {101, 102, 103, 104, 105, 106})
+
     def test_validation_metrics_respect_step_frequency(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             logger = MOPDAuditLogger(
@@ -1085,6 +1142,7 @@ class MOPDVerlTests(unittest.TestCase):
         rendered = format_command(build_command(config))
 
         self.assertIn("+mopd_audit.full_gradient_enabled=true", rendered)
+        self.assertIn("+mopd_audit.max_samples_per_domain=null", rendered)
         self.assertIn("+mopd_audit.log_sample_level_freq_steps=1", rendered)
         self.assertIn("+mopd_audit.log_validation_metrics_freq_steps=1", rendered)
         self.assertIn("+mopd_audit.full_gradient_freq_steps=1", rendered)
@@ -1108,6 +1166,7 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("+mopd_audit.entropy_vocab_vector_freq_steps=1", rendered)
         self.assertIn("+mopd_audit.token_conflict_enabled=true", rendered)
         self.assertIn("+mopd_audit.token_conflict_freq_steps=1", rendered)
+        self.assertIn("+mopd_audit.token_conflict_top_k=null", rendered)
         self.assertIn("+mopd_audit.token_gradient_enabled=true", rendered)
         self.assertIn("+mopd_audit.token_gradient_freq_steps=1", rendered)
         self.assertIn("+mopd_audit.token_gradient_gap_selection_enabled=true", rendered)
@@ -1161,8 +1220,11 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertTrue(config.audit.token_gap_vocab_vector_enabled)
         self.assertTrue(config.audit.entropy_vocab_vector_enabled)
         self.assertTrue(config.audit.token_gradient_enabled)
-        self.assertEqual(config.trainer.total_training_steps, 10)
+        self.assertEqual(config.trainer.total_training_steps, 200)
+        self.assertEqual(config.trainer.save_freq, 5)
         self.assertIn("trainer.n_gpus_per_node=2", rendered)
+        self.assertIn("trainer.save_freq=5", rendered)
+        self.assertIn("trainer.total_training_steps=200", rendered)
         self.assertIn("data.train_batch_size=256", rendered)
         self.assertIn("data.max_response_length=16384", rendered)
         self.assertIn("actor_rollout_ref.actor.ppo_mini_batch_size=256", rendered)
@@ -1194,8 +1256,8 @@ class MOPDVerlTests(unittest.TestCase):
 
         self.assertTrue(config.actor.topk_distill_enabled)
         self.assertEqual(config.actor.topk_distill_k, 32)
-        self.assertTrue(config.actor.use_dynamic_bsz)
-        self.assertFalse(config.actor.optimizer_offload)
+        self.assertFalse(config.actor.use_dynamic_bsz)
+        self.assertTrue(config.actor.optimizer_offload)
         self.assertEqual(config.rollout.gpu_memory_utilization, 0.7)
         self.assertIn("mopd_audit.token_gradient_enabled=true", rendered)
         self.assertIn("mopd_audit.sample_gradient_cos_enabled=true", rendered)
@@ -1203,8 +1265,9 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("actor_rollout_ref.actor.policy_loss.topk_distill_enabled=true", rendered)
         self.assertIn("actor_rollout_ref.actor.policy_loss.topk_distill_k=32", rendered)
         self.assertIn("actor_rollout_ref.actor.policy_loss.topk_distill_tail_bucket=false", rendered)
+        self.assertIn("actor_rollout_ref.actor.use_dynamic_bsz=False", rendered)
         self.assertIn("actor_rollout_ref.actor.use_dynamic_bsz=True", rendered)
-        self.assertIn("actor_rollout_ref.actor.fsdp_config.optimizer_offload=False", rendered)
+        self.assertIn("actor_rollout_ref.actor.fsdp_config.optimizer_offload=True", rendered)
         self.assertIn("actor_rollout_ref.actor.ppo_max_token_len_per_gpu=32768", rendered)
         self.assertIn("actor_rollout_ref.rollout.gpu_memory_utilization=0.6", rendered)
 

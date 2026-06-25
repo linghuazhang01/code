@@ -16,18 +16,21 @@ This checkout is the current OPD/MOPD training entrypoint. The training runtime 
 
 ## Configs
 
-Three formal MOPD variants are kept with 2/4/8 GPU profiles, plus metrics smoke profiles:
+Three formal MOPD variants are kept with 2/4/6/8 GPU profiles, plus metrics smoke profiles:
 
 | Config | Purpose |
 | --- | --- |
 | `configs/mopd_formal_audit_all_2gpu.yaml` | 2-GPU formal 4B math/code run with every MOPD audit family enabled. |
 | `configs/mopd_formal_audit_all_4gpu.yaml` | 4-GPU all-audit run, same objective with a larger global batch. |
+| `configs/mopd_formal_audit_all_6gpu.yaml` | 6-GPU all-audit run, TP=2 with three rollout data-parallel groups. |
 | `configs/mopd_formal_audit_all_8gpu.yaml` | 8-GPU all-audit run, TP=4 with two rollout data-parallel groups. |
 | `configs/mopd_formal_audit_loss_only_2gpu.yaml` | 2-GPU all-audit run where token-gradient selection only uses loss magnitude. |
 | `configs/mopd_formal_audit_loss_only_4gpu.yaml` | 4-GPU loss-only token-gradient audit run. |
+| `configs/mopd_formal_audit_loss_only_6gpu.yaml` | 6-GPU loss-only token-gradient audit run. |
 | `configs/mopd_formal_audit_loss_only_8gpu.yaml` | 8-GPU loss-only token-gradient audit run. |
 | `configs/mopd_formal_audit_off_2gpu.yaml` | 2-GPU run with the same model/data/objective and all audit disabled. |
 | `configs/mopd_formal_audit_off_4gpu.yaml` | 4-GPU audit-off run. |
+| `configs/mopd_formal_audit_off_6gpu.yaml` | 6-GPU audit-off run using the memory-safe TP=2 profile. |
 | `configs/mopd_formal_audit_off_8gpu.yaml` | 8-GPU audit-off run. |
 | `configs/mopd_formal_audit_all_smoke.yaml` | 2-GPU one-step metrics smoke run with all audit outputs and full-vocab vectors enabled. |
 | `configs/mopd_formal_audit_loss_only_smoke.yaml` | 2-GPU one-step smoke run with loss-only token-gradient selection. |
@@ -46,6 +49,7 @@ GPU scaling:
 | --- | --- | --- | --- | --- |
 | 2 | `_2gpu` | 256 | 2 | 8 |
 | 4 | `_4gpu` | 512 | 4 | 16 |
+| 6 | `_6gpu` | 768 | 2 | 24 |
 | 8 | `_8gpu` | 1024 | 4 | 32 |
 
 `mopd_formal_audit_all_*gpu.yaml` additionally enables:
@@ -97,6 +101,10 @@ Use the matching GPU list for larger profiles:
 GPU_IDS=0,1,2,3 bash scripts/start_remote_mopd_training.sh \
   configs/mopd_formal_audit_all_4gpu.yaml \
   --run-id mopd_audit_all_4gpu_$(date +%Y%m%d_%H%M%S)
+
+GPU_IDS=0,1,2,3,4,5 bash scripts/start_remote_mopd_training.sh \
+  configs/mopd_formal_audit_all_6gpu.yaml \
+  --run-id mopd_audit_all_6gpu_$(date +%Y%m%d_%H%M%S)
 
 GPU_IDS=0,1,2,3,4,5,6,7 bash scripts/start_remote_mopd_training.sh \
   configs/mopd_formal_audit_all_8gpu.yaml \

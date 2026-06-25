@@ -71,7 +71,7 @@ actor:
   param_offload: true
   optimizer_offload: true
   fsdp_size: 1
-  use_dynamic_bsz: true
+  use_dynamic_bsz: false
 
 rollout:
   calculate_log_probs: true
@@ -108,7 +108,7 @@ audit:
   tensorboard_layout: domain_category
   tensorboard_prune_mode: core
   loss_variance_signal: opd_loss_token
-  max_samples_per_domain: 16
+  max_samples_per_domain: null
   high_variance_cv_threshold: 1.0
   log_sample_level: true
   log_sample_level_freq_steps: 1
@@ -139,7 +139,7 @@ audit:
   entropy_vocab_vector_freq_steps: 1
   token_conflict_enabled: true
   token_conflict_freq_steps: 1
-  token_conflict_top_k: 50
+  token_conflict_top_k: null
   token_gradient_enabled: true
   token_gradient_freq_steps: 1
   token_gradient_gap_selection_enabled: false
