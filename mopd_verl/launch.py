@@ -239,7 +239,7 @@ def build_overrides(config: MOPDConfig) -> list[str]:
         f"actor_rollout_ref.actor.entropy_coeff={actor.entropy_coeff}",
         f"actor_rollout_ref.actor.ppo_max_token_len_per_gpu={actor.ppo_max_token_len_per_gpu}",
         f"actor_rollout_ref.model.enable_gradient_checkpointing={_bool(actor.gradient_checkpointing)}",
-        "actor_rollout_ref.model.override_config.attn_implementation=eager",
+        "+actor_rollout_ref.model.override_config.attn_implementation=eager",
         f"actor_rollout_ref.actor.fsdp_config.param_offload={_bool(actor.param_offload)}",
         f"actor_rollout_ref.actor.fsdp_config.optimizer_offload={_bool(actor.optimizer_offload)}",
         "actor_rollout_ref.actor.fsdp_config.model_dtype=bfloat16",

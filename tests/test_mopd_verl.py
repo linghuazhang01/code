@@ -3677,6 +3677,100 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIsNone(stats["sample_projection_share"])
         self.assertTrue(torch.equal(parameter.grad, training_grad))
 
+    def test_token_selection_recompute_does_not_call_backward(self) -> None:
+        try:
+            import torch
+            from torch import nn
+
+            from mopd_verl.full_gradient_worker import SequentialBackwardDomainGradientTracker
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ToyActor:
+            def __init__(self) -> None:
+                self.actor_module = nn.Linear(1, 1, bias=False)
+                self.actor_optimizer = torch.optim.SGD(self.actor_module.parameters(), lr=0.1)
+                self.config = {"fsdp_config": {"fsdp_size": 1}}
+
+        class FakeBatch:
+            def __init__(self) -> None:
+                self.batch = {"response_mask": torch.ones((1, 1), dtype=torch.float32)}
+                self.non_tensor_batch = {}
+                self.meta_info = {"temperature": 1.0}
+
+            def to(self, device: object) -> "FakeBatch":
+                del device
+                return self
+
+        actor = ToyActor()
+        parameter = next(actor.actor_module.parameters())
+        parameter.grad = torch.tensor([[7.0]])
+        training_grad = parameter.grad.detach().clone()
+        tracker = SequentialBackwardDomainGradientTracker(
+            actor,
+            {
+                "domains": ["math", "code"],
+                "token_gradient_enabled": True,
+            },
+        )
+        selected_tokens = [
+            {
+                "candidate_index": 0,
+                "micro_batch": FakeBatch(),
+                "sample_index": 0,
+                "position": 0,
+                "loss_scale_factor": 1.0,
+                "on_policy": True,
+            }
+        ]
+
+        with patch("mopd_verl.full_gradient_worker.get_device_id", return_value="cpu"), patch(
+            "mopd_verl.full_gradient_worker._actor_micro_batch_loss",
+            side_effect=lambda *_args, **_kwargs: actor.actor_module(torch.tensor([[2.0]])).sum(),
+        ), patch.object(
+            torch.Tensor,
+            "backward",
+            side_effect=AssertionError("token selection recompute must never call loss.backward()"),
+        ), patch(
+            "mopd_verl.full_gradient_worker._finalize_fsdp_after_auxiliary_backward"
+        ) as finalize_fsdp:
+            stats = tracker._recompute_token_selection_gradient_stats(
+                selected_tokens,
+                target_map={"math": ((torch.tensor([1.0], dtype=torch.float32),), 1.0)},
+                restore_grads=False,
+            )
+
+        self.assertEqual(stats["token_grad_available"], 1.0)
+        self.assertEqual(stats["token_grad_non_none_grad_count"], 1.0)
+        self.assertEqual(stats["token_grad_param_count"], 1.0)
+        self.assertEqual(stats["token_grad_none_grad_count"], 0.0)
+        self.assertIsNone(stats["token_grad_autograd_error"])
+        self.assertTrue(torch.equal(parameter.grad, training_grad))
+        finalize_fsdp.assert_called_once_with(actor)
+
+        with patch("mopd_verl.full_gradient_worker.get_device_id", return_value="cpu"), patch(
+            "mopd_verl.full_gradient_worker._actor_micro_batch_loss",
+            side_effect=lambda *_args, **_kwargs: actor.actor_module(torch.tensor([[2.0]])).sum(),
+        ), patch(
+            "torch.autograd.grad",
+            return_value=(None,),
+        ), patch(
+            "mopd_verl.full_gradient_worker._finalize_fsdp_after_auxiliary_backward"
+        ) as finalize_fsdp_none:
+            disconnected_stats = tracker._recompute_token_selection_gradient_stats(
+                selected_tokens,
+                target_map={"math": ((torch.tensor([1.0], dtype=torch.float32),), 1.0)},
+                restore_grads=False,
+            )
+
+        self.assertEqual(disconnected_stats["token_grad_available"], 0.0)
+        self.assertEqual(disconnected_stats["token_grad_non_none_grad_count"], 0.0)
+        self.assertEqual(disconnected_stats["token_grad_param_count"], 1.0)
+        self.assertEqual(disconnected_stats["token_grad_none_grad_count"], 1.0)
+        self.assertEqual(disconnected_stats["token_grad_autograd_error"], "all_parameters_disconnected")
+        self.assertTrue(torch.equal(parameter.grad, training_grad))
+        finalize_fsdp_none.assert_called_once_with(actor)
+
     def test_audit_logger_emits_domain_category_metrics_on_synthetic_batch(self) -> None:
         try:
             import torch

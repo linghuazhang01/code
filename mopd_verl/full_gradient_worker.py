@@ -192,6 +192,87 @@ def _actor_no_sync_context(actor: Any) -> Any:
     return nullcontext()
 
 
+def _finalize_fsdp_after_auxiliary_backward(actor: Any) -> None:
+    actor_module = getattr(actor, "actor_module", None)
+    if actor_module is None:
+        return
+    try:
+        from torch.distributed.fsdp._common_utils import (
+            HandleTrainingState,
+            TrainingState,
+            _get_module_fsdp_state,
+        )
+        from torch.distributed.fsdp._runtime_utils import _post_backward_final_callback
+    except (AttributeError, ImportError, RuntimeError):
+        return
+
+    module_iter = (actor_module,)
+    modules = getattr(actor_module, "modules", None)
+    if callable(modules):
+        try:
+            module_iter = tuple(modules())
+        except Exception:
+            module_iter = (actor_module,)
+
+    state_items: list[tuple[Any, Any]] = []
+    seen_states: set[int] = set()
+    for module in module_iter:
+        try:
+            state = _get_module_fsdp_state(module)
+        except Exception:
+            continue
+        if state is None or id(state) in seen_states:
+            continue
+        seen_states.add(id(state))
+        state_items.append((module, state))
+    if not state_items:
+        return
+
+    root_module, root_state = state_items[0]
+    for module, state in state_items:
+        if bool(getattr(state, "_is_root", False)):
+            root_module, root_state = module, state
+            break
+
+    all_states = tuple(getattr(root_state, "_all_fsdp_states", None) or [state for _module, state in state_items])
+    backward_states = {HandleTrainingState.BACKWARD_PRE, HandleTrainingState.BACKWARD_POST}
+    needs_finalize = any(
+        getattr(getattr(state, "_handle", None), "_training_state", None) in backward_states
+        for state in all_states
+    )
+    if not needs_finalize:
+        return
+
+    if bool(getattr(root_state, "_is_root", False)):
+        try:
+            _post_backward_final_callback(root_state, root_module)
+            return
+        except Exception:
+            pass
+
+    for state in all_states:
+        try:
+            state.training_state = TrainingState.IDLE
+        except Exception:
+            pass
+        handle = getattr(state, "_handle", None)
+        if handle is None:
+            continue
+        try:
+            if getattr(handle, "_training_state", None) in backward_states:
+                handle._ran_pre_backward_hook = False
+                handle._needs_pre_backward_unshard = False
+                handle._post_forward_index = None
+                handle._training_state = HandleTrainingState.IDLE
+                handle._prefetched = False
+        except Exception:
+            pass
+    try:
+        root_state._post_backward_callback_queued = False
+    except Exception:
+        pass
+
+
 def _all_gather_list(values: list[Any]) -> list[Any]:
     if not torch.distributed.is_initialized():
         return list(values)
@@ -2332,6 +2413,8 @@ class SequentialBackwardDomainGradientTracker:
             return {
                 "token_grad_available": 0.0,
                 "token_grad_norm": None,
+                "token_grad_param_count": 0.0,
+                "token_grad_none_grad_count": 0.0,
                 "token_grad_autograd_error": "empty_token_mask",
                 "token_grad_seconds": time.perf_counter() - started_at,
             }
@@ -2344,6 +2427,8 @@ class SequentialBackwardDomainGradientTracker:
             return {
                 "token_grad_available": 0.0,
                 "token_grad_norm": None,
+                "token_grad_param_count": 0.0,
+                "token_grad_none_grad_count": 0.0,
                 "token_grad_autograd_error": "zero_contribution_scale",
                 "token_grad_seconds": time.perf_counter() - started_at,
             }
@@ -2362,8 +2447,12 @@ class SequentialBackwardDomainGradientTracker:
         except Exception as exc:
             gradients = tuple(None for _ in parameters)
             autograd_error = type(exc).__name__
+        finally:
+            _finalize_fsdp_after_auxiliary_backward(self.actor)
         autograd_seconds = time.perf_counter() - autograd_started_at
         non_none_grad_count = sum(gradient is not None for gradient in gradients)
+        param_count = len(parameters)
+        none_grad_count = max(param_count - non_none_grad_count, 0)
         if non_none_grad_count == 0 and autograd_error is None:
             autograd_error = "all_parameters_disconnected"
         fallback_stats: tuple[float | None, dict[str, float] | None] | None = None
@@ -2388,6 +2477,7 @@ class SequentialBackwardDomainGradientTracker:
             fallback_seconds = time.perf_counter() - fallback_started_at
             if fallback_non_none_count > 0:
                 non_none_grad_count = fallback_non_none_count
+                none_grad_count = max(param_count - non_none_grad_count, 0)
                 autograd_error = None
                 fallback_stats = (fallback_local_norm_sq, fallback_local_dots)
                 fallback_used = 1.0
@@ -2402,6 +2492,8 @@ class SequentialBackwardDomainGradientTracker:
                 "token_grad_available": 0.0,
                 "token_grad_norm": None,
                 "token_grad_non_none_grad_count": float(non_none_grad_count),
+                "token_grad_param_count": float(param_count),
+                "token_grad_none_grad_count": float(none_grad_count),
                 "token_grad_autograd_error": autograd_error or "parameter_target_mismatch",
                 "token_loss_contribution_scale": contribution_scale,
                 "token_grad_seconds": time.perf_counter() - started_at,
@@ -2422,6 +2514,8 @@ class SequentialBackwardDomainGradientTracker:
             "token_grad_available": float(available),
             "token_grad_norm": token_norm if available else None,
             "token_grad_non_none_grad_count": float(non_none_grad_count),
+            "token_grad_param_count": float(param_count),
+            "token_grad_none_grad_count": float(none_grad_count),
             "token_grad_autograd_error": autograd_error,
             "token_loss_contribution_scale": contribution_scale,
             "token_grad_seconds": time.perf_counter() - started_at,
@@ -2483,6 +2577,7 @@ class SequentialBackwardDomainGradientTracker:
         except Exception as exc:
             error = f"backward_{type(exc).__name__}"
         finally:
+            _finalize_fsdp_after_auxiliary_backward(self.actor)
             if grad_snapshot is not None:
                 _restore_parameter_grads_from_snapshot(parameters, grad_snapshot, grad_dtypes=grad_dtypes)
                 if debug_restore_diff:
@@ -2553,38 +2648,52 @@ class SequentialBackwardDomainGradientTracker:
 
         used_micro_batches: list[DataProto] = []
         if selected_tokens:
-            _clear_parameter_grads(parameters)
             try:
-                with _actor_no_sync_context(self.actor):
-                    for group in grouped.values():
-                        micro_batch = group["micro_batch"]
-                        used_micro_batches.append(micro_batch)
-                        token_mask = torch.zeros_like(micro_batch.batch["response_mask"], dtype=torch.float32)
-                        for sample_idx, position in group["positions"]:
-                            token_mask[sample_idx, position] = 1.0
-                        contribution_scale = _token_mask_contribution_scale(
-                            micro_batch.batch["response_mask"],
-                            token_mask,
-                            loss_agg_mode,
-                        )
-                        if contribution_scale <= 0.0:
+                accumulated_gradients: list[torch.Tensor | None] = [None for _ in parameters]
+                for group in grouped.values():
+                    micro_batch = group["micro_batch"]
+                    used_micro_batches.append(micro_batch)
+                    token_mask = torch.zeros_like(micro_batch.batch["response_mask"], dtype=torch.float32)
+                    for sample_idx, position in group["positions"]:
+                        token_mask[sample_idx, position] = 1.0
+                    contribution_scale = _token_mask_contribution_scale(
+                        micro_batch.batch["response_mask"],
+                        token_mask,
+                        loss_agg_mode,
+                    )
+                    if contribution_scale <= 0.0:
+                        continue
+                    loss = _actor_micro_batch_loss(
+                        self.actor,
+                        micro_batch,
+                        loss_scale_factor=float(group["loss_scale_factor"]) * contribution_scale,
+                        on_policy=bool(group["on_policy"]),
+                        safe_logprob_backward=True,
+                        response_mask_override=token_mask,
+                    )
+                    group_gradients = torch.autograd.grad(
+                        loss,
+                        parameters,
+                        retain_graph=False,
+                        allow_unused=True,
+                    )
+                    for idx, gradient in enumerate(group_gradients):
+                        if gradient is None:
                             continue
-                        loss = _actor_micro_batch_loss(
-                            self.actor,
-                            micro_batch,
-                            loss_scale_factor=float(group["loss_scale_factor"]) * contribution_scale,
-                            on_policy=bool(group["on_policy"]),
-                            safe_logprob_backward=False,
-                            response_mask_override=token_mask,
-                        )
-                        loss.backward()
-                gradients = tuple(parameter.grad for parameter in parameters)
+                        detached_gradient = gradient.detach()
+                        if accumulated_gradients[idx] is None:
+                            accumulated_gradients[idx] = detached_gradient.clone()
+                        else:
+                            accumulated_gradients[idx] = accumulated_gradients[idx] + detached_gradient
+                    del group_gradients, loss
+                gradients = tuple(accumulated_gradients)
                 non_none_grad_count = sum(gradient is not None for gradient in gradients)
                 local_norm_sq, local_dots = self._grad_multi_target_stats_from_tensors(gradients, target_map)
                 del gradients
             except Exception as exc:
-                autograd_error = f"backward_{type(exc).__name__}"
+                autograd_error = type(exc).__name__
             finally:
+                _finalize_fsdp_after_auxiliary_backward(self.actor)
                 if restore_grads:
                     if grad_snapshot is not None:
                         _restore_parameter_grads_from_snapshot(parameters, grad_snapshot, grad_dtypes=grad_dtypes)
@@ -2627,16 +2736,22 @@ class SequentialBackwardDomainGradientTracker:
             local_error = autograd_error or "parameter_target_mismatch"
             local_norm_sq = 0.0
             local_dots = {domain: 0.0 for domain in target_map}
+        if selected_tokens and non_none_grad_count == 0 and local_error is None:
+            local_error = "all_parameters_disconnected"
+
+        local_param_count = len(parameters) if selected_tokens else 0
 
         target_domains = sorted(target_map)
         reduced_values = _all_reduce_values_sum(
-            [float(max(local_norm_sq, 0.0)), float(non_none_grad_count)]
+            [float(max(local_norm_sq, 0.0)), float(non_none_grad_count), float(local_param_count)]
             + [float(local_dots.get(domain, 0.0)) for domain in target_domains]
         )
         norm_sq = max(reduced_values[0], 0.0)
         global_non_none_grad_count = reduced_values[1]
+        global_param_count = reduced_values[2]
+        global_none_grad_count = max(global_param_count - global_non_none_grad_count, 0.0)
         dots = {
-            domain: reduced_values[2 + idx]
+            domain: reduced_values[3 + idx]
             for idx, domain in enumerate(target_domains)
         }
         max_keys = [
@@ -2666,6 +2781,8 @@ class SequentialBackwardDomainGradientTracker:
             "token_grad_available": float(available),
             "token_grad_norm": token_norm if available else None,
             "token_grad_non_none_grad_count": float(global_non_none_grad_count),
+            "token_grad_param_count": float(global_param_count),
+            "token_grad_none_grad_count": float(global_none_grad_count),
             "token_grad_autograd_error": ";".join(global_errors) if global_errors else None,
             "token_grad_backward_fallback_seconds": 0.0,
             "token_grad_backward_fallback_used": 0.0,
@@ -2781,6 +2898,15 @@ class SequentialBackwardDomainGradientTracker:
                 ] = float(own_projection_value)
             metrics[f"{safe_domain}/token_grad/{selection_key}_selected_token_count"] = float(
                 row.get("selected_token_count", 0.0) or 0.0
+            )
+            metrics[f"{safe_domain}/token_grad/{selection_key}_non_none_grad_count"] = float(
+                row.get("token_grad_non_none_grad_count", 0.0) or 0.0
+            )
+            metrics[f"{safe_domain}/token_grad/{selection_key}_none_grad_count"] = float(
+                row.get("token_grad_none_grad_count", 0.0) or 0.0
+            )
+            metrics[f"{safe_domain}/token_grad/{selection_key}_param_count"] = float(
+                row.get("token_grad_param_count", 0.0) or 0.0
             )
             metrics[f"{safe_domain}/token_grad/{selection_key}_selected_sample_count"] = float(
                 row.get("selected_sample_count", 0.0) or 0.0
@@ -3089,6 +3215,8 @@ class SequentialBackwardDomainGradientTracker:
         except Exception as exc:
             gradients = tuple(None for _ in parameters)
             autograd_error = type(exc).__name__
+        finally:
+            _finalize_fsdp_after_auxiliary_backward(self.actor)
         local_norm_sq, local_dot = self._grad_stats_from_tensors(gradients, target_chunks)
         non_none_grad_count = sum(gradient is not None for gradient in gradients)
         if non_none_grad_count == 0 and autograd_error is None:
