@@ -42,7 +42,7 @@ class MOPDProfileTests(unittest.TestCase):
         self.assertTrue(config.actor.gradient_checkpointing)
         self.assertEqual(config.actor.fsdp_size, 1)
         self.assertEqual(config.rollout.tensor_model_parallel_size, tensor_parallel_size)
-        self.assertEqual(config.rollout.gpu_memory_utilization, 0.6 if audit_mode in {"all", "loss_only"} else 0.8)
+        self.assertEqual(config.rollout.gpu_memory_utilization, 0.7)
         self.assertEqual(config.rollout.max_num_seqs, 8 if gpu_count == 2 else 16)
         self.assertEqual(config.trainer.n_gpus_per_node, gpu_count)
         self.assertEqual(config.trainer.total_training_steps, 10)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import os
 import shlex
 import subprocess
@@ -335,6 +336,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     extra_args = list(args.extra)
     if extra_args and extra_args[0] == "--":
         extra_args = extra_args[1:]
+
+    # Append timestamp to experiment name so repeated runs produce distinct
+    # tensorboard log dirs and don't collide.
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    extra_args = [f"trainer.experiment_name={config.trainer.experiment_name}_{timestamp}", *extra_args]
 
     command = build_command(config, extra_args)
     if args.dry_run:
