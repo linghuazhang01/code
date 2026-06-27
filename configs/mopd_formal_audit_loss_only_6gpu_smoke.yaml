@@ -1,12 +1,13 @@
-# Formal math+code MOPD/ExOPD profile for six NVIDIA A800 80GB GPUs.
-# Loss-only token-gradient audit profile: every MOPD audit family is on, but
-# token-gradient candidate selection only uses per-token loss magnitude.
-# Uses the same memory-safe 6-GPU rollout shape as mopd_formal_audit_off_6gpu.
+# Two-GPU smoke profile for the loss-only formal audit path.
+# Keeps the loss-only token-gradient selection from the 6-GPU profile, but uses
+# a tiny batch and one training step for quick remote validation.
 
 runtime:
   python_bin: python
   verl_module: verl.trainer.main_ppo
-  wandb_mode: disabled
+  wandb_mode: online
+  wandb_entity: lz101-rice-university
+  env_file: .env.local
   used_model: no_api
 
 data:
@@ -27,7 +28,7 @@ data:
     - eval/domains/code/data/HumanEvalPlus/test.parquet
     - eval/domains/code/data/MBPPPlus/test.parquet
     # - eval/domains/code/data/LiveCodeBench/test.parquet
-  train_batch_size: 32
+  train_batch_size: 8
   max_prompt_length: 2048
   max_response_length: 16384
   val_batch_size: 1024
@@ -61,7 +62,7 @@ actor:
   topk_distill_loss_weight: 1.0
   topk_distill_logprob_chunk_size: 16
   topk_distill_logprob_mode: sparse
-  ppo_mini_batch_size: 32
+  ppo_mini_batch_size: 8
   ppo_micro_batch_size_per_gpu: 1
   use_kl_loss: true
   kl_loss_coef: 0
@@ -119,9 +120,12 @@ audit:
   calibration_bins: 10
   full_gradient_enabled: true
   full_gradient_freq_steps: 1
+  full_grad_training_parity_freq_steps: 1
   full_gradient_train_max_samples_per_domain: null
   full_gradient_micro_batch_size_per_gpu: 1
   full_gradient_storage_dtype: bfloat16
+  sequence_masked_target_enabled: true
+  sequence_masked_target_use_as_primary: true
   sample_gradient_enabled: true
   sample_gradient_freq_steps: 1
   sample_gradient_norm_enabled: true
@@ -154,7 +158,7 @@ paper_eval:
   enabled: false
   script_path: eval/scripts/run_paper_eval_suite.sh
   model_path: null
-  output_dir: eval_outputs/paper_suite/formal_audit_loss_only_6gpu
+  output_dir: eval_outputs/paper_suite/formal_audit_loss_only_6gpu_smoke
   datasets:
     - aime24
     - aime25
@@ -169,16 +173,16 @@ paper_eval:
   timeout_seconds: 0
 
 trainer:
-  project_name: on-policy-distillation
+  project_name: MOPD
   experiment_name: Qwen3-4B-Multi-Teacher-ExOPD-formal-audit-loss-only-6gpu-smoke
-  logger: '["console","tensorboard"]'
+  logger: '["console","tensorboard","wandb"]'
   n_gpus_per_node: 2
   nnodes: 1
-  save_freq: 5
+  save_freq: -1
   default_local_dir: checkpoints/formal_audit_loss_only_6gpu_smoke
   test_freq: -1
-  total_epochs: 3
-  total_training_steps: 200
+  total_epochs: 1
+  total_training_steps: 1
   max_actor_ckpt_to_keep: 2
   max_critic_ckpt_to_keep: 1
   critic_warmup: 0

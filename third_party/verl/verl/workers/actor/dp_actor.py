@@ -19,9 +19,7 @@ Single Process Actor
 
 import logging
 import os
-from contextlib import nullcontext
 
-import numpy as np
 import torch
 from torch import nn
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -29,7 +27,6 @@ from torch.distributed.tensor import DTensor
 
 import verl.utils.torch_functional as verl_F
 from verl import DataProto
-from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
 from verl.utils.attention_utils import index_first_axis, pad_input, rearrange, unpad_input
 from verl.utils.device import get_device_id, get_device_name
 from verl.utils.fsdp_utils import FSDPModule, fsdp2_clip_grad_norm_
@@ -41,27 +38,12 @@ from verl.utils.torch_functional import logprobs_from_logits
 from verl.utils.ulysses import gather_outputs_and_unpad, ulysses_pad, ulysses_pad_and_slice_inputs
 from verl.workers.actor import BasePPOActor
 from verl.workers.config import ActorConfig
+from mopd_verl.full_gradient.actor_loss import build_actor_micro_batch_loss
 from mopd_verl.topk_distill import (
     TOPK_LOGPROB_MODE_SPARSE,
-    TOPK_RENORMALIZED_FORWARD_KL,
-    TOPK_SUPPORT_SOURCE_STUDENT,
-    TOPK_SUPPORT_SOURCE_TEACHER,
-    chosen_token_forward_kl_matrix,
-    is_topk_distill_enabled,
-    resolved_topk_distill_mode,
-    select_teacher_log_prob_tensor,
-    selected_logits_from_hidden_states,
-    teacher_prefix_forward_weight,
-    teacher_prefix_masks,
-    topk_distill_bucket_metrics,
-    topk_distill_include_tail,
     topk_distill_logprob_chunk_size,
     topk_distill_logprob_mode,
-    topk_distill_loss_matrix,
-    topk_distill_support_source,
-    topk_distill_temperature,
     topk_distill_uses_renormalized_support,
-    topk_distill_weight,
     topk_log_probs_from_logits,
     topk_teacher_student_cross_entropy_matrix,
 )
@@ -70,114 +52,6 @@ __all__ = ["DataParallelPPOActor"]
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
-
-
-def _teacher_type_at(opd_teacher: object, index: int) -> object:
-    if isinstance(opd_teacher, np.ndarray):
-        if opd_teacher.ndim == 0:
-            return opd_teacher.item()
-        return opd_teacher[index]
-    if isinstance(opd_teacher, (list, tuple)):
-        return opd_teacher[index]
-    return opd_teacher
-
-
-def _select_teacher_topk_tensors(
-    model_inputs: dict[str, object],
-    policy_loss_config: object,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    if "math_teacher_topk_ids" not in model_inputs or "math_teacher_topk_logprobs" not in model_inputs:
-        raise ValueError(
-            "Top-k distillation requires math_teacher_topk_ids and math_teacher_topk_logprobs in the batch."
-        )
-    math_ids = model_inputs["math_teacher_topk_ids"]
-    math_log_probs = model_inputs["math_teacher_topk_logprobs"]
-    code_ids = model_inputs.get("code_teacher_topk_ids", math_ids)
-    code_log_probs = model_inputs.get("code_teacher_topk_logprobs", math_log_probs)
-    if not bool(policy_loss_config.get("multi_teacher_distill", False)) or "opd_teacher" not in model_inputs:
-        return math_ids, math_log_probs
-
-    opd_teacher = model_inputs["opd_teacher"]
-    selected_ids = torch.empty_like(math_ids)
-    selected_log_probs = torch.empty_like(math_log_probs)
-    for idx in range(int(math_log_probs.shape[0])):
-        teacher_type = _teacher_type_at(opd_teacher, idx)
-        if teacher_type == "code" and "code_teacher_topk_ids" in model_inputs:
-            selected_ids[idx] = code_ids[idx]
-            selected_log_probs[idx] = code_log_probs[idx]
-        else:
-            selected_ids[idx] = math_ids[idx]
-            selected_log_probs[idx] = math_log_probs[idx]
-    return selected_ids, selected_log_probs
-
-
-def _select_student_topk_teacher_log_probs(
-    model_inputs: dict[str, object],
-    policy_loss_config: object,
-) -> torch.Tensor:
-    if "math_teacher_student_topk_logprobs" not in model_inputs:
-        raise ValueError(
-            "Student top-k distillation requires math_teacher_student_topk_logprobs in the batch."
-        )
-    math_log_probs = model_inputs["math_teacher_student_topk_logprobs"]
-    code_log_probs = model_inputs.get("code_teacher_student_topk_logprobs", math_log_probs)
-    if not bool(policy_loss_config.get("multi_teacher_distill", False)) or "opd_teacher" not in model_inputs:
-        return math_log_probs
-
-    opd_teacher = model_inputs["opd_teacher"]
-    selected_log_probs = torch.empty_like(math_log_probs)
-    for idx in range(int(math_log_probs.shape[0])):
-        teacher_type = _teacher_type_at(opd_teacher, idx)
-        if teacher_type == "code" and "code_teacher_student_topk_logprobs" in model_inputs:
-            selected_log_probs[idx] = code_log_probs[idx]
-        else:
-            selected_log_probs[idx] = math_log_probs[idx]
-    return selected_log_probs
-
-
-def _select_topk_support_tensors(
-    model_inputs: dict[str, object],
-    policy_loss_config: object,
-) -> tuple[torch.Tensor, torch.Tensor, str]:
-    support_source = topk_distill_support_source(policy_loss_config)
-    if support_source == TOPK_SUPPORT_SOURCE_STUDENT:
-        if "student_topk_ids" not in model_inputs:
-            raise ValueError("Student top-k distillation requires student_topk_ids in the batch.")
-        return (
-            model_inputs["student_topk_ids"],
-            _select_student_topk_teacher_log_probs(model_inputs, policy_loss_config),
-            support_source,
-        )
-    if support_source != TOPK_SUPPORT_SOURCE_TEACHER:
-        raise ValueError(f"Unsupported top-k support source: {support_source!r}.")
-    support_ids, teacher_log_probs = _select_teacher_topk_tensors(model_inputs, policy_loss_config)
-    return support_ids, teacher_log_probs, support_source
-
-
-def _unwrap_module(module: nn.Module) -> nn.Module:
-    for attr in ("_fsdp_wrapped_module", "module"):
-        wrapped = getattr(module, attr, None)
-        if isinstance(wrapped, nn.Module):
-            return wrapped
-    return module
-
-
-def _causal_lm_body_and_head(module: nn.Module) -> tuple[nn.Module | None, nn.Module | None]:
-    unwrapped = _unwrap_module(module)
-    candidates = [unwrapped]
-    base_model = getattr(unwrapped, "base_model", None)
-    if isinstance(base_model, nn.Module):
-        candidates.append(base_model)
-        nested = getattr(base_model, "model", None)
-        if isinstance(nested, nn.Module):
-            candidates.append(nested)
-
-    for candidate in candidates:
-        body = getattr(candidate, "model", None)
-        head = getattr(candidate, "lm_head", None)
-        if isinstance(body, nn.Module) and isinstance(head, nn.Module) and hasattr(head, "weight"):
-            return body, head
-    return None, None
 
 
 class DataParallelPPOActor(BasePPOActor):
@@ -225,31 +99,6 @@ class DataParallelPPOActor(BasePPOActor):
         else:
             self.scaler = None
 
-    def _can_use_selected_topk_head(self, multi_modal_inputs: dict[str, object]) -> bool:
-        if multi_modal_inputs:
-            return False
-        fsdp_config = self.config.fsdp_config
-        raw_fsdp_size = fsdp_config.get("fsdp_size", -1) if hasattr(fsdp_config, "get") else -1
-        try:
-            fsdp_size = int(raw_fsdp_size)
-        except (TypeError, ValueError):
-            fsdp_size = -1
-        if fsdp_size != 1:
-            return False
-        body, head = _causal_lm_body_and_head(self.actor_module)
-        return body is not None and head is not None
-
-    def _selected_topk_param_context(self):
-        if isinstance(self.actor_module, FSDP):
-            return FSDP.summon_full_params(
-                self.actor_module,
-                recurse=True,
-                writeback=True,
-                rank0_only=False,
-                offload_to_cpu=False,
-            )
-        return nullcontext()
-
     def _forward_micro_batch(
         self,
         micro_batch,
@@ -283,16 +132,6 @@ class DataParallelPPOActor(BasePPOActor):
             from verl.utils.model import extract_multi_modal_inputs
 
             multi_modal_inputs = extract_multi_modal_inputs(micro_batch["multi_modal_inputs"])
-        use_selected_topk_head = (
-            needs_topk_extra
-            and gather_topk_ids is not None
-            and topk is None
-            and not normalize_gathered_topk
-            and str(topk_logprob_mode).lower() == TOPK_LOGPROB_MODE_SPARSE
-            and not calculate_log_probs
-            and not calculate_entropy
-            and self._can_use_selected_topk_head(multi_modal_inputs)
-        )
 
         with torch.autocast(device_type=self.device_name, dtype=self.param_dtype):
             input_ids = micro_batch["input_ids"]
@@ -370,54 +209,20 @@ class DataParallelPPOActor(BasePPOActor):
                     extra_args["temperature"] = temperature
                     extra_args["return_dict"] = True
 
-                if use_selected_topk_head:
-                    body, head = _causal_lm_body_and_head(self.actor_module)
-                    if body is None or head is None:
-                        raise RuntimeError("selected top-k head path requires a causal LM body and lm_head.")
-                    output = body(
-                        input_ids=input_ids_rmpad,
-                        attention_mask=None,
-                        position_ids=position_ids_rmpad,
-                        use_cache=False,
-                    )
-                    hidden_states_rmpad = output[0]
-                    if hidden_states_rmpad.dim() == 3 and int(hidden_states_rmpad.shape[0]) == 1:
-                        hidden_states_rmpad = hidden_states_rmpad.squeeze(0)
-                    log_probs = hidden_states_rmpad.new_zeros(input_ids_rmpad_rolled.shape)
-                    gather_ids = gather_topk_ids.to(device=input_ids.device, dtype=torch.long)
-                    full_gather_ids = torch.zeros(
-                        (batch_size, seqlen, int(gather_ids.shape[-1])),
-                        device=input_ids.device,
-                        dtype=torch.long,
-                    )
-                    full_gather_ids[:, -response_length - 1 : -1, :] = gather_ids
-                    gather_ids_rmpad = index_first_axis(
-                        rearrange(full_gather_ids, "b s k -> (b s) k"),
-                        indices,
-                    )
-                    gathered_log_probs_rmpad = selected_logits_from_hidden_states(
-                        hidden_states_rmpad,
-                        vocab_weights=head.weight,
-                        token_ids=gather_ids_rmpad,
-                        bias=getattr(head, "bias", None),
-                        temperature=temperature,
-                        chunk_size=topk_logprob_chunk_size or 16,
-                    )
-                else:
-                    output = self.actor_module(
-                        input_ids=input_ids_rmpad,
-                        attention_mask=None,
-                        position_ids=position_ids_rmpad,
-                        **multi_modal_inputs,
-                        use_cache=False,
-                        **extra_args,
-                    )  # prevent model thinks we are generating
+                output = self.actor_module(
+                    input_ids=input_ids_rmpad,
+                    attention_mask=None,
+                    position_ids=position_ids_rmpad,
+                    **multi_modal_inputs,
+                    use_cache=False,
+                    **extra_args,
+                )  # prevent model thinks we are generating
 
-                if self.use_fused_kernels and not use_selected_topk_head:
+                if self.use_fused_kernels:
                     log_probs = output.log_probs.squeeze(0)  # (total_nnz,)
                     entropy_rmpad = output.entropy.squeeze(0)  # (total_nnz,)
 
-                elif not use_selected_topk_head:
+                else:
                     logits_rmpad = output.logits.squeeze(0)  # (total_nnz, vocab_size)
                     logits_rmpad.div_(temperature)
 
@@ -533,41 +338,20 @@ class DataParallelPPOActor(BasePPOActor):
                     extra_args["temperature"] = temperature
                     extra_args["return_dict"] = True
 
-                if use_selected_topk_head:
-                    body, head = _causal_lm_body_and_head(self.actor_module)
-                    if body is None or head is None:
-                        raise RuntimeError("selected top-k head path requires a causal LM body and lm_head.")
-                    output = body(
-                        input_ids=input_ids,
-                        attention_mask=attention_mask,
-                        position_ids=position_ids,
-                        use_cache=False,
-                    )
-                    hidden_states = output[0][:, -response_length - 1 : -1, :]
-                    log_probs = hidden_states.new_zeros(hidden_states.shape[:-1])
-                    gathered_topk_log_probs = selected_logits_from_hidden_states(
-                        hidden_states,
-                        vocab_weights=head.weight,
-                        token_ids=gather_topk_ids.to(device=input_ids.device, dtype=torch.long),
-                        bias=getattr(head, "bias", None),
-                        temperature=temperature,
-                        chunk_size=topk_logprob_chunk_size or 16,
-                    )
-                else:
-                    output = self.actor_module(
-                        input_ids=input_ids,
-                        attention_mask=attention_mask,
-                        position_ids=position_ids,
-                        **multi_modal_inputs,
-                        use_cache=False,
-                        **extra_args,
-                    )  # prevent model thinks we are generating
+                output = self.actor_module(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    **multi_modal_inputs,
+                    use_cache=False,
+                    **extra_args,
+                )  # prevent model thinks we are generating
 
-                if self.use_fused_kernels and not use_selected_topk_head:
+                if self.use_fused_kernels:
                     log_probs = output.log_probs[:, -response_length - 1 : -1]
                     entropy = output.entropy[:, -response_length - 1 : -1]  # (bsz, response_length)
 
-                elif not use_selected_topk_head:
+                else:
                     logits = output.logits
 
                     logits.div_(temperature)
@@ -784,7 +568,7 @@ class DataParallelPPOActor(BasePPOActor):
         for micro_batch in micro_batches:
             micro_batch = micro_batch.to(get_device_id())
             model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
-            with torch.no_grad(), self._selected_topk_param_context():
+            with torch.no_grad():
                 _, _, _, _, student_topk_log_probs = self._forward_micro_batch(
                     model_inputs,
                     temperature=temperature,
@@ -824,22 +608,24 @@ class DataParallelPPOActor(BasePPOActor):
             "old_log_probs",
             "advantages",
         ]
+        batch_keys = set(data.batch.keys())
+
+        def append_existing_batch_key(key: str) -> None:
+            if key in batch_keys and key not in select_keys:
+                select_keys.append(key)
+
         if self.config.use_kl_loss:
             select_keys.append("math_teacher_log_prob")
         # Include pre-computed IS weights if present in batch
         # Weights are computed centrally in trainer and added to batch when algorithm.rollout_is=True
-        if "rollout_is_weights" in data.batch.keys():
-            select_keys.append("rollout_is_weights")
+        append_existing_batch_key("rollout_is_weights")
         # Include rollout_log_probs for computing rollout_corr metrics in bypass mode
-        if "rollout_log_probs" in data.batch.keys():
-            select_keys.append("rollout_log_probs")
-         # Include base model log probs for corrected reward computation
+        append_existing_batch_key("rollout_log_probs")
+        # Include base model log probs for corrected reward computation
         # These are computed when actor_rollout_ref.model.base_model_path and
         # actor_rollout_ref.ref.model.base_model_path are both specified
-        if "base_log_prob" in data.batch.keys():
-            select_keys.append("base_log_prob")
-        if "code_teacher_log_prob" in data.batch.keys():
-            select_keys.append("code_teacher_log_prob")
+        append_existing_batch_key("base_log_prob")
+        append_existing_batch_key("code_teacher_log_prob")
         for key in (
             "math_teacher_topk_ids",
             "math_teacher_topk_logprobs",
@@ -851,26 +637,24 @@ class DataParallelPPOActor(BasePPOActor):
             "teacher_prefix_mask",
             "student_suffix_mask",
         ):
-            if key in data.batch.keys():
-                select_keys.append(key)
+            append_existing_batch_key(key)
         # Include math_teacher_log_prob for only_reverse_kl_advantages mode
         teacher_prefix_config_active = bool(self.config.policy_loss.get("teacher_prefix_enabled", False))
         if (
             (self.config.policy_loss.only_reverse_kl_advantages or teacher_prefix_config_active)
-            and "math_teacher_log_prob" in data.batch.keys()
+            and "math_teacher_log_prob" in batch_keys
         ):
-            if "math_teacher_log_prob" not in select_keys:
-                select_keys.append("math_teacher_log_prob")
-        if teacher_prefix_config_active and "code_teacher_log_prob" in data.batch.keys():
-            if "code_teacher_log_prob" not in select_keys:
-                select_keys.append("code_teacher_log_prob")
-        
-        has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
+            append_existing_batch_key("math_teacher_log_prob")
+        if teacher_prefix_config_active:
+            append_existing_batch_key("code_teacher_log_prob")
+
+        non_tensor_keys = set(data.non_tensor_batch.keys())
+        has_multi_modal_inputs = "multi_modal_inputs" in non_tensor_keys
         non_tensor_select_keys = ["multi_modal_inputs"] if has_multi_modal_inputs else []
         # Include audit/domain metadata. Training consumes opd_teacher; the
         # remaining keys are used by MOPD sample-level gradient logging.
         for key in ("opd_teacher", "sample_id", "id", "domain", "source_domain", "ability", "data_source", "extra_info"):
-            if key in data.non_tensor_batch.keys() and key not in non_tensor_select_keys:
+            if key in non_tensor_keys and key not in non_tensor_select_keys:
                 non_tensor_select_keys.append(key)
 
         data = data.select(batch_keys=select_keys, non_tensor_batch_keys=non_tensor_select_keys)
@@ -882,10 +666,11 @@ class DataParallelPPOActor(BasePPOActor):
         on_policy = len(mini_batches) == 1 and self.config.ppo_epochs == 1
 
         metrics = {}
-        topk_distill_active = is_topk_distill_enabled(self.config.policy_loss)
         # MOPD audit: domain-gradient tracker begin
         mopd_gradient_tracker = None
         mopd_full_gradient_cfg = data.meta_info.get("mopd_full_gradient", {})
+        if not isinstance(mopd_full_gradient_cfg, dict):
+            mopd_full_gradient_cfg = {}
         if isinstance(mopd_full_gradient_cfg, dict) and mopd_full_gradient_cfg.get("enabled", False):
             from mopd_verl.full_gradient_worker import SequentialBackwardDomainGradientTracker
 
@@ -904,6 +689,11 @@ class DataParallelPPOActor(BasePPOActor):
                             mopd_full_gradient_cfg.get("micro_batch_size_per_gpu")
                             or self.config.ppo_micro_batch_size_per_gpu
                         ),
+                    )
+                if self.config.use_dynamic_bsz and mopd_static_micro_batch_size is not None:
+                    metrics["global/audit/full_gradient_forced_static_micro_batch"] = 1.0
+                    metrics["global/audit/full_gradient_static_micro_batch_size"] = float(
+                        mopd_static_micro_batch_size
                     )
                 use_dynamic_micro_batch = self.config.use_dynamic_bsz and mopd_static_micro_batch_size is None
                 if use_dynamic_micro_batch:
@@ -933,319 +723,53 @@ class DataParallelPPOActor(BasePPOActor):
                 self.actor_optimizer.zero_grad()
                 # MOPD audit: domain-gradient tracker begin
                 if mopd_gradient_tracker is not None:
-                    mopd_gradient_tracker.start_mini_batch()
+                    append_to_dict(
+                        metrics,
+                        mopd_gradient_tracker.run_pre_update_audit(
+                            tracked_micro_batches,
+                            on_policy=on_policy,
+                            use_dynamic_micro_batch=use_dynamic_micro_batch,
+                            ppo_mini_batch_size=self.config.ppo_mini_batch_size,
+                            gradient_accumulation=self.gradient_accumulation,
+                        ),
+                    )
+                    self.actor_optimizer.zero_grad()
                 # MOPD audit: domain-gradient tracker end
 
-                for mopd_domain, micro_batch in tracked_micro_batches:
+                for _mopd_domain, micro_batch in tracked_micro_batches:
                     micro_batch = micro_batch.to(get_device_id())
                     micro_batch_metrics = {}
                     model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
                     response_mask = model_inputs["response_mask"]
-                    old_log_prob = model_inputs["old_log_probs"]
-                    advantages = model_inputs["advantages"]
-
-                    entropy_coeff = self.config.entropy_coeff
-                    loss_agg_mode = self.config.loss_agg_mode
 
                     if use_dynamic_micro_batch:
                         loss_scale_factor = response_mask.shape[0] / self.config.ppo_mini_batch_size
                     else:
                         loss_scale_factor = 1 / self.gradient_accumulation
 
-                    # all return: (bsz, response_length)
-                    calculate_entropy = False
-                    if entropy_coeff != 0:
-                        calculate_entropy = True
-                    topk_support_ids = None
-                    teacher_support_log_probs = None
-                    topk_support_source_value = None
-                    if topk_distill_active:
-                        (
-                            topk_support_ids,
-                            teacher_support_log_probs,
-                            topk_support_source_value,
-                        ) = _select_topk_support_tensors(
-                            model_inputs,
-                            self.config.policy_loss,
-                        )
-                    use_renormalized_support = (
-                        topk_distill_active
-                        and topk_distill_uses_renormalized_support(self.config.policy_loss)
+                    loss_result = build_actor_micro_batch_loss(
+                        self,
+                        micro_batch,
+                        loss_scale_factor=float(loss_scale_factor),
+                        on_policy=on_policy,
+                        include_metrics=True,
+                        temperature=float(temperature),
                     )
-                    effective_topk_logprob_mode = topk_distill_logprob_mode(self.config.policy_loss)
-                    if use_renormalized_support:
-                        effective_topk_logprob_mode = TOPK_LOGPROB_MODE_SPARSE
-                    kl_loss_coef = float(self.config.kl_loss_coef or 0.0)
-                    calculate_log_probs = not topk_distill_active or (
-                        self.config.use_kl_loss and kl_loss_coef != 0.0
-                    )
-                    selected_topk_param_context = nullcontext()
-                    if (
-                        topk_distill_active
-                        and topk_support_ids is not None
-                        and use_renormalized_support
-                        and effective_topk_logprob_mode == TOPK_LOGPROB_MODE_SPARSE
-                        and not calculate_log_probs
-                        and not calculate_entropy
-                    ):
-                        selected_topk_param_context = self._selected_topk_param_context()
-                    selected_topk_param_context.__enter__()
-                    forward_output = self._forward_micro_batch(
-                        model_inputs,
-                        temperature=temperature,
-                        calculate_entropy=calculate_entropy,
-                        gather_topk_ids=topk_support_ids,
-                        calculate_log_probs=calculate_log_probs,
-                        normalize_gathered_topk=not use_renormalized_support,
-                        topk_logprob_chunk_size=topk_distill_logprob_chunk_size(self.config.policy_loss),
-                        topk_logprob_mode=effective_topk_logprob_mode,
-                        return_extra=topk_distill_active,
-                    )
-                    if topk_distill_active:
-                        entropy, log_prob, _, _, student_topk_log_probs = forward_output
-                    else:
-                        entropy, log_prob = forward_output
-                    prefix_loss_mask, suffix_loss_mask, teacher_prefix_active = teacher_prefix_masks(
-                        model_inputs,
-                        response_mask,
-                        self.config.policy_loss,
-                    )
-                    distill_response_mask = suffix_loss_mask if teacher_prefix_active else response_mask
-                    loss_token_mask = (
-                        (prefix_loss_mask + suffix_loss_mask).clamp(max=1.0)
-                        if teacher_prefix_active
-                        else response_mask
-                    )
-
-                    # for fully_async_policy recipe
-                    if hasattr(self.config, "use_rollout_log_probs") and self.config.use_rollout_log_probs:
-                        old_log_prob = model_inputs["old_log_probs"]
-                    else:
-                        if on_policy:
-                            old_log_prob = log_prob.detach()
-                        else:
-                            old_log_prob = model_inputs["old_log_probs"]
-
-                    loss_mode = self.config.policy_loss.get("loss_mode", "vanilla")
-                    # vanilla -> verl.trainer.ppo.core_algos.compute_policy_loss_vanilla
-
-                    # Extract pre-computed rollout correction weights if present
-                    # Weights are computed centrally in trainer and added when algorithm.rollout_is=True
-                    rollout_is_weights = model_inputs.get("rollout_is_weights", None)
-
-                    if topk_distill_active:
-                        pg_loss = log_prob.new_zeros(())
-                    else:
-                        # only use reverse KL for advantages if only_reverse_kl_advantages is True
-                        if self.config.policy_loss.only_reverse_kl_advantages:
-                            # Corrected reverse KL with base model normalization if base log probs are available
-                            # Formula: (log_prob_actor - log_prob_ref) - (log_prob_actor_base - log_prob_ref_base)
-                            # This removes the base model bias from both actor and ref models
-                            if "base_log_prob" in model_inputs:
-                                lambda_vals = self.config.policy_loss.lambda_vals
-
-                                if self.config.policy_loss.multi_teacher_distill:
-                                    #### multi-teacher distillation ####
-                                    if "opd_teacher" in model_inputs:
-                                        opd_teacher = model_inputs["opd_teacher"]
-                                        batch_size = old_log_prob.shape[0]
-
-                                        reverse_kl = torch.zeros_like(old_log_prob)
-
-                                        for i in range(batch_size):
-                                            teacher_type = _teacher_type_at(opd_teacher, i)
-                                            if teacher_type == "code" and "code_teacher_log_prob" in model_inputs:
-                                                teacher_log_prob = model_inputs["code_teacher_log_prob"][i]
-                                            else:
-                                                teacher_log_prob = model_inputs["math_teacher_log_prob"][i]
-                                            if lambda_vals == 1.0:
-                                                reverse_kl[i] = old_log_prob[i] - teacher_log_prob
-                                            else:
-                                                reverse_kl[i] = old_log_prob[i] - model_inputs["base_log_prob"][i] - (teacher_log_prob - model_inputs["base_log_prob"][i]) * lambda_vals
-                                    else:
-                                        reverse_kl = old_log_prob - model_inputs["math_teacher_log_prob"]
-                                    #### multi-teacher distillation ####
-                                else:
-                                    #### single-teacher distillation ####
-                                    reverse_kl = old_log_prob - model_inputs["base_log_prob"]
-                                    reward_correction = model_inputs["math_teacher_log_prob"] - model_inputs["base_log_prob"]
-
-                                    if lambda_vals == 1.0:
-                                        reverse_kl = old_log_prob - model_inputs["math_teacher_log_prob"]
-                                    else:
-                                        reverse_kl = reverse_kl - reward_correction * lambda_vals
-                                    #### single-teacher distillation ####
-                            elif (
-                                "code_teacher_log_prob" in model_inputs
-                                and self.config.policy_loss.multi_teacher_distill
-                                and "opd_teacher" in model_inputs
-                            ):
-                                opd_teacher = model_inputs["opd_teacher"]
-                                batch_size = old_log_prob.shape[0]
-                                reverse_kl = torch.zeros_like(old_log_prob)
-
-                                for i in range(batch_size):
-                                    teacher_type = _teacher_type_at(opd_teacher, i)
-                                    teacher_log_prob = (
-                                        model_inputs["code_teacher_log_prob"][i]
-                                        if teacher_type == "code"
-                                        else model_inputs["math_teacher_log_prob"][i]
-                                    )
-                                    reverse_kl[i] = old_log_prob[i] - teacher_log_prob
-                            else:
-                                # Standard reverse KL: log(π_actor / π_ref) = log_prob_actor - log_prob_ref
-                                reverse_kl = old_log_prob - model_inputs["math_teacher_log_prob"]
-                            advantages = (- (reverse_kl))
-
-                        # gpg -> verl.trainer.ppo.core_algos.compute_policy_loss_gpg
-                        # clip_cov -> verl.trainer.ppo.core_algos.compute_policy_loss_clip_cov
-                        policy_loss_fn = get_policy_loss_fn(loss_mode)
-
-                        # Compute policy loss (any function is expected to return 2 values)
-                        pg_loss, pg_metrics = policy_loss_fn(
-                            old_log_prob=old_log_prob,
-                            log_prob=log_prob,
-                            advantages=advantages,
-                            response_mask=distill_response_mask,
-                            loss_agg_mode=loss_agg_mode,
-                            config=self.config,
-                            rollout_is_weights=rollout_is_weights,
-                        )
-                        micro_batch_metrics.update(pg_metrics)
-
-                        # Skip if using pure rollout correction mode (metrics already in pg_metrics)
-                        rollout_log_prob = model_inputs.get("rollout_log_probs", None)
-                        if loss_mode != "rollout_correction" and rollout_log_prob is not None:
-                            # Compute metrics using CURRENT policy π_θ vs π_rollout
-                            # Tracks evolving off-policy gap as π_θ updates during mini-batch training
-                            from verl.trainer.ppo.rollout_corr_helper import compute_rollout_corr_metrics_from_logprobs
-
-                            rollout_corr_metrics = compute_rollout_corr_metrics_from_logprobs(
-                                log_prob=log_prob,
-                                rollout_log_prob=rollout_log_prob,
-                                response_mask=distill_response_mask,
-                            )
-                            micro_batch_metrics.update(rollout_corr_metrics)
-
-                    if entropy_coeff != 0:
-                        entropy_loss = agg_loss(loss_mat=entropy, loss_mask=loss_token_mask, loss_agg_mode=loss_agg_mode)
-
-                        # compute policy loss
-                        policy_loss = pg_loss - entropy_loss * entropy_coeff
-                    else:
-                        policy_loss = pg_loss
-
-                    if topk_distill_active:
-                        topk_loss_mat = topk_distill_loss_matrix(
-                            student_topk_log_probs=student_topk_log_probs,
-                            teacher_topk_log_probs=teacher_support_log_probs,
-                            mode=resolved_topk_distill_mode(self.config.policy_loss),
-                            include_tail=topk_distill_include_tail(self.config.policy_loss),
-                            temperature=topk_distill_temperature(self.config.policy_loss),
-                        )
-                        topk_loss = agg_loss(
-                            loss_mat=topk_loss_mat,
-                            loss_mask=distill_response_mask,
-                            loss_agg_mode=loss_agg_mode,
-                        )
-                        topk_weight = topk_distill_weight(self.config.policy_loss)
-                        policy_loss = policy_loss + topk_loss * topk_weight
-                        micro_batch_metrics["actor/topk_distill_loss"] = (
-                            topk_loss.detach().item() * loss_scale_factor
-                        )
-                        micro_batch_metrics["actor/topk_distill_weight"] = topk_weight
-                        micro_batch_metrics["actor/topk_distill_support_is_student"] = (
-                            float(topk_support_source_value == TOPK_SUPPORT_SOURCE_STUDENT)
-                        )
-                        for key, value in topk_distill_bucket_metrics(
-                            student_topk_log_probs=student_topk_log_probs,
-                            teacher_topk_log_probs=teacher_support_log_probs,
-                            response_mask=distill_response_mask,
-                            student_values_are_log_probs=not use_renormalized_support,
-                            support_source=topk_support_source_value,
-                        ).items():
-                            micro_batch_metrics[f"actor/{key}"] = value
-
-                    if teacher_prefix_active:
-                        prefix_weight = teacher_prefix_forward_weight(self.config.policy_loss)
-                        if topk_distill_active:
-                            prefix_loss_mat = topk_distill_loss_matrix(
-                                student_topk_log_probs=student_topk_log_probs,
-                                teacher_topk_log_probs=teacher_support_log_probs,
-                                mode=TOPK_RENORMALIZED_FORWARD_KL,
-                                include_tail=False,
-                                temperature=topk_distill_temperature(self.config.policy_loss),
-                            )
-                        else:
-                            teacher_log_prob = select_teacher_log_prob_tensor(
-                                model_inputs,
-                                self.config.policy_loss,
-                            )
-                            prefix_loss_mat = chosen_token_forward_kl_matrix(
-                                student_log_probs=log_prob,
-                                teacher_log_probs=teacher_log_prob,
-                            )
-                        prefix_loss = agg_loss(
-                            loss_mat=prefix_loss_mat,
-                            loss_mask=prefix_loss_mask,
-                            loss_agg_mode=loss_agg_mode,
-                        )
-                        policy_loss = policy_loss + prefix_loss * prefix_weight
-                        micro_batch_metrics["actor/teacher_prefix_forward_kl_loss"] = (
-                            prefix_loss.detach().item() * loss_scale_factor
-                        )
-                        micro_batch_metrics["actor/teacher_prefix_forward_kl_weight"] = prefix_weight
-                        micro_batch_metrics["actor/teacher_prefix_token_count"] = (
-                            prefix_loss_mask.detach().sum().item() * loss_scale_factor
-                        )
-                        micro_batch_metrics["actor/student_suffix_token_count"] = (
-                            suffix_loss_mask.detach().sum().item() * loss_scale_factor
-                        )
-
-                    if self.config.use_kl_loss and kl_loss_coef != 0.0:
-                        math_teacher_log_prob = model_inputs["math_teacher_log_prob"]
-                        # compute kl loss
-                        kld = kl_penalty(
-                            logprob=log_prob, ref_logprob=math_teacher_log_prob, kl_penalty=self.config.kl_loss_type
-                        )
-                        kl_loss = agg_loss(loss_mat=kld, loss_mask=distill_response_mask, loss_agg_mode=loss_agg_mode)
-
-                        policy_loss = policy_loss + kl_loss * self.config.kl_loss_coef
-                        micro_batch_metrics["actor/kl_loss"] = kl_loss.detach().item() * loss_scale_factor
-                        micro_batch_metrics["actor/kl_coef"] = self.config.kl_loss_coef
-
-
-                    if self.config.use_dynamic_bsz:
-                        # relative to the dynamic bsz
-                        loss = policy_loss * loss_scale_factor
-                    else:
-                        loss = policy_loss * loss_scale_factor
-                    # MOPD audit: sample-gradient tracker begin
-                    if mopd_gradient_tracker is not None:
-                        mopd_gradient_tracker.before_backward(
-                            mopd_domain,
-                            micro_batch,
-                            loss_scale_factor=loss_scale_factor,
-                            on_policy=on_policy,
-                        )
-                    # MOPD audit: sample-gradient tracker end
+                    loss = loss_result.loss
+                    micro_batch_metrics.update(loss_result.metrics)
                     if self.scaler is not None:
                         self.scaler.scale(loss).backward()
                     else:
                         loss.backward()
-                    # MOPD audit: domain-gradient tracker begin
-                    if mopd_gradient_tracker is not None:
-                        mopd_gradient_tracker.after_backward(mopd_domain, len(micro_batch), micro_batch)
-                    # MOPD audit: domain-gradient tracker end
-                    selected_topk_param_context.__exit__(None, None, None)
 
-                    micro_batch_metrics["actor/pg_loss"] = pg_loss.detach().item() * loss_scale_factor
                     append_to_dict(metrics, micro_batch_metrics)
 
-                # MOPD audit: domain-gradient tracker begin
                 if mopd_gradient_tracker is not None:
-                    append_to_dict(metrics, mopd_gradient_tracker.finish_mini_batch())
-                # MOPD audit: domain-gradient tracker end
+                    append_to_dict(
+                        metrics,
+                        mopd_gradient_tracker.full_grad_training_parity_metrics(),
+                    )
+
                 grad_norm = self._optimizer_step()
                 mini_batch_metrics = {"actor/grad_norm": grad_norm.detach().item()}
                 append_to_dict(metrics, mini_batch_metrics)

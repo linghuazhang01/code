@@ -32,8 +32,12 @@
 | `configs/mopd_formal_audit_off_8gpu.yaml` | 8 卡 audit-off 训练。 |
 | `configs/mopd_formal_audit_all_smoke.yaml` | 2 卡 one-step 指标 smoke，打开全部 audit 输出和 full-vocab vectors。 |
 | `configs/mopd_formal_audit_loss_only_smoke.yaml` | 2 卡 one-step smoke，token-gradient selection 只用 loss magnitude。 |
+| `configs/mopd_formal_audit_grad_consistency_2gpu_smoke.yaml` | 2 卡 Qwen3-0.6B smoke，用于验证 full/sample/token gradient 闭合。 |
+| `configs/mopd_formal_audit_grad_consistency_2gpu_b16_1step_smoke.yaml` | 2 卡 batch size 16、1 step 的 gradient consistency smoke。 |
+| `configs/mopd_formal_audit_grad_consistency_2gpu_b32_2step_smoke.yaml` | 2 卡 batch size 32、2 step 的 gradient consistency smoke。 |
+| `configs/mopd_formal_audit_grad_consistency_2gpu_b64_3step_smoke.yaml` | 2 卡 batch size 64、3 step 的 gradient consistency smoke。 |
 
-所有配置共同使用：
+正式 2/4/6/8 卡配置共同使用：
 
 - student: `../models/Qwen3-4B`
 - math teacher: `../models/Qwen3-4B-Non-Thinking-RL-Math-Step500`
@@ -64,7 +68,11 @@
 
 `mopd_formal_audit_off_*gpu.yaml` 设置 `audit.enabled=false`，并显式关闭所有 audit 子开关。
 
-smoke profile 作为指标测试 profile 保留并纳入测试。它们使用 `data.train_batch_size=32`、`actor.ppo_mini_batch_size=32`、`trainer.total_training_steps=1`，但保持正式 `data.max_response_length=16384`，并保留 full-vocab token gap 与 entropy vectors。
+all-audit 和 loss-only smoke profile 作为指标测试 profile 保留并纳入测试。它们使用 `data.train_batch_size=32`、`actor.ppo_mini_batch_size=32`、`trainer.total_training_steps=1`，但保持正式 `data.max_response_length=16384`，并保留 full-vocab token gap 与 entropy vectors。
+
+gradient consistency smoke profile 使用 `../models/Qwen3-0.6B` 降低闭合验证成本。它们启用 sequence-masked domain target、sample/token backward recompute，并通过 token `top_p=1.0` closure 检查把 full-token gradient 与 domain gradient 对齐比较。
+
+配置默认使用 `logger: '["console","tensorboard","wandb"]'`、`runtime.wandb_entity: lz101-rice-university` 和 `runtime.env_file: .env.local`。在启动训练的机器上把 `WANDB_API_KEY` 放入 `.env.local`；该文件已 gitignore，不能提交。无需 W&B 的本地 dry-run 可以覆盖 `runtime.wandb_mode=disabled`。
 
 ## 启动
 
@@ -76,6 +84,8 @@ GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
   configs/mopd_formal_audit_all_2gpu.yaml \
   --run-id mopd_audit_all_2gpu_$(date +%Y%m%d_%H%M%S)
 ```
+
+`scripts/start_remote_mopd_training.sh` 在 `/root/miniconda3/envs/mopd-verl` 存在时会默认使用这个环境，并在 launch 日志里打印实际 Python 路径。
 
 启动 audit-off 版本：
 

@@ -624,6 +624,14 @@ class MOPDAuditLogger:
         self.calibration_bins = max(1, int(_cfg_get(audit_config, "calibration_bins", 10)))
         self.full_gradient_enabled = bool(_cfg_get(audit_config, "full_gradient_enabled", False))
         self.full_gradient_freq_steps = max(1, int(_cfg_get(audit_config, "full_gradient_freq_steps", 1)))
+        full_grad_training_parity_freq_steps = _cfg_get(
+            audit_config,
+            "full_grad_training_parity_freq_steps",
+            1,
+        )
+        self.full_grad_training_parity_freq_steps = int(
+            1 if full_grad_training_parity_freq_steps is None else full_grad_training_parity_freq_steps
+        )
         self.full_gradient_train_max_samples_per_domain = _optional_positive_int(
             _cfg_get(audit_config, "full_gradient_train_max_samples_per_domain", None)
         )
@@ -632,6 +640,16 @@ class MOPDAuditLogger:
             int(_cfg_get(audit_config, "full_gradient_micro_batch_size_per_gpu", 1)),
         )
         self.full_gradient_storage_dtype = str(_cfg_get(audit_config, "full_gradient_storage_dtype", "float32"))
+        self.execution_timing = str(_cfg_get(audit_config, "execution_timing", "pre_update")).lower()
+        self.full_gradient_direct_recompute_enabled = bool(
+            _cfg_get(audit_config, "full_gradient_direct_recompute_enabled", True)
+        )
+        self.sequence_masked_target_enabled = bool(
+            _cfg_get(audit_config, "sequence_masked_target_enabled", False)
+        )
+        self.sequence_masked_target_use_as_primary = bool(
+            _cfg_get(audit_config, "sequence_masked_target_use_as_primary", False)
+        )
         self.sample_gradient_enabled = bool(_cfg_get(audit_config, "sample_gradient_enabled", False))
         self.sample_gradient_freq_steps = max(1, int(_cfg_get(audit_config, "sample_gradient_freq_steps", 1)))
         self.sample_gradient_norm_enabled = bool(_cfg_get(audit_config, "sample_gradient_norm_enabled", True))
@@ -639,6 +657,12 @@ class MOPDAuditLogger:
         self.sample_gradient_cos_freq_steps = max(
             1,
             int(_cfg_get(audit_config, "sample_gradient_cos_freq_steps", 1)),
+        )
+        self.sample_gradient_backward_recompute_enabled = bool(
+            _cfg_get(audit_config, "sample_gradient_backward_recompute_enabled", True)
+        )
+        self.sample_gradient_backward_sync_enabled = bool(
+            _cfg_get(audit_config, "sample_gradient_backward_sync_enabled", True)
         )
         self.sample_gradient_log_sample_level = bool(
             _cfg_get(audit_config, "sample_gradient_log_sample_level", True)
@@ -700,6 +724,12 @@ class MOPDAuditLogger:
         )
         self.token_gradient_strict_grad_restore = bool(
             _cfg_get(audit_config, "token_gradient_strict_grad_restore", False)
+        )
+        self.token_gradient_backward_recompute_enabled = bool(
+            _cfg_get(audit_config, "token_gradient_backward_recompute_enabled", True)
+        )
+        self.token_gradient_backward_sync_enabled = bool(
+            _cfg_get(audit_config, "token_gradient_backward_sync_enabled", True)
         )
         policy_loss = _cfg_get(_cfg_get(_cfg_get(config, "actor_rollout_ref", {}), "actor", {}), "policy_loss", {})
         self.lambda_vals = float(_cfg_get(policy_loss, "lambda_vals", 1.0))
@@ -802,7 +832,11 @@ class MOPDAuditLogger:
                 and step % self.sample_gradient_cos_freq_steps == 0
             )
         )
-        return self.enabled and (full_gradient_active or sample_gradient_active or self.should_compute_token_gradient(step))
+        return self.enabled and (
+            full_gradient_active
+            or sample_gradient_active
+            or self.should_compute_token_gradient(step)
+        )
 
     def should_compute_domain_gradient(self, step: int) -> bool:
         full_gradient_active = self.full_gradient_enabled and step % self.full_gradient_freq_steps == 0
@@ -810,6 +844,10 @@ class MOPDAuditLogger:
 
     def should_compute_token_gradient(self, step: int) -> bool:
         return self._freq_active(self.token_gradient_enabled, self.token_gradient_freq_steps, step)
+
+    def should_log_full_grad_training_parity(self, step: int) -> bool:
+        freq_steps = int(self.full_grad_training_parity_freq_steps)
+        return self.enabled and freq_steps >= 0 and step % max(1, freq_steps) == 0
 
     def balance_domain_gradient_batch(
         self,
@@ -931,6 +969,11 @@ class MOPDAuditLogger:
                 "max_samples_per_domain": self.full_gradient_train_max_samples_per_domain,
                 "micro_batch_size_per_gpu": self.full_gradient_micro_batch_size_per_gpu,
                 "storage_dtype": self.full_gradient_storage_dtype,
+                "execution_timing": self.execution_timing,
+                "full_gradient_direct_recompute_enabled": self.full_gradient_direct_recompute_enabled,
+                "sequence_masked_target_enabled": self.sequence_masked_target_enabled,
+                "sequence_masked_target_use_as_primary": self.sequence_masked_target_use_as_primary,
+                "full_grad_training_parity_freq_steps": self.full_grad_training_parity_freq_steps,
                 "learning_rate": self._current_learning_rate_value(),
                 "sample_gradient_enabled": self.should_compute_sample_gradient(step) and mode == "train",
                 "sample_gradient_freq_steps": self.sample_gradient_freq_steps,
@@ -939,6 +982,8 @@ class MOPDAuditLogger:
                 and mode == "train"
                 and step % self.sample_gradient_cos_freq_steps == 0,
                 "sample_gradient_cos_freq_steps": self.sample_gradient_cos_freq_steps,
+                "sample_gradient_backward_recompute_enabled": self.sample_gradient_backward_recompute_enabled,
+                "sample_gradient_backward_sync_enabled": self.sample_gradient_backward_sync_enabled,
                 "sample_gradient_log_sample_level": self.should_log_sample_gradient_level(step),
                 "sample_gradient_log_sample_level_freq_steps": self.sample_gradient_log_sample_level_freq_steps,
                 "offload_domain_gradients": self.full_gradient_offload_domain_gradients,
@@ -950,6 +995,8 @@ class MOPDAuditLogger:
                 "token_gradient_top_k": self.token_gradient_top_k,
                 "token_gradient_top_p": self.token_gradient_top_p,
                 "token_gradient_strict_grad_restore": self.token_gradient_strict_grad_restore,
+                "token_gradient_backward_recompute_enabled": self.token_gradient_backward_recompute_enabled,
+                "token_gradient_backward_sync_enabled": self.token_gradient_backward_sync_enabled,
                 "domain_partition": domain_partition or {},
             }
         }

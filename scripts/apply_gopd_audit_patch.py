@@ -653,7 +653,17 @@ def patch_dp_actor(gopd_dir: Path) -> bool:
                 self.actor_optimizer.zero_grad()
                 # MOPD audit: domain-gradient tracker begin
                 if mopd_gradient_tracker is not None:
-                    mopd_gradient_tracker.start_mini_batch()
+                    append_to_dict(
+                        metrics,
+                        mopd_gradient_tracker.run_pre_update_audit(
+                            tracked_micro_batches,
+                            on_policy=on_policy,
+                            use_dynamic_micro_batch=False,
+                            ppo_mini_batch_size=self.config.ppo_mini_batch_size,
+                            gradient_accumulation=self.gradient_accumulation,
+                        ),
+                    )
+                    self.actor_optimizer.zero_grad()
                 # MOPD audit: domain-gradient tracker end
 
                 for mopd_domain, micro_batch in tracked_micro_batches:
@@ -668,23 +678,10 @@ def patch_dp_actor(gopd_dir: Path) -> bool:
 
                     micro_batch_metrics["actor/pg_loss"] = pg_loss.detach().item() * loss_scale_factor
 ''',
-        '''                    # MOPD audit: sample-gradient tracker begin
-                    if mopd_gradient_tracker is not None:
-                        mopd_gradient_tracker.before_backward(
-                            mopd_domain,
-                            micro_batch,
-                            loss_scale_factor=loss_scale_factor,
-                            on_policy=on_policy,
-                        )
-                    # MOPD audit: sample-gradient tracker end
-                    if self.scaler is not None:
+        '''                    if self.scaler is not None:
                         self.scaler.scale(loss).backward()
                     else:
                         loss.backward()
-                    # MOPD audit: domain-gradient tracker begin
-                    if mopd_gradient_tracker is not None:
-                        mopd_gradient_tracker.after_backward(mopd_domain, len(micro_batch), micro_batch)
-                    # MOPD audit: domain-gradient tracker end
 
                     micro_batch_metrics["actor/pg_loss"] = pg_loss.detach().item() * loss_scale_factor
 ''',
@@ -693,10 +690,12 @@ def patch_dp_actor(gopd_dir: Path) -> bool:
         path,
         '''                grad_norm = self._optimizer_step()
 ''',
-        '''                # MOPD audit: domain-gradient tracker begin
-                if mopd_gradient_tracker is not None:
-                    append_to_dict(metrics, mopd_gradient_tracker.finish_mini_batch())
-                # MOPD audit: domain-gradient tracker end
+        '''                if mopd_gradient_tracker is not None:
+                    append_to_dict(
+                        metrics,
+                        mopd_gradient_tracker.full_grad_training_parity_metrics(),
+                    )
+
                 grad_norm = self._optimizer_step()
 ''',
     )

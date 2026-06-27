@@ -5,7 +5,9 @@
 runtime:
   python_bin: python
   verl_module: verl.trainer.main_ppo
-  wandb_mode: disabled
+  wandb_mode: online
+  wandb_entity: lz101-rice-university
+  env_file: .env.local
   used_model: no_api
 
 data:
@@ -118,6 +120,7 @@ audit:
   calibration_bins: 10
   full_gradient_enabled: false
   full_gradient_freq_steps: 1
+  full_grad_training_parity_freq_steps: 1
   full_gradient_train_max_samples_per_domain: null
   full_gradient_micro_batch_size_per_gpu: 1
   full_gradient_storage_dtype: bfloat16
@@ -168,9 +171,9 @@ paper_eval:
   timeout_seconds: 0
 
 trainer:
-  project_name: on-policy-distillation
+  project_name: MOPD
   experiment_name: Qwen3-4B-Multi-Teacher-ExOPD-formal-audit-off-2gpu
-  logger: '["console","tensorboard"]'
+  logger: '["console","tensorboard","wandb"]'
   n_gpus_per_node: 2
   nnodes: 1
   save_freq: 5

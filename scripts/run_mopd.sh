@@ -75,6 +75,7 @@ fi
 
 export PYTHONPATH="${CODE_DIR}:${VERL_RUNTIME_DIR}:${PYTHONPATH:-}"
 export PYTHONINTMAXSTRDIGITS="${PYTHONINTMAXSTRDIGITS:-0}"
+cd "${CODE_DIR}"
 
 ARGS=(--config "${CONFIG_PATH}")
 if [[ "${DRY_RUN:-0}" == "1" || "${DRY_RUN_FLAG}" == "1" ]]; then

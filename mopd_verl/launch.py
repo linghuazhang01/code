@@ -88,15 +88,26 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"+mopd_audit.calibration_bins={audit.calibration_bins}",
         f"+mopd_audit.full_gradient_enabled={str(audit.full_gradient_enabled).lower()}",
         f"+mopd_audit.full_gradient_freq_steps={audit.full_gradient_freq_steps}",
+        f"+mopd_audit.full_grad_training_parity_freq_steps={audit.full_grad_training_parity_freq_steps}",
         "+mopd_audit.full_gradient_train_max_samples_per_domain="
         f"{_hydra_scalar(audit.full_gradient_train_max_samples_per_domain)}",
         f"+mopd_audit.full_gradient_micro_batch_size_per_gpu={audit.full_gradient_micro_batch_size_per_gpu}",
         f"+mopd_audit.full_gradient_storage_dtype={audit.full_gradient_storage_dtype}",
+        "+mopd_audit.full_gradient_direct_recompute_enabled="
+        f"{str(audit.full_gradient_direct_recompute_enabled).lower()}",
+        "+mopd_audit.sequence_masked_target_enabled="
+        f"{str(audit.sequence_masked_target_enabled).lower()}",
+        "+mopd_audit.sequence_masked_target_use_as_primary="
+        f"{str(audit.sequence_masked_target_use_as_primary).lower()}",
         f"+mopd_audit.sample_gradient_enabled={str(audit.sample_gradient_enabled).lower()}",
         f"+mopd_audit.sample_gradient_freq_steps={audit.sample_gradient_freq_steps}",
         f"+mopd_audit.sample_gradient_norm_enabled={str(audit.sample_gradient_norm_enabled).lower()}",
         f"+mopd_audit.sample_gradient_cos_enabled={str(audit.sample_gradient_cos_enabled).lower()}",
         f"+mopd_audit.sample_gradient_cos_freq_steps={audit.sample_gradient_cos_freq_steps}",
+        "+mopd_audit.sample_gradient_backward_recompute_enabled="
+        f"{str(audit.sample_gradient_backward_recompute_enabled).lower()}",
+        "+mopd_audit.sample_gradient_backward_sync_enabled="
+        f"{str(audit.sample_gradient_backward_sync_enabled).lower()}",
         f"+mopd_audit.sample_gradient_log_sample_level={str(audit.sample_gradient_log_sample_level).lower()}",
         "+mopd_audit.sample_gradient_log_sample_level_freq_steps="
         f"{audit.sample_gradient_log_sample_level_freq_steps}",
@@ -125,6 +136,10 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"+mopd_audit.token_gradient_top_p={audit.token_gradient_top_p}",
         f"+mopd_audit.token_gradient_strict_grad_restore="
         f"{str(audit.token_gradient_strict_grad_restore).lower()}",
+        "+mopd_audit.token_gradient_backward_recompute_enabled="
+        f"{str(audit.token_gradient_backward_recompute_enabled).lower()}",
+        "+mopd_audit.token_gradient_backward_sync_enabled="
+        f"{str(audit.token_gradient_backward_sync_enabled).lower()}",
     ]
 
 
@@ -309,10 +324,52 @@ def format_command(command: Sequence[str]) -> str:
     return " ".join(shlex.quote(part) for part in command)
 
 
+def _valid_env_key(key: str) -> bool:
+    if not key or key[0].isdigit():
+        return False
+    return all(char == "_" or char.isalnum() for char in key)
+
+
+def _read_env_file(path: str | None) -> dict[str, str]:
+    if not path:
+        return {}
+
+    env_path = Path(path).expanduser()
+    if not env_path.is_absolute():
+        env_path = Path.cwd() / env_path
+    if not env_path.exists():
+        return {}
+
+    values: dict[str, str] = {}
+    for line_number, raw_line in enumerate(env_path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            raise ValueError(f"Invalid env file line {line_number} in {env_path}: expected KEY=value.")
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not _valid_env_key(key):
+            raise ValueError(f"Invalid env key {key!r} on line {line_number} in {env_path}.")
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
 def run_command(command: Sequence[str], config: MOPDConfig) -> int:
     env = os.environ.copy()
+    shell_env = set(env)
+    for key, value in _read_env_file(config.runtime.env_file).items():
+        env.setdefault(key, value)
     env.setdefault("PYTHONUNBUFFERED", "1")
     env.setdefault("PYTHONINTMAXSTRDIGITS", "0")
+    if config.runtime.wandb_entity is not None and "WANDB_ENTITY" not in shell_env:
+        env["WANDB_ENTITY"] = config.runtime.wandb_entity
     env.setdefault("WANDB_MODE", config.runtime.wandb_mode)
     env.setdefault("USED_MODEL", config.runtime.used_model)
     return subprocess.call(list(command), env=env)

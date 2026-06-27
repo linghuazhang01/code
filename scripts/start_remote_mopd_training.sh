@@ -29,6 +29,8 @@ Environment:
   LOG_DIR=$CODE_DIR/logs
   STOP_STALE_RAY=1
   GPU_IDLE_MEMORY_LIMIT_MB=1000
+  MOPD_REMOTE_CONDA_ENV=/root/miniconda3/envs/mopd-verl
+  MOPD_REMOTE_CONDA_ROOT=/root/miniconda3
   MOPD_STEP_PROGRESS=1
   MOPD_VLLM_GENERATE_PROGRESS=1
 USAGE
@@ -47,6 +49,12 @@ LOG_DIR="${LOG_DIR:-${CODE_DIR}/logs}"
 STOP_STALE_RAY="${STOP_STALE_RAY:-1}"
 GPU_IDLE_MEMORY_LIMIT_MB="${GPU_IDLE_MEMORY_LIMIT_MB:-1000}"
 VERL_RUNTIME_DIR="${VERL_RUNTIME_DIR:-${CODE_DIR}/third_party/verl}"
+MOPD_REMOTE_CONDA_ENV="${MOPD_REMOTE_CONDA_ENV:-/root/miniconda3/envs/mopd-verl}"
+MOPD_REMOTE_CONDA_ROOT="${MOPD_REMOTE_CONDA_ROOT:-/root/miniconda3}"
+
+if [[ -d "${MOPD_REMOTE_CONDA_ENV}/bin" ]]; then
+  export PATH="${MOPD_REMOTE_CONDA_ENV}/bin:${MOPD_REMOTE_CONDA_ROOT}/bin:${PATH:-}"
+fi
 
 GPU_IDS="${GPU_IDS//$'\t'/,}"
 GPU_IDS="${GPU_IDS// /,}"
@@ -311,6 +319,9 @@ cat > "${LAUNCH_FILE}" <<LAUNCH
 #!/usr/bin/env bash
 set -euo pipefail
 cd $(quote "${CODE_DIR}")
+if [[ -d $(quote "${MOPD_REMOTE_CONDA_ENV}")/bin ]]; then
+  export PATH=$(quote "${MOPD_REMOTE_CONDA_ENV}")/bin:$(quote "${MOPD_REMOTE_CONDA_ROOT}")/bin:\${PATH:-}
+fi
 export CUDA_VISIBLE_DEVICES=$(quote "${GPU_IDS}")
 export PYTHONUNBUFFERED=1
 export PYTHONINTMAXSTRDIGITS=0
@@ -318,7 +329,6 @@ export VERL_RUNTIME_DIR=$(quote "${VERL_RUNTIME_DIR}")
 export PYTHONPATH=$(quote "${CODE_DIR}"):$(quote "${VERL_RUNTIME_DIR}"):\${PYTHONPATH:-}
 export TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS=\${OMP_NUM_THREADS:-8}
-export WANDB_MODE=\${WANDB_MODE:-disabled}
 export USED_MODEL=\${USED_MODEL:-no_api}
 export MOPD_STEP_PROGRESS=\${MOPD_STEP_PROGRESS:-1}
 export MOPD_VLLM_GENERATE_PROGRESS=\${MOPD_VLLM_GENERATE_PROGRESS:-1}
@@ -339,6 +349,8 @@ trap 'kill \${GPU_MONITOR_PID} 2>/dev/null || true' EXIT
   echo CUDA_VISIBLE_DEVICES=$(quote "${GPU_IDS}")
   echo LOG_FILE=$(quote "${LOG_FILE}")
   echo START_TS=\$(date -Is)
+  echo PYTHON_BIN=\$(command -v python)
+  python --version
   $(printf "%s" "${DRY_RUN_ENV}")bash scripts/run_mopd.sh $(quote "${CONFIG_PATH}")${RUN_MOPD_EXTRA_ARGS_Q}
 } 2>&1 | tee -a $(quote "${LOG_FILE}")
 LAUNCH

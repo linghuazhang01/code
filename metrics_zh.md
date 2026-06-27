@@ -200,7 +200,8 @@ token_gradient_strict_grad_restore: false
 sample-gradient 配置的含义：
 
 - `sample_gradient_norm_enabled: true`：每个 step 统计 domain 内每个样本对真实 backward 的 sample grad norm 分布，不额外 recompute。
-- `sample_gradient_cos_enabled: false`：默认禁用 sample-to-domain gradient cosine。当前实现依赖 `torch.autograd.grad()` 重算 sample gradient，实测容易出现全参数断图；如需诊断可临时开启。
+- `sample_gradient_cos_enabled: false`：默认禁用 sample-to-domain gradient cosine。临时开启时会对每个样本做 auxiliary backward recompute，并在每次 recompute 后恢复训练 `.grad`；该路径成本约等于“每个样本一次额外 forward/backward”，建议只用于 smoke/debug。
+- `sample_gradient_backward_sync_enabled: true`：sample recompute 默认触发 FSDP/DDP sync backward，和 domain/token gradient 使用同一个 optimizer-space 统计口径。non-owner rank 会用 zero-mask loss 参与每个 global sample slot 的 collective，避免不同 rank backward 次序不一致；同时额外输出 sample vector closure，用来判断 raw projection share 是否可信。
 
 | Metric | 含义 | 计算方式 |
 | --- | --- | --- |
@@ -240,7 +241,12 @@ sample grad norm 不需要额外 backward：tracker 在真实 actor backward 过
 | `<domain>/sample_grad_contribution/projection_share_max` | 全部样本 projection share 最大值。 | `max(projection_share)`。 |
 | `<domain>/sample_grad_contribution/projection_share_negative_frac` | 全部样本中抵消 domain gradient 方向的比例。 | 统计 `projection_share < 0` 的比例。 |
 | `<domain>/sample_grad_contribution/top1_abs_share` | 全部样本里绝对投影贡献最大的单样本强度。 | `max(abs(projection_share))`。 |
-| `<domain>/sample_grad_contribution/projection_share_sum` | sample projection share 的求和 sanity check。 | 若 sample 重算 loss 与 domain gradient 口径一致，且统计覆盖该 domain 全部样本，此值应接近 1；明显偏离表示 sample/domain 梯度口径不一致或样本未完整聚合。 |
+| `<domain>/sample_grad_contribution/projection_share_sum` | raw sample projection share 的求和 sanity check。 | 直接对 raw/scaled sample projection share 求和；当前 FSDP recompute 口径下它不一定接近 1，主要用于暴露 sample/domain 梯度口径差异。 |
+| `<domain>/sample_grad_contribution/projection_share_normalized_sum` | normalized sample projection share 的求和。 | 对当前 domain 内所有 sample projection share 按其 domain 内总和归一化后求和，正常应为 1。 |
+| `<domain>/sample_grad_contribution/projection_share_normalized_min/max/mean` | normalized sample projection share 分布。 | `sample_projection_share / sum_domain(sample_projection_share)` 后统计 min/max/mean，用于读取样本相对贡献。 |
+| `<domain>/sample_grad_contribution/top1_abs_share_normalized` | normalized 后绝对贡献最大的单样本强度。 | `max(abs(sample_projection_share_normalized))`。 |
+| `<domain>/sample_grad_closure/projection_share_sum_raw_error` | raw sample projection share 相对 replica 期望的偏差。 | `abs(sum(raw_projection_share) - raw_expected_sum)`，用于诊断 raw share 是否可闭合；当前不作为样本贡献解释指标。 |
+| `<domain>/sample_grad_closure/projection_share_normalized_sum_error` | normalized sample share closure error。 | `abs(sum(sample_projection_share_normalized) - 1)`；用于确认归一化后的相对贡献可读。 |
 
 已删除：所有 `grad/*`、`grad_anchor/*`、`grad_conflict/*` proxy metrics。
 
@@ -287,15 +293,15 @@ combined_diff =
 
 - `gap = teacher_logp - student_logp`：signed chosen-token teacher/student log-prob 差距；top-p mass 使用正向 gap 质量，避免正负抵消。
 - `gap_abs = abs(teacher_logp - student_logp)`：absolute chosen-token teacher/student log-prob 差距。
-- `loss_abs = abs(token_loss_score)`：训练 loss 层面的 token score。top-k distillation 开启时来自 per-token top-k distill loss；非 top-k 路径下使用 chosen-token reverse-KL proxy。
+- `loss_abs = abs(token_loss_score * original_aggregation_scale * loss_scale_factor)`：训练 loss 层面的 token contribution score。top-k distillation 开启时原始 token score 来自 per-token top-k distill loss；非 top-k 路径下使用 chosen-token reverse-KL proxy。原始未缩放值会额外记录为 `loss_raw_abs`。
 
-随后 tracker 会根据 selection 开关，分别在 `gap`、`gap_abs` 和/或 `loss_abs` 的 domain 全局分布上选择 `top{token_gradient_top_k}_*` 与覆盖 `token_gradient_top_p` 比例 score mass 的最小 token 集合，例如 `top100_gap`、`topp10_gap_mass`、`top100_gap_abs`、`topp10_gap_abs_mass`、`top100_loss_abs`、`topp10_loss_abs_mass`。每个 selection 都会对选中 token 做额外 gradient recompute。若 `token_gradient_loss_abs_selection_enabled=false`，不会额外 forward 计算 loss score。
+随后 tracker 会根据 selection 开关，分别在 `gap`、`gap_abs` 和/或 `loss_abs` 的 domain 全局分布上选择 `top{token_gradient_top_k}_*` 与覆盖 `token_gradient_top_p` 比例 score mass 的最小 token 集合，例如 `top100_gap`、`topp10_gap_mass`、`top100_gap_abs`、`topp10_gap_abs_mass`、`top100_loss_abs`、`topp10_loss_abs_mass`。当 `token_gradient_top_p=1.0` 时，`topp100_*_mass` 会选择该 score family 下全部 finite candidate tokens，用于验证全 token 梯度是否能闭合到 domain gradient。每个 selection 都会对选中 token 做额外 gradient recompute。若 `token_gradient_loss_abs_selection_enabled=false`，不会额外 forward 计算 loss score。
 
 ```text
 g_token = grad(token_loss_with_original_aggregation_scale, actor_params)
 ```
 
-注意这里的 `token_loss` 会按原始 `loss_agg_mode` 重新缩放。例如 `token-mean` 下，单 token mask 的 loss 会乘以 `1 / effective_tokens`，避免把单 token 的梯度贡献放大。
+注意这里的 `loss_abs` selection score 和 `token_loss` 重算都会按原始 `loss_agg_mode` 重新缩放。例如 `token-mean` 下，单 token contribution 会乘以 `1 / effective_tokens`，避免长短样本之间的 token contribution 粒度不一致。需要和训练目标严格对齐时，应使用 `loss_abs` selection 或 `*_loss_only_*` profile；`gap` 和 `gap_abs` 只作为 log-prob diagnostic，不用于真实 loss contribution 结论。
 
 | Metric | 含义 | 计算方式 |
 | --- | --- | --- |
@@ -322,6 +328,10 @@ g_token = grad(token_loss_with_original_aggregation_scale, actor_params)
 | `<domain>/token_grad_conflict/conflict_to_other_mean` | 选中 token 对另一个 domain 的平均冲突强度。 | `mean(max(0, -cos(g_token, g_other_domain)))`。 |
 | `<domain>/token_grad_contribution/own_projection_share_sum` | 选中 token 对当前 domain full gradient 的投影贡献总量。 | `sum((g_token · g_domain) / ||g_domain||_2^2)`。只覆盖 top-k token，因此不是完整 domain contribution。 |
 | `<domain>/token_grad_contribution/negative_other_projection_share_sum` | 选中 token 对另一个 domain full gradient 的负向投影总量。 | `sum(max(0, -(g_token · g_other_domain) / ||g_other_domain||_2^2))`。 |
+| `<domain>/token_grad_closure/topp100_<score>_mass_selected_all_tokens` | `token_gradient_top_p=1.0` 时，当前 closure selection 是否覆盖该 domain 全部候选 token。 | `selected_token_count == global_candidate_token_count`。 |
+| `<domain>/token_grad_closure/topp100_<score>_mass_projection_share_error` | 全 token selection 对 domain gradient 的 projection closure error。 | `abs((g_selected_tokens · g_domain) / ||g_domain||_2^2 - 1)`；若 token 梯度与 domain 梯度口径完全一致，应接近 0。 |
+| `<domain>/token_grad_closure/topp100_<score>_mass_cosine_error` | 全 token selection 与 domain gradient 的方向误差。 | `abs(cos(g_selected_tokens, g_domain) - 1)`。 |
+| `<domain>/token_grad_closure/topp100_<score>_mass_norm_ratio_error` | 全 token selection 与 domain gradient 的 norm 比例误差。 | `abs(||g_selected_tokens||_2 / ||g_domain||_2 - 1)`。 |
 | `<domain>/token_grad_cost/seconds_sum` | 当前 domain 选中 token 的 exact gradient 总耗时。 | 对该 domain token rows 的 `token_grad_seconds` 求和。 |
 | `<domain>/token_grad_cost/seconds_per_selected_token` | 当前 domain 平均每个选中 token 的 exact gradient 耗时。 | `seconds_sum / selected_token_count`。 |
 | `<domain>/token_grad_cost/backward_fallback_count` | 当前 domain 使用 backward fallback 的 token 数。 | 当 `autograd.grad()` 断图且 fallback 成功时计 1。 |

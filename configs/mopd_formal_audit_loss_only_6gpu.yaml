@@ -6,7 +6,9 @@
 runtime:
   python_bin: python
   verl_module: verl.trainer.main_ppo
-  wandb_mode: disabled
+  wandb_mode: online
+  wandb_entity: lz101-rice-university
+  env_file: .env.local
   used_model: no_api
 
 data:
@@ -119,14 +121,22 @@ audit:
   calibration_bins: 10
   full_gradient_enabled: true
   full_gradient_freq_steps: 1
+  full_grad_training_parity_freq_steps: 1
   full_gradient_train_max_samples_per_domain: null
   full_gradient_micro_batch_size_per_gpu: 1
   full_gradient_storage_dtype: bfloat16
+  execution_timing: pre_update
+  full_gradient_direct_recompute_enabled: true
+  sequence_masked_target_enabled: true
+  sequence_masked_target_use_as_primary: true
+  full_gradient_offload_domain_gradients: true
   sample_gradient_enabled: true
   sample_gradient_freq_steps: 1
   sample_gradient_norm_enabled: true
   sample_gradient_cos_enabled: true
   sample_gradient_cos_freq_steps: 1
+  sample_gradient_backward_recompute_enabled: true
+  sample_gradient_backward_sync_enabled: true
   sample_gradient_log_sample_level: true
   sample_gradient_log_sample_level_freq_steps: 1
   token_gap_enabled: true
@@ -147,8 +157,10 @@ audit:
   token_gradient_gap_abs_selection_enabled: false
   token_gradient_loss_abs_selection_enabled: true
   token_gradient_top_k: 100
-  token_gradient_top_p: 0.10
+  token_gradient_top_p: 0.20
   token_gradient_strict_grad_restore: false
+  token_gradient_backward_recompute_enabled: true
+  token_gradient_backward_sync_enabled: true
 
 paper_eval:
   enabled: false
@@ -169,9 +181,9 @@ paper_eval:
   timeout_seconds: 0
 
 trainer:
-  project_name: on-policy-distillation
+  project_name: MOPD
   experiment_name: Qwen3-4B-Multi-Teacher-ExOPD-formal-audit-loss-only-6gpu
-  logger: '["console","tensorboard"]'
+  logger: '["console","tensorboard","wandb"]'
   n_gpus_per_node: 6
   nnodes: 1
   save_freq: 5

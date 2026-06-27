@@ -34,8 +34,12 @@ Three formal MOPD variants are kept with 2/4/6/8 GPU profiles, plus metrics smok
 | `configs/mopd_formal_audit_off_8gpu.yaml` | 8-GPU audit-off run. |
 | `configs/mopd_formal_audit_all_smoke.yaml` | 2-GPU one-step metrics smoke run with all audit outputs and full-vocab vectors enabled. |
 | `configs/mopd_formal_audit_loss_only_smoke.yaml` | 2-GPU one-step smoke run with loss-only token-gradient selection. |
+| `configs/mopd_formal_audit_grad_consistency_2gpu_smoke.yaml` | 2-GPU Qwen3-0.6B smoke run for full/sample/token gradient closure. |
+| `configs/mopd_formal_audit_grad_consistency_2gpu_b16_1step_smoke.yaml` | 2-GPU gradient consistency smoke with batch size 16 and one training step. |
+| `configs/mopd_formal_audit_grad_consistency_2gpu_b32_2step_smoke.yaml` | 2-GPU gradient consistency smoke with batch size 32 and two training steps. |
+| `configs/mopd_formal_audit_grad_consistency_2gpu_b64_3step_smoke.yaml` | 2-GPU gradient consistency smoke with batch size 64 and three training steps. |
 
-All profiles use:
+Formal 2/4/6/8 GPU profiles use:
 
 - student: `../models/Qwen3-4B`
 - math teacher: `../models/Qwen3-4B-Non-Thinking-RL-Math-Step500`
@@ -66,7 +70,11 @@ GPU scaling:
 
 `mopd_formal_audit_off_*gpu.yaml` sets `audit.enabled=false` and explicitly turns off all audit subfamilies.
 
-The smoke profiles are tracked as metrics test profiles. They use `data.train_batch_size=32`, `actor.ppo_mini_batch_size=32`, and `trainer.total_training_steps=1`, while keeping the formal `data.max_response_length=16384` and full-vocab token gap and entropy vectors enabled.
+The all-audit and loss-only smoke profiles are tracked as metrics test profiles. They use `data.train_batch_size=32`, `actor.ppo_mini_batch_size=32`, and `trainer.total_training_steps=1`, while keeping the formal `data.max_response_length=16384` and full-vocab token gap and entropy vectors enabled.
+
+The gradient consistency smoke profiles use `../models/Qwen3-0.6B` to keep closure checks cheap. They enable sequence-masked domain targets, sample/token backward recompute, and token `top_p=1.0` closure checks so the full-token gradient can be compared against the domain gradient.
+
+Configs default to `logger: '["console","tensorboard","wandb"]'`, `runtime.wandb_entity: lz101-rice-university`, and `runtime.env_file: .env.local`. Put `WANDB_API_KEY` in `.env.local` on the machine that launches training. This file is gitignored and must not be committed. Override `runtime.wandb_mode=disabled` for local dry runs without W&B.
 
 ## Launch
 
@@ -78,6 +86,8 @@ GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
   configs/mopd_formal_audit_all_2gpu.yaml \
   --run-id mopd_audit_all_2gpu_$(date +%Y%m%d_%H%M%S)
 ```
+
+`scripts/start_remote_mopd_training.sh` defaults to `/root/miniconda3/envs/mopd-verl` when that environment exists and prints the resolved Python path at launch.
 
 Run the audit-off profile:
 

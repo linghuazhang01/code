@@ -148,14 +148,21 @@ class AuditConfig:
     calibration_bins: int = 10
     full_gradient_enabled: bool = False
     full_gradient_freq_steps: int = 1
+    full_grad_training_parity_freq_steps: int = 1
     full_gradient_train_max_samples_per_domain: int | None = None
     full_gradient_micro_batch_size_per_gpu: int = 1
     full_gradient_storage_dtype: str = "float32"
+    execution_timing: str = "pre_update"
+    full_gradient_direct_recompute_enabled: bool = True
+    sequence_masked_target_enabled: bool = False
+    sequence_masked_target_use_as_primary: bool = False
     sample_gradient_enabled: bool = False
     sample_gradient_freq_steps: int = 1
     sample_gradient_norm_enabled: bool = True
     sample_gradient_cos_enabled: bool = False
     sample_gradient_cos_freq_steps: int = 1
+    sample_gradient_backward_recompute_enabled: bool = True
+    sample_gradient_backward_sync_enabled: bool = True
     sample_gradient_log_sample_level: bool = True
     sample_gradient_log_sample_level_freq_steps: int = 1
     full_gradient_offload_domain_gradients: bool = True
@@ -179,6 +186,8 @@ class AuditConfig:
     token_gradient_top_k: int = 100
     token_gradient_top_p: float = 0.10
     token_gradient_strict_grad_restore: bool = False
+    token_gradient_backward_recompute_enabled: bool = True
+    token_gradient_backward_sync_enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -229,6 +238,8 @@ class RuntimeConfig:
     python_bin: str = "python3"
     verl_module: str = "verl.trainer.main_ppo"
     wandb_mode: str = "online"
+    wandb_entity: str | None = None
+    env_file: str | None = None
     used_model: str = "no_api"
 
 

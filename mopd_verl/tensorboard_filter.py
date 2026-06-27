@@ -13,16 +13,20 @@ DIRECT_AUDIT_CATEGORIES = {
     "cost",
     "full_grad",
     "full_grad_alignment",
+    "full_grad_closure",
     "full_grad_contribution",
     "full_grad_conflict",
     "full_grad_cost",
+    "full_grad_training_parity",
     "loss",
     "length",
     "optimization",
     "reward",
     "sample_grad",
+    "sample_grad_closure",
     "sample_grad_contribution",
     "sample_grad_cos",
+    "sample_grad_cost",
     "teacher",
     "entropy",
     "entropy_vocab_cosine",
@@ -30,6 +34,7 @@ DIRECT_AUDIT_CATEGORIES = {
     "token_gap",
     "token_gap_vocab_cosine",
     "token_grad",
+    "token_grad_closure",
     "token_grad_conflict",
     "token_grad_contribution",
     "token_grad_cost",
@@ -66,11 +71,59 @@ CORE_SAMPLE_GRAD_CONTRIBUTION = {
     "projection_share_min",
     "projection_share_max",
     "projection_share_negative_frac",
+    "projection_share_normalized_mean",
+    "projection_share_normalized_min",
+    "projection_share_normalized_max",
+    "projection_share_normalized_negative_frac",
+    "projection_share_normalized_sum",
+    "projection_share_normalized_sum_error",
     "projection_share_sum",
     "projection_share_sum_across_replicas",
     "projection_share_sum_error",
+    "projection_share_sum_raw",
+    "projection_share_sum_raw_expected",
+    "projection_share_sum_raw_error",
+    "projection_share_scale_mean",
     "projection_share_replica_count",
+    "projection_share_trusted",
     "top1_abs_share",
+    "top1_abs_share_normalized",
+}
+CORE_SAMPLE_GRAD_CLOSURE = {
+    "projection_share_normalized_sum",
+    "projection_share_normalized_sum_error",
+    "projection_share_sum",
+    "projection_share_sum_error",
+    "projection_share_sum_raw",
+    "projection_share_sum_raw_expected",
+    "projection_share_sum_raw_error",
+    "valid_frac",
+    "vector_available",
+    "vector_candidate_norm",
+    "vector_cosine",
+    "vector_diff_norm",
+    "vector_error_count",
+    "vector_max_abs",
+    "vector_norm_ratio",
+    "vector_projection_share",
+    "vector_reference_norm",
+    "vector_rel_l2",
+    "vector_slot_count",
+}
+CORE_SAMPLE_GRAD_COST = {
+    "backward_recompute_count",
+    "backward_sync_count",
+    "restore_post_target_rel_l2_max",
+    "restore_pre_target_rel_l2_max",
+    "seconds_mean",
+    "seconds_sum",
+}
+CORE_FULL_GRAD_CLOSURE = {
+    "cosine",
+    "max_abs",
+    "norm_ratio",
+    "projection_share",
+    "rel_l2",
 }
 CORE_GLOBAL_LOSS = {
     "sample_opd_loss_mean",
@@ -170,6 +223,16 @@ CORE_TOKEN_GRAD_CONTRIBUTION = {
     "own_projection_share_mean",
     "own_projection_share_sum",
 }
+CORE_TOKEN_GRAD_CLOSURE = {
+    "candidate_token_frac",
+    "candidate_sample_frac",
+    "selected_all_tokens",
+    "selected_all_samples",
+    "projection_share_error",
+    "cosine_error",
+    "norm_ratio",
+    "norm_ratio_error",
+}
 CORE_TOKEN_GRAD_COST = {
     "autograd_seconds_sum",
     "available_token_count",
@@ -201,6 +264,20 @@ CORE_DOMAIN_COVERAGE = {"duplicate_rate"}
 CORE_FULL_GRAD = {"grad_norm", "sample_count"}
 CORE_FULL_GRAD_ALIGNMENT = {"full_grad_cosine_domain_total"}
 CORE_FULL_GRAD_CONTRIBUTION = {"signed_projection_share"}
+CORE_FULL_GRAD_TRAINING_PARITY = {
+    "candidate_norm",
+    "cosine",
+    "diff_norm",
+    "max_abs",
+    "norm_ratio",
+    "projection_share",
+    "reference_norm",
+    "rel_l2",
+}
+CORE_FULL_GRAD_TRAINING_PARITY_GROUPS = {
+    "audit_total_vs_training_total",
+    "sequence_total_vs_training_total",
+}
 CORE_CONFLICT = {
     "conflict_magnitude_i_k",
     "full_grad_cosine_train_i_k",
@@ -208,11 +285,16 @@ CORE_CONFLICT = {
 CORE_AUDIT = {
     "error",
     "full_gradient_autograd_unavailable",
+    "full_gradient_domain_direct_recompute_available",
+    "full_gradient_domain_direct_recompute_error",
+    "full_gradient_domain_direct_recompute_used",
+    "full_gradient_execution_timing_pre_update",
     "full_gradient_domain_sequential_available",
     "full_gradient_domain_sequential_unsupported",
     "full_gradient_replicated_all_reduce",
     "full_gradient_replica_count",
     "full_gradient_true_backward_fallback",
+    "pre_update_audit_used",
     "sample_gradient_distributed_unsupported",
     "sample_gradient_cos_distributed_unsupported",
     "sample_gradient_norm_distributed_unsupported",
@@ -311,16 +393,25 @@ def _keep_global(category: str, metric: str, parts: list[str]) -> bool:
     if category == "full_grad_cost":
         return metric in {
             "backward_seconds",
+            "domain_direct_recompute_seconds",
             "domain_summary_seconds",
             "finish_mini_batch_seconds",
             "max_memory_allocated_gb",
         }
+    if category == "full_grad_closure":
+        return metric in CORE_FULL_GRAD_CLOSURE
     if category == "token_grad_cost":
         return metric in CORE_TOKEN_GRAD_COST
     if category == "full_grad_alignment":
         return metric in CORE_FULL_GRAD_ALIGNMENT
     if category == "full_grad_contribution":
         return metric in CORE_FULL_GRAD_CONTRIBUTION
+    if category == "full_grad_training_parity":
+        return (
+            len(parts) >= 4
+            and parts[2] in CORE_FULL_GRAD_TRAINING_PARITY_GROUPS
+            and metric in CORE_FULL_GRAD_TRAINING_PARITY
+        )
     if category == "data":
         return metric in CORE_GLOBAL_DATA
     if category == "full_grad_conflict":
@@ -357,6 +448,10 @@ def _keep_domain(category: str, metric: str, parts: list[str]) -> bool:
         return metric in CORE_SAMPLE_GRAD_COS
     if category == "sample_grad_contribution":
         return metric in CORE_SAMPLE_GRAD_CONTRIBUTION
+    if category == "sample_grad_closure":
+        return metric in CORE_SAMPLE_GRAD_CLOSURE
+    if category == "sample_grad_cost":
+        return metric in CORE_SAMPLE_GRAD_COST
     if category == "full_grad":
         return metric in CORE_FULL_GRAD
     if category == "teacher":
@@ -390,6 +485,8 @@ def _keep_domain(category: str, metric: str, parts: list[str]) -> bool:
         return metric in CORE_TOKEN_GRAD_CONFLICT
     if category == "token_grad_contribution":
         return metric in CORE_TOKEN_GRAD_CONTRIBUTION or metric.endswith("_projection_share")
+    if category == "token_grad_closure":
+        return any(metric.endswith(f"_{name}") for name in CORE_TOKEN_GRAD_CLOSURE)
     if category == "token_grad_cost":
         return metric in CORE_TOKEN_GRAD_COST
     if category == "reward":
