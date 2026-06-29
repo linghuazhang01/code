@@ -245,6 +245,7 @@ class MOPDVerlTests(unittest.TestCase):
 
         self.assertIn("actor_rollout_ref.model.path=../models/Qwen3-4B", rendered)
         self.assertIn("+actor_rollout_ref.ref.model.path=../models/Qwen3-4B-Non-Thinking-RL-Math-Step500", rendered)
+        self.assertIn("+actor_rollout_ref.ref.model.teacher_model_device=cpu", rendered)
         self.assertIn("+actor_rollout_ref.ref.model.base_model_path=../models/Qwen3-4B-Non-Thinking-RL-Code-Step300", rendered)
         self.assertIn("actor_rollout_ref.actor.policy_loss.multi_teacher_distill=true", rendered)
         self.assertIn("actor_rollout_ref.actor.policy_loss.lambda_vals=1.0", rendered)
@@ -259,6 +260,17 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("eval/domains/code/data/HumanEvalPlus/test.parquet", rendered)
         self.assertIn("eval/domains/code/data/MBPPPlus/test.parquet", rendered)
         self.assertNotIn("eval/domains/code/data/LiveCodeBench/test.parquet", rendered)
+
+    def test_teacher_model_device_command_is_config_controlled(self) -> None:
+        config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_formal_audit_all_2gpu.yaml"
+        config = load_config(config_path)
+        gpu_teacher_config = replace(
+            config,
+            model=replace(config.model, teacher_model_device="gpu"),
+        )
+        rendered = format_command(build_command(gpu_teacher_config))
+
+        self.assertIn("+actor_rollout_ref.ref.model.teacher_model_device=gpu", rendered)
 
     def test_topk_distillation_command_is_config_controlled(self) -> None:
         config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_formal_audit_all_2gpu.yaml"
@@ -2087,9 +2099,166 @@ class MOPDVerlTests(unittest.TestCase):
             },
         )
         tracker._last_audit_total_chunks = (torch.tensor([1.0, 1.0]),)
+        tracker._last_sequence_total_chunks = (torch.tensor([2.0, 2.0]),)
 
         self.assertEqual(tracker.full_grad_training_parity_metrics(), {})
         self.assertEqual(tracker._last_audit_total_chunks, tuple())
+        self.assertEqual(tracker._last_sequence_total_chunks, tuple())
+
+    def test_finish_mini_batch_does_not_retain_parity_chunks_when_disabled(self) -> None:
+        try:
+            import torch
+            from torch import nn
+
+            from mopd_verl.full_gradient.tracker import SequentialBackwardDomainGradientTracker
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ToyActor:
+            def __init__(self) -> None:
+                self.actor_module = nn.Linear(1, 1, bias=False)
+                self.actor_optimizer = torch.optim.SGD(self.actor_module.parameters(), lr=0.1)
+                self.config = {"fsdp_config": {"fsdp_size": 1}}
+
+        sequence_targets = {"math": ((torch.tensor([1.0]),), 1.0)}
+        tracker = SequentialBackwardDomainGradientTracker(
+            ToyActor(),
+            {
+                "enabled": True,
+                "domains": ["math"],
+                "sequence_masked_target_enabled": True,
+                "sequence_masked_target_use_as_primary": True,
+                "full_grad_training_parity_freq_steps": -1,
+            },
+        )
+        tracker._schedule_candidates = [{"micro_batch": object()}]
+
+        with patch.object(
+            tracker,
+            "_recompute_sequence_domain_targets",
+            return_value=({}, sequence_targets, (torch.tensor([1.0]),), 1.0),
+        ), patch.object(
+            tracker,
+            "_finish_direct_domain_gradient_metrics",
+            return_value=({}, sequence_targets),
+        ), patch.object(
+            tracker,
+            "_summed_domain_target_reference_chunks",
+            return_value=(torch.tensor([1.0]),),
+        ), patch.object(
+            tracker,
+            "_domain_target_closure_metrics",
+            return_value={},
+        ), patch.object(
+            tracker,
+            "_sample_norm_metrics",
+            return_value={},
+        ), patch(
+            "mopd_verl.full_gradient.tracker._all_reduce_sum",
+            side_effect=lambda value: float(value),
+        ):
+            tracker.finish_mini_batch()
+
+        self.assertEqual(tracker._last_audit_total_chunks, tuple())
+        self.assertEqual(tracker._last_sequence_total_chunks, tuple())
+        self.assertEqual(tracker._schedule_candidates, [])
+        self.assertEqual(tracker._sample_records, [])
+        self.assertEqual(tracker._token_gradient_candidates, {})
+
+    def test_finish_mini_batch_keeps_parity_chunks_until_parity_check(self) -> None:
+        try:
+            import torch
+            from torch import nn
+
+            from mopd_verl.full_gradient.tracker import SequentialBackwardDomainGradientTracker
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ToyActor:
+            def __init__(self) -> None:
+                self.actor_module = nn.Linear(1, 1, bias=False)
+                self.actor_optimizer = torch.optim.SGD(self.actor_module.parameters(), lr=0.1)
+                self.config = {"fsdp_config": {"fsdp_size": 1}}
+
+        actor = ToyActor()
+        next(actor.actor_module.parameters()).grad = torch.tensor([[1.0]])
+        sequence_targets = {"math": ((torch.tensor([1.0]),), 1.0)}
+        tracker = SequentialBackwardDomainGradientTracker(
+            actor,
+            {
+                "enabled": True,
+                "domains": ["math"],
+                "sequence_masked_target_enabled": True,
+                "sequence_masked_target_use_as_primary": True,
+                "full_grad_training_parity_freq_steps": 1,
+            },
+        )
+        tracker._schedule_candidates = [{"micro_batch": object()}]
+
+        with patch.object(
+            tracker,
+            "_recompute_sequence_domain_targets",
+            return_value=({}, sequence_targets, (torch.tensor([1.0]),), 1.0),
+        ), patch.object(
+            tracker,
+            "_finish_direct_domain_gradient_metrics",
+            return_value=({}, sequence_targets),
+        ), patch.object(
+            tracker,
+            "_summed_domain_target_reference_chunks",
+            return_value=(torch.tensor([1.0]),),
+        ), patch.object(
+            tracker,
+            "_domain_target_closure_metrics",
+            return_value={},
+        ), patch.object(
+            tracker,
+            "_sample_norm_metrics",
+            return_value={},
+        ), patch(
+            "mopd_verl.full_gradient.tracker._all_reduce_sum",
+            side_effect=lambda value: float(value),
+        ):
+            tracker.finish_mini_batch()
+
+        self.assertTrue(tracker._last_audit_total_chunks)
+        self.assertTrue(tracker._last_sequence_total_chunks)
+        self.assertEqual(tracker._schedule_candidates, [])
+
+        with patch(
+            "mopd_verl.full_gradient.tracker._snapshot_current_grad_chunks",
+            return_value=(torch.tensor([1.0]),),
+        ), patch(
+            "mopd_verl.full_gradient.tracker._gradient_chunk_pair_stats",
+            return_value=({"rel_l2": 0.0}, []),
+        ):
+            metrics = tracker.full_grad_training_parity_metrics()
+
+        self.assertIn("global/full_grad_training_parity/audit_total_vs_training_total/rel_l2", metrics)
+        self.assertEqual(tracker._last_audit_total_chunks, tuple())
+        self.assertEqual(tracker._last_sequence_total_chunks, tuple())
+
+    def test_finish_mini_batch_clears_cpu_refs_on_error(self) -> None:
+        try:
+            from mopd_verl.full_gradient.tracker import SequentialBackwardDomainGradientTracker
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ToyActor:
+            config = {"fsdp_config": {"fsdp_size": 1}}
+
+        tracker = SequentialBackwardDomainGradientTracker(ToyActor(), {"domains": ["math"]})
+        tracker._schedule_candidates = [{"micro_batch": object()}]
+        tracker._sample_records = [{"sample_id": "sample-0"}]
+        tracker._token_gradient_candidates = {"math": [{"micro_batch": object()}]}
+
+        with patch.object(tracker, "_finish_mini_batch_impl", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                tracker.finish_mini_batch()
+
+        self.assertEqual(tracker._schedule_candidates, [])
+        self.assertEqual(tracker._sample_records, [])
+        self.assertEqual(tracker._token_gradient_candidates, {})
 
     def test_token_gradient_top_p_controls_gap_abs_mass_selection(self) -> None:
         try:
@@ -2690,6 +2859,119 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertTrue(tracker._sample_gradient_distributed_unsupported)
         self.assertTrue(tracker._sample_gradient_norm_distributed_unsupported)
         self.assertTrue(tracker._sample_gradient_cos_distributed_unsupported)
+
+    def test_sequential_tracker_allows_token_sequence_replay_for_fsdp_size_two(self) -> None:
+        try:
+            from mopd_verl.full_gradient.tracker import SequentialBackwardDomainGradientTracker
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ToyActor:
+            config = {"fsdp_config": {"fsdp_size": 2}}
+
+        tracker = SequentialBackwardDomainGradientTracker(
+            ToyActor(),
+            {
+                "enabled": True,
+                "domains": ["math", "code"],
+                "sequence_masked_target_enabled": True,
+                "sequence_masked_target_use_as_primary": True,
+                "token_gradient_enabled": True,
+            },
+        )
+
+        self.assertTrue(tracker.token_gradient_enabled)
+        self.assertTrue(tracker._token_gradient_sequence_replay_supported)
+        self.assertFalse(tracker._token_gradient_distributed_unsupported)
+        self.assertFalse(tracker._sample_gradient_distributed_unsupported)
+
+    def test_sequential_tracker_disables_token_gradient_without_sequence_primary_for_shards(self) -> None:
+        try:
+            from mopd_verl.full_gradient.tracker import SequentialBackwardDomainGradientTracker
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ToyActor:
+            config = {"fsdp_config": {"fsdp_size": 2}}
+
+        tracker = SequentialBackwardDomainGradientTracker(
+            ToyActor(),
+            {
+                "enabled": True,
+                "domains": ["math", "code"],
+                "sequence_masked_target_enabled": True,
+                "sequence_masked_target_use_as_primary": False,
+                "token_gradient_enabled": True,
+            },
+        )
+
+        self.assertFalse(tracker.token_gradient_enabled)
+        self.assertFalse(tracker._token_gradient_sequence_replay_supported)
+        self.assertTrue(tracker._token_gradient_distributed_unsupported)
+
+    def test_token_sequence_replay_caches_candidates_for_fsdp_size_two(self) -> None:
+        try:
+            from mopd_verl.full_gradient.tracker import SequentialBackwardDomainGradientTracker
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ActorConfig:
+            fsdp_config = {"fsdp_size": 2}
+
+            def get(self, key: str, default: object = None) -> object:
+                return getattr(self, key, default)
+
+        class ToyActor:
+            config = ActorConfig()
+
+        class FakeMicroBatch:
+            batch = None
+            non_tensor_batch = {"domain": ["math", "math"], "opd_teacher": ["math", "math"]}
+
+            def __len__(self) -> int:
+                return 2
+
+        tracker = SequentialBackwardDomainGradientTracker(
+            ToyActor(),
+            {
+                "enabled": True,
+                "domains": ["math"],
+                "sequence_masked_target_enabled": True,
+                "sequence_masked_target_use_as_primary": True,
+                "token_gradient_enabled": True,
+            },
+        )
+        tracker.start_mini_batch()
+
+        token_rows = [
+            {"sample_id": "sample-0", "sample_index": 0, "position": 3, "gap_abs": 9.0},
+            {"sample_id": "sample-1", "sample_index": 1, "position": 2, "gap_abs": 7.0},
+        ]
+        copied_indices: list[list[int]] = []
+
+        def fake_copy(_micro_batch: object, indices: list[int]) -> object:
+            copied_indices.append(indices)
+            return {"indices": indices}
+
+        with patch.object(
+            tracker,
+            "_select_token_gradient_candidates",
+            return_value=token_rows,
+        ), patch(
+            "mopd_verl.full_gradient.tracker._copy_data_proto_rows_to_cpu",
+            side_effect=fake_copy,
+        ):
+            tracker.record_pre_update_micro_batch(
+                "math",
+                FakeMicroBatch(),
+                loss_scale_factor=1.0,
+                on_policy=True,
+            )
+
+        self.assertEqual(copied_indices, [[0, 1]])
+        self.assertEqual(len(tracker._token_gradient_candidates["math"]), 1)
+        cached_rows = tracker._token_gradient_candidates["math"][0]["tokens"]
+        self.assertEqual([row["sample_id"] for row in cached_rows], ["sample-0", "sample-1"])
 
     def test_balance_batch_logs_seqlen_tokens_and_workload_separately(self) -> None:
         trainer_path = (

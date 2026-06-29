@@ -200,6 +200,7 @@ def build_overrides(config: MOPDConfig) -> list[str]:
     if model.student_base_path is not None:
         model_overrides.append(f"+actor_rollout_ref.model.base_model_path={model.student_base_path}")
     model_overrides.append(f"+actor_rollout_ref.ref.model.path={model.primary_teacher_path}")
+    model_overrides.append(f"+actor_rollout_ref.ref.model.teacher_model_device={model.teacher_model_device}")
     if model.secondary_teacher_path is not None:
         model_overrides.append(f"+actor_rollout_ref.ref.model.base_model_path={model.secondary_teacher_path}")
 

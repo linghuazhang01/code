@@ -24,7 +24,7 @@
 | `configs/mopd_formal_audit_all_8gpu.yaml` | 8 卡 all-audit 训练，TP=4，并保留两个 rollout data-parallel group。 |
 | `configs/mopd_formal_audit_loss_only_2gpu.yaml` | 2 卡 all-audit 训练，但 token-gradient selection 只用 loss magnitude。 |
 | `configs/mopd_formal_audit_loss_only_4gpu.yaml` | 4 卡 loss-only token-gradient audit 训练。 |
-| `configs/mopd_formal_audit_loss_only_6gpu.yaml` | 6 卡 loss-only token-gradient audit 训练。 |
+| `configs/mopd_formal_audit_loss_only_6gpu.yaml` | 6 卡 loss-only token-gradient audit 训练，使用 fsdp=2 sequence replay。 |
 | `configs/mopd_formal_audit_loss_only_8gpu.yaml` | 8 卡 loss-only token-gradient audit 训练。 |
 | `configs/mopd_formal_audit_off_2gpu.yaml` | 2 卡同模型/数据/objective，关闭全部 audit。 |
 | `configs/mopd_formal_audit_off_4gpu.yaml` | 4 卡 audit-off 训练。 |
@@ -44,6 +44,7 @@
 - code teacher: `../models/Qwen3-4B-Non-Thinking-RL-Code-Step300`
 - train files: `DeepMath-103K/train_filtered_level6.parquet` 与 `Eurus/code_train.parquet`
 - teacher top-k local-support distillation，`topk_distill_k=32`
+- teacher model 默认通过 `model.teacher_model_device: cpu` 放在 CPU；只有在 GPU 显存足够时才建议在 YAML 里改成 `gpu`。
 
 卡数 scaling：
 
@@ -64,7 +65,9 @@
 - token conflict attribution
 - token-gradient audit，支持 domain-level signed-gap、gap-abs 与 loss top-k/top-p selection
 
-`mopd_formal_audit_loss_only_*gpu.yaml` 保持与 all-audit profile 相同的 audit surface，包括 full/sample gradients、token gap vectors、entropy vectors、token conflict 和 token-gradient 记录。唯一差异是 token-gradient 候选 token selection：`token_gradient_gap_selection_enabled=false`、`token_gradient_gap_abs_selection_enabled=false`、`token_gradient_loss_abs_selection_enabled=true`。
+`mopd_formal_audit_loss_only_*gpu.yaml` 使用相同的 loss-only token-gradient selection：`token_gradient_gap_selection_enabled=false`、`token_gradient_gap_abs_selection_enabled=false`、`token_gradient_loss_abs_selection_enabled=true`。2/4/8 卡 profile 保持完整 all-audit surface，包括 sample-gradient 指标。6 卡 loss-only profile 是显存安全的 fsdp=2 profile：它通过 sequence replay 保留 full-gradient 和 token-gradient audit，使用 `token_gradient_top_p=0.15`，但关闭 sample-gradient 指标，因为每个 worker 只拥有 sharded parameter view。
+
+对于 fsdp=2 token-gradient run，必须保持 `sequence_masked_target_enabled=true` 与 `sequence_masked_target_use_as_primary=true`。`token_gradient_top_p=1.0` 可作为 full-token closure check：`topp100_*` token-gradient selection 应覆盖全部候选 token，并且与对应 domain gradient 的 cosine/projection/norm-ratio 接近 1。
 
 `mopd_formal_audit_off_*gpu.yaml` 设置 `audit.enabled=false`，并显式关闭所有 audit 子开关。
 

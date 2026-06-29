@@ -47,7 +47,8 @@ class MOPDProfileTests(unittest.TestCase):
         self.assertEqual(config.actor.ppo_mini_batch_size, train_batch_size)
         self.assertEqual(config.actor.ppo_micro_batch_size_per_gpu, 1)
         self.assertTrue(config.actor.gradient_checkpointing)
-        self.assertEqual(config.actor.fsdp_size, 1)
+        expected_fsdp_size = 2 if audit_mode == "loss_only" and gpu_count == 6 else 1
+        self.assertEqual(config.actor.fsdp_size, expected_fsdp_size)
         self.assertEqual(config.rollout.tensor_model_parallel_size, tensor_parallel_size)
         self.assertEqual(config.rollout.gpu_memory_utilization, gpu_memory_utilization)
         self.assertEqual(config.rollout.max_num_seqs, max_num_seqs)
@@ -66,6 +67,7 @@ class MOPDProfileTests(unittest.TestCase):
         self.assertIn(f"trainer.n_gpus_per_node={gpu_count}", rendered)
         self.assertIn(f"trainer.save_freq={expected_save_freq}", rendered)
         self.assertIn(f"trainer.total_training_steps={expected_steps}", rendered)
+        self.assertIn(f"actor_rollout_ref.actor.fsdp_config.fsdp_size={expected_fsdp_size}", rendered)
         self.assertIn(f"actor_rollout_ref.rollout.tensor_model_parallel_size={tensor_parallel_size}", rendered)
         if audit_mode in {"all", "loss_only"}:
             self.assertIn(f"+mopd_audit.output_dir=audit/{output_name}", rendered)
@@ -88,6 +90,7 @@ class MOPDProfileTests(unittest.TestCase):
                 config = load_config(config_dir / f"mopd_formal_audit_all_{gpu_count}gpu.yaml")
                 self.assertTrue(config.audit.enabled)
                 self.assertTrue(config.audit.full_gradient_enabled)
+                self.assertEqual(config.actor.fsdp_size, 1)
                 self.assertTrue(config.audit.sample_gradient_enabled)
                 self.assertTrue(config.audit.sample_gradient_norm_enabled)
                 self.assertTrue(config.audit.sample_gradient_cos_enabled)
@@ -112,12 +115,19 @@ class MOPDProfileTests(unittest.TestCase):
             with self.subTest(gpu_count=gpu_count):
                 config = load_config(config_dir / f"mopd_formal_audit_loss_only_{gpu_count}gpu.yaml")
                 rendered = format_command(build_command(config))
+                fsdp2_sequence_replay_profile = gpu_count == 6
+                expected_token_gradient_top_p = 0.15 if fsdp2_sequence_replay_profile else 0.10
 
                 self.assertTrue(config.audit.enabled)
                 self.assertTrue(config.audit.full_gradient_enabled)
-                self.assertTrue(config.audit.sample_gradient_enabled)
-                self.assertTrue(config.audit.sample_gradient_norm_enabled)
-                self.assertTrue(config.audit.sample_gradient_cos_enabled)
+                self.assertEqual(config.actor.fsdp_size, 2 if fsdp2_sequence_replay_profile else 1)
+                self.assertEqual(config.audit.sample_gradient_enabled, not fsdp2_sequence_replay_profile)
+                self.assertEqual(config.audit.sample_gradient_norm_enabled, not fsdp2_sequence_replay_profile)
+                self.assertEqual(config.audit.sample_gradient_cos_enabled, not fsdp2_sequence_replay_profile)
+                self.assertEqual(
+                    config.audit.sample_gradient_log_sample_level,
+                    not fsdp2_sequence_replay_profile,
+                )
                 self.assertTrue(config.audit.token_gap_enabled)
                 self.assertTrue(config.audit.token_gap_vocab_vector_enabled)
                 self.assertTrue(config.audit.entropy_enabled)
@@ -130,10 +140,19 @@ class MOPDProfileTests(unittest.TestCase):
                 self.assertIsNone(config.audit.max_samples_per_domain)
                 self.assertIsNone(config.audit.token_conflict_top_k)
                 self.assertEqual(config.audit.token_gradient_top_k, 100)
-                self.assertEqual(config.audit.token_gradient_top_p, 0.10)
+                self.assertEqual(config.audit.token_gradient_top_p, expected_token_gradient_top_p)
                 self.assertIn("+mopd_audit.token_gradient_gap_selection_enabled=false", rendered)
                 self.assertIn("+mopd_audit.token_gradient_gap_abs_selection_enabled=false", rendered)
                 self.assertIn("+mopd_audit.token_gradient_loss_abs_selection_enabled=true", rendered)
+                self.assertIn(
+                    f"+mopd_audit.token_gradient_top_p={expected_token_gradient_top_p}",
+                    rendered,
+                )
+                if fsdp2_sequence_replay_profile:
+                    self.assertIn("actor_rollout_ref.actor.fsdp_config.fsdp_size=2", rendered)
+                    self.assertIn("+mopd_audit.sequence_masked_target_use_as_primary=true", rendered)
+                    self.assertIn("+mopd_audit.sample_gradient_enabled=false", rendered)
+                    self.assertIn("+mopd_audit.full_gradient_direct_recompute_enabled=false", rendered)
 
     def test_metric_smoke_profile_tracks_all_audit_outputs(self) -> None:
         config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_formal_audit_all_smoke.yaml"

@@ -26,7 +26,7 @@ Three formal MOPD variants are kept with 2/4/6/8 GPU profiles, plus metrics smok
 | `configs/mopd_formal_audit_all_8gpu.yaml` | 8-GPU all-audit run, TP=4 with two rollout data-parallel groups. |
 | `configs/mopd_formal_audit_loss_only_2gpu.yaml` | 2-GPU all-audit run where token-gradient selection only uses loss magnitude. |
 | `configs/mopd_formal_audit_loss_only_4gpu.yaml` | 4-GPU loss-only token-gradient audit run. |
-| `configs/mopd_formal_audit_loss_only_6gpu.yaml` | 6-GPU loss-only token-gradient audit run. |
+| `configs/mopd_formal_audit_loss_only_6gpu.yaml` | 6-GPU loss-only token-gradient audit run using fsdp=2 sequence replay. |
 | `configs/mopd_formal_audit_loss_only_8gpu.yaml` | 8-GPU loss-only token-gradient audit run. |
 | `configs/mopd_formal_audit_off_2gpu.yaml` | 2-GPU run with the same model/data/objective and all audit disabled. |
 | `configs/mopd_formal_audit_off_4gpu.yaml` | 4-GPU audit-off run. |
@@ -46,6 +46,7 @@ Formal 2/4/6/8 GPU profiles use:
 - code teacher: `../models/Qwen3-4B-Non-Thinking-RL-Code-Step300`
 - train files under `data/G-OPD-Training-Data/DeepMath-103K/` and `data/G-OPD-Training-Data/Eurus/`
 - teacher top-k local-support distillation with `topk_distill_k=32`
+- teacher models default to CPU storage through `model.teacher_model_device: cpu`; set it to `gpu` in the YAML only when the run has enough spare GPU memory.
 
 GPU scaling:
 
@@ -66,7 +67,9 @@ GPU scaling:
 - token conflict attribution
 - token-gradient audit with domain-level signed-gap, gap-abs, and loss top-k/top-p selections
 
-`mopd_formal_audit_loss_only_*gpu.yaml` keeps the same audit surface as the all-audit profiles, including full/sample gradients, token gap vectors, entropy vectors, token conflict, and token-gradient logging. The only difference is token-gradient candidate selection: `token_gradient_gap_selection_enabled=false`, `token_gradient_gap_abs_selection_enabled=false`, and `token_gradient_loss_abs_selection_enabled=true`.
+`mopd_formal_audit_loss_only_*gpu.yaml` keeps the same loss-only token-gradient selection policy: `token_gradient_gap_selection_enabled=false`, `token_gradient_gap_abs_selection_enabled=false`, and `token_gradient_loss_abs_selection_enabled=true`. The 2/4/8-GPU profiles keep the full all-audit surface, including sample-gradient metrics. The 6-GPU loss-only profile is the memory-safe fsdp=2 profile: it keeps full-gradient and token-gradient audits through sequence replay, uses `token_gradient_top_p=0.15`, and disables sample-gradient metrics because each worker owns only a sharded parameter view.
+
+For fsdp=2 token-gradient runs, `sequence_masked_target_enabled=true` and `sequence_masked_target_use_as_primary=true` are required. `token_gradient_top_p=1.0` is a useful closure check: the `topp100_*` token-gradient selection should cover all candidate tokens and match the corresponding domain gradient with cosine/projection/norm-ratio near 1.
 
 `mopd_formal_audit_off_*gpu.yaml` sets `audit.enabled=false` and explicitly turns off all audit subfamilies.
 

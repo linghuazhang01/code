@@ -49,6 +49,7 @@ class ModelConfig:
     reasoning_teacher_path: str | None
     primary_teacher_path: str
     secondary_teacher_path: str | None
+    teacher_model_device: str = "cpu"
 
 
 @dataclass(frozen=True)
@@ -364,6 +365,11 @@ def load_config(path: str | Path) -> MOPDConfig:
         "code_teacher_path",
         secondary_teacher_raw if secondary_teacher_raw is not None else primary_teacher_raw,
     )
+    teacher_model_device = str(model_raw.get("teacher_model_device", "cpu")).lower()
+    if teacher_model_device == "cuda":
+        teacher_model_device = "gpu"
+    if teacher_model_device not in {"cpu", "gpu"}:
+        raise ValueError("Expected model.teacher_model_device to be one of: 'cpu', 'gpu', or 'cuda'.")
     model = ModelConfig(
         student_path=str(model_raw["student_path"]),
         student_base_path=(
@@ -380,6 +386,7 @@ def load_config(path: str | Path) -> MOPDConfig:
         ),
         primary_teacher_path=str(primary_teacher_raw),
         secondary_teacher_path=(None if secondary_teacher_raw is None else str(secondary_teacher_raw)),
+        teacher_model_device=teacher_model_device,
     )
 
     return MOPDConfig(

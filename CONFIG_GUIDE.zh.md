@@ -12,7 +12,7 @@
 | `configs/mopd_formal_audit_all_8gpu.yaml` | 8 卡正式诊断训练 | TP=4，8 卡 batch |
 | `configs/mopd_formal_audit_loss_only_2gpu.yaml` | 2 卡 loss-only 诊断训练 | 同 all-audit surface，但 token-gradient selection 只用 loss |
 | `configs/mopd_formal_audit_loss_only_4gpu.yaml` | 4 卡 loss-only 诊断训练 | 同 objective，batch 按卡数放大 |
-| `configs/mopd_formal_audit_loss_only_6gpu.yaml` | 6 卡 loss-only 诊断训练 | TP=2，6 卡 batch，token-gradient selection 只用 loss |
+| `configs/mopd_formal_audit_loss_only_6gpu.yaml` | 6 卡 loss-only 诊断训练 | TP=2，6 卡 batch，fsdp=2 sequence replay，token-gradient selection 只用 loss |
 | `configs/mopd_formal_audit_loss_only_8gpu.yaml` | 8 卡 loss-only 诊断训练 | TP=4，8 卡 batch |
 | `configs/mopd_formal_audit_off_2gpu.yaml` | 2 卡无 audit 训练 | 同样的模型、数据和 objective，关闭所有 MOPD audit 输出 |
 | `configs/mopd_formal_audit_off_4gpu.yaml` | 4 卡无 audit 训练 | 同 objective，batch 按卡数放大 |
@@ -112,13 +112,14 @@ rollout:
 
 ## Audit Loss Only
 
-`configs/mopd_formal_audit_loss_only_*gpu.yaml` 用于隔离 “high-loss token” 的 token-gradient 贡献。它不关闭其他 audit family；除了 token-gradient selection 的分数来源外，其他设置与 all-audit profile 保持一致：
+`configs/mopd_formal_audit_loss_only_*gpu.yaml` 用于隔离 “high-loss token” 的 token-gradient 贡献。2/4/8 卡 profile 不关闭其他 audit family；除了 token-gradient selection 的分数来源外，其他设置与 all-audit profile 保持一致。6 卡 loss-only profile 使用 `fsdp_size: 2` 和 sequence replay 来降低显存/CPU 峰值，因此关闭 sample-gradient 指标：
 
 ```yaml
 audit:
   enabled: true
   output_dir: audit/formal_audit_loss_only_<gpu>
   full_gradient_enabled: true
+  # 6gpu fsdp=2 profile sets these sample-gradient fields to false.
   sample_gradient_enabled: true
   sample_gradient_norm_enabled: true
   sample_gradient_cos_enabled: true
@@ -132,10 +133,21 @@ audit:
   token_gradient_gap_abs_selection_enabled: false
   token_gradient_loss_abs_selection_enabled: true
   token_gradient_top_k: 100
+  # 6gpu fsdp=2 profile uses 0.15; other loss-only formal profiles use 0.10.
   token_gradient_top_p: 0.10
 ```
 
 因此 `token_grad_metrics.jsonl` 仍会生成，但候选 token 只来自 `loss_abs` top-k/top-p，而不会再额外生成 signed-gap 或 gap-abs selector 的 token-gradient 样本。
+
+在 fsdp=2 下，token-gradient 依赖：
+
+```yaml
+audit:
+  sequence_masked_target_enabled: true
+  sequence_masked_target_use_as_primary: true
+```
+
+这一路径不要求每个 worker 拥有完整 local params。6 卡正式 loss-only profile 默认使用 `token_gradient_top_p: 0.15`。若把 `token_gradient_top_p` 临时覆盖为 `1.0`，`topp100_*` selection 应该覆盖全部候选 token，并与对应 domain gradient 的 cosine、projection share、norm ratio 接近 1，可用于 closure sanity check。
 
 ## 指标 Smoke
 

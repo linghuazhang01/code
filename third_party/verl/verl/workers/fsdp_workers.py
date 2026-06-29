@@ -97,6 +97,19 @@ logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 device_name = get_device_name()
 
 
+def _normalize_teacher_model_device(value: Any) -> str:
+    device = str(value or "cpu").lower()
+    if device == "cuda":
+        device = "gpu"
+    if device not in {"cpu", "gpu"}:
+        raise ValueError("Expected teacher_model_device to be one of: 'cpu', 'gpu', or 'cuda'.")
+    return device
+
+
+def _teacher_model_uses_cpu_offload(value: Any) -> bool:
+    return _normalize_teacher_model_device(value) == "cpu"
+
+
 def create_device_mesh(world_size, fsdp_size):
     if fsdp_size < 0 or fsdp_size >= world_size:
         device_mesh = init_device_mesh(device_name, mesh_shape=(world_size,), mesh_dim_names=["fsdp"])
@@ -292,6 +305,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         use_liger=False,
         role="actor",
         enable_activation_offload=False,
+        ref_cpu_offload: bool = True,
     ):
         from torch.distributed.fsdp import CPUOffload, MixedPrecision
         from transformers import (
@@ -500,9 +514,9 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         sharding_strategy = get_sharding_strategy(fsdp_mesh)
 
         # TODO: add transformer policy
-        # We force reference policy to use CPUOffload to save memory.
+        # Reference/teacher policies use CPUOffload by default to save GPU memory.
         # We force turn off CPUOffload for actor because it causes incorrect results when using grad accumulation
-        cpu_offload = None if role == "actor" else CPUOffload(offload_params=True)
+        cpu_offload = None if role == "actor" or not ref_cpu_offload else CPUOffload(offload_params=True)
         fsdp_strategy = self.config.actor.strategy
         if fsdp_strategy == "fsdp":
             actor_module_fsdp = FSDP(
@@ -528,7 +542,11 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 self._is_offload_param = False
                 self._is_offload_optimizer = False
             else:
-                cpu_offload = None if role == "actor" else CPUOffloadPolicy(pin_memory=True)
+                cpu_offload = (
+                    None
+                    if role == "actor" or not ref_cpu_offload
+                    else CPUOffloadPolicy(pin_memory=True)
+                )
 
             fsdp_kwargs = {
                 "mesh": fsdp_mesh,
@@ -827,11 +845,17 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         if self._is_ref:
             ref_model_path = self.config.model.path
             ref_model = self.config.ref.get("model", None)
+            teacher_model_device = _normalize_teacher_model_device("cpu")
             if ref_model is not None:
                 ref_model_path = ref_model.get("path", self.config.model.path)
+                teacher_model_device = _normalize_teacher_model_device(
+                    ref_model.get("teacher_model_device", "cpu")
+                )
+            teacher_ref_cpu_offload = _teacher_model_uses_cpu_offload(teacher_model_device)
 
             if self.rank == 0:
                 print("reference model:", ref_model_path)
+                print(f"reference teacher_model_device: {teacher_model_device}")
             local_path = copy_to_local(ref_model_path, use_shm=use_shm)
             self.ref_module_fsdp = self._build_model_optimizer(
                 model_path=local_path,
@@ -843,6 +867,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 trust_remote_code=self.config.model.get("trust_remote_code", False),
                 use_liger=self.config.model.get("use_liger", False),
                 role="ref",
+                ref_cpu_offload=teacher_ref_cpu_offload,
             )[0]
             OmegaConf.set_struct(self.config.ref, True)
             with open_dict(self.config.ref):
@@ -886,9 +911,14 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         self._has_base_ref_model = False
         ref_model_config = self.config.ref.get("model", {})
         ref_base_model_path = ref_model_config.get("base_model_path", None) if ref_model_config else None
+        teacher_model_device = _normalize_teacher_model_device(
+            ref_model_config.get("teacher_model_device", "cpu") if ref_model_config else "cpu"
+        )
+        teacher_ref_cpu_offload = _teacher_model_uses_cpu_offload(teacher_model_device)
         if ref_base_model_path is not None and self._is_ref:
             if self.rank == 0:
                 print(f"Ref base model: {ref_base_model_path}")
+                print(f"Ref base model teacher_model_device: {teacher_model_device}")
             local_ref_base_path = copy_to_local(ref_base_model_path, use_shm=use_shm)
             self.base_ref_module_fsdp = self._build_model_optimizer(
                 model_path=local_ref_base_path,
@@ -900,6 +930,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 trust_remote_code=self.config.model.get("trust_remote_code", False),
                 use_liger=self.config.model.get("use_liger", False),
                 role="ref",
+                ref_cpu_offload=teacher_ref_cpu_offload,
             )[0]
             # Create a config for base ref policy
             base_ref_config = OmegaConf.create(OmegaConf.to_container(self.config.ref))

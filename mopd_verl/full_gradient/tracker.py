@@ -755,6 +755,10 @@ class SequentialBackwardDomainGradientTracker:
         requested_sample_cos = self.sample_gradient_enabled and bool(cfg.get("sample_gradient_cos_enabled", False))
         requested_token_gradient = bool(cfg.get("token_gradient_enabled", False))
         self._sample_gradient_uses_full_local_params = _actor_has_full_local_params_for_sample_gradient(actor)
+        self._token_gradient_sequence_replay_supported = (
+            self.sequence_masked_target_enabled
+            and self.sequence_masked_target_use_as_primary
+        )
         self._sample_gradient_norm_distributed_unsupported = (
             requested_sample_norm and not self._sample_gradient_uses_full_local_params
         )
@@ -762,7 +766,9 @@ class SequentialBackwardDomainGradientTracker:
             requested_sample_cos and not self._sample_gradient_uses_full_local_params
         )
         self._token_gradient_distributed_unsupported = (
-            requested_token_gradient and not self._sample_gradient_uses_full_local_params
+            requested_token_gradient
+            and not self._sample_gradient_uses_full_local_params
+            and not self._token_gradient_sequence_replay_supported
         )
         self.sample_norm_enabled = requested_sample_norm and not self._sample_gradient_norm_distributed_unsupported
         self.sample_cos_enabled = requested_sample_cos and not self._sample_gradient_cos_distributed_unsupported
@@ -827,7 +833,6 @@ class SequentialBackwardDomainGradientTracker:
         self._token_gradient_selected_sample_ids: dict[str, set[str]] = {}
         self._micro_batch_index = 0
         self._sample_zero_norm_count = 0
-        self._last_sequence_domain_targets: dict[str, tuple[tuple[torch.Tensor, ...], float]] = {}
         self._last_audit_total_chunks: tuple[torch.Tensor, ...] = tuple()
         self._last_sequence_total_chunks: tuple[torch.Tensor, ...] = tuple()
         self._use_dynamic_micro_batch = False
@@ -974,18 +979,20 @@ class SequentialBackwardDomainGradientTracker:
         self._sample_counts = {}
         self._first_domain_chunks = None
         self._started_at = time.perf_counter()
+        self._clear_mini_batch_cpu_refs()
+        self._micro_batch_index = 0
+        self._sample_zero_norm_count = 0
+        self._last_audit_total_chunks = tuple()
+        self._last_sequence_total_chunks = tuple()
+        self._use_dynamic_micro_batch = False
+
+    def _clear_mini_batch_cpu_refs(self) -> None:
         self._sample_records = []
         self._sample_candidates = {}
         self._domain_recompute_candidates = {}
         self._schedule_candidates = []
         self._token_gradient_candidates = {}
         self._token_gradient_selected_sample_ids = {}
-        self._micro_batch_index = 0
-        self._sample_zero_norm_count = 0
-        self._last_sequence_domain_targets = {}
-        self._last_audit_total_chunks = tuple()
-        self._last_sequence_total_chunks = tuple()
-        self._use_dynamic_micro_batch = False
 
     def run_pre_update_audit(
         self,
@@ -1114,6 +1121,12 @@ class SequentialBackwardDomainGradientTracker:
         self._micro_batch_index += 1
 
     def finish_mini_batch(self) -> dict[str, float]:
+        try:
+            return self._finish_mini_batch_impl()
+        finally:
+            self._clear_mini_batch_cpu_refs()
+
+    def _finish_mini_batch_impl(self) -> dict[str, float]:
         finish_started_at = time.perf_counter()
         metrics: dict[str, float] = {
             "global/audit/full_gradient_autograd_unavailable": 0.0,
@@ -1143,11 +1156,18 @@ class SequentialBackwardDomainGradientTracker:
             metrics["global/audit/sample_gradient_cos_distributed_unsupported"] = 1.0
         if self._token_gradient_distributed_unsupported:
             metrics["global/audit/token_gradient_distributed_unsupported"] = 1.0
+        if (
+            self.token_gradient_enabled
+            and not self._sample_gradient_uses_full_local_params
+            and self._token_gradient_sequence_replay_supported
+        ):
+            metrics["global/audit/token_gradient_distributed_sequence_replay_enabled"] = 1.0
         first_chunks = self._first_domain_chunks
         self._first_domain_chunks = None
         domain_targets: dict[str, tuple[tuple[torch.Tensor, ...], float]] = {}
         direct_targets: dict[str, tuple[tuple[torch.Tensor, ...], float]] = {}
         domain_target_source = 0.0
+        keep_parity_chunks = self.pre_update_audit and self._should_log_full_grad_training_parity()
 
         can_direct_domain_recompute = self._domain_direct_recompute_active()
         if (
@@ -1206,9 +1226,7 @@ class SequentialBackwardDomainGradientTracker:
                 _sequence_total_norm_sq,
             ) = self._recompute_sequence_domain_targets()
             metrics.update(sequence_metrics)
-            if sequence_targets:
-                self._last_sequence_domain_targets = sequence_targets
-            if self.pre_update_audit and sequence_total_chunks:
+            if keep_parity_chunks and sequence_total_chunks:
                 self._last_sequence_total_chunks = sequence_total_chunks
             if self.sequence_masked_target_use_as_primary and sequence_targets:
                 sequence_domain_metrics, sequence_domain_targets = self._finish_direct_domain_gradient_metrics(
@@ -1246,8 +1264,10 @@ class SequentialBackwardDomainGradientTracker:
                     prefix="global/full_grad_closure/chosen_target",
                 )
             )
-            if self.pre_update_audit:
+            if keep_parity_chunks:
                 self._last_audit_total_chunks = chosen_reference_chunks
+            else:
+                del chosen_reference_chunks
 
         if self.sample_cos_enabled and domain_targets:
             metrics.update(self._sample_cos_metrics(domain_targets))
@@ -1259,10 +1279,6 @@ class SequentialBackwardDomainGradientTracker:
         )
         if self.sample_log_sample_level:
             _write_jsonl_rows(self.output_dir, "sample_grad_metrics.jsonl", self._sample_records)
-        self._sample_candidates = {}
-        self._domain_recompute_candidates = {}
-        self._token_gradient_candidates = {}
-        self._token_gradient_selected_sample_ids = {}
         metrics["global/full_grad_cost/finish_mini_batch_seconds"] = time.perf_counter() - finish_started_at
         return metrics
 
