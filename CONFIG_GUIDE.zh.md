@@ -24,7 +24,7 @@
 卡数 scaling：
 
 - `data.max_prompt_length=2048`
-- `data.max_response_length=16384`
+- `data.max_response_length=16384`，其中 6 卡 loss-only profile 为了降低 sequence replay 峰值改为 `10240`，并显式设置 `rollout.max_model_len=12288`
 
 | GPU 数 | 配置后缀 | `trainer.n_gpus_per_node` | `rollout.tensor_model_parallel_size` | `data.train_batch_size` | `actor.ppo_mini_batch_size` | `ray_kwargs.ray_init.num_cpus` |
 | --- | --- | --- | --- | --- | --- | --- |

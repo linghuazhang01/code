@@ -65,7 +65,7 @@
 - token conflict attribution
 - token-gradient audit，支持 domain-level signed-gap、gap-abs 与 loss top-k/top-p selection
 
-`mopd_formal_audit_loss_only_*gpu.yaml` 使用相同的 loss-only token-gradient selection：`token_gradient_gap_selection_enabled=false`、`token_gradient_gap_abs_selection_enabled=false`、`token_gradient_loss_abs_selection_enabled=true`。2/4/8 卡 profile 保持完整 all-audit surface，包括 sample-gradient 指标。6 卡 loss-only profile 是显存安全的 fsdp=2 profile：它通过 sequence replay 保留 full-gradient 和 token-gradient audit，使用 `token_gradient_top_p=0.15`，但关闭 sample-gradient 指标，因为每个 worker 只拥有 sharded parameter view。
+`mopd_formal_audit_loss_only_*gpu.yaml` 使用相同的 loss-only token-gradient selection：`token_gradient_gap_selection_enabled=false`、`token_gradient_gap_abs_selection_enabled=false`、`token_gradient_loss_abs_selection_enabled=true`。2/4/8 卡 profile 保持完整 all-audit surface，包括 sample-gradient 指标。6 卡 loss-only profile 是显存安全的 fsdp=2 profile：它通过 sequence replay 保留 full-gradient 和 token-gradient audit，将 `data.max_response_length` 限制为 `10240`，显式设置 `rollout.max_model_len=12288`，使用 `token_gradient_top_p=0.15`，但关闭 sample-gradient 指标，因为每个 worker 只拥有 sharded parameter view。
 
 对于 fsdp=2 token-gradient run，必须保持 `sequence_masked_target_enabled=true` 与 `sequence_masked_target_use_as_primary=true`。`token_gradient_top_p=1.0` 可作为 full-token closure check：`topp100_*` token-gradient selection 应覆盖全部候选 token，并且与对应 domain gradient 的 cosine/projection/norm-ratio 接近 1。
 

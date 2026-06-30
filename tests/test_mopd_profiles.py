@@ -43,7 +43,8 @@ class MOPDProfileTests(unittest.TestCase):
         expected_save_freq = 5
 
         self.assertEqual(config.data.train_batch_size, train_batch_size)
-        self.assertEqual(config.data.max_response_length, 16384)
+        expected_response_length = 10240 if audit_mode == "loss_only" and gpu_count == 6 else 16384
+        self.assertEqual(config.data.max_response_length, expected_response_length)
         self.assertEqual(config.actor.ppo_mini_batch_size, train_batch_size)
         self.assertEqual(config.actor.ppo_micro_batch_size_per_gpu, 1)
         self.assertTrue(config.actor.gradient_checkpointing)
@@ -52,6 +53,8 @@ class MOPDProfileTests(unittest.TestCase):
         self.assertEqual(config.rollout.tensor_model_parallel_size, tensor_parallel_size)
         self.assertEqual(config.rollout.gpu_memory_utilization, gpu_memory_utilization)
         self.assertEqual(config.rollout.max_num_seqs, max_num_seqs)
+        expected_max_model_len = 12288 if audit_mode == "loss_only" and gpu_count == 6 else None
+        self.assertEqual(config.rollout.max_model_len, expected_max_model_len)
         self.assertEqual(config.trainer.n_gpus_per_node, gpu_count)
         self.assertEqual(config.trainer.total_training_steps, expected_steps)
         self.assertEqual(config.trainer.save_freq, expected_save_freq)
@@ -63,12 +66,15 @@ class MOPDProfileTests(unittest.TestCase):
         self.assertEqual(config.actor.topk_distill_k, 32)
         self.assertFalse(config.actor.topk_distill_tail_bucket)
         self.assertIn(f"data.train_batch_size={train_batch_size}", rendered)
+        self.assertIn(f"data.max_response_length={expected_response_length}", rendered)
         self.assertIn(f"actor_rollout_ref.actor.ppo_mini_batch_size={train_batch_size}", rendered)
         self.assertIn(f"trainer.n_gpus_per_node={gpu_count}", rendered)
         self.assertIn(f"trainer.save_freq={expected_save_freq}", rendered)
         self.assertIn(f"trainer.total_training_steps={expected_steps}", rendered)
         self.assertIn(f"actor_rollout_ref.actor.fsdp_config.fsdp_size={expected_fsdp_size}", rendered)
         self.assertIn(f"actor_rollout_ref.rollout.tensor_model_parallel_size={tensor_parallel_size}", rendered)
+        if expected_max_model_len is not None:
+            self.assertIn(f"actor_rollout_ref.rollout.max_model_len={expected_max_model_len}", rendered)
         if audit_mode in {"all", "loss_only"}:
             self.assertIn(f"+mopd_audit.output_dir=audit/{output_name}", rendered)
             self.assertIn("+mopd_audit.max_samples_per_domain=null", rendered)
