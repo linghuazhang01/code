@@ -10,6 +10,25 @@ import torch
 _TOPK_LOGPROB_CHUNK_SIZE = 16
 
 CHOSEN_TOKEN_REVERSE_KL = "chosen_token_reverse_kl"
+CHOSEN_TOKEN_POLICY_GRADIENT = "chosen_token_policy_gradient"
+DISTILL_LOSS_BUILDER_AUTO = "auto"
+DISTILL_LOSS_BUILDER_CHOSEN_TOKEN_REVERSE_KL = "chosen_token_reverse_kl"
+DISTILL_LOSS_BUILDER_POLICY_GRADIENT = "policy_gradient"
+DISTILL_LOSS_BUILDER_TOPK_KL = "topk_kl"
+DISTILL_LOSS_BUILDERS = {
+    DISTILL_LOSS_BUILDER_AUTO,
+    DISTILL_LOSS_BUILDER_CHOSEN_TOKEN_REVERSE_KL,
+    DISTILL_LOSS_BUILDER_POLICY_GRADIENT,
+    DISTILL_LOSS_BUILDER_TOPK_KL,
+}
+DISTILL_LOSS_BUILDER_ALIASES = {
+    "pg": DISTILL_LOSS_BUILDER_POLICY_GRADIENT,
+    "chosen_token_pg": DISTILL_LOSS_BUILDER_POLICY_GRADIENT,
+    CHOSEN_TOKEN_POLICY_GRADIENT: DISTILL_LOSS_BUILDER_POLICY_GRADIENT,
+    "topk": DISTILL_LOSS_BUILDER_TOPK_KL,
+    "topk_distill": DISTILL_LOSS_BUILDER_TOPK_KL,
+    "topk_distillation": DISTILL_LOSS_BUILDER_TOPK_KL,
+}
 TOPK_LOGPROB_MODE_SPARSE = "sparse"
 TOPK_LOGPROB_MODE_FULL_VOCAB = "full_vocab"
 TOPK_LOGPROB_MODES = {TOPK_LOGPROB_MODE_SPARSE, TOPK_LOGPROB_MODE_FULL_VOCAB}
@@ -67,6 +86,33 @@ def cfg_get(config: Any, key: str, default: Any = None) -> Any:
 
 def distill_mode(policy_loss_config: Any) -> str:
     return str(cfg_get(policy_loss_config, "distill_mode", CHOSEN_TOKEN_REVERSE_KL))
+
+
+def distill_loss_builder(policy_loss_config: Any) -> str:
+    builder = str(
+        cfg_get(policy_loss_config, "distill_loss_builder", DISTILL_LOSS_BUILDER_AUTO)
+        or DISTILL_LOSS_BUILDER_AUTO
+    ).lower()
+    builder = DISTILL_LOSS_BUILDER_ALIASES.get(builder, builder)
+    if builder != DISTILL_LOSS_BUILDER_AUTO:
+        if builder not in DISTILL_LOSS_BUILDERS:
+            raise ValueError(
+                "distill_loss_builder must be one of "
+                f"{sorted(DISTILL_LOSS_BUILDERS)} or aliases "
+                f"{sorted(DISTILL_LOSS_BUILDER_ALIASES)}, got {builder!r}."
+            )
+        return builder
+
+    mode = distill_mode(policy_loss_config)
+    if mode in {CHOSEN_TOKEN_POLICY_GRADIENT, DISTILL_LOSS_BUILDER_POLICY_GRADIENT}:
+        return DISTILL_LOSS_BUILDER_POLICY_GRADIENT
+    if mode in TOPK_DISTILL_MODES or bool(cfg_get(policy_loss_config, "topk_distill_enabled", False)):
+        return DISTILL_LOSS_BUILDER_TOPK_KL
+    return DISTILL_LOSS_BUILDER_CHOSEN_TOKEN_REVERSE_KL
+
+
+def uses_topk_distill_loss(policy_loss_config: Any) -> bool:
+    return distill_loss_builder(policy_loss_config) == DISTILL_LOSS_BUILDER_TOPK_KL
 
 
 def resolved_topk_distill_mode(policy_loss_config: Any) -> str:
@@ -221,6 +267,14 @@ def teacher_prefix_masks(
 
 
 def chosen_token_forward_kl_matrix(
+    *,
+    student_log_probs: torch.Tensor,
+    teacher_log_probs: torch.Tensor,
+) -> torch.Tensor:
+    return teacher_log_probs.float() - student_log_probs.float()
+
+
+def chosen_token_policy_gradient_reward_matrix(
     *,
     student_log_probs: torch.Tensor,
     teacher_log_probs: torch.Tensor,

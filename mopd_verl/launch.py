@@ -232,6 +232,7 @@ def build_overrides(config: MOPDConfig) -> list[str]:
         f"actor_rollout_ref.actor.policy_loss.only_reverse_kl_advantages={_bool(actor.only_reverse_kl_advantages)}",
         f"actor_rollout_ref.actor.policy_loss.lambda_vals={actor.lambda_vals}",
         f"actor_rollout_ref.actor.policy_loss.multi_teacher_distill={str(actor.multi_teacher_distill).lower()}",
+        f"actor_rollout_ref.actor.policy_loss.distill_loss_builder={actor.distill_loss_builder}",
         f"actor_rollout_ref.actor.policy_loss.distill_mode={actor.distill_mode}",
         f"actor_rollout_ref.actor.policy_loss.topk_distill_enabled={str(actor.topk_distill_enabled).lower()}",
         f"actor_rollout_ref.actor.policy_loss.topk_distill_kl_direction={actor.topk_distill_kl_direction}",

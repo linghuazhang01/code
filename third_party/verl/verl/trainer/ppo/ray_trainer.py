@@ -51,11 +51,11 @@ from mopd_verl.teacher_prefix import (
 from mopd_verl.topk_distill import (
     TOPK_SUPPORT_SOURCE_STUDENT,
     TOPK_SUPPORT_SOURCE_TEACHER,
-    is_topk_distill_enabled,
     topk_distill_include_tail,
     topk_distill_k,
     topk_distill_support_source,
     topk_distill_temperature,
+    uses_topk_distill_loss,
 )
 from mopd_verl.verl_audit import MOPDAuditLogger
 from verl.experimental.dataset.sampler import AbstractCurriculumSampler
@@ -1336,7 +1336,7 @@ class RayPPOTrainer:
                     # compute global_valid tokens
                     batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
                     policy_loss_config = self.config.actor_rollout_ref.actor.policy_loss
-                    if is_topk_distill_enabled(policy_loss_config):
+                    if uses_topk_distill_loss(policy_loss_config):
                         support_source = topk_distill_support_source(policy_loss_config)
                         batch.meta_info["topk_distill_support_source"] = support_source
                         if support_source == TOPK_SUPPORT_SOURCE_STUDENT:
@@ -1523,7 +1523,7 @@ class RayPPOTrainer:
                     if (
                         self.mopd_audit_logger.enabled
                         and self.mopd_audit_logger.should_log_entropy(self.global_steps)
-                        and is_topk_distill_enabled(policy_loss_config)
+                        and uses_topk_distill_loss(policy_loss_config)
                         and (
                             "math_teacher_topk_ids" in batch.batch
                             or (

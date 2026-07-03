@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -59,6 +60,7 @@ class ActorConfig:
     only_reverse_kl_advantages: bool = True
     lambda_vals: float = 1.25
     multi_teacher_distill: bool = True
+    distill_loss_builder: str = "auto"
     distill_mode: str = "chosen_token_reverse_kl"
     topk_distill_enabled: bool = False
     topk_distill_kl_direction: str = "reverse"
@@ -189,6 +191,8 @@ class AuditConfig:
     token_gradient_strict_grad_restore: bool = False
     token_gradient_backward_recompute_enabled: bool = True
     token_gradient_backward_sync_enabled: bool = True
+    gradient_fingerprint_enabled: bool = False
+    gradient_fingerprint_freq_steps: int = 1
 
 
 @dataclass(frozen=True)
@@ -306,6 +310,12 @@ def _optional_string(value: Any, key: str) -> str | None:
     raise ValueError(f"Expected '{key}' to be a string or null.")
 
 
+def _same_model_path(left: Any, right: Any) -> bool:
+    if left is None or right is None:
+        return False
+    return os.path.normcase(os.path.normpath(str(left))) == os.path.normcase(os.path.normpath(str(right)))
+
+
 def load_config(path: str | Path) -> MOPDConfig:
     config_path = Path(path)
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -365,6 +375,10 @@ def load_config(path: str | Path) -> MOPDConfig:
         "code_teacher_path",
         secondary_teacher_raw if secondary_teacher_raw is not None else primary_teacher_raw,
     )
+    if _same_model_path(secondary_teacher_raw, primary_teacher_raw):
+        secondary_teacher_raw = (
+            None if _same_model_path(code_teacher_raw, primary_teacher_raw) else code_teacher_raw
+        )
     teacher_model_device = str(model_raw.get("teacher_model_device", "cpu")).lower()
     if teacher_model_device == "cuda":
         teacher_model_device = "gpu"

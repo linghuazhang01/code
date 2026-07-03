@@ -14,12 +14,14 @@ from mopd_verl.full_gradient.labels import (
     _non_tensor_list,
 )
 from mopd_verl.topk_distill import (
+    DISTILL_LOSS_BUILDER_POLICY_GRADIENT,
     TOPK_LOGPROB_MODE_SPARSE,
     TOPK_RENORMALIZED_FORWARD_KL,
     TOPK_SUPPORT_SOURCE_STUDENT,
     TOPK_SUPPORT_SOURCE_TEACHER,
     chosen_token_forward_kl_matrix,
-    is_topk_distill_enabled,
+    chosen_token_policy_gradient_reward_matrix,
+    distill_loss_builder,
     resolved_topk_distill_mode,
     select_teacher_log_prob_tensor,
     teacher_prefix_forward_weight,
@@ -33,6 +35,7 @@ from mopd_verl.topk_distill import (
     topk_distill_temperature,
     topk_distill_uses_renormalized_support,
     topk_distill_weight,
+    uses_topk_distill_loss,
 )
 from verl import DataProto
 from verl.utils.device import get_device_id
@@ -252,6 +255,23 @@ def _actor_reverse_kl_advantages(
     return -reverse_kl
 
 
+def _actor_policy_gradient_rewards(
+    model_inputs: dict[str, Any],
+    policy_loss_cfg: Any,
+    old_log_prob: torch.Tensor,
+) -> torch.Tensor:
+    teacher_log_prob = _selected_teacher_log_prob_from_inputs(model_inputs, policy_loss_cfg)
+    return chosen_token_policy_gradient_reward_matrix(
+        student_log_probs=old_log_prob,
+        teacher_log_probs=teacher_log_prob,
+    )
+
+
+def _masked_mean(value: torch.Tensor, mask: torch.Tensor) -> float:
+    denom = mask.detach().float().sum().clamp(min=1.0)
+    return float(((value.detach().float() * mask.detach().float()).sum() / denom).cpu().item())
+
+
 def _response_token_id_matrix_from_inputs(model_inputs: dict[str, Any], response_mask: torch.Tensor) -> torch.Tensor | None:
     token_ids = None
     for key in ("responses", "response_ids", "input_ids"):
@@ -366,7 +386,8 @@ def build_actor_micro_batch_loss(
     if safe_logprob_backward:
         forward_kwargs["inplace_backward"] = False
     policy_loss_cfg = _cfg_get(actor.config, "policy_loss", {})
-    topk_distill_active = is_topk_distill_enabled(policy_loss_cfg)
+    builder_name = distill_loss_builder(policy_loss_cfg)
+    topk_distill_active = uses_topk_distill_loss(policy_loss_cfg)
     use_renormalized_support, effective_topk_logprob_mode = _topk_runtime_config(policy_loss_cfg)
     use_renormalized_support = topk_distill_active and use_renormalized_support
     kl_coef = float(_cfg_get(actor.config, "kl_loss_coef", 0.0) or 0.0)
@@ -435,7 +456,10 @@ def build_actor_micro_batch_loss(
         policy_loss = log_prob.new_zeros(())
         pg_loss = policy_loss
     else:
-        advantages = _actor_reverse_kl_advantages(actor, model_inputs, old_log_prob)
+        if builder_name == DISTILL_LOSS_BUILDER_POLICY_GRADIENT:
+            advantages = _actor_policy_gradient_rewards(model_inputs, policy_loss_cfg, old_log_prob)
+        else:
+            advantages = _actor_reverse_kl_advantages(actor, model_inputs, old_log_prob)
         loss_mode = str(_cfg_get(_cfg_get(actor.config, "policy_loss", {}), "loss_mode", "vanilla"))
         policy_loss_fn = get_policy_loss_fn(loss_mode)
         pg_loss, pg_metrics = policy_loss_fn(
@@ -450,6 +474,11 @@ def build_actor_micro_batch_loss(
         policy_loss = pg_loss
         if include_metrics:
             metrics.update(pg_metrics)
+            if builder_name == DISTILL_LOSS_BUILDER_POLICY_GRADIENT:
+                metrics["actor/chosen_token_pg_reward_mean"] = _masked_mean(
+                    advantages,
+                    distill_response_mask,
+                )
             rollout_log_prob = model_inputs.get("rollout_log_probs", None)
             if loss_mode != "rollout_correction" and rollout_log_prob is not None:
                 from verl.trainer.ppo.rollout_corr_helper import compute_rollout_corr_metrics_from_logprobs
@@ -590,7 +619,8 @@ def _actor_micro_batch_token_loss_scores(
             model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
             response_mask = model_inputs["response_mask"]
             policy_loss_cfg = _cfg_get(actor.config, "policy_loss", {})
-            topk_distill_active = is_topk_distill_enabled(policy_loss_cfg)
+            topk_distill_active = uses_topk_distill_loss(policy_loss_cfg)
+            builder_name = distill_loss_builder(policy_loss_cfg)
             use_renormalized_support, effective_topk_logprob_mode = _topk_runtime_config(policy_loss_cfg)
             use_renormalized_support = topk_distill_active and use_renormalized_support
             kl_coef = float(_cfg_get(actor.config, "kl_loss_coef", 0.0) or 0.0)
@@ -645,9 +675,17 @@ def _actor_micro_batch_token_loss_scores(
                     old_log_prob = log_prob.detach()
                 else:
                     old_log_prob = model_inputs["old_log_probs"]
-                teacher_log_prob = _selected_teacher_log_prob_from_inputs(model_inputs, policy_loss_cfg)
-                loss_mat = old_log_prob.float() - teacher_log_prob.float()
-                source = "chosen_token_reverse_kl_proxy"
+                if builder_name == DISTILL_LOSS_BUILDER_POLICY_GRADIENT:
+                    loss_mat = _actor_policy_gradient_rewards(
+                        model_inputs,
+                        policy_loss_cfg,
+                        old_log_prob,
+                    )
+                    source = "chosen_token_policy_gradient_reward"
+                else:
+                    teacher_log_prob = _selected_teacher_log_prob_from_inputs(model_inputs, policy_loss_cfg)
+                    loss_mat = old_log_prob.float() - teacher_log_prob.float()
+                    source = "chosen_token_reverse_kl_proxy"
 
             score_mat = loss_mat.float() * distill_response_mask.detach().float()
             if teacher_prefix_active and prefix_loss_mask.detach().sum().item() > 0:

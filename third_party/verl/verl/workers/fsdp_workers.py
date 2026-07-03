@@ -110,6 +110,12 @@ def _teacher_model_uses_cpu_offload(value: Any) -> bool:
     return _normalize_teacher_model_device(value) == "cpu"
 
 
+def _same_model_path(left: Any, right: Any) -> bool:
+    if left is None or right is None:
+        return False
+    return os.path.normcase(os.path.normpath(str(left))) == os.path.normcase(os.path.normpath(str(right)))
+
+
 def create_device_mesh(world_size, fsdp_size):
     if fsdp_size < 0 or fsdp_size >= world_size:
         device_mesh = init_device_mesh(device_name, mesh_shape=(world_size,), mesh_dim_names=["fsdp"])
@@ -919,26 +925,32 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             if self.rank == 0:
                 print(f"Ref base model: {ref_base_model_path}")
                 print(f"Ref base model teacher_model_device: {teacher_model_device}")
-            local_ref_base_path = copy_to_local(ref_base_model_path, use_shm=use_shm)
-            self.base_ref_module_fsdp = self._build_model_optimizer(
-                model_path=local_ref_base_path,
-                fsdp_config=omega_conf_to_dataclass(self.config.ref.fsdp_config),
-                optim_config=None,
-                override_model_config=override_model_config,
-                use_remove_padding=use_remove_padding,
-                use_fused_kernels=use_fused_kernels,
-                trust_remote_code=self.config.model.get("trust_remote_code", False),
-                use_liger=self.config.model.get("use_liger", False),
-                role="ref",
-                ref_cpu_offload=teacher_ref_cpu_offload,
-            )[0]
-            # Create a config for base ref policy
-            base_ref_config = OmegaConf.create(OmegaConf.to_container(self.config.ref))
-            OmegaConf.set_struct(base_ref_config, True)
-            with open_dict(base_ref_config):
-                base_ref_config.use_remove_padding = use_remove_padding
-                base_ref_config.use_fused_kernels = use_fused_kernels
-            self.base_ref_policy = DataParallelPPOActor(config=base_ref_config, actor_module=self.base_ref_module_fsdp)
+            if _same_model_path(ref_base_model_path, ref_model_path):
+                self.base_ref_module_fsdp = self.ref_module_fsdp
+                self.base_ref_policy = self.ref_policy
+                if self.rank == 0:
+                    print("Ref base model reuses reference model; skipped duplicate teacher load.")
+            else:
+                local_ref_base_path = copy_to_local(ref_base_model_path, use_shm=use_shm)
+                self.base_ref_module_fsdp = self._build_model_optimizer(
+                    model_path=local_ref_base_path,
+                    fsdp_config=omega_conf_to_dataclass(self.config.ref.fsdp_config),
+                    optim_config=None,
+                    override_model_config=override_model_config,
+                    use_remove_padding=use_remove_padding,
+                    use_fused_kernels=use_fused_kernels,
+                    trust_remote_code=self.config.model.get("trust_remote_code", False),
+                    use_liger=self.config.model.get("use_liger", False),
+                    role="ref",
+                    ref_cpu_offload=teacher_ref_cpu_offload,
+                )[0]
+                # Create a config for base ref policy
+                base_ref_config = OmegaConf.create(OmegaConf.to_container(self.config.ref))
+                OmegaConf.set_struct(base_ref_config, True)
+                with open_dict(base_ref_config):
+                    base_ref_config.use_remove_padding = use_remove_padding
+                    base_ref_config.use_fused_kernels = use_fused_kernels
+                self.base_ref_policy = DataParallelPPOActor(config=base_ref_config, actor_module=self.base_ref_module_fsdp)
             self._has_base_ref_model = True
             if self.rank == 0:
                 print(f"Ref base model initialized successfully from {ref_base_model_path}")

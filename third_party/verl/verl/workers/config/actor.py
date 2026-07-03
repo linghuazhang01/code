@@ -55,6 +55,7 @@ class PolicyLossConfig(BaseConfig):
     only_reverse_kl_advantages: bool = False
     lambda_vals: float = 1.0
     multi_teacher_distill: bool = False
+    distill_loss_builder: str = "auto"
     distill_mode: str = "chosen_token_reverse_kl"
     topk_distill_enabled: bool = False
     topk_distill_kl_direction: str = "reverse"

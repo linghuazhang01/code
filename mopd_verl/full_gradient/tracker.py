@@ -40,7 +40,7 @@ from mopd_verl.full_gradient.labels import (
     _sample_ids,
     _teacher_labels,
 )
-from mopd_verl.topk_distill import is_topk_distill_enabled
+from mopd_verl.topk_distill import uses_topk_distill_loss
 from verl import DataProto
 from verl.utils.device import get_device_id, get_torch_device
 
@@ -3179,7 +3179,7 @@ class SequentialBackwardDomainGradientTracker:
             return []
         response_mask = model_inputs["response_mask"].detach().float().cpu()
         policy_loss_cfg = _cfg_get(self.actor.config, "policy_loss", {})
-        topk_distill_active = is_topk_distill_enabled(policy_loss_cfg)
+        topk_distill_active = uses_topk_distill_loss(policy_loss_cfg)
         has_gap_inputs = "old_log_probs" in model_inputs and "math_teacher_log_prob" in model_inputs
         if not has_gap_inputs and not (
             topk_distill_active and self.token_gradient_loss_abs_selection_enabled

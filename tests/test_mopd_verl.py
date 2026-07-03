@@ -34,16 +34,21 @@ from mopd_verl.searchqa_data import searchqa_to_verl_parquet
 from mopd_verl.settings import load_config
 from mopd_verl.smoke_data import write_smoke_data
 from mopd_verl.topk_distill import (
+    DISTILL_LOSS_BUILDER_POLICY_GRADIENT,
+    DISTILL_LOSS_BUILDER_TOPK_KL,
     TOPK_FORWARD_KL_WITH_TAIL,
     TOPK_RENORMALIZED_FORWARD_KL,
     TOPK_RENORMALIZED_REVERSE_KL,
     chosen_token_forward_kl_matrix,
+    chosen_token_policy_gradient_reward_matrix,
+    distill_loss_builder,
     resolved_topk_distill_mode,
     selected_logits_from_hidden_states,
     teacher_prefix_masks,
     topk_distill_loss_matrix,
     topk_log_probs_from_logits,
     topk_teacher_student_cross_entropy_matrix,
+    uses_topk_distill_loss,
 )
 from mopd_verl.teacher_prefix import build_dataset_teacher_prefix
 from grpo.data.toolrl import toolrl_to_verl_parquet
@@ -296,6 +301,55 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("actor_rollout_ref.actor.policy_loss.topk_distill_temperature=2.0", rendered)
         self.assertIn("actor_rollout_ref.actor.policy_loss.topk_distill_loss_weight=0.5", rendered)
 
+    def test_policy_gradient_distill_builder_overrides_topk_flag(self) -> None:
+        config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_formal_audit_all_2gpu.yaml"
+        config = load_config(config_path)
+        pg_config = replace(
+            config,
+            actor=replace(
+                config.actor,
+                distill_loss_builder="policy_gradient",
+                topk_distill_enabled=True,
+            ),
+        )
+        rendered = format_command(build_command(pg_config))
+        policy_loss_config = {
+            "distill_loss_builder": "policy_gradient",
+            "topk_distill_enabled": True,
+        }
+
+        self.assertIn("actor_rollout_ref.actor.policy_loss.distill_loss_builder=policy_gradient", rendered)
+        self.assertEqual(distill_loss_builder(policy_loss_config), DISTILL_LOSS_BUILDER_POLICY_GRADIENT)
+        self.assertFalse(uses_topk_distill_loss(policy_loss_config))
+        self.assertEqual(
+            distill_loss_builder({"topk_distill_enabled": True}),
+            DISTILL_LOSS_BUILDER_TOPK_KL,
+        )
+
+    def test_duplicate_teacher_path_is_not_rendered_as_base_ref_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "same_teacher.yaml"
+            config_path.write_text(
+                """
+data:
+  train_files: ["train.parquet"]
+  val_files: ["val.parquet"]
+model:
+  student_path: student
+  student_base_path: null
+  math_teacher_path: teacher
+  code_teacher_path: teacher/.
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+            rendered = format_command(build_command(config))
+
+        self.assertIsNone(config.model.secondary_teacher_path)
+        self.assertIn("+actor_rollout_ref.ref.model.path=teacher", rendered)
+        self.assertNotIn("+actor_rollout_ref.ref.model.base_model_path=", rendered)
+
     def test_teacher_prefix_command_is_config_controlled(self) -> None:
         config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_formal_audit_all_2gpu.yaml"
         config = load_config(config_path)
@@ -368,6 +422,22 @@ class MOPDVerlTests(unittest.TestCase):
             resolved_topk_distill_mode({"topk_distill_enabled": True}),
             TOPK_RENORMALIZED_REVERSE_KL,
         )
+
+    def test_chosen_token_policy_gradient_reward_is_teacher_minus_student(self) -> None:
+        try:
+            import torch
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"torch is not installed: {exc}")
+
+        student = torch.tensor([[-3.0, -1.5]], dtype=torch.float32)
+        teacher = torch.tensor([[-2.0, -2.5]], dtype=torch.float32)
+        reward = chosen_token_policy_gradient_reward_matrix(
+            student_log_probs=student,
+            teacher_log_probs=teacher,
+        )
+
+        self.assertTrue(torch.equal(reward, torch.tensor([[1.0, -1.0]], dtype=torch.float32)))
+
 
     def test_topk_distillation_helper_uses_renormalized_support_kl(self) -> None:
         try:
