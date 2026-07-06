@@ -15,6 +15,7 @@ Examples:
 Environment:
   MOPD_CONFIG=<default config when config arg is omitted>
   VERL_RUNTIME_DIR=<vendored verl runtime dir>
+  MOPD_LAUNCH_PYTHON=<python executable for this launcher, default: python3>
 USAGE
 }
 
@@ -85,4 +86,4 @@ if [[ "${#EXTRA_ARGS[@]}" -gt 0 ]]; then
   ARGS+=(-- "${EXTRA_ARGS[@]}")
 fi
 
-exec python -m mopd_verl.launch "${ARGS[@]}"
+exec "${MOPD_LAUNCH_PYTHON:-python3}" -m mopd_verl.launch "${ARGS[@]}"

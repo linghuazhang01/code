@@ -1,273 +1,160 @@
-# GRPO Teacher 训练运行说明
+# M2RL-style GRPO for Qwen 4B Non-Thinking
 
-这个目录存放专门用于训练 GRPO teacher model 的代码。当前支持两条训练链路：
+This directory is a clean replacement for the earlier ToolRL/General-Reasoner GRPO adapter. The old implementation was moved to `../temp/grpo_legacy_backup_*/grpo` from the project root.
 
-- ToolRL：训练 tool-use / function-calling teacher。
-- General-Reasoner：训练 general reasoning teacher，使用 verifier model 做 reward。
+The goal is to reuse the relevant M2RL recipe for two GRPO teacher domains:
 
-共享训练入口仍然是 `mopd_verl.launch`，共享 `verl` runtime 位于 `third_party/verl`。`grpo/` 只放 GRPO-specific 的 config、data adapter、reward adapter 和 verifier worker。
+- Instruction following: M2RL `run-qwen3-4B-if.sh`, `rm-type=ifbench`.
+- Science QA: M2RL `run-qwen3-4B-science.sh`, `rm-type=gpqa`.
 
-## 目录结构
+The local runtime still uses the vendored `verl` launcher through `scripts/run_mopd.sh`; we do not vendor the full M2RL/slime stack here.
+
+## M2RL Parameters Mirrored
+
+M2RL's single-domain IF and Science RL scripts use:
 
 ```text
-grpo/
-  configs/
-    toolrl.yaml
-    general_reasoner.yaml
-  data/
-    toolrl.py
-  rewards/
-    toolrl.py
-    general_reasoner.py
-  workers/
-    general_verifier.py
+rollout-max-prompt-len     2048
+rollout-max-response-len   32768
+n-samples-per-prompt       16
+global-batch-size          2048
+context-parallel-size      2
+max-tokens-per-gpu         17600
 ```
 
-请从 `code/` 目录运行下面所有命令：
+The local configs map this to:
+
+```text
+data.max_prompt_length              2048
+data.max_response_length            32768
+actor_rollout_ref.rollout.n         16
+actor_rollout_ref.rollout.max_model_len 34816
+```
+
+Because the local `verl` path does not expose M2RL/slime context parallelism, the configs conservatively set `actor.ppo_max_token_len_per_gpu=34816`. If you run the original M2RL/slime stack with CP=2, the M2RL value around `17600` per GPU is the closer match.
+
+## Reward Functions
+
+Main adapter:
+
+```text
+grpo/rewards/m2rl.py
+```
+
+It supports:
+
+- `ifbench`: official IFBench strict instruction-following verifier.
+- `gpqa`: M2RL-style multiple-choice science reward using option-letter extraction.
+
+Important non-thinking adaptation: M2RL's original reward hub returns `0.0` when the response has no `</think>` tag. This local adapter strips `</think>` if present, but does not require it, because this experiment is explicitly for non-thinking Qwen 4B behavior.
+
+## Data Requirements
+
+M2RL scripts assume preprocessed parquet paths:
+
+```text
+$DATA_DIR/rl_train/if.parquet
+$DATA_DIR/rl_train/science.parquet
+$DATA_DIR/val/IFBench_test.parquet
+$DATA_DIR/val/gpqa.parquet
+```
+
+The M2RL repo does not directly ship those parquet files. The public source is the NVIDIA Nemotron RL blend, plus benchmark validation files. Therefore data is not plug-and-play until it is filtered and converted.
+
+For local training, convert any M2RL-style parquet/json/jsonl with:
 
 ```bash
 cd /Users/linghuazhang/Desktop/Project/OPD/code
 export PYTHONPATH="$PWD:$PWD/third_party/verl:${PYTHONPATH:-}"
-export PYTHONINTMAXSTRDIGITS=0
+
+python -m grpo.data.m2rl prepare \
+  --input /path/to/if.parquet \
+  --output data/M2RL/if/train.parquet \
+  --rm-type ifbench \
+  --split train \
+  --domain if
+
+python -m grpo.data.m2rl prepare \
+  --input /path/to/science.parquet \
+  --output data/M2RL/science/train.parquet \
+  --rm-type gpqa \
+  --split train \
+  --domain science
 ```
 
-## 1. 运行 ToolRL
+Validate before launching:
 
-ToolRL 上游代码已经拉到：
+```bash
+python -m grpo.data.m2rl validate --input /path/to/if.parquet --rm-type ifbench
+python -m grpo.data.m2rl validate --input /path/to/science.parquet --rm-type gpqa
+```
+
+## Schema Checks
+
+`ifbench` rows must include:
 
 ```text
-/Users/linghuazhang/Desktop/Project/OPD/temp/grpo_sources/ToolRL
+prompt or messages
+metadata.instruction_id_list
+metadata.kwargs
+metadata.prompt_text
 ```
 
-### 1.1 准备数据
-
-把 ToolRL 原始 parquet 转成当前 shared verl schema：
+The IFBench reward also requires a local clone of `allenai/IFBench`:
 
 ```bash
-python -m mopd_verl.prepare_data prepare-toolrl \
-  --input ../temp/grpo_sources/ToolRL/dataset/rlla_4k/train.parquet \
-  --output data/ToolRL/rlla_4k/train.parquet \
-  --split train
-
-python -m mopd_verl.prepare_data prepare-toolrl \
-  --input ../temp/grpo_sources/ToolRL/dataset/rlla_4k/test.parquet \
-  --output data/ToolRL/rlla_4k/test.parquet \
-  --split test
+git clone https://github.com/allenai/IFBench.git ../IFBench
+export IFBENCH_REPO=/Users/linghuazhang/Desktop/Project/OPD/IFBench
 ```
 
-### 1.2 先 dry-run 检查命令
+Alternatively:
 
 ```bash
-DRY_RUN=1 scripts/run_toolrl_grpo.sh
+export M2RL_ALLOW_IFBENCH_AUTO_CLONE=1
 ```
 
-如果命令里能看到这些字段，说明配置路径正确：
+`gpqa` rows must include:
 
 ```text
-data/ToolRL/rlla_4k/train.parquet
-custom_reward_function.path=grpo/rewards/toolrl.py
-actor_rollout_ref.rollout.n=4
+prompt or messages
+label, answer, correct_letter, or correct_answer
+metadata.choices when the label is not already a letter
 ```
 
-### 1.3 正式启动训练
+## Launch
+
+Dry-run first:
 
 ```bash
-scripts/run_toolrl_grpo.sh
+DRY_RUN=1 scripts/run_m2rl_if_grpo.sh
+DRY_RUN=1 scripts/run_m2rl_science_grpo.sh
+DRY_RUN=1 scripts/run_m2rl_if_science_grpo.sh
 ```
 
-默认配置文件是：
-
-```text
-grpo/configs/toolrl.yaml
-```
-
-默认 checkpoint 输出到：
-
-```text
-checkpoints/toolrl-qwen2.5-3b-grpo
-```
-
-### 1.4 常用 override
-
-换 base model：
+Actual runs:
 
 ```bash
-scripts/run_toolrl_grpo.sh -- \
-  actor_rollout_ref.model.path=/path/to/Qwen2.5-3B-Instruct \
-  actor_rollout_ref.model.base_model_path=/path/to/Qwen2.5-3B-Instruct
+scripts/run_m2rl_if_grpo.sh -- \
+  actor_rollout_ref.model.path=/path/to/qwen-4b-non-thinking \
+  actor_rollout_ref.model.base_model_path=/path/to/qwen-4b-non-thinking
+
+scripts/run_m2rl_science_grpo.sh -- \
+  actor_rollout_ref.model.path=/path/to/qwen-4b-non-thinking \
+  actor_rollout_ref.model.base_model_path=/path/to/qwen-4b-non-thinking
 ```
 
-换 GPU 数：
+The default config uses `Qwen/Qwen3-4B` with `enable_thinking=false`, because no local `Qwen4B-Non-Thinking` base checkpoint is present in this workspace. Override model paths for the exact checkpoint.
 
-```bash
-scripts/run_toolrl_grpo.sh -- \
-  trainer.n_gpus_per_node=4 \
-  actor_rollout_ref.rollout.tensor_model_parallel_size=1
-```
+## Current Fitness Assessment
 
-启用 ToolRL reward variant：
+Reward side:
 
-```bash
-WITHLENGTH=1 scripts/run_toolrl_grpo.sh
-REFINEDREWARD=1 scripts/run_toolrl_grpo.sh
-SCHEDULEREWARD=1 scripts/run_toolrl_grpo.sh
-```
+- IFBench reward is strong if official IFBench metadata is present.
+- GPQA reward is self-contained and suitable for multiple-choice science QA.
+- Non-thinking outputs are supported.
 
-## 2. 运行 General-Reasoner
+Data side:
 
-General-Reasoner 上游代码已经拉到：
-
-```text
-/Users/linghuazhang/Desktop/Project/OPD/temp/grpo_sources/General-Reasoner
-```
-
-### 2.1 准备数据
-
-从 Hugging Face 下载并转换 `TIGER-Lab/WebInstruct-verified`：
-
-```bash
-python -m mopd_verl.prepare_data prepare-general-reasoner-hf \
-  --output-dir data/GeneralReasoner/WebInstructVerified
-```
-
-当前 config 把 validation parquet 放在 `eval/domains/greasoner/...`，所以需要 staging 一份：
-
-```bash
-mkdir -p eval/domains/greasoner/data/WebInstructVerified
-cp data/GeneralReasoner/WebInstructVerified/test.parquet \
-  eval/domains/greasoner/data/WebInstructVerified/test.parquet
-```
-
-### 2.2 准备 verifier 和 backbone
-
-General-Reasoner 训练需要 verifier reward model。可以先下载到本地模型目录：
-
-```bash
-huggingface-cli download TIGER-Lab/general-verifier \
-  --local-dir ../models/general-verifier
-
-huggingface-cli download Qwen/Qwen3-4B \
-  --local-dir ../models/Qwen3-4B
-```
-
-### 2.3 先 dry-run 检查命令
-
-```bash
-DRY_RUN=1 scripts/run_general_reasoner_grpo.sh
-```
-
-如果命令里能看到这些字段，说明配置路径正确：
-
-```text
-data/GeneralReasoner/WebInstructVerified/train.parquet
-custom_reward_function.path=grpo/rewards/general_reasoner.py
-+reward_model.worker.path=grpo/workers/general_verifier.py
-reward_model.strategy=verifier
-```
-
-### 2.4 正式启动训练
-
-建议显式传入本地 verifier 和 backbone 路径：
-
-```bash
-scripts/run_general_reasoner_grpo.sh -- \
-  reward_model.model.path=../models/general-verifier \
-  actor_rollout_ref.model.path=../models/Qwen3-4B \
-  actor_rollout_ref.model.base_model_path=../models/Qwen3-4B
-```
-
-默认配置文件是：
-
-```text
-grpo/configs/general_reasoner.yaml
-```
-
-默认 checkpoint 输出到：
-
-```text
-checkpoints/general-reasoner-qwen3-4b-grpo
-```
-
-### 2.5 常用 override
-
-如果不是 8 卡环境，至少改这些参数：
-
-```bash
-scripts/run_general_reasoner_grpo.sh -- \
-  trainer.n_gpus_per_node=4 \
-  actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
-  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=32 \
-  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1
-```
-
-如果显存不够，优先调小：
-
-```bash
-scripts/run_general_reasoner_grpo.sh -- \
-  data.train_batch_size=256 \
-  actor_rollout_ref.actor.ppo_mini_batch_size=128 \
-  actor_rollout_ref.rollout.n=4 \
-  actor_rollout_ref.rollout.max_num_batched_tokens=4096
-```
-
-## 3. 远程机器运行
-
-如果代码已经同步到远程机器，可以直接用已有远程启动脚本：
-
-```bash
-scripts/start_remote_mopd_training.sh grpo/configs/toolrl.yaml --run-id toolrl_grpo
-
-scripts/start_remote_mopd_training.sh grpo/configs/general_reasoner.yaml --run-id general_reasoner_grpo -- \
-  reward_model.model.path=../models/general-verifier \
-  actor_rollout_ref.model.path=../models/Qwen3-4B \
-  actor_rollout_ref.model.base_model_path=../models/Qwen3-4B
-```
-
-如果需要先从本地同步再启动：
-
-```bash
-scripts/sync_and_start_remote_mopd.sh grpo/configs/toolrl.yaml --run-id toolrl_grpo
-
-scripts/sync_and_start_remote_mopd.sh grpo/configs/general_reasoner.yaml --run-id general_reasoner_grpo -- \
-  reward_model.model.path=../models/general-verifier \
-  actor_rollout_ref.model.path=../models/Qwen3-4B \
-  actor_rollout_ref.model.base_model_path=../models/Qwen3-4B
-```
-
-## 4. 常见问题
-
-### `No module named yaml`
-
-当前 Python 环境缺少 `PyYAML`。切到训练环境，或安装项目依赖：
-
-```bash
-pip install -r requirements.txt
-```
-
-### 找不到 parquet 数据
-
-先确认是否已经运行对应的数据准备命令：
-
-```bash
-ls data/ToolRL/rlla_4k
-ls data/GeneralReasoner/WebInstructVerified
-ls eval/domains/greasoner/data/WebInstructVerified
-```
-
-### General-Reasoner verifier 启动失败
-
-确认训练环境安装了 GPU 版 `vllm`，并且 `reward_model.model.path` 指向可加载的 verifier 模型目录：
-
-```bash
-scripts/run_general_reasoner_grpo.sh -- \
-  reward_model.model.path=/absolute/path/to/general-verifier
-```
-
-### 只想看最终 verl 命令
-
-两个脚本都支持：
-
-```bash
-DRY_RUN=1 scripts/run_toolrl_grpo.sh
-DRY_RUN=1 scripts/run_general_reasoner_grpo.sh
-```
+- M2RL's expected per-domain parquet files are not directly present in this workspace.
+- The public Nemotron blend is available, but requires filtering into IF and Science splits.
+- Training should not start until `grpo.data.m2rl validate` passes for both train and validation parquet files.

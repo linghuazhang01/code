@@ -51,8 +51,8 @@ from mopd_verl.topk_distill import (
     uses_topk_distill_loss,
 )
 from mopd_verl.teacher_prefix import build_dataset_teacher_prefix
-from grpo.data.toolrl import toolrl_to_verl_parquet
-from grpo.rewards.toolrl import compute_score as compute_toolrl_score
+from grpo.data.m2rl import m2rl_frame_to_verl
+from grpo.rewards.m2rl import compute_score as compute_m2rl_score
 from mopd_verl.verl_audit import MOPDAuditLogger
 
 
@@ -792,32 +792,28 @@ model:
         expected_gathered_logits = logits.gather(dim=-1, index=gather_ids)
         self.assertTrue(torch.allclose(gathered_logits, expected_gathered_logits, atol=1e-6))
 
-    def test_toolrl_command_uses_custom_reward(self) -> None:
-        config_path = Path(__file__).resolve().parents[1] / "grpo" / "configs" / "toolrl.yaml"
+    def test_m2rl_if_command_uses_custom_reward(self) -> None:
+        config_path = Path(__file__).resolve().parents[1] / "grpo" / "configs" / "m2rl_if.yaml"
         config = load_config(config_path)
         rendered = format_command(build_command(config))
 
-        self.assertIn("data/ToolRL/rlla_4k/train.parquet", rendered)
-        self.assertIn("+data.domain_sampling_weights={tool: 1}", rendered)
+        self.assertIn("data/M2RL/if/train.parquet", rendered)
         self.assertIn("actor_rollout_ref.actor.policy_loss.multi_teacher_distill=false", rendered)
-        self.assertIn("actor_rollout_ref.actor.use_kl_loss=False", rendered)
-        self.assertIn("custom_reward_function.path=grpo/rewards/toolrl.py", rendered)
+        self.assertIn("custom_reward_function.path=grpo/rewards/m2rl.py", rendered)
         self.assertIn("custom_reward_function.name=compute_score", rendered)
-        self.assertIn("actor_rollout_ref.rollout.n=4", rendered)
+        self.assertIn("actor_rollout_ref.rollout.n=16", rendered)
+        self.assertIn("actor_rollout_ref.rollout.max_model_len=34816", rendered)
 
-    def test_general_reasoner_command_uses_external_verifier_worker(self) -> None:
-        config_path = Path(__file__).resolve().parents[1] / "grpo" / "configs" / "general_reasoner.yaml"
+    def test_m2rl_mixed_command_uses_domain_sampling(self) -> None:
+        config_path = Path(__file__).resolve().parents[1] / "grpo" / "configs" / "m2rl_if_science_mix.yaml"
         config = load_config(config_path)
         rendered = format_command(build_command(config))
 
-        self.assertIn("data/GeneralReasoner/WebInstructVerified/train.parquet", rendered)
-        self.assertIn("+data.domain_sampling_weights={reasoning: 1}", rendered)
-        self.assertIn("custom_reward_function.path=grpo/rewards/general_reasoner.py", rendered)
-        self.assertIn("reward_model.enable=True", rendered)
-        self.assertIn("reward_model.strategy=verifier", rendered)
-        self.assertIn("+reward_model.worker.path=grpo/workers/general_verifier.py", rendered)
-        self.assertIn("+reward_model.worker.name=RewardModelWorker", rendered)
-        self.assertIn("reward_model.model.path=TIGER-Lab/general-verifier", rendered)
+        self.assertIn("data/M2RL/if/train.parquet", rendered)
+        self.assertIn("data/M2RL/science/train.parquet", rendered)
+        self.assertIn("+data.domain_sampling_weights={if: 0.5, science: 0.5}", rendered)
+        self.assertIn("custom_reward_function.path=grpo/rewards/m2rl.py", rendered)
+        self.assertIn("custom_reward_function.name=compute_score", rendered)
 
     def test_dp_actor_routes_non_code_teacher_labels_through_primary_ref(self) -> None:
         source_path = Path(__file__).resolve().parents[1] / "third_party" / "verl" / "verl" / "workers" / "actor" / "dp_actor.py"
@@ -1520,45 +1516,35 @@ model:
         self.assertEqual(domains.count("math"), 2)
         self.assertEqual(domains.count("code"), 2)
 
-    def test_toolrl_conversion_adds_teacher_metadata_and_role(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            source = Path(tmpdir) / "toolrl.parquet"
-            target = Path(tmpdir) / "toolrl_verl.parquet"
-            pd.DataFrame(
-                [
-                    {
-                        "data_source": "rlla",
-                        "prompt": [{"content": "Pick the right tool."}],
-                        "ability": "tool",
-                        "reward_model": {"style": "rule", "ground_truth": "<think> ok </think>"},
-                        "extra_info": {"index": 7},
-                    }
-                ]
-            ).to_parquet(source, index=False)
+    def test_m2rl_conversion_adds_teacher_metadata_and_role(self) -> None:
+        frame = pd.DataFrame(
+            [
+                {
+                    "prompt": "Which option is correct?",
+                    "label": "B",
+                    "metadata": {"choices": ["wrong", "right"], "correct_letter": "B"},
+                }
+            ]
+        )
+        row = m2rl_frame_to_verl(frame, rm_type="gpqa", split="train", domain="science").iloc[0]
 
-            count = toolrl_to_verl_parquet(source, target, split="train")
-            row = pd.read_parquet(target).to_dict(orient="records")[0]
-
-        self.assertEqual(count, 1)
+        self.assertEqual(row["data_source"], "m2rl_gpqa")
         self.assertEqual(row["prompt"][0]["role"], "user")
-        self.assertEqual(row["extra_info"]["opd_teacher"], "tool")
-        self.assertEqual(row["extra_info"]["domain"], "tool")
+        self.assertEqual(row["reward_model"]["ground_truth"], "B")
+        self.assertEqual(row["extra_info"]["opd_teacher"], "science")
+        self.assertEqual(row["extra_info"]["domain"], "science")
         self.assertEqual(row["extra_info"]["split"], "train")
 
-    def test_toolrl_reward_scores_exact_tool_call(self) -> None:
-        response = (
-            '<think> I should call the tool. </think>\n'
-            '<tool_call>\n{"name": "GetNews", "parameters": {"page": "1"}}\n</tool_call>'
-        )
-        reward = compute_toolrl_score(
-            data_source="toolrl_rlla",
-            solution_str=response,
-            ground_truth=response,
+    def test_m2rl_science_reward_scores_final_answer_letter(self) -> None:
+        reward = compute_m2rl_score(
+            data_source="m2rl_science",
+            solution_str="Final answer: C",
+            ground_truth="C",
+            extra_info={"rm_type": "gpqa", "choices": ["A", "B", "C"]},
         )
 
-        self.assertEqual(reward["toolrl_format"], 1.0)
-        self.assertEqual(reward["toolrl_correctness"], 3.0)
-        self.assertEqual(reward["score"], 4.0)
+        self.assertEqual(reward["m2rl_gpqa"], 1.0)
+        self.assertEqual(reward["score"], 1.0)
 
     def test_tensorboard_core_filter_keeps_high_signal_metrics(self) -> None:
         logger = MOPDAuditLogger(

@@ -1,5 +1,12 @@
-"""Backward-compatible imports for General-Reasoner verifier worker."""
+"""Legacy General-Reasoner verifier worker compatibility shim."""
 
-from grpo.workers.general_verifier import RewardModelWorker
+
+class RewardModelWorker:
+    def __init__(self, *_: object, **__: object) -> None:
+        raise RuntimeError(
+            "Legacy General-Reasoner verifier worker was removed when grpo/ "
+            "was reset for M2RL-style IF/Science GRPO."
+        )
+
 
 __all__ = ["RewardModelWorker"]

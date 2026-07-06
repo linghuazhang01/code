@@ -134,8 +134,8 @@ audit:
   tier2_window_size: 20
   calibration_bins: 10
   full_gradient_enabled: true
-  full_gradient_freq_steps: 1
-  full_grad_training_parity_freq_steps: 1
+  full_gradient_freq_steps: 2
+  full_grad_training_parity_freq_steps: -1
   full_gradient_train_max_samples_per_domain: null
   full_gradient_micro_batch_size_per_gpu: 1
   full_gradient_storage_dtype: bfloat16
@@ -145,7 +145,7 @@ audit:
   sequence_masked_target_use_as_primary: true
   sequence_replay_skip_non_target_domains: false
   sequence_masked_target_closure_rel_l2_threshold: 0.02
-  training_gradient_from_domain_sum_enabled: false
+  training_gradient_from_domain_sum_enabled: true
   full_gradient_offload_domain_gradients: true
   sample_gradient_enabled: false
   sample_gradient_freq_steps: 1

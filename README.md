@@ -130,6 +130,13 @@ Local dry-run:
 scripts/run_mopd.sh configs/mopd_formal_audit_all_2gpu.yaml --dry-run
 ```
 
+Download the 30B teacher used by the Qwen30B distillation smoke config:
+
+```bash
+MODEL_ROOT=/root/autodl-tmp/opd_mopd/models \
+  scripts/download_qwen30b_teacher.sh
+```
+
 Metrics smoke:
 
 ```bash

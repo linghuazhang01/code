@@ -24,12 +24,17 @@ from mopd_verl.general_reasoner_data import (
     prepare_general_reasoner_hf_dataset,
 )
 from mopd_verl.searchqa_data import searchqa_to_verl_parquet
-from grpo.data.toolrl import toolrl_to_verl_parquet
+from grpo.data.m2rl import m2rl_to_verl_parquet
+
+try:
+    from grpo.data.toolrl import toolrl_to_verl_parquet
+except ImportError:
+    toolrl_to_verl_parquet = None
 
 if hasattr(sys, "set_int_max_str_digits"):
     sys.set_int_max_str_digits(0)
 
-VALID_TEACHERS = {"math", "code", "reasoning", "search", "tool"}
+VALID_TEACHERS = {"math", "code", "reasoning", "search", "tool", "if", "science"}
 
 
 @dataclass(frozen=True)
@@ -261,6 +266,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     toolrl_parser.add_argument("--teacher", default="tool", choices=sorted(VALID_TEACHERS), help="OPD teacher label.")
     toolrl_parser.add_argument("--data-source", default="toolrl_rlla", help="Data source tag for reward logging.")
     toolrl_parser.add_argument("--max-samples", type=int, default=None, help="Optional cap for quick tests.")
+    m2rl_parser = subparsers.add_parser(
+        "prepare-m2rl",
+        help="Convert M2RL IFBench/Science parquet, JSON, or JSONL into the shared verl parquet format.",
+    )
+    m2rl_parser.add_argument("--input", required=True, help="Input M2RL-style .parquet, .json, or .jsonl file.")
+    m2rl_parser.add_argument("--output", required=True, help="Output verl parquet file.")
+    m2rl_parser.add_argument("--rm-type", required=True, choices=["ifbench", "gpqa"], help="Reward type.")
+    m2rl_parser.add_argument("--split", default="train", help="Split name to record in extra_info.")
+    m2rl_parser.add_argument("--teacher", default=None, choices=sorted(VALID_TEACHERS), help="OPD teacher label.")
+    m2rl_parser.add_argument("--data-source", default=None, help="Data source tag for reward dispatch/logging.")
+    m2rl_parser.add_argument("--max-samples", type=int, default=None, help="Optional cap for quick tests.")
     return parser.parse_args(argv)
 
 
@@ -318,6 +334,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
         return 0
     if args.command == "prepare-toolrl":
+        if toolrl_to_verl_parquet is None:
+            raise RuntimeError(
+                "Legacy ToolRL adapter was removed when code/grpo was reset for M2RL-style GRPO. "
+                "Restore temp/grpo_legacy_backup_*/grpo if ToolRL is still needed."
+            )
         count = toolrl_to_verl_parquet(
             args.input,
             args.output,
@@ -337,6 +358,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
         sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
         return 0 if validation.is_valid and sample_validation.is_valid else 1
+    if args.command == "prepare-m2rl":
+        teacher = args.teacher or ("if" if args.rm_type == "ifbench" else "science")
+        report = m2rl_to_verl_parquet(
+            args.input,
+            args.output,
+            rm_type=args.rm_type,
+            split=args.split,
+            domain=teacher,
+            data_source=args.data_source,
+            max_samples=args.max_samples,
+        )
+        validation = validate_teacher_labels(args.output) if report.is_valid else None
+        sample_validation = validate_sample_ids(args.output) if report.is_valid else None
+        payload = {
+            **report.to_dict(),
+            "counts": validation.counts if validation is not None else {},
+            "sample_id_duplicate_count": sample_validation.duplicate_count if sample_validation is not None else 0,
+            "sample_id_invalid_rows": sample_validation.invalid_rows[:20] if sample_validation is not None else [],
+        }
+        sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
+        return 0 if report.is_valid and validation and validation.is_valid and sample_validation and sample_validation.is_valid else 1
 
     if args.command == "merge":
         merge_teacher_data(args.math_train, args.code_train, args.output)

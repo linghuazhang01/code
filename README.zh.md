@@ -128,6 +128,13 @@ GPU_IDS=0,1,2,3,4,5,6,7 bash scripts/start_remote_mopd_training.sh \
 scripts/run_mopd.sh configs/mopd_formal_audit_all_2gpu.yaml --dry-run
 ```
 
+下载 Qwen30B distillation smoke config 使用的 30B teacher：
+
+```bash
+MODEL_ROOT=/root/autodl-tmp/opd_mopd/models \
+  scripts/download_qwen30b_teacher.sh
+```
+
 指标 smoke：
 
 ```bash

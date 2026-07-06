@@ -167,6 +167,30 @@ def _strip_dp_actor_audit_blocks(text: str) -> str:
     )
 
 
+def _indent_domain_sum_training_fallback(text: str) -> str:
+    anchor = "                else:\n                    for mopd_domain, micro_batch in tracked_micro_batches:\n"
+    start = text.find(anchor)
+    if start < 0:
+        return text
+    body_start = start + len(anchor)
+    if text[body_start:].startswith("                        "):
+        return text
+    parity_marker = (
+        "\n                if mopd_gradient_tracker is not None:\n"
+        "                    append_to_dict(\n"
+        "                        metrics,\n"
+        "                        mopd_gradient_tracker.full_grad_training_parity_metrics(),"
+    )
+    body_end = text.find(parity_marker, body_start)
+    if body_end < 0:
+        body_end = text.find("\n                grad_norm = self._optimizer_step()", body_start)
+    if body_end < 0:
+        return text
+    body = text[body_start:body_end]
+    indented = "".join(f"    {line}" if line.strip() else line for line in body.splitlines(keepends=True))
+    return text[:body_start] + indented + text[body_end:]
+
+
 def _strip_main_ppo_domain_sampler_blocks(text: str) -> str:
     text = re.sub(
         r"\n {4}# MOPD audit: domain weighted sampler begin\n"
@@ -666,7 +690,18 @@ def patch_dp_actor(gopd_dir: Path) -> bool:
                     self.actor_optimizer.zero_grad()
                 # MOPD audit: domain-gradient tracker end
 
-                for mopd_domain, micro_batch in tracked_micro_batches:
+                mopd_domain_sum_training_applied = False
+                if mopd_gradient_tracker is not None:
+                    (
+                        mopd_domain_sum_training_applied,
+                        mopd_domain_sum_training_metrics,
+                    ) = mopd_gradient_tracker.apply_domain_sum_gradient_for_training()
+                    append_to_dict(metrics, mopd_domain_sum_training_metrics)
+
+                if mopd_domain_sum_training_applied:
+                    metrics["global/audit/training_gradient_from_domain_sum_skipped_backward"] = 1.0
+                else:
+                    for mopd_domain, micro_batch in tracked_micro_batches:
 ''',
     )
     changed |= _replace_once(
@@ -699,6 +734,11 @@ def patch_dp_actor(gopd_dir: Path) -> bool:
                 grad_norm = self._optimizer_step()
 ''',
     )
+    updated = path.read_text(encoding="utf-8")
+    indented = _indent_domain_sum_training_fallback(updated)
+    if indented != updated:
+        path.write_text(indented, encoding="utf-8")
+        changed = True
     return changed
 
 
