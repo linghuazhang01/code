@@ -650,6 +650,15 @@ class MOPDAuditLogger:
         self.sequence_masked_target_use_as_primary = bool(
             _cfg_get(audit_config, "sequence_masked_target_use_as_primary", False)
         )
+        self.sequence_replay_skip_non_target_domains = bool(
+            _cfg_get(audit_config, "sequence_replay_skip_non_target_domains", False)
+        )
+        self.sequence_masked_target_closure_rel_l2_threshold = float(
+            _cfg_get(audit_config, "sequence_masked_target_closure_rel_l2_threshold", 0.02)
+        )
+        self.training_gradient_from_domain_sum_enabled = bool(
+            _cfg_get(audit_config, "training_gradient_from_domain_sum_enabled", False)
+        )
         self.sample_gradient_enabled = bool(_cfg_get(audit_config, "sample_gradient_enabled", False))
         self.sample_gradient_freq_steps = max(1, int(_cfg_get(audit_config, "sample_gradient_freq_steps", 1)))
         self.sample_gradient_norm_enabled = bool(_cfg_get(audit_config, "sample_gradient_norm_enabled", True))
@@ -973,6 +982,11 @@ class MOPDAuditLogger:
                 "full_gradient_direct_recompute_enabled": self.full_gradient_direct_recompute_enabled,
                 "sequence_masked_target_enabled": self.sequence_masked_target_enabled,
                 "sequence_masked_target_use_as_primary": self.sequence_masked_target_use_as_primary,
+                "sequence_replay_skip_non_target_domains": self.sequence_replay_skip_non_target_domains,
+                "sequence_masked_target_closure_rel_l2_threshold": (
+                    self.sequence_masked_target_closure_rel_l2_threshold
+                ),
+                "training_gradient_from_domain_sum_enabled": self.training_gradient_from_domain_sum_enabled,
                 "full_grad_training_parity_freq_steps": self.full_grad_training_parity_freq_steps,
                 "learning_rate": self._current_learning_rate_value(),
                 "sample_gradient_enabled": self.should_compute_sample_gradient(step) and mode == "train",

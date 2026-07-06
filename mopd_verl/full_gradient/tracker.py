@@ -743,8 +743,20 @@ class SequentialBackwardDomainGradientTracker:
         self.sequence_masked_target_use_as_primary = self.sequence_masked_target_enabled and bool(
             cfg.get("sequence_masked_target_use_as_primary", False)
         )
+        self.sequence_replay_skip_non_target_domains = self.sequence_masked_target_enabled and bool(
+            cfg.get("sequence_replay_skip_non_target_domains", False)
+        )
+        self.training_gradient_from_domain_sum_enabled = self.domain_gradient_enabled and bool(
+            cfg.get("training_gradient_from_domain_sum_enabled", False)
+        )
         self.domain_direct_recompute_closure_rel_l2_threshold = float(
             cfg.get("domain_direct_recompute_closure_rel_l2_threshold", 0.02)
+        )
+        self.sequence_masked_target_closure_rel_l2_threshold = float(
+            cfg.get(
+                "sequence_masked_target_closure_rel_l2_threshold",
+                self.domain_direct_recompute_closure_rel_l2_threshold,
+            )
         )
         self.inject_opd_teacher_from_domain_partition = bool(
             cfg.get("inject_opd_teacher_from_domain_partition", False)
@@ -835,6 +847,9 @@ class SequentialBackwardDomainGradientTracker:
         self._sample_zero_norm_count = 0
         self._last_audit_total_chunks: tuple[torch.Tensor, ...] = tuple()
         self._last_sequence_total_chunks: tuple[torch.Tensor, ...] = tuple()
+        self._last_domain_targets_for_training: dict[str, tuple[tuple[torch.Tensor, ...], float]] = {}
+        self._last_domain_target_source_for_training = 0.0
+        self._last_domain_targets_for_training_trusted = False
         self._use_dynamic_micro_batch = False
 
     def _should_log_full_grad_training_parity(self) -> bool:
@@ -842,6 +857,8 @@ class SequentialBackwardDomainGradientTracker:
         return freq_steps >= 0 and self.step % max(1, freq_steps) == 0
 
     def _domain_target_storage_dtype(self) -> str:
+        if self.training_gradient_from_domain_sum_enabled:
+            return "float32"
         return self.storage_dtype
 
     def _domain_direct_recompute_active(self) -> bool:
@@ -984,6 +1001,9 @@ class SequentialBackwardDomainGradientTracker:
         self._sample_zero_norm_count = 0
         self._last_audit_total_chunks = tuple()
         self._last_sequence_total_chunks = tuple()
+        self._last_domain_targets_for_training = {}
+        self._last_domain_target_source_for_training = 0.0
+        self._last_domain_targets_for_training_trusted = False
         self._use_dynamic_micro_batch = False
 
     def _clear_mini_batch_cpu_refs(self) -> None:
@@ -1039,6 +1059,7 @@ class SequentialBackwardDomainGradientTracker:
             self.sample_norm_enabled
             or self.sample_cos_enabled
             or self.token_gradient_enabled
+            or self.sequence_masked_target_enabled
             or self._domain_direct_recompute_active()
         ):
             self._micro_batch_index += 1
@@ -1167,6 +1188,7 @@ class SequentialBackwardDomainGradientTracker:
         domain_targets: dict[str, tuple[tuple[torch.Tensor, ...], float]] = {}
         direct_targets: dict[str, tuple[tuple[torch.Tensor, ...], float]] = {}
         domain_target_source = 0.0
+        domain_target_trusted = False
         keep_parity_chunks = self.pre_update_audit and self._should_log_full_grad_training_parity()
 
         can_direct_domain_recompute = self._domain_direct_recompute_active()
@@ -1181,6 +1203,7 @@ class SequentialBackwardDomainGradientTracker:
             if self._direct_domain_targets_pass_closure_gate(direct_targets, direct_metrics):
                 domain_metrics, domain_targets = self._finish_direct_domain_gradient_metrics(direct_targets)
                 domain_target_source = 1.0
+                domain_target_trusted = True
             elif first_chunks is not None:
                 if direct_targets:
                     metrics["global/audit/full_gradient_domain_direct_recompute_rejected_by_closure"] = 1.0
@@ -1203,6 +1226,7 @@ class SequentialBackwardDomainGradientTracker:
             if self._direct_domain_targets_pass_closure_gate(direct_targets, direct_metrics):
                 domain_metrics, domain_targets = self._finish_direct_domain_gradient_metrics(direct_targets)
                 domain_target_source = 1.0
+                domain_target_trusted = True
             elif first_chunks is not None:
                 if direct_targets:
                     metrics["global/audit/full_gradient_domain_direct_recompute_rejected_by_closure"] = 1.0
@@ -1229,22 +1253,54 @@ class SequentialBackwardDomainGradientTracker:
             if keep_parity_chunks and sequence_total_chunks:
                 self._last_sequence_total_chunks = sequence_total_chunks
             if self.sequence_masked_target_use_as_primary and sequence_targets:
+                sequence_closure_rel_l2 = sequence_metrics.get(
+                    "global/full_grad_sequence/domain_sum_vs_total/rel_l2"
+                )
+                sequence_target_trusted = False
+                if sequence_closure_rel_l2 is not None:
+                    try:
+                        sequence_target_trusted = (
+                            float(sequence_closure_rel_l2)
+                            <= self.sequence_masked_target_closure_rel_l2_threshold
+                        )
+                    except (TypeError, ValueError):
+                        sequence_target_trusted = False
                 sequence_domain_metrics, sequence_domain_targets = self._finish_direct_domain_gradient_metrics(
                     sequence_targets
                 )
                 metrics.update(sequence_domain_metrics)
                 domain_targets = sequence_domain_targets
                 domain_target_source = 4.0
+                domain_target_trusted = sequence_target_trusted
                 metrics["global/audit/full_gradient_domain_sequence_masked_primary_used"] = 1.0
                 metrics["global/audit/full_gradient_domain_sequence_masked_replay_used"] = 1.0
+                metrics[
+                    "global/audit/full_gradient_domain_sequence_masked_replay_trusted"
+                ] = float(sequence_target_trusted)
+                metrics[
+                    "global/audit/full_gradient_domain_sequence_masked_replay_closure_rel_l2_threshold"
+                ] = self.sequence_masked_target_closure_rel_l2_threshold
+                if not sequence_target_trusted:
+                    metrics[
+                        "global/audit/full_gradient_domain_sequence_masked_replay_rejected_by_closure"
+                    ] = 1.0
                 metrics["global/audit/full_gradient_domain_direct_recompute_used"] = 0.0
         if not domain_targets:
             domain_target_source = 0.0
+            domain_target_trusted = False
         metrics["global/audit/full_gradient_domain_target_source"] = domain_target_source
         metrics["global/audit/full_gradient_domain_target_source_sequence_masked_replay"] = float(
             domain_target_source == 4.0
         )
-        metrics["global/audit/full_gradient_domain_target_trusted"] = float(domain_target_source == 4.0)
+        metrics["global/audit/full_gradient_domain_target_trusted"] = float(domain_target_trusted)
+        if self.training_gradient_from_domain_sum_enabled and domain_targets:
+            self._last_domain_targets_for_training = domain_targets
+            self._last_domain_target_source_for_training = float(domain_target_source)
+            self._last_domain_targets_for_training_trusted = bool(domain_target_trusted)
+            metrics["global/audit/training_gradient_from_domain_sum_target_available"] = 1.0
+            metrics["global/audit/training_gradient_from_domain_sum_target_trusted"] = float(
+                domain_target_trusted
+            )
 
         if domain_targets:
             _finalize_fsdp_after_auxiliary_backward(self.actor)
@@ -1330,6 +1386,69 @@ class SequentialBackwardDomainGradientTracker:
             for key, value in stats.items():
                 metrics[f"{prefix}/{key}"] = float(value)
         return metrics
+
+    def apply_domain_sum_gradient_for_training(self) -> tuple[bool, dict[str, float]]:
+        """Restore the chosen domain-gradient sum into parameter grads for optimizer step."""
+
+        if not self.training_gradient_from_domain_sum_enabled:
+            return False, {}
+
+        metrics: dict[str, float] = {
+            "global/audit/training_gradient_from_domain_sum_requested": 1.0,
+            "global/audit/training_gradient_from_domain_sum_applied": 0.0,
+        }
+        domain_targets = self._last_domain_targets_for_training
+        if not domain_targets:
+            metrics["global/audit/training_gradient_from_domain_sum_unavailable"] = 1.0
+            return False, metrics
+
+        target_source = float(self._last_domain_target_source_for_training)
+        metrics["global/audit/training_gradient_from_domain_sum_target_source"] = target_source
+        metrics["global/audit/training_gradient_from_domain_sum_target_trusted"] = float(
+            self._last_domain_targets_for_training_trusted
+        )
+        if target_source not in (1.0, 4.0):
+            metrics["global/audit/training_gradient_from_domain_sum_untrusted_target"] = 1.0
+            return False, metrics
+        if not self._last_domain_targets_for_training_trusted:
+            metrics["global/audit/training_gradient_from_domain_sum_untrusted_target"] = 1.0
+            return False, metrics
+
+        if getattr(self.actor, "scaler", None) is not None:
+            metrics["global/audit/training_gradient_from_domain_sum_unsupported_grad_scaler"] = 1.0
+            return False, metrics
+
+        missing_domains = [domain for domain in self.domains if domain not in domain_targets]
+        if missing_domains:
+            metrics["global/audit/training_gradient_from_domain_sum_missing_domain_count"] = float(
+                len(missing_domains)
+            )
+            return False, metrics
+
+        parameters = _trainable_parameters(self.actor)
+        if not parameters:
+            metrics["global/audit/training_gradient_from_domain_sum_no_parameters"] = 1.0
+            return False, metrics
+
+        for chunks, _norm_sq in domain_targets.values():
+            if len(chunks) != len(parameters):
+                metrics["global/audit/training_gradient_from_domain_sum_parameter_mismatch"] = 1.0
+                return False, metrics
+            for parameter, chunk in zip(parameters, chunks):
+                if int(parameter.numel()) != int(chunk.numel()):
+                    metrics["global/audit/training_gradient_from_domain_sum_parameter_mismatch"] = 1.0
+                    return False, metrics
+
+        _clear_parameter_grads(parameters)
+        _restore_parameter_grads_from_targets(parameters, domain_targets)
+        restore_stats = _parameter_grad_target_diff_stats(parameters, domain_targets)
+        for key, value in restore_stats.items():
+            metrics[f"global/audit/training_gradient_from_domain_sum_restore/{key}"] = float(value)
+        metrics["global/audit/training_gradient_from_domain_sum_applied"] = 1.0
+        metrics["global/audit/training_gradient_from_domain_sum_domain_count"] = float(len(domain_targets))
+        metrics["global/audit/training_gradient_from_domain_sum_parameter_count"] = float(len(parameters))
+        metrics["global/audit/training_gradient_from_domain_sum_storage_float32"] = 1.0
+        return True, metrics
 
     def _store_token_gradient_candidates(
         self,
@@ -1560,6 +1679,14 @@ class SequentialBackwardDomainGradientTracker:
         contribution_scale_sum = 0.0
         effective_loss_scale_sum = 0.0
         target_type = _safe_name(target_spec.get("type", "unknown"))
+        target_domain = str(target_spec.get("domain", ""))
+        skip_non_target_domain_slots = (
+            self.sequence_replay_skip_non_target_domains
+            and target_type == "domain"
+            and bool(target_domain)
+        )
+        executed_micro_count = 0
+        skipped_micro_count = 0
         actor_config = getattr(self.actor, "config", {})
         loss_agg_mode = str(_cfg_get(actor_config, "loss_agg_mode", "token-mean"))
         apply_contribution_scale = bool(target_spec.get("apply_token_mask_contribution_scale", False))
@@ -1567,7 +1694,10 @@ class SequentialBackwardDomainGradientTracker:
             _finalize_fsdp_after_auxiliary_backward(self.actor)
             _clear_parameter_grads(parameters)
             micro_count = len(schedule)
-            for seq_idx, slot in enumerate(schedule):
+            for _seq_idx, slot in enumerate(schedule):
+                if skip_non_target_domain_slots and str(slot.get("domain", "")) != target_domain:
+                    skipped_micro_count += 1
+                    continue
                 micro_batch = slot["micro_batch"].to(get_device_id())
                 response_mask = micro_batch.batch["response_mask"]
                 token_mask = self._build_sequence_target_mask(
@@ -1601,6 +1731,7 @@ class SequentialBackwardDomainGradientTracker:
                     micro_batch.to("cpu")
                 except Exception:
                     pass
+                executed_micro_count += 1
             _finalize_fsdp_after_auxiliary_backward(self.actor)
             chunks = _snapshot_current_grad_chunks(
                 self.actor,
@@ -1618,7 +1749,16 @@ class SequentialBackwardDomainGradientTracker:
                 [token_mask_sum, contribution_scale_sum, effective_loss_scale_sum],
             )
             metrics[f"global/audit/sequence_target_{target_type}_available"] = float(norm_sq > 0.0)
-            metrics[f"global/audit/sequence_target_{target_type}_micro_batch_count"] = float(len(schedule))
+            metrics[f"global/audit/sequence_target_{target_type}_micro_batch_count"] = float(micro_count)
+            metrics[f"global/audit/sequence_target_{target_type}_executed_micro_batch_count"] = float(
+                executed_micro_count
+            )
+            metrics[f"global/audit/sequence_target_{target_type}_skipped_micro_batch_count"] = float(
+                skipped_micro_count
+            )
+            metrics[f"global/audit/sequence_target_{target_type}_skip_non_target_domains"] = float(
+                skip_non_target_domain_slots
+            )
             metrics[f"global/audit/sequence_target_{target_type}_token_mask_sum"] = float(global_token_mask_sum)
             metrics[f"global/audit/sequence_target_{target_type}_contribution_scale_sum"] = float(
                 global_contribution_scale_sum
@@ -1661,7 +1801,11 @@ class SequentialBackwardDomainGradientTracker:
             metrics["global/full_grad_sequence/total_replay_norm"] = total_norm_sq**0.5
         for domain in self.domains:
             domain_metrics, chunks, norm_sq = self._recompute_masked_schedule_target(
-                {"type": "domain", "domain": domain},
+                {
+                    "type": "domain",
+                    "domain": domain,
+                    "apply_token_mask_contribution_scale": True,
+                },
                 storage_dtype=storage_dtype,
             )
             safe_domain = _safe_name(domain)

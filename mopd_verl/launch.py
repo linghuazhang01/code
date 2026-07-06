@@ -11,7 +11,7 @@ import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from mopd_verl.settings import MOPDConfig, load_config
+from mopd_verl.settings import MOPDConfig, WorkerPoolPlacementConfig, load_config
 
 
 def _bool(value: bool) -> str:
@@ -21,6 +21,10 @@ def _bool(value: bool) -> str:
 def _hydra_list(values: Sequence[str]) -> str:
     quoted = ", ".join(f"'{value}'" for value in values)
     return f"[{quoted}]"
+
+
+def _hydra_int_list(values: Sequence[int]) -> str:
+    return "[" + ", ".join(str(int(value)) for value in values) + "]"
 
 
 def _hydra_float_dict(values: Mapping[str, float]) -> str:
@@ -65,6 +69,37 @@ def _rollout_multiturn_overrides(config: MOPDConfig) -> list[str]:
     return overrides
 
 
+def _worker_pool_overrides(prefix: str, pool: WorkerPoolPlacementConfig) -> list[str]:
+    overrides = []
+    if pool.process_on_nodes is not None:
+        overrides.append(f"{prefix}.process_on_nodes={_hydra_int_list(pool.process_on_nodes)}")
+    if pool.n_gpus_per_node is not None:
+        overrides.append(f"{prefix}.n_gpus_per_node={pool.n_gpus_per_node}")
+    if pool.nnodes is not None:
+        overrides.append(f"{prefix}.nnodes={pool.nnodes}")
+    return overrides
+
+
+def _worker_placement_overrides(config: MOPDConfig) -> list[str]:
+    placement = config.worker_placement
+    pool_overrides = [
+        *_worker_pool_overrides(
+            "actor_rollout_ref.worker_placement.actor_rollout",
+            placement.actor_rollout,
+        ),
+        *_worker_pool_overrides(
+            "actor_rollout_ref.worker_placement.ref_policy",
+            placement.ref_policy,
+        ),
+    ]
+    if not placement.separate_ref_policy and not pool_overrides:
+        return []
+    return [
+        f"actor_rollout_ref.worker_placement.separate_ref_policy={str(placement.separate_ref_policy).lower()}",
+        *pool_overrides,
+    ]
+
+
 def _audit_overrides(config: MOPDConfig) -> list[str]:
     audit = config.audit
     if not audit.enabled:
@@ -99,6 +134,12 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"{str(audit.sequence_masked_target_enabled).lower()}",
         "+mopd_audit.sequence_masked_target_use_as_primary="
         f"{str(audit.sequence_masked_target_use_as_primary).lower()}",
+        "+mopd_audit.sequence_replay_skip_non_target_domains="
+        f"{str(audit.sequence_replay_skip_non_target_domains).lower()}",
+        "+mopd_audit.sequence_masked_target_closure_rel_l2_threshold="
+        f"{audit.sequence_masked_target_closure_rel_l2_threshold}",
+        "+mopd_audit.training_gradient_from_domain_sum_enabled="
+        f"{str(audit.training_gradient_from_domain_sum_enabled).lower()}",
         f"+mopd_audit.sample_gradient_enabled={str(audit.sample_gradient_enabled).lower()}",
         f"+mopd_audit.sample_gradient_freq_steps={audit.sample_gradient_freq_steps}",
         f"+mopd_audit.sample_gradient_norm_enabled={str(audit.sample_gradient_norm_enabled).lower()}",
@@ -232,7 +273,7 @@ def build_overrides(config: MOPDConfig) -> list[str]:
         f"actor_rollout_ref.actor.policy_loss.only_reverse_kl_advantages={_bool(actor.only_reverse_kl_advantages)}",
         f"actor_rollout_ref.actor.policy_loss.lambda_vals={actor.lambda_vals}",
         f"actor_rollout_ref.actor.policy_loss.multi_teacher_distill={str(actor.multi_teacher_distill).lower()}",
-        f"actor_rollout_ref.actor.policy_loss.distill_loss_builder={actor.distill_loss_builder}",
+        f"+actor_rollout_ref.actor.policy_loss.distill_loss_builder={actor.distill_loss_builder}",
         f"actor_rollout_ref.actor.policy_loss.distill_mode={actor.distill_mode}",
         f"actor_rollout_ref.actor.policy_loss.topk_distill_enabled={str(actor.topk_distill_enabled).lower()}",
         f"actor_rollout_ref.actor.policy_loss.topk_distill_kl_direction={actor.topk_distill_kl_direction}",
@@ -309,6 +350,7 @@ def build_overrides(config: MOPDConfig) -> list[str]:
     overrides.extend(vllm_engine_overrides)
     overrides.extend(domain_sampling_overrides)
     overrides.extend(_rollout_multiturn_overrides(config))
+    overrides.extend(_worker_placement_overrides(config))
     overrides.extend(_audit_overrides(config))
     overrides.extend(_paper_eval_overrides(config))
     overrides.extend(config.extra_overrides)

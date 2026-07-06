@@ -231,25 +231,92 @@ import yaml
 
 config_path = Path(sys.argv[1])
 config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-value = (config.get("trainer") or {}).get("n_gpus_per_node", 1)
+trainer = config.get("trainer") or {}
+worker_placement = config.get("worker_placement") or (config.get("actor_rollout_ref") or {}).get("worker_placement") or {}
+actor_rollout = worker_placement.get("actor_rollout") or {}
+ref_policy = worker_placement.get("ref_policy") or {}
+trainer_gpus = trainer.get("n_gpus_per_node", 1)
+trainer_nnodes = trainer.get("nnodes", 1)
+separate_ref_policy = worker_placement.get("separate_ref_policy", False)
+
+
+def parse_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def parse_int(value, key):
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"{key} must be an integer, got {value!r}") from exc
+    if numeric <= 0:
+        raise SystemExit(f"{key} must be positive, got {numeric!r}")
+    return numeric
+
+
+def parse_process_on_nodes(value, key):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        cleaned = value.strip().strip("[]")
+        value = [] if not cleaned else [part.strip() for part in cleaned.split(",")]
+    if not isinstance(value, list) or not value:
+        raise SystemExit(f"{key} must be a non-empty list of positive integers, got {value!r}")
+    return [parse_int(item, f"{key}[]") for item in value]
+
+
+def first_node_gpus(pool, default_gpus, key):
+    process_on_nodes = parse_process_on_nodes(pool.get("process_on_nodes"), f"{key}.process_on_nodes")
+    if process_on_nodes is not None:
+        return process_on_nodes[0]
+    return parse_int(pool.get("n_gpus_per_node", default_gpus), f"{key}.n_gpus_per_node")
+
+
+def set_path(root, dotted_key, raw_value):
+    parts = dotted_key.split(".")
+    cursor = root
+    for part in parts[:-1]:
+        next_cursor = cursor.get(part)
+        if not isinstance(next_cursor, dict):
+            next_cursor = {}
+            cursor[part] = next_cursor
+        cursor = next_cursor
+    cursor[parts[-1]] = raw_value.strip().strip("'\"")
 
 for override in sys.argv[2:]:
     if "=" not in override:
         continue
     key, raw_value = override.split("=", 1)
-    if key.lstrip("+") == "trainer.n_gpus_per_node":
-        value = raw_value.strip().strip("'\"")
+    key = key.lstrip("+")
+    value = raw_value.strip().strip("'\"")
+    if key == "trainer.n_gpus_per_node":
+        trainer_gpus = value
+    elif key == "trainer.nnodes":
+        trainer_nnodes = value
+    elif key.startswith("worker_placement."):
+        set_path({"worker_placement": worker_placement}, key, value)
+    elif key.startswith("actor_rollout_ref.worker_placement."):
+        set_path({"actor_rollout_ref": {"worker_placement": worker_placement}}, key, value)
 
-try:
-    print(int(value))
-except (TypeError, ValueError) as exc:
-    raise SystemExit(f"trainer.n_gpus_per_node must be an integer, got {value!r}") from exc
+trainer_gpus = parse_int(trainer_gpus, "trainer.n_gpus_per_node")
+parse_int(trainer_nnodes, "trainer.nnodes")
+separate_ref_policy = parse_bool(worker_placement.get("separate_ref_policy", separate_ref_policy))
+actor_rollout = worker_placement.get("actor_rollout") or {}
+ref_policy = worker_placement.get("ref_policy") or {}
+required_gpus = first_node_gpus(actor_rollout, trainer_gpus, "worker_placement.actor_rollout")
+if separate_ref_policy:
+    required_gpus += first_node_gpus(ref_policy, trainer_gpus, "worker_placement.ref_policy")
+print(required_gpus)
 PY
 )"
 
 if [[ "${REQUIRED_GPUS}" -gt "${VISIBLE_GPU_COUNT}" ]]; then
   cat >&2 <<EOF
-Config requests trainer.n_gpus_per_node=${REQUIRED_GPUS}, but GPU_IDS exposes only ${VISIBLE_GPU_COUNT} GPU(s): ${GPU_IDS}
+Config requests ${REQUIRED_GPUS} visible GPU(s) across worker pools, but GPU_IDS exposes only ${VISIBLE_GPU_COUNT}: ${GPU_IDS}
 
 Set GPU_IDS to enough physical GPUs, for example:
   GPU_IDS=0,1,2,3,4,5,6,7 bash scripts/start_remote_mopd_training.sh ${CONFIG_ARG}

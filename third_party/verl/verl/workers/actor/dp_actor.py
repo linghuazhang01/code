@@ -736,33 +736,44 @@ class DataParallelPPOActor(BasePPOActor):
                     self.actor_optimizer.zero_grad()
                 # MOPD audit: domain-gradient tracker end
 
-                for _mopd_domain, micro_batch in tracked_micro_batches:
-                    micro_batch = micro_batch.to(get_device_id())
-                    micro_batch_metrics = {}
-                    model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
-                    response_mask = model_inputs["response_mask"]
+                mopd_domain_sum_training_applied = False
+                if mopd_gradient_tracker is not None:
+                    (
+                        mopd_domain_sum_training_applied,
+                        mopd_domain_sum_training_metrics,
+                    ) = mopd_gradient_tracker.apply_domain_sum_gradient_for_training()
+                    append_to_dict(metrics, mopd_domain_sum_training_metrics)
 
-                    if use_dynamic_micro_batch:
-                        loss_scale_factor = response_mask.shape[0] / self.config.ppo_mini_batch_size
-                    else:
-                        loss_scale_factor = 1 / self.gradient_accumulation
+                if mopd_domain_sum_training_applied:
+                    metrics["global/audit/training_gradient_from_domain_sum_skipped_backward"] = 1.0
+                else:
+                    for _mopd_domain, micro_batch in tracked_micro_batches:
+                        micro_batch = micro_batch.to(get_device_id())
+                        micro_batch_metrics = {}
+                        model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
+                        response_mask = model_inputs["response_mask"]
 
-                    loss_result = build_actor_micro_batch_loss(
-                        self,
-                        micro_batch,
-                        loss_scale_factor=float(loss_scale_factor),
-                        on_policy=on_policy,
-                        include_metrics=True,
-                        temperature=float(temperature),
-                    )
-                    loss = loss_result.loss
-                    micro_batch_metrics.update(loss_result.metrics)
-                    if self.scaler is not None:
-                        self.scaler.scale(loss).backward()
-                    else:
-                        loss.backward()
+                        if use_dynamic_micro_batch:
+                            loss_scale_factor = response_mask.shape[0] / self.config.ppo_mini_batch_size
+                        else:
+                            loss_scale_factor = 1 / self.gradient_accumulation
 
-                    append_to_dict(metrics, micro_batch_metrics)
+                        loss_result = build_actor_micro_batch_loss(
+                            self,
+                            micro_batch,
+                            loss_scale_factor=float(loss_scale_factor),
+                            on_policy=on_policy,
+                            include_metrics=True,
+                            temperature=float(temperature),
+                        )
+                        loss = loss_result.loss
+                        micro_batch_metrics.update(loss_result.metrics)
+                        if self.scaler is not None:
+                            self.scaler.scale(loss).backward()
+                        else:
+                            loss.backward()
+
+                        append_to_dict(metrics, micro_batch_metrics)
 
                 if mopd_gradient_tracker is not None:
                     append_to_dict(

@@ -32,6 +32,77 @@ from verl.utils.device import is_cuda_available
 from verl.utils.import_utils import load_extern_type
 
 
+GLOBAL_POOL_ID = "global_pool"
+ACTOR_ROLLOUT_POOL_ID = "actor_rollout_pool"
+REF_POLICY_POOL_ID = "ref_policy_pool"
+
+
+def _cfg_get(config, key: str, default=None):
+    if config is None:
+        return default
+    if hasattr(config, "get"):
+        return config.get(key, default)
+    return getattr(config, key, default)
+
+
+def _cfg_bool(config, key: str, default: bool = False) -> bool:
+    value = _cfg_get(config, key, default)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _worker_placement_config(config):
+    return OmegaConf.select(config, "actor_rollout_ref.worker_placement") or {}
+
+
+def _separate_ref_policy_pool_enabled(config) -> bool:
+    return _cfg_bool(_worker_placement_config(config), "separate_ref_policy", False)
+
+
+def _actor_rollout_pool_id(config) -> str:
+    return ACTOR_ROLLOUT_POOL_ID if _separate_ref_policy_pool_enabled(config) else GLOBAL_POOL_ID
+
+
+def _ref_policy_pool_id(config) -> str:
+    return REF_POLICY_POOL_ID if _separate_ref_policy_pool_enabled(config) else _actor_rollout_pool_id(config)
+
+
+def _int_list(value, key: str) -> list[int]:
+    resolved = OmegaConf.to_container(value, resolve=True) if OmegaConf.is_config(value) else value
+    if not isinstance(resolved, list | tuple) or len(resolved) == 0:
+        raise ValueError(f"actor_rollout_ref.worker_placement.{key} must be a non-empty list of positive integers")
+    output = [int(item) for item in resolved]
+    if any(item <= 0 for item in output):
+        raise ValueError(f"actor_rollout_ref.worker_placement.{key} must contain only positive integers")
+    return output
+
+
+def _pool_process_on_nodes(pool_config, *, default_n_gpus_per_node: int, default_nnodes: int, pool_name: str) -> list[int]:
+    process_on_nodes = _cfg_get(pool_config, "process_on_nodes", None)
+    if process_on_nodes is not None:
+        return _int_list(process_on_nodes, f"{pool_name}.process_on_nodes")
+
+    n_gpus_per_node = _cfg_get(pool_config, "n_gpus_per_node", None)
+    nnodes = _cfg_get(pool_config, "nnodes", None)
+    if n_gpus_per_node is None:
+        n_gpus_per_node = default_n_gpus_per_node
+    if nnodes is None:
+        nnodes = default_nnodes
+
+    n_gpus_per_node = int(n_gpus_per_node)
+    nnodes = int(nnodes)
+    if n_gpus_per_node <= 0:
+        raise ValueError(f"actor_rollout_ref.worker_placement.{pool_name}.n_gpus_per_node must be greater than 0")
+    if nnodes <= 0:
+        raise ValueError(f"actor_rollout_ref.worker_placement.{pool_name}.nnodes must be greater than 0")
+    return [n_gpus_per_node] * nnodes
+
+
+def _ref_policy_needed(config) -> bool:
+    return bool(config.algorithm.use_kl_in_reward or config.actor_rollout_ref.actor.use_kl_loss)
+
+
 @hydra.main(config_path="config", config_name="ppo_trainer", version_base=None)
 def main(config):
     """Main entry point for PPO training with Hydra configuration management.
@@ -177,10 +248,47 @@ class TaskRunner:
         """Initialize resource pool manager."""
         from verl.trainer.ppo.ray_trainer import Role
 
-        global_pool_id = "global_pool"
+        worker_placement = _worker_placement_config(config)
+        actor_rollout_pool_config = _cfg_get(worker_placement, "actor_rollout", {})
+        ref_policy_pool_config = _cfg_get(worker_placement, "ref_policy", {})
+        actor_rollout_pool_id = _actor_rollout_pool_id(config)
+        actor_rollout_pool = _pool_process_on_nodes(
+            actor_rollout_pool_config,
+            default_n_gpus_per_node=config.trainer.n_gpus_per_node,
+            default_nnodes=config.trainer.nnodes,
+            pool_name="actor_rollout",
+        )
+        actor_rollout_world_size = sum(actor_rollout_pool)
+        trainer_world_size = int(config.trainer.n_gpus_per_node) * int(config.trainer.nnodes)
+        if actor_rollout_world_size != trainer_world_size:
+            raise ValueError(
+                "actor_rollout_ref.worker_placement.actor_rollout must request the same total GPU count as "
+                "trainer.n_gpus_per_node * trainer.nnodes, because verl uses trainer.* as the actor DP world size. "
+                f"Got actor_rollout={actor_rollout_pool} ({actor_rollout_world_size}) and "
+                f"trainer world size={trainer_world_size}."
+            )
+
         resource_pool_spec = {
-            global_pool_id: [config.trainer.n_gpus_per_node] * config.trainer.nnodes,
+            actor_rollout_pool_id: actor_rollout_pool,
         }
+        if _separate_ref_policy_pool_enabled(config) and _ref_policy_needed(config):
+            ref_policy_pool = _pool_process_on_nodes(
+                ref_policy_pool_config,
+                default_n_gpus_per_node=config.trainer.n_gpus_per_node,
+                default_nnodes=config.trainer.nnodes,
+                pool_name="ref_policy",
+            )
+            real_train_batch_size = int(config.data.train_batch_size) * int(config.actor_rollout_ref.rollout.n)
+            ref_policy_world_size = sum(ref_policy_pool)
+            if real_train_batch_size % ref_policy_world_size != 0:
+                raise ValueError(
+                    "data.train_batch_size * actor_rollout_ref.rollout.n must be divisible by the ref policy "
+                    "worker world size. "
+                    f"Got real_train_batch_size={real_train_batch_size} and ref_policy={ref_policy_pool} "
+                    f"({ref_policy_world_size})."
+                )
+            resource_pool_spec[REF_POLICY_POOL_ID] = ref_policy_pool
+
         # TODO Here you can use the new registration method to support dynamic registration of roles
         if config.reward_model.enable_resource_pool:
             if config.reward_model.n_gpus_per_node <= 0:
@@ -191,8 +299,8 @@ class TaskRunner:
             reward_pool = [config.reward_model.n_gpus_per_node] * config.reward_model.nnodes
             resource_pool_spec["reward_pool"] = reward_pool
 
-        self.mapping[Role.ActorRollout] = global_pool_id
-        self.mapping[Role.Critic] = global_pool_id
+        self.mapping[Role.ActorRollout] = actor_rollout_pool_id
+        self.mapping[Role.Critic] = actor_rollout_pool_id
         from verl.trainer.ppo.ray_trainer import ResourcePoolManager
 
         resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=self.mapping)
@@ -228,7 +336,7 @@ class TaskRunner:
             if config.reward_model.enable_resource_pool:
                 self.mapping[Role.RewardModel] = "reward_pool"
             else:
-                self.mapping[Role.RewardModel] = "global_pool"
+                self.mapping[Role.RewardModel] = _actor_rollout_pool_id(config)
 
     def add_ref_policy_worker(self, config, ref_policy_cls):
         """Add reference policy worker if KL loss or KL reward is used."""
@@ -236,7 +344,7 @@ class TaskRunner:
 
         if config.algorithm.use_kl_in_reward or config.actor_rollout_ref.actor.use_kl_loss:
             self.role_worker_mapping[Role.RefPolicy] = ray.remote(ref_policy_cls)
-            self.mapping[Role.RefPolicy] = "global_pool"
+            self.mapping[Role.RefPolicy] = _ref_policy_pool_id(config)
 
     def run(self, config):
         """Execute the main PPO training workflow.

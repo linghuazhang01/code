@@ -133,6 +133,20 @@ class RolloutCorrectionConfig:
 
 
 @dataclass(frozen=True)
+class WorkerPoolPlacementConfig:
+    process_on_nodes: list[int] | None = None
+    n_gpus_per_node: int | None = None
+    nnodes: int | None = None
+
+
+@dataclass(frozen=True)
+class WorkerPlacementConfig:
+    separate_ref_policy: bool = False
+    actor_rollout: WorkerPoolPlacementConfig = field(default_factory=WorkerPoolPlacementConfig)
+    ref_policy: WorkerPoolPlacementConfig = field(default_factory=WorkerPoolPlacementConfig)
+
+
+@dataclass(frozen=True)
 class AuditConfig:
     enabled: bool = False
     output_dir: str = "mopd_audit"
@@ -159,6 +173,9 @@ class AuditConfig:
     full_gradient_direct_recompute_enabled: bool = True
     sequence_masked_target_enabled: bool = False
     sequence_masked_target_use_as_primary: bool = False
+    sequence_replay_skip_non_target_domains: bool = False
+    sequence_masked_target_closure_rel_l2_threshold: float = 0.02
+    training_gradient_from_domain_sum_enabled: bool = False
     sample_gradient_enabled: bool = False
     sample_gradient_freq_steps: int = 1
     sample_gradient_norm_enabled: bool = True
@@ -255,6 +272,7 @@ class MOPDConfig:
     actor: ActorConfig = field(default_factory=ActorConfig)
     rollout: RolloutConfig = field(default_factory=RolloutConfig)
     rollout_correction: RolloutCorrectionConfig = field(default_factory=RolloutCorrectionConfig)
+    worker_placement: WorkerPlacementConfig = field(default_factory=WorkerPlacementConfig)
     audit: AuditConfig = field(default_factory=AuditConfig)
     paper_eval: PaperEvalConfig = field(default_factory=PaperEvalConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
@@ -300,6 +318,49 @@ def _string_list_mapping(value: Any, key: str) -> dict[str, list[str]]:
     for item_key, item_value in value.items():
         output[str(item_key)] = _string_list(item_value, f"{key}.{item_key}")
     return output
+
+
+def _optional_positive_int(value: Any, key: str) -> int | None:
+    if value is None:
+        return None
+    numeric = int(value)
+    if numeric <= 0:
+        raise ValueError(f"Expected '{key}' to be positive.")
+    return numeric
+
+
+def _optional_positive_int_list(value: Any, key: str) -> list[int] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError(f"Expected '{key}' to be a list of positive integers or null.")
+    if not value:
+        raise ValueError(f"Expected '{key}' to be non-empty when provided.")
+    output: list[int] = []
+    for index, item in enumerate(value):
+        numeric = _optional_positive_int(item, f"{key}[{index}]")
+        if numeric is None:
+            raise ValueError(f"Expected '{key}[{index}]' to be a positive integer.")
+        output.append(numeric)
+    return output
+
+
+def _worker_pool_placement(value: Any, key: str) -> WorkerPoolPlacementConfig:
+    raw = _expect_mapping(value or {}, key)
+    return WorkerPoolPlacementConfig(
+        process_on_nodes=_optional_positive_int_list(raw.get("process_on_nodes"), f"{key}.process_on_nodes"),
+        n_gpus_per_node=_optional_positive_int(raw.get("n_gpus_per_node"), f"{key}.n_gpus_per_node"),
+        nnodes=_optional_positive_int(raw.get("nnodes"), f"{key}.nnodes"),
+    )
+
+
+def _worker_placement(value: Any) -> WorkerPlacementConfig:
+    raw = _expect_mapping(value or {}, "worker_placement")
+    return WorkerPlacementConfig(
+        separate_ref_policy=bool(raw.get("separate_ref_policy", WorkerPlacementConfig.separate_ref_policy)),
+        actor_rollout=_worker_pool_placement(raw.get("actor_rollout"), "worker_placement.actor_rollout"),
+        ref_policy=_worker_pool_placement(raw.get("ref_policy"), "worker_placement.ref_policy"),
+    )
 
 
 def _optional_string(value: Any, key: str) -> str | None:
@@ -411,6 +472,7 @@ def load_config(path: str | Path) -> MOPDConfig:
         rollout_correction=RolloutCorrectionConfig(
             **_expect_mapping(root.get("rollout_correction", {}), "rollout_correction")
         ),
+        worker_placement=_worker_placement(root.get("worker_placement", {})),
         audit=AuditConfig(**_expect_mapping(root.get("audit", {}), "audit")),
         paper_eval=PaperEvalConfig(
             enabled=bool(paper_eval_raw.get("enabled", PaperEvalConfig.enabled)),
