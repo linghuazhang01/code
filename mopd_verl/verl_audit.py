@@ -24,6 +24,7 @@ from mopd_verl.tensorboard_filter import (
     is_direct_audit_metric_key,
 )
 from mopd_verl.tensorboard_tags import domain_metric_category, safe_name
+from mopd_verl.topk_distill import select_teacher_log_prob_tensor, teacher_log_prob_key, teacher_tensor_prefix
 
 
 _DOMAIN_PARTITION_META_KEY = "mopd_domain_gradient_partition"
@@ -148,6 +149,43 @@ def _tensor_to_float_list(tensor: Any) -> list[float]:
 
 def _tensor_to_int_list(tensor: Any) -> list[int]:
     return [int(x) for x in tensor.detach().long().cpu().tolist()]
+
+
+def _select_domain_tensor(
+    *,
+    tensor_batch: Any,
+    batch_keys: set[str],
+    labels: list[str],
+    reference: Any,
+    suffix: str,
+    generic_key: str | None = None,
+    fallback_domain: str = "math",
+) -> Any | None:
+    import torch
+
+    domain_tensors = {
+        key[: -len(suffix)]: tensor_batch[key].detach().float()
+        for key in batch_keys
+        if key.endswith(suffix)
+    }
+    generic_tensor = (
+        tensor_batch[generic_key].detach().float()
+        if generic_key is not None and generic_key in batch_keys
+        else None
+    )
+    if not domain_tensors:
+        return generic_tensor
+
+    fallback_tensor = generic_tensor
+    if fallback_tensor is None:
+        fallback_tensor = domain_tensors.get(fallback_domain)
+    if fallback_tensor is None:
+        fallback_tensor = next(iter(domain_tensors.values()))
+    selected = torch.zeros_like(reference)
+    for idx, label in enumerate(labels):
+        domain_key = teacher_tensor_prefix(label)
+        selected[idx] = domain_tensors.get(domain_key, fallback_tensor)[idx]
+    return selected
 
 
 def _infer_tokenizer_vocab_size(tokenizer: Any | None) -> int | None:
@@ -891,8 +929,8 @@ class MOPDAuditLogger:
             metrics["global/audit/full_gradient_domain_partition_aligned"] = 1.0
             metrics["global/audit/full_gradient_domain_partition_unsupported"] = 0.0
             return metrics
-        if len(self.domains) != 2 or "attention_mask" not in batch.batch:
-            partition_meta["unsupported_reason"] = "requires_two_domains_and_attention_mask"
+        if not self.domains or "attention_mask" not in batch.batch:
+            partition_meta["unsupported_reason"] = "requires_domains_and_attention_mask"
             return metrics
 
         attention_mask = batch.batch["attention_mask"]
@@ -1101,28 +1139,43 @@ class MOPDAuditLogger:
         batch_keys = set(tensor_batch.keys())
         math_teacher_log_prob = (tensor_batch["math_teacher_log_prob"] if "math_teacher_log_prob" in batch_keys else old_log_probs).detach().float()
         base_log_prob = (tensor_batch["base_log_prob"] if "base_log_prob" in batch_keys else old_log_probs).detach().float()
-        code_teacher_log_prob = (
-            tensor_batch["code_teacher_log_prob"] if "code_teacher_log_prob" in batch_keys else math_teacher_log_prob
-        ).detach().float()
+        teacher_log_prob_tensors = {
+            key[: -len("_teacher_log_prob")]: tensor_batch[key].detach().float()
+            for key in batch_keys
+            if key.endswith("_teacher_log_prob")
+        }
+        teacher_log_prob_tensors.setdefault("math", math_teacher_log_prob)
         batch_size = int(old_log_probs.shape[0])
 
         labels = extract_teacher_domains(non_tensor, batch_size)
         sample_ids = extract_sample_ids(non_tensor, batch_size, step)
 
-        teacher_log_probs = torch.zeros_like(old_log_probs)
+        model_inputs = {**tensor_batch, **non_tensor}
+        try:
+            teacher_log_probs = select_teacher_log_prob_tensor(
+                model_inputs,
+                {"multi_teacher_distill": True},
+            ).detach().float()
+        except Exception:
+            teacher_log_probs = torch.zeros_like(old_log_probs)
         teacher_teacher_diff = torch.zeros_like(old_log_probs)
         student_teacher_diff = torch.zeros_like(old_log_probs)
         reverse_kl = torch.zeros_like(old_log_probs)
-        has_alternate_teacher = "code_teacher_log_prob" in batch_keys
         for idx, label in enumerate(labels):
-            teacher_log_prob = code_teacher_log_prob[idx] if label == "code" else math_teacher_log_prob[idx]
-            if has_alternate_teacher:
-                alternate_teacher_log_prob = math_teacher_log_prob[idx] if label == "code" else code_teacher_log_prob[idx]
-                teacher_teacher_diff[idx] = (teacher_log_prob - alternate_teacher_log_prob).abs()
+            teacher_log_prob = teacher_log_probs[idx]
+            selected_key = teacher_log_prob_key(label)[: -len("_teacher_log_prob")]
+            alternates = [
+                tensor[idx]
+                for name, tensor in teacher_log_prob_tensors.items()
+                if name != selected_key and tuple(tensor.shape) == tuple(old_log_probs.shape)
+            ]
+            if alternates:
+                teacher_teacher_diff[idx] = torch.stack(
+                    [(teacher_log_prob - alternate).abs() for alternate in alternates]
+                ).max(dim=0).values
             else:
                 teacher_teacher_diff[idx] = (teacher_log_prob - old_log_probs[idx]).abs()
             student_teacher_diff[idx] = (old_log_probs[idx] - teacher_log_prob).abs()
-            teacher_log_probs[idx] = teacher_log_prob
             if self.lambda_vals == 1.0:
                 reverse_kl[idx] = old_log_probs[idx] - teacher_log_prob
             else:
@@ -1138,34 +1191,21 @@ class MOPDAuditLogger:
         student_entropy = (
             tensor_batch["student_entropy"].detach().float() if "student_entropy" in batch_keys else None
         )
-        teacher_entropy = None
-        if "math_teacher_entropy" in batch_keys:
-            math_teacher_entropy = tensor_batch["math_teacher_entropy"].detach().float()
-            code_teacher_entropy = (
-                tensor_batch["code_teacher_entropy"].detach().float()
-                if "code_teacher_entropy" in batch_keys
-                else math_teacher_entropy
-            )
-            teacher_entropy = torch.zeros_like(old_log_probs)
-            for idx, label in enumerate(labels):
-                teacher_entropy[idx] = code_teacher_entropy[idx] if label == "code" else math_teacher_entropy[idx]
-        teacher_student_cross_entropy = None
-        if "math_teacher_student_cross_entropy" in batch_keys:
-            math_teacher_student_cross_entropy = tensor_batch["math_teacher_student_cross_entropy"].detach().float()
-            code_teacher_student_cross_entropy = (
-                tensor_batch["code_teacher_student_cross_entropy"].detach().float()
-                if "code_teacher_student_cross_entropy" in batch_keys
-                else math_teacher_student_cross_entropy
-            )
-            teacher_student_cross_entropy = torch.zeros_like(old_log_probs)
-            for idx, label in enumerate(labels):
-                teacher_student_cross_entropy[idx] = (
-                    code_teacher_student_cross_entropy[idx]
-                    if label == "code"
-                    else math_teacher_student_cross_entropy[idx]
-                )
-        elif "teacher_student_cross_entropy" in batch_keys:
-            teacher_student_cross_entropy = tensor_batch["teacher_student_cross_entropy"].detach().float()
+        teacher_entropy = _select_domain_tensor(
+            tensor_batch=tensor_batch,
+            batch_keys=batch_keys,
+            labels=labels,
+            reference=old_log_probs,
+            suffix="_teacher_entropy",
+        )
+        teacher_student_cross_entropy = _select_domain_tensor(
+            tensor_batch=tensor_batch,
+            batch_keys=batch_keys,
+            labels=labels,
+            reference=old_log_probs,
+            suffix="_teacher_student_cross_entropy",
+            generic_key="teacher_student_cross_entropy",
+        )
 
         sample_token_opd_loss_mean = _mask_mean(reverse_kl, response_mask)
         sample_opd_loss = (reverse_kl * response_mask).sum(dim=-1)

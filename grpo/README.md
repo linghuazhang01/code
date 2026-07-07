@@ -48,6 +48,31 @@ It supports:
 
 Important non-thinking adaptation: M2RL's original reward hub returns `0.0` when the response has no `</think>` tag. This local adapter strips `</think>` if present, but does not require it, because this experiment is explicitly for non-thinking Qwen 4B behavior.
 
+Mixed MOPD math/code/IF/science training should use:
+
+```text
+grpo/rewards/mixed.py
+```
+
+That router sends `ifbench` and `gpqa` rows to the M2RL adapter, while preserving the vendored `verl` default rewards for existing math/code data sources. Do not point a mixed-domain MOPD config directly at `grpo/rewards/m2rl.py`, because it intentionally rejects non-M2RL math/code rows.
+
+The current Qwen30B MOPD mixed config supports four active training domains:
+
+| Domain | Training parquet | Reward path |
+| --- | --- | --- |
+| `math` | `data/G-OPD-Training-Data/DeepMath-103K/train_filtered_level6.parquet` | `mixed.py` -> vendored `verl.utils.reward_score.default_compute_score`; `DeepMath-103K` routes to `math_verify.compute_score`. |
+| `code` | `data/G-OPD-Training-Data/Eurus/code_train.parquet` | `mixed.py` -> vendored default reward; rows such as `taco` use sandbox-fusion if configured, otherwise vendored `prime_code.compute_score`. |
+| `if` | `data/G-OPD-Training-Data/IF/train.parquet` | `mixed.py` -> `m2rl.py` -> `compute_ifbench_reward`, with `verifiable_instructions` preferred and AllenAI IFBench strict checking as fallback. |
+| `science` | `data/G-OPD-Training-Data/Science/train.parquet` | `mixed.py` -> `m2rl.py` -> `compute_gpqa_reward`; rows use `rm_type=gpqa`, `data_source=m2rl_gpqa` or another science/GPQA marker, and metadata with `correct_letter` or an equivalent label. |
+
+For Nemotron/Open-Instruct instruction-following rows, install the lightweight verifier:
+
+```bash
+python -m pip install --no-cache-dir git+https://github.com/abukharin-nv/verifiable-instructions.git
+```
+
+The adapter uses `verifiable_instructions` first for Open-Instruct/IFEval-style ids such as `length_constraints:number_words`, and falls back to AllenAI IFBench only for older IFBench-style ids.
+
 ## Data Requirements
 
 M2RL scripts assume preprocessed parquet paths:
@@ -61,6 +86,34 @@ $DATA_DIR/val/gpqa.parquet
 
 The M2RL repo does not directly ship those parquet files. The public source is the NVIDIA Nemotron RL blend, plus benchmark validation files. Therefore data is not plug-and-play until it is filtered and converted.
 
+This repo's MOPD configs expect the prepared training data under `data/`:
+
+```text
+data/G-OPD-Training-Data/IF/train.parquet
+data/G-OPD-Training-Data/Science/train.parquet
+```
+
+The current local copies were prepared from the sibling GRPO workspace's Nemotron/Open-Instruct source data. Keep launch configs pointed at the repo-local `data/G-OPD-Training-Data/...` paths; the sibling workspace is only a regeneration source.
+
+Regenerate the repo-local data with:
+
+```bash
+python scripts/prepare_nemotron_rl_data.py \
+  --input /Users/linghuazhang/Desktop/Project/GRPO/data/raw/nemotron-rl-instruction_following/instruction_following.jsonl \
+  --if-output data/G-OPD-Training-Data/IF/train.parquet \
+  --science-output data/G-OPD-Training-Data/Science/train.parquet \
+  --manifest data/nemotron_rl/manifest.json
+```
+
+For a tiny local smoke dataset:
+
+```bash
+python scripts/prepare_nemotron_rl_data.py \
+  --input /Users/linghuazhang/Desktop/Project/GRPO/data/raw/nemotron-rl-instruction_following/instruction_following.jsonl \
+  --if-output data/G-OPD-Training-Data/IF/train.parquet \
+  --if-max-samples 32
+```
+
 For local training, convert any M2RL-style parquet/json/jsonl with:
 
 ```bash
@@ -69,14 +122,14 @@ export PYTHONPATH="$PWD:$PWD/third_party/verl:${PYTHONPATH:-}"
 
 python -m grpo.data.m2rl prepare \
   --input /path/to/if.parquet \
-  --output data/M2RL/if/train.parquet \
+  --output data/G-OPD-Training-Data/IF/train.parquet \
   --rm-type ifbench \
   --split train \
   --domain if
 
 python -m grpo.data.m2rl prepare \
   --input /path/to/science.parquet \
-  --output data/M2RL/science/train.parquet \
+  --output data/G-OPD-Training-Data/Science/train.parquet \
   --rm-type gpqa \
   --split train \
   --domain science
@@ -126,6 +179,7 @@ metadata.choices when the label is not already a letter
 Dry-run first:
 
 ```bash
+scripts/run_mopd.sh grpo/configs/m2rl_if_smoke.yaml --dry-run
 DRY_RUN=1 scripts/run_m2rl_if_grpo.sh
 DRY_RUN=1 scripts/run_m2rl_science_grpo.sh
 DRY_RUN=1 scripts/run_m2rl_if_science_grpo.sh

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -102,6 +103,11 @@ def domain_label_from_row(row: Mapping[str, Any]) -> str:
             return str(value)
 
     extra_info = row.get("extra_info")
+    if isinstance(extra_info, str):
+        try:
+            extra_info = json.loads(extra_info)
+        except json.JSONDecodeError:
+            extra_info = None
     if isinstance(extra_info, Mapping):
         for key in DOMAIN_LABEL_KEYS:
             value = extra_info.get(key)

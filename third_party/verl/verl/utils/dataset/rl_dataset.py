@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import copy
+import json
 import logging
 import os
 import re
@@ -49,13 +50,22 @@ def collate_fn(data_list: list[dict]) -> dict:
     """
     tensors = defaultdict(list)
     non_tensors = defaultdict(list)
+    all_keys = {key for data in data_list for key in data}
+    tensor_keys = {
+        key
+        for data in data_list
+        for key, val in data.items()
+        if isinstance(val, torch.Tensor)
+    }
 
     for data in data_list:
-        for key, val in data.items():
-            if isinstance(val, torch.Tensor):
-                tensors[key].append(val)
-            else:
-                non_tensors[key].append(val)
+        for key in tensor_keys:
+            val = data.get(key)
+            if not isinstance(val, torch.Tensor):
+                raise ValueError(f"Tensor field {key!r} is missing or non-tensor in one dataset row.")
+            tensors[key].append(val)
+        for key in all_keys - tensor_keys:
+            non_tensors[key].append(data.get(key))
 
     for key, val in tensors.items():
         tensors[key] = torch.stack(val, dim=0)
@@ -149,11 +159,44 @@ class RLHFDataset(Dataset):
         for i, parquet_file in enumerate(data_files):
             self.data_files[i] = copy_to_local(src=parquet_file, cache_dir=self.cache_dir, use_shm=self.use_shm)
 
+    def _load_parquet_dataset(self, parquet_file: str) -> datasets.Dataset:
+        if self.config.get("load_parquet_direct", False):
+            import pyarrow.parquet as pq
+
+            # Avoid HuggingFace datasets writing a second Arrow cache on disk.
+            return datasets.Dataset(pq.read_table(parquet_file))
+        return datasets.load_dataset("parquet", data_files=parquet_file)["train"]
+
+    def _normalize_dataset_for_concatenation(self, dataframe: datasets.Dataset) -> datasets.Dataset:
+        if "extra_info" in dataframe.column_names:
+
+            def encode_extra_info(batch: dict) -> dict:
+                return {
+                    "extra_info": [
+                        json.dumps(value or {}, ensure_ascii=False, sort_keys=True, default=str)
+                        for value in batch["extra_info"]
+                    ]
+                }
+
+            dataframe = dataframe.map(
+                encode_extra_info,
+                batched=True,
+                keep_in_memory=True,
+                load_from_cache_file=False,
+                try_original_type=False,
+                desc="Normalizing extra_info",
+            )
+
+        for column in ("data_source", "ability", "domain", "opd_teacher", "source_domain"):
+            if column in dataframe.column_names:
+                dataframe = dataframe.cast_column(column, datasets.Value("string"))
+        return dataframe
+
     def _read_files_and_tokenize(self):
         dataframes = []
         for file_idx, parquet_file in enumerate(self.data_files):
             # read parquet files and cache
-            dataframe = datasets.load_dataset("parquet", data_files=parquet_file)["train"]
+            dataframe = self._load_parquet_dataset(parquet_file)
             original_file = self.original_data_files[file_idx] if file_idx < len(self.original_data_files) else parquet_file
             try:
                 from mopd_verl.domain_sampling import annotate_hf_dataset_domain, domain_for_data_file
@@ -163,6 +206,7 @@ class RLHFDataset(Dataset):
                     dataframe = annotate_hf_dataset_domain(dataframe, domain)
             except ImportError:
                 pass
+            dataframe = self._normalize_dataset_for_concatenation(dataframe)
             dataframes.append(dataframe)
         self.dataframe: datasets.Dataset = datasets.concatenate_datasets(dataframes)
 
@@ -254,11 +298,13 @@ class RLHFDataset(Dataset):
                         traceback.print_exc()
                         return self.max_prompt_length + 1
 
-            dataframe = dataframe.filter(
-                lambda doc: doc2len(doc) <= self.max_prompt_length,
-                num_proc=self.num_workers,
-                desc=f"Filtering prompts longer than {self.max_prompt_length} tokens",
-            )
+            filter_kwargs = {
+                "num_proc": self.num_workers,
+                "desc": f"Filtering prompts longer than {self.max_prompt_length} tokens",
+            }
+            if self.config.get("load_parquet_direct", False):
+                filter_kwargs.update({"keep_in_memory": True, "load_from_cache_file": False})
+            dataframe = dataframe.filter(lambda doc: doc2len(doc) <= self.max_prompt_length, **filter_kwargs)
 
             print(f"filter dataset len: {len(dataframe)}")
         return dataframe
@@ -301,6 +347,11 @@ class RLHFDataset(Dataset):
         Note that we also return the raw_input_ids so that it can be combined with other chat template
         """
         row_dict: dict = self.dataframe[item]
+        if isinstance(row_dict.get("extra_info"), str):
+            try:
+                row_dict["extra_info"] = json.loads(row_dict["extra_info"])
+            except json.JSONDecodeError:
+                row_dict["extra_info"] = {}
         messages = self._build_messages(row_dict)
         model_inputs = {}
 
@@ -464,8 +515,12 @@ class RLHFDataset(Dataset):
             row_dict["opd_teacher"] = row_dict.get("extra_info", {}).get("opd_teacher")
         if "domain" in row_dict.get("extra_info", {}) and "domain" not in row_dict:
             row_dict["domain"] = row_dict.get("extra_info", {}).get("domain")
-        if "sample_id" in row_dict.get("extra_info", {}):
-            row_dict["sample_id"] = row_dict.get("extra_info", {}).get("sample_id")
+        sample_id = row_dict.get("extra_info", {}).get("sample_id")
+        if sample_id is None:
+            sample_id = row_dict.get("sample_id")
+        if sample_id is None:
+            sample_id = row_dict.get("extra_info", {}).get("index", index)
+        row_dict["sample_id"] = str(sample_id)
         if "source_domain" in row_dict.get("extra_info", {}) and "source_domain" not in row_dict:
             row_dict["source_domain"] = row_dict.get("extra_info", {}).get("source_domain")
         if "validation_dataset" in row_dict.get("extra_info", {}):

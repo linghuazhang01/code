@@ -43,6 +43,8 @@ from mopd_verl.topk_distill import (
     chosen_token_policy_gradient_reward_matrix,
     distill_loss_builder,
     resolved_topk_distill_mode,
+    select_teacher_log_prob_tensor,
+    select_teacher_tensor_by_domain,
     selected_logits_from_hidden_states,
     teacher_prefix_masks,
     topk_distill_loss_matrix,
@@ -124,6 +126,53 @@ class MOPDVerlTests(unittest.TestCase):
             rank_lengths = rank_mask.sum(dim=-1)
             rank_workloads.append(int((24576 * rank_lengths + rank_lengths.square()).sum().item()))
         self.assertLess(abs(rank_workloads[0] - rank_workloads[1]), max(rank_workloads) * 0.05)
+
+    def test_domain_gradient_batch_balance_aligns_three_domains(self) -> None:
+        try:
+            import torch
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"torch is not installed: {exc}")
+
+        class SyntheticBatch:
+            def __init__(self) -> None:
+                self.batch = {"attention_mask": torch.ones((12, 8), dtype=torch.long)}
+                self.non_tensor_batch = {
+                    "opd_teacher": ["math"] * 4 + ["code"] * 4 + ["if"] * 4,
+                    "sample_id": [f"sample-{idx}" for idx in range(12)],
+                }
+
+            def reorder(self, indices: object) -> None:
+                index_list = indices.tolist()
+                self.batch = {key: value[indices] for key, value in self.batch.items()}
+                self.non_tensor_batch = {
+                    key: [value[idx] for idx in index_list] for key, value in self.non_tensor_batch.items()
+                }
+
+        logger = MOPDAuditLogger(
+            {
+                "mopd_audit": {
+                    "enabled": True,
+                    "domains": ["math", "code", "if"],
+                    "full_gradient_enabled": True,
+                    "full_gradient_micro_batch_size_per_gpu": 1,
+                }
+            }
+        )
+        batch = SyntheticBatch()
+
+        metrics = logger.balance_domain_gradient_batch(batch, step=0, world_size=4)
+
+        self.assertEqual(metrics["global/audit/full_gradient_domain_partition_aligned"], 1.0)
+        self.assertEqual(metrics["global/audit/full_gradient_domain_partition_unsupported"], 0.0)
+        self.assertEqual(
+            batch.meta_info["mopd_domain_gradient_partition"]["domain_block_sample_counts"],
+            {"math": 1, "code": 1, "if": 1},
+        )
+        for rank in range(4):
+            rank_labels = batch.non_tensor_batch["opd_teacher"][rank * 3 : (rank + 1) * 3]
+            self.assertEqual(rank_labels.count("math"), 1)
+            self.assertEqual(rank_labels.count("code"), 1)
+            self.assertEqual(rank_labels.count("if"), 1)
 
     def test_domain_gradient_batch_balance_skips_non_divisible_domains(self) -> None:
         try:
@@ -797,7 +846,7 @@ model:
         config = load_config(config_path)
         rendered = format_command(build_command(config))
 
-        self.assertIn("data/M2RL/if/train.parquet", rendered)
+        self.assertIn("data/G-OPD-Training-Data/IF/train.parquet", rendered)
         self.assertIn("actor_rollout_ref.actor.policy_loss.multi_teacher_distill=false", rendered)
         self.assertIn("custom_reward_function.path=grpo/rewards/m2rl.py", rendered)
         self.assertIn("custom_reward_function.name=compute_score", rendered)
@@ -809,30 +858,168 @@ model:
         config = load_config(config_path)
         rendered = format_command(build_command(config))
 
-        self.assertIn("data/M2RL/if/train.parquet", rendered)
-        self.assertIn("data/M2RL/science/train.parquet", rendered)
+        self.assertIn("data/G-OPD-Training-Data/IF/train.parquet", rendered)
+        self.assertIn("data/G-OPD-Training-Data/Science/train.parquet", rendered)
         self.assertIn("+data.domain_sampling_weights={if: 0.5, science: 0.5}", rendered)
         self.assertIn("custom_reward_function.path=grpo/rewards/m2rl.py", rendered)
         self.assertIn("custom_reward_function.name=compute_score", rendered)
 
-    def test_dp_actor_routes_non_code_teacher_labels_through_primary_ref(self) -> None:
-        source_path = Path(__file__).resolve().parents[1] / "third_party" / "verl" / "verl" / "workers" / "actor" / "dp_actor.py"
-        source = source_path.read_text(encoding="utf-8")
+    def test_qwen30b_6gpu_config_uses_equal_four_domain_batches(self) -> None:
+        config_path = (
+            Path(__file__).resolve().parents[1]
+            / "configs"
+            / "mopd_qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_6gpu.yaml"
+        )
+        config = load_config(config_path)
+        rendered = format_command(build_command(config))
 
-        self.assertIn(
-            'if teacher_type == "code" and "code_teacher_log_prob" in model_inputs:\n'
-            '                                            teacher_log_prob = model_inputs["code_teacher_log_prob"][i]\n'
-            "                                        else:\n"
-            '                                            teacher_log_prob = model_inputs["math_teacher_log_prob"][i]',
-            source,
+        self.assertEqual(config.data.train_batch_size, 504)
+        self.assertEqual(config.actor.ppo_mini_batch_size, 504)
+        self.assertEqual(config.trainer.n_gpus_per_node, 4)
+        self.assertEqual(config.audit.domains, ["math", "code", "if", "science"])
+        self.assertIn("data/G-OPD-Training-Data/IF/train.parquet", rendered)
+        self.assertIn("data/G-OPD-Training-Data/Science/train.parquet", rendered)
+        self.assertIn("+data.domain_sampling_weights={math: 1, code: 1, if: 1, science: 1}", rendered)
+        self.assertIn("+mopd_audit.domains=['math', 'code', 'if', 'science']", rendered)
+        self.assertIn("+mopd_audit.training_gradient_from_domain_sum_enabled=true", rendered)
+        self.assertIn("custom_reward_function.path=grpo/rewards/mixed.py", rendered)
+        self.assertIn("custom_reward_function.name=compute_score", rendered)
+        self.assertEqual(config.model.if_teacher_path, "../models/Qwen3-30B-A3B")
+        self.assertEqual(
+            config.model.domain_teacher_paths,
+            {
+                "math": "../models/Qwen3-30B-A3B",
+                "code": "../models/Qwen3-30B-A3B",
+                "if": "../models/Qwen3-30B-A3B",
+                "science": "../models/Qwen3-30B-A3B",
+            },
         )
-        self.assertIn(
-            "if lambda_vals == 1.0:\n"
-            "                                            reverse_kl[i] = old_log_prob[i] - teacher_log_prob\n"
-            "                                        else:\n"
-            "                                            reverse_kl[i] = old_log_prob[i] - model_inputs[\"base_log_prob\"][i]",
-            source,
+        self.assertIn("+actor_rollout_ref.ref.model.teacher_paths=", rendered)
+        self.assertIn("if:", rendered)
+        self.assertIn("science:", rendered)
+        self.assertIn("../models/Qwen3-30B-A3B", rendered)
+        self.assertNotIn("+actor_rollout_ref.ref.model.base_model_path=", rendered)
+
+    def test_qwen30b_2gpu_smoke_config_uses_equal_four_domain_batches(self) -> None:
+        config_path = (
+            Path(__file__).resolve().parents[1]
+            / "configs"
+            / "mopd_qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_2gpu_b16_2step_smoke.yaml"
         )
+        config = load_config(config_path)
+        rendered = format_command(build_command(config))
+
+        self.assertEqual(config.data.train_batch_size, 16)
+        self.assertEqual(config.actor.ppo_mini_batch_size, 16)
+        self.assertEqual(config.trainer.n_gpus_per_node, 1)
+        self.assertEqual(config.trainer.total_training_steps, 2)
+        self.assertEqual(config.audit.domains, ["math", "code", "if", "science"])
+        self.assertIn("data/G-OPD-Training-Data/IF/train.parquet", rendered)
+        self.assertIn("data/G-OPD-Training-Data/Science/train.parquet", rendered)
+        self.assertIn("+data.domain_sampling_weights={math: 1, code: 1, if: 1, science: 1}", rendered)
+        self.assertIn("+mopd_audit.domains=['math', 'code', 'if', 'science']", rendered)
+        self.assertIn("+mopd_audit.training_gradient_from_domain_sum_enabled=true", rendered)
+        self.assertIn("custom_reward_function.path=grpo/rewards/mixed.py", rendered)
+        self.assertIn("custom_reward_function.name=compute_score", rendered)
+        self.assertEqual(config.model.if_teacher_path, "../models/Qwen3-30B-A3B")
+        self.assertEqual(
+            config.model.domain_teacher_paths,
+            {
+                "math": "../models/Qwen3-30B-A3B",
+                "code": "../models/Qwen3-30B-A3B",
+                "if": "../models/Qwen3-30B-A3B",
+                "science": "../models/Qwen3-30B-A3B",
+            },
+        )
+        self.assertIn("+actor_rollout_ref.ref.model.teacher_paths=", rendered)
+        self.assertIn("if:", rendered)
+        self.assertIn("science:", rendered)
+        self.assertIn("../models/Qwen3-30B-A3B", rendered)
+        self.assertNotIn("+actor_rollout_ref.ref.model.base_model_path=", rendered)
+
+    def test_teacher_log_prob_selection_supports_four_domains(self) -> None:
+        try:
+            import torch
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"torch is not installed: {exc}")
+
+        selected = select_teacher_log_prob_tensor(
+            {
+                "opd_teacher": ["math", "code", "if", "science"],
+                "math_teacher_log_prob": torch.tensor([[1.0], [1.0], [1.0], [1.0]]),
+                "code_teacher_log_prob": torch.tensor([[2.0], [2.0], [2.0], [2.0]]),
+                "if_teacher_log_prob": torch.tensor([[3.0], [3.0], [3.0], [3.0]]),
+                "science_teacher_log_prob": torch.tensor([[4.0], [4.0], [4.0], [4.0]]),
+            },
+            {"multi_teacher_distill": True},
+        )
+
+        self.assertTrue(torch.equal(selected, torch.tensor([[1.0], [2.0], [3.0], [4.0]])))
+
+    def test_teacher_topk_selection_supports_four_domains(self) -> None:
+        try:
+            import torch
+
+            from mopd_verl.full_gradient.actor_loss import _selected_topk_support_from_inputs
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"top-k distillation dependencies are not installed: {exc}")
+
+        def filled(value: float, *, dtype: torch.dtype) -> torch.Tensor:
+            return torch.full((4, 1, 2), value, dtype=dtype)
+
+        model_inputs = {
+            "opd_teacher": ["math", "code", "if", "science"],
+            "math_teacher_topk_ids": filled(10, dtype=torch.long),
+            "code_teacher_topk_ids": filled(20, dtype=torch.long),
+            "if_teacher_topk_ids": filled(30, dtype=torch.long),
+            "science_teacher_topk_ids": filled(40, dtype=torch.long),
+            "math_teacher_topk_logprobs": filled(1.0, dtype=torch.float32),
+            "code_teacher_topk_logprobs": filled(2.0, dtype=torch.float32),
+            "if_teacher_topk_logprobs": filled(3.0, dtype=torch.float32),
+            "science_teacher_topk_logprobs": filled(4.0, dtype=torch.float32),
+            "student_topk_ids": filled(99, dtype=torch.long),
+            "math_teacher_student_topk_logprobs": filled(11.0, dtype=torch.float32),
+            "code_teacher_student_topk_logprobs": filled(22.0, dtype=torch.float32),
+            "if_teacher_student_topk_logprobs": filled(33.0, dtype=torch.float32),
+            "science_teacher_student_topk_logprobs": filled(44.0, dtype=torch.float32),
+        }
+        policy_loss_config = {"multi_teacher_distill": True}
+
+        selected_ids = select_teacher_tensor_by_domain(
+            model_inputs,
+            policy_loss_config,
+            suffix="topk_ids",
+        )
+        selected_logprobs = select_teacher_tensor_by_domain(
+            model_inputs,
+            policy_loss_config,
+            suffix="topk_logprobs",
+        )
+        teacher_support_ids, teacher_support_logprobs = _selected_topk_support_from_inputs(
+            model_inputs,
+            {**policy_loss_config, "topk_distill_support_source": "teacher"},
+        )
+        student_support_ids, student_support_logprobs = _selected_topk_support_from_inputs(
+            model_inputs,
+            {**policy_loss_config, "topk_distill_support_source": "student"},
+        )
+
+        expected_ids = torch.tensor([10, 20, 30, 40], dtype=torch.long).view(4, 1, 1).expand(4, 1, 2)
+        expected_teacher_logprobs = torch.tensor(
+            [1.0, 2.0, 3.0, 4.0],
+            dtype=torch.float32,
+        ).view(4, 1, 1).expand(4, 1, 2)
+        expected_student_logprobs = torch.tensor(
+            [11.0, 22.0, 33.0, 44.0],
+            dtype=torch.float32,
+        ).view(4, 1, 1).expand(4, 1, 2)
+
+        self.assertTrue(torch.equal(selected_ids, expected_ids))
+        self.assertTrue(torch.equal(selected_logprobs, expected_teacher_logprobs))
+        self.assertTrue(torch.equal(teacher_support_ids, expected_ids))
+        self.assertTrue(torch.equal(teacher_support_logprobs, expected_teacher_logprobs))
+        self.assertTrue(torch.equal(student_support_ids, model_inputs["student_topk_ids"]))
+        self.assertTrue(torch.equal(student_support_logprobs, expected_student_logprobs))
 
     def test_audit_logs_domain_gap_and_entropy_distribution_vectors(self) -> None:
         try:
@@ -1011,6 +1198,107 @@ model:
         self.assertEqual(
             [round(value, 1) for value in entropy_vectors["code"]["teacher_student_cross_entropy_vector_domain"]],
             [2.0, 2.5, 3.0],
+        )
+
+    def test_audit_entropy_uses_dynamic_teacher_tensors_for_three_domains(self) -> None:
+        try:
+            import torch
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"torch is not installed: {exc}")
+
+        class SyntheticBatch:
+            def __init__(self) -> None:
+                self.batch = {
+                    "old_log_probs": torch.zeros((3, 2), dtype=torch.float32),
+                    "math_teacher_log_prob": torch.zeros((3, 2), dtype=torch.float32),
+                    "code_teacher_log_prob": torch.ones((3, 2), dtype=torch.float32),
+                    "if_teacher_log_prob": torch.full((3, 2), 2.0, dtype=torch.float32),
+                    "base_log_prob": torch.zeros((3, 2), dtype=torch.float32),
+                    "response_mask": torch.ones((3, 2), dtype=torch.float32),
+                    "responses": torch.tensor([[1, 2], [1, 3], [2, 3]], dtype=torch.long),
+                    "student_entropy": torch.tensor(
+                        [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]],
+                        dtype=torch.float32,
+                    ),
+                    "math_teacher_entropy": torch.tensor(
+                        [[0.1, 0.2], [9.0, 9.0], [9.0, 9.0]],
+                        dtype=torch.float32,
+                    ),
+                    "code_teacher_entropy": torch.tensor(
+                        [[8.0, 8.0], [1.1, 1.2], [8.0, 8.0]],
+                        dtype=torch.float32,
+                    ),
+                    "if_teacher_entropy": torch.tensor(
+                        [[7.0, 7.0], [7.0, 7.0], [2.1, 2.2]],
+                        dtype=torch.float32,
+                    ),
+                    "math_teacher_student_cross_entropy": torch.tensor(
+                        [[10.0, 11.0], [90.0, 90.0], [90.0, 90.0]],
+                        dtype=torch.float32,
+                    ),
+                    "code_teacher_student_cross_entropy": torch.tensor(
+                        [[80.0, 80.0], [20.0, 21.0], [80.0, 80.0]],
+                        dtype=torch.float32,
+                    ),
+                    "if_teacher_student_cross_entropy": torch.tensor(
+                        [[70.0, 70.0], [70.0, 70.0], [30.0, 31.0]],
+                        dtype=torch.float32,
+                    ),
+                }
+                self.non_tensor_batch = {
+                    "opd_teacher": ["math", "code", "if"],
+                    "sample_id": ["m0", "c0", "if0"],
+                }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = MOPDAuditLogger(
+                {
+                    "mopd_audit": {
+                        "enabled": True,
+                        "output_dir": tmpdir,
+                        "domains": ["math", "code", "if"],
+                        "log_sample_level": False,
+                        "entropy_vocab_vector_enabled": True,
+                        "token_gap_vocab_size": 5,
+                    },
+                    "actor_rollout_ref": {
+                        "actor": {"policy_loss": {"lambda_vals": 1.0}},
+                    },
+                }
+            )
+            metrics = logger.log_training_step(SyntheticBatch(), step=1, lr=0.01)
+            entropy_rows = [
+                json.loads(line)
+                for line in (Path(tmpdir) / "entropy_distribution_vectors.jsonl").read_text(
+                    encoding="utf-8"
+                ).splitlines()
+            ]
+
+        self.assertAlmostEqual(metrics["math/entropy/sum_teacher_entropy"], 0.3, places=6)
+        self.assertAlmostEqual(metrics["code/entropy/sum_teacher_entropy"], 2.3, places=6)
+        self.assertAlmostEqual(metrics["if/entropy/sum_teacher_entropy"], 4.3, places=6)
+        self.assertAlmostEqual(metrics["math/entropy/sum_teacher_student_cross_entropy"], 21.0, places=6)
+        self.assertAlmostEqual(metrics["code/entropy/sum_teacher_student_cross_entropy"], 41.0, places=6)
+        self.assertAlmostEqual(metrics["if/entropy/sum_teacher_student_cross_entropy"], 61.0, places=6)
+        self.assertIn(
+            "global/entropy_vocab_cosine/math_vs_if/teacher_student_cross_entropy_sum_cosine",
+            metrics,
+        )
+        self.assertIn(
+            "global/entropy_vocab_cosine/code_vs_if/teacher_student_cross_entropy_sum_cosine",
+            metrics,
+        )
+        entropy_vectors = {row["domain"]: row for row in entropy_rows}
+        self.assertEqual(
+            [round(value, 1) for value in entropy_vectors["if"]["teacher_entropy_vector_domain"]],
+            [2.1, 2.2],
+        )
+        self.assertEqual(
+            [
+                round(value, 1)
+                for value in entropy_vectors["if"]["teacher_student_cross_entropy_vector_domain"]
+            ],
+            [30.0, 31.0],
         )
 
     def test_vocab_vectors_prefer_model_config_vocab_size(self) -> None:
@@ -1496,6 +1784,10 @@ model:
             allocate_domain_batch_counts(10, {"a": 0.5, "b": 0.3, "c": 0.2}),
             {"a": 5, "b": 3, "c": 2},
         )
+        self.assertEqual(
+            allocate_domain_batch_counts(504, {"math": 1, "code": 1, "if": 1}),
+            {"math": 168, "code": 168, "if": 168},
+        )
 
     def test_domain_batch_sampler_emits_exact_domain_counts(self) -> None:
         try:
@@ -1870,6 +2162,80 @@ model:
             0.5,
             places=6,
         )
+
+    def test_sequential_backward_domain_tracker_computes_multi_domain_geometry(self) -> None:
+        try:
+            import math
+
+            import torch
+            from torch import nn
+
+            from mopd_verl.full_gradient.tracker import SequentialBackwardDomainGradientTracker
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ToyActor:
+            def __init__(self) -> None:
+                self.actor_module = nn.Linear(3, 1, bias=False)
+                self.actor_optimizer = torch.optim.SGD(self.actor_module.parameters(), lr=0.1)
+                self.config = {"fsdp_config": {"fsdp_size": 1}}
+
+        tracker = SequentialBackwardDomainGradientTracker(
+            ToyActor(),
+            {"enabled": True, "domains": ["math", "code", "if"], "storage_dtype": "float32"},
+        )
+        tracker._sample_counts = {"math": 2, "code": 3, "if": 4}
+
+        metrics, _targets = tracker._finish_direct_domain_gradient_metrics(
+            {
+                "math": ((torch.tensor([1.0, 0.0, 0.0]),), 1.0),
+                "code": ((torch.tensor([0.0, 2.0, 0.0]),), 4.0),
+                "if": ((torch.tensor([0.0, 0.0, 3.0]),), 9.0),
+            }
+        )
+
+        total_norm = math.sqrt(14.0)
+        for pair in ("math_vs_code", "math_vs_if", "code_vs_if"):
+            self.assertIn(f"global/full_grad_conflict/{pair}/full_grad_cosine_train_i_k", metrics)
+            self.assertAlmostEqual(
+                metrics[f"global/full_grad_conflict/{pair}/full_grad_cosine_train_i_k"],
+                0.0,
+                places=6,
+            )
+
+        self.assertAlmostEqual(
+            metrics["global/full_grad_alignment/math_vs_total/full_grad_cosine_domain_total"],
+            1.0 / total_norm,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            metrics["global/full_grad_alignment/code_vs_total/full_grad_cosine_domain_total"],
+            2.0 / total_norm,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            metrics["global/full_grad_alignment/if_vs_total/full_grad_cosine_domain_total"],
+            3.0 / total_norm,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            metrics["global/full_grad_contribution/math_to_total/signed_projection_share"],
+            1.0 / 14.0,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            metrics["global/full_grad_contribution/code_to_total/signed_projection_share"],
+            4.0 / 14.0,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            metrics["global/full_grad_contribution/if_to_total/signed_projection_share"],
+            9.0 / 14.0,
+            places=6,
+        )
+        self.assertEqual(metrics["math/full_grad/sample_count"], 2.0)
+        self.assertEqual(metrics["code/full_grad/sample_count"], 3.0)
+        self.assertEqual(metrics["if/full_grad/sample_count"], 4.0)
 
     def test_sequential_backward_tracker_snapshots_after_first_domain_block(self) -> None:
         try:
@@ -2596,6 +2962,106 @@ model:
         self.assertEqual(metrics[f"{prefix}_cosine_error"], 0.0)
         self.assertEqual(metrics[f"{prefix}_norm_ratio"], 1.0)
         self.assertEqual(metrics[f"{prefix}_norm_ratio_error"], 0.0)
+
+    def test_token_gradient_summarizes_all_other_domains(self) -> None:
+        try:
+            import torch
+            from torch import nn
+
+            from mopd_verl.full_gradient.tracker import SequentialBackwardDomainGradientTracker
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class ActorConfig:
+            fsdp_config = {"fsdp_size": 1}
+
+            def get(self, key: str, default: object = None) -> object:
+                return getattr(self, key, default)
+
+        class ToyActor:
+            def __init__(self) -> None:
+                self.actor_module = nn.Linear(2, 1, bias=False)
+                self.actor_optimizer = torch.optim.SGD(self.actor_module.parameters(), lr=0.1)
+                self.config = ActorConfig()
+
+        tracker = SequentialBackwardDomainGradientTracker(
+            ToyActor(),
+            {
+                "domains": ["math", "code", "if"],
+                "token_gradient_enabled": True,
+                "token_gradient_gap_selection_enabled": False,
+                "token_gradient_gap_abs_selection_enabled": True,
+                "token_gradient_loss_abs_selection_enabled": False,
+                "token_gradient_top_k": 1,
+                "token_gradient_top_p": 0.0,
+            },
+        )
+        tracker._token_gradient_candidates = {
+            "math": [
+                {
+                    "context": {"loss_scale_factor": 1.0, "on_policy": True},
+                    "micro_batch": object(),
+                    "tokens": [
+                        {"sample_id": "sample-0", "sample_index": 0, "position": 0, "gap_abs": 2.0},
+                        {"sample_id": "sample-0", "sample_index": 0, "position": 1, "gap_abs": 1.0},
+                    ],
+                }
+            ]
+        }
+
+        def fake_recompute(
+            _selected_tokens: list[dict[str, object]],
+            **_kwargs: object,
+        ) -> dict[str, object]:
+            return {
+                "token_grad_available": 1.0,
+                "token_grad_norm": 2.0,
+                "token_grad_non_none_grad_count": 1.0,
+                "token_grad_param_count": 1.0,
+                "token_grad_none_grad_count": 0.0,
+                "token_grad_seconds": 0.1,
+                "token_grad_autograd_seconds": 0.1,
+                "math_cos": 0.9,
+                "math_projection_share": 0.8,
+                "math_norm_ratio": 1.0,
+                "code_cos": -0.4,
+                "code_projection_share": -0.2,
+                "code_norm_ratio": 0.7,
+                "if_cos": 0.25,
+                "if_projection_share": 0.1,
+                "if_norm_ratio": 0.6,
+            }
+
+        with patch.object(
+            tracker,
+            "_recompute_token_selection_gradient_stats",
+            side_effect=fake_recompute,
+        ):
+            metrics = tracker._token_gradient_metrics(
+                {
+                    "math": ((torch.tensor([1.0, 0.0]),), 1.0),
+                    "code": ((torch.tensor([0.0, 1.0]),), 1.0),
+                    "if": ((torch.tensor([1.0, 1.0]),), 2.0),
+                }
+            )
+
+        self.assertAlmostEqual(metrics["math/token_grad_conflict/top1_gap_abs_vs_code_cos"], -0.4)
+        self.assertAlmostEqual(metrics["math/token_grad_conflict/top1_gap_abs_vs_code_conflict"], 0.4)
+        self.assertAlmostEqual(metrics["math/token_grad_conflict/top1_gap_abs_vs_if_cos"], 0.25)
+        self.assertAlmostEqual(metrics["math/token_grad_conflict/other_code_conflict_max"], 0.4)
+        self.assertAlmostEqual(metrics["math/token_grad_conflict/other_if_cos_mean"], 0.25)
+        self.assertAlmostEqual(
+            metrics["math/token_grad_contribution/top1_gap_abs_to_code_projection_share"],
+            -0.2,
+        )
+        self.assertAlmostEqual(
+            metrics["math/token_grad_contribution/top1_gap_abs_to_if_projection_share"],
+            0.1,
+        )
+        self.assertAlmostEqual(
+            metrics["math/token_grad_contribution/other_code_projection_share_mean"],
+            -0.2,
+        )
 
     def test_token_gradient_selection_switches_control_score_families(self) -> None:
         try:

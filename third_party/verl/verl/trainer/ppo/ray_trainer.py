@@ -85,6 +85,20 @@ from verl.utils.tracking import ValidationGenerationsLogger
 LOGGER = logging.getLogger(__name__)
 
 
+def _teacher_paths_from_config(config) -> dict[str, str]:
+    ref_model = config.actor_rollout_ref.ref.get("model", None)
+    if ref_model is None:
+        return {}
+    teacher_paths = ref_model.get("teacher_paths", None)
+    if teacher_paths is None:
+        return {}
+    if OmegaConf.is_config(teacher_paths):
+        teacher_paths = OmegaConf.to_container(teacher_paths, resolve=True)
+    if not isinstance(teacher_paths, dict):
+        raise ValueError("Expected actor_rollout_ref.ref.model.teacher_paths to be a mapping.")
+    return {str(domain): str(path) for domain, path in teacher_paths.items() if path is not None}
+
+
 def _env_flag(name: str, default: bool) -> bool:
     raw_value = os.getenv(name)
     if raw_value is None:
@@ -397,12 +411,18 @@ class RayPPOTrainer:
         self.ref_base_model_path = config.actor_rollout_ref.ref.get("model", None)
         if self.ref_base_model_path is not None:
             self.ref_base_model_path = self.ref_base_model_path.get("base_model_path", None)
+        self.ref_teacher_paths = _teacher_paths_from_config(config)
+        self.use_domain_teacher_paths = bool(self.ref_teacher_paths)
         self.use_base_models = self.base_model_path is not None or self.ref_base_model_path is not None
         
         if self.use_base_models:
             print(f"Base log-prob computation enabled:")
             print(f"  Actor base model: {self.base_model_path}")
             print(f"  Ref base model: {self.ref_base_model_path}")
+        if self.use_domain_teacher_paths:
+            print("Domain teacher log-prob computation enabled:")
+            for domain, path in self.ref_teacher_paths.items():
+                print(f"  {domain}: {path}")
 
                 
         self.hybrid_engine = config.actor_rollout_ref.hybrid_engine
@@ -1478,6 +1498,13 @@ class RayPPOTrainer:
                                     ref_log_prob = self.actor_rollout_wg.compute_ref_log_prob(batch)
                                 batch = batch.union(ref_log_prob)
 
+                            if self.use_domain_teacher_paths:
+                                if not self.ref_in_actor:
+                                    domain_teacher_log_probs = self.ref_policy_wg.compute_domain_teacher_log_probs(batch)
+                                else:
+                                    domain_teacher_log_probs = self.actor_rollout_wg.compute_domain_teacher_log_probs(batch)
+                                batch = batch.union(domain_teacher_log_probs)
+
                     # Compute base model log probs for corrected reward computation
                     # This computes: base_log_prob from actor's base model (using input_ids)
                     # and code_teacher_log_prob from ref's base model (using ref_input_ids)
@@ -1485,7 +1512,7 @@ class RayPPOTrainer:
                         with marked_timer("base_log_probs", timing_raw, color="green"):
                             # First compute code_teacher_log_prob using ref's base model
                             # This uses ref_input_ids which may be present in batch
-                            if self.ref_base_model_path is not None:
+                            if self.ref_base_model_path is not None and not self.use_domain_teacher_paths:
                                 if not self.ref_in_actor:
                                     base_ref_log_prob = self.ref_policy_wg.compute_base_ref_log_prob(batch)
                                 else:

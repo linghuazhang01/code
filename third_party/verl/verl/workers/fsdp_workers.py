@@ -116,6 +116,65 @@ def _same_model_path(left: Any, right: Any) -> bool:
     return os.path.normcase(os.path.normpath(str(left))) == os.path.normcase(os.path.normpath(str(right)))
 
 
+def _teacher_tensor_prefix(domain: Any) -> str:
+    text = str(domain or "math").strip().lower().replace("-", "_")
+    safe = "".join(char if (char.isalnum() or char == "_") else "_" for char in text)
+    safe = "_".join(part for part in safe.split("_") if part)
+    return safe or "math"
+
+
+def _teacher_paths_mapping(value: Any) -> dict[str, str]:
+    if value is None:
+        return {}
+    if isinstance(value, DictConfig):
+        value = OmegaConf.to_container(value, resolve=True)
+    if not isinstance(value, dict):
+        raise ValueError("Expected ref.model.teacher_paths to be a mapping of domain to model path.")
+    output = {}
+    for domain, path in value.items():
+        if path is None:
+            continue
+        output[_teacher_tensor_prefix(domain)] = str(path)
+    return output
+
+
+def _teacher_log_prob_tensor_key(domain: Any) -> str:
+    return f"{_teacher_tensor_prefix(domain)}_teacher_log_prob"
+
+
+def _teacher_topk_ids_tensor_key(domain: Any) -> str:
+    return f"{_teacher_tensor_prefix(domain)}_teacher_topk_ids"
+
+
+def _teacher_topk_logprobs_tensor_key(domain: Any) -> str:
+    return f"{_teacher_tensor_prefix(domain)}_teacher_topk_logprobs"
+
+
+def _teacher_student_topk_logprobs_tensor_key(domain: Any) -> str:
+    return f"{_teacher_tensor_prefix(domain)}_teacher_student_topk_logprobs"
+
+
+def _teacher_entropy_tensor_key(domain: Any) -> str:
+    return f"{_teacher_tensor_prefix(domain)}_teacher_entropy"
+
+
+def _retag_teacher_tensors(
+    tensors: dict[str, torch.Tensor],
+    *,
+    source_domain: str,
+    target_domain: str,
+) -> dict[str, torch.Tensor]:
+    source_prefix = _teacher_tensor_prefix(source_domain)
+    target_prefix = _teacher_tensor_prefix(target_domain)
+    if source_prefix == target_prefix:
+        return dict(tensors)
+    output = {}
+    for key, value in tensors.items():
+        if key.startswith(f"{source_prefix}_teacher"):
+            output[f"{target_prefix}{key[len(source_prefix):]}"] = value
+    return output
+
+
 def create_device_mesh(world_size, fsdp_size):
     if fsdp_size < 0 or fsdp_size >= world_size:
         device_mesh = init_device_mesh(device_name, mesh_shape=(world_size,), mesh_dim_names=["fsdp"])
@@ -848,6 +907,9 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         if self._is_rollout:
             self._build_rollout(trust_remote_code=self.config.model.get("trust_remote_code", False))
 
+        self.domain_teacher_policies = {}
+        self.domain_teacher_modules = {}
+        self._domain_teacher_paths = {}
         if self._is_ref:
             ref_model_path = self.config.model.path
             ref_model = self.config.ref.get("model", None)
@@ -880,6 +942,46 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 self.config.ref.use_remove_padding = use_remove_padding
                 self.config.ref.use_fused_kernels = use_fused_kernels
             self.ref_policy = DataParallelPPOActor(config=self.config.ref, actor_module=self.ref_module_fsdp)
+            self.domain_teacher_policies["math"] = self.ref_policy
+            self._domain_teacher_paths["math"] = str(ref_model_path)
+
+            teacher_paths = _teacher_paths_mapping(ref_model.get("teacher_paths", None) if ref_model else None)
+            if teacher_paths:
+                teacher_paths.setdefault("math", str(ref_model_path))
+                loaded_by_path = {os.path.normcase(os.path.normpath(str(ref_model_path))): self.ref_policy}
+                if self.rank == 0:
+                    print(f"Domain teacher paths: {teacher_paths}")
+                for domain, teacher_path in teacher_paths.items():
+                    normalized_path = os.path.normcase(os.path.normpath(str(teacher_path)))
+                    if normalized_path in loaded_by_path:
+                        self.domain_teacher_policies[domain] = loaded_by_path[normalized_path]
+                        self._domain_teacher_paths[domain] = str(teacher_path)
+                        continue
+                    if self.rank == 0:
+                        print(f"Domain teacher model for {domain}: {teacher_path}")
+                    local_teacher_path = copy_to_local(teacher_path, use_shm=use_shm)
+                    teacher_module_fsdp = self._build_model_optimizer(
+                        model_path=local_teacher_path,
+                        fsdp_config=omega_conf_to_dataclass(self.config.ref.fsdp_config),
+                        optim_config=None,
+                        override_model_config=override_model_config,
+                        use_remove_padding=use_remove_padding,
+                        use_fused_kernels=use_fused_kernels,
+                        trust_remote_code=self.config.model.get("trust_remote_code", False),
+                        use_liger=self.config.model.get("use_liger", False),
+                        role="ref",
+                        ref_cpu_offload=teacher_ref_cpu_offload,
+                    )[0]
+                    teacher_config = OmegaConf.create(OmegaConf.to_container(self.config.ref))
+                    OmegaConf.set_struct(teacher_config, True)
+                    with open_dict(teacher_config):
+                        teacher_config.use_remove_padding = use_remove_padding
+                        teacher_config.use_fused_kernels = use_fused_kernels
+                    teacher_policy = DataParallelPPOActor(config=teacher_config, actor_module=teacher_module_fsdp)
+                    self.domain_teacher_modules[domain] = teacher_module_fsdp
+                    self.domain_teacher_policies[domain] = teacher_policy
+                    self._domain_teacher_paths[domain] = str(teacher_path)
+                    loaded_by_path[normalized_path] = teacher_policy
 
         # Initialize base models for corrected reward computation
         # Actor's base model (for computing base_log_prob)
@@ -917,11 +1019,17 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         self._has_base_ref_model = False
         ref_model_config = self.config.ref.get("model", {})
         ref_base_model_path = ref_model_config.get("base_model_path", None) if ref_model_config else None
+        domain_teacher_paths = _teacher_paths_mapping(
+            ref_model_config.get("teacher_paths", None) if ref_model_config else None
+        )
         teacher_model_device = _normalize_teacher_model_device(
             ref_model_config.get("teacher_model_device", "cpu") if ref_model_config else "cpu"
         )
         teacher_ref_cpu_offload = _teacher_model_uses_cpu_offload(teacher_model_device)
-        if ref_base_model_path is not None and self._is_ref:
+        if domain_teacher_paths and self._is_ref:
+            self.base_ref_policy = self.domain_teacher_policies.get("code")
+            self._has_base_ref_model = self.base_ref_policy is not None
+        elif ref_base_model_path is not None and self._is_ref:
             if self.rank == 0:
                 print(f"Ref base model: {ref_base_model_path}")
                 print(f"Ref base model teacher_model_device: {teacher_model_device}")
@@ -1145,6 +1253,55 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         return output
 
+    def _prepare_ref_log_prob_meta(self, data: DataProto) -> None:
+        data.meta_info["micro_batch_size"] = self.config.ref.log_prob_micro_batch_size_per_gpu
+        data.meta_info["temperature"] = self.config.rollout.temperature
+        data.meta_info["max_token_len"] = self.config.ref.log_prob_max_token_len_per_gpu
+        data.meta_info["use_dynamic_bsz"] = self.config.ref.log_prob_use_dynamic_bsz
+
+    def _compute_teacher_policy_tensors(
+        self,
+        policy: Any,
+        data: DataProto,
+        *,
+        domain: str,
+        calculate_entropy: bool,
+    ) -> dict[str, torch.Tensor]:
+        teacher_topk_k = data.meta_info.get("teacher_topk_k", None)
+        teacher_topk_k = None if teacher_topk_k is None else int(teacher_topk_k)
+        support_source = str(data.meta_info.get("topk_distill_support_source", "teacher")).lower()
+        use_student_topk_support = support_source == "student" and "student_topk_ids" in data.batch
+        domain = _teacher_tensor_prefix(domain)
+        log_prob_key = _teacher_log_prob_tensor_key(domain)
+        with self.ulysses_sharding_manager:
+            if use_student_topk_support:
+                output, entropys, student_support_log_probs = policy.compute_log_prob(
+                    data=data,
+                    calculate_entropy=calculate_entropy,
+                    gather_topk_ids_key="student_topk_ids",
+                )
+                tensors = {
+                    log_prob_key: output,
+                    _teacher_student_topk_logprobs_tensor_key(domain): student_support_log_probs,
+                }
+            elif teacher_topk_k is None:
+                output, entropys = policy.compute_log_prob(data=data, calculate_entropy=calculate_entropy)
+                tensors = {log_prob_key: output}
+            else:
+                output, entropys, topk_ids, topk_log_probs = policy.compute_log_prob(
+                    data=data,
+                    calculate_entropy=calculate_entropy,
+                    topk=teacher_topk_k,
+                )
+                tensors = {
+                    log_prob_key: output,
+                    _teacher_topk_ids_tensor_key(domain): topk_ids,
+                    _teacher_topk_logprobs_tensor_key(domain): topk_log_probs,
+                }
+            if calculate_entropy and entropys is not None:
+                tensors[_teacher_entropy_tensor_key(domain)] = entropys
+        return tensors
+
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
     @DistProfiler.annotate(color="olive", role="ref_compute_log_prob")
     def compute_ref_log_prob(self, data: DataProto):
@@ -1159,45 +1316,16 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         # else:
         # otherwise, the class have a standalone ref model
 
-        micro_batch_size = self.config.ref.log_prob_micro_batch_size_per_gpu
-        data.meta_info["micro_batch_size"] = micro_batch_size
-        data.meta_info["temperature"] = self.config.rollout.temperature
-        data.meta_info["max_token_len"] = self.config.ref.log_prob_max_token_len_per_gpu
-        data.meta_info["use_dynamic_bsz"] = self.config.ref.log_prob_use_dynamic_bsz
-        teacher_topk_k = data.meta_info.get("teacher_topk_k", None)
-        teacher_topk_k = None if teacher_topk_k is None else int(teacher_topk_k)
-        support_source = str(data.meta_info.get("topk_distill_support_source", "teacher")).lower()
-        use_student_topk_support = support_source == "student" and "student_topk_ids" in data.batch
+        self._prepare_ref_log_prob_meta(data)
         calculate_entropy = bool(data.meta_info.get("mopd_compute_teacher_entropy", False))
-        with self.ulysses_sharding_manager:
-            data = data.to("cpu")  # data will to device with each micro batch on ref.compute_log_prob
-            if use_student_topk_support:
-                output, entropys, student_support_log_probs = self.ref_policy.compute_log_prob(
-                    data=data,
-                    calculate_entropy=calculate_entropy,
-                    gather_topk_ids_key="student_topk_ids",
-                )
-                tensors = {
-                    "math_teacher_log_prob": output,
-                    "math_teacher_student_topk_logprobs": student_support_log_probs,
-                }
-            elif teacher_topk_k is None:
-                output, entropys = self.ref_policy.compute_log_prob(data=data, calculate_entropy=calculate_entropy)
-                tensors = {"math_teacher_log_prob": output}
-            else:
-                output, entropys, topk_ids, topk_log_probs = self.ref_policy.compute_log_prob(
-                    data=data,
-                    calculate_entropy=calculate_entropy,
-                    topk=teacher_topk_k,
-                )
-                tensors = {
-                    "math_teacher_log_prob": output,
-                    "math_teacher_topk_ids": topk_ids,
-                    "math_teacher_topk_logprobs": topk_log_probs,
-                }
-            if calculate_entropy and entropys is not None:
-                tensors["math_teacher_entropy"] = entropys
-            output = DataProto.from_dict(tensors=tensors)
+        data = data.to("cpu")  # data will to device with each micro batch on ref.compute_log_prob
+        tensors = self._compute_teacher_policy_tensors(
+            self.ref_policy,
+            data,
+            domain="math",
+            calculate_entropy=calculate_entropy,
+        )
+        output = DataProto.from_dict(tensors=tensors)
 
         output = output.to("cpu")
 
@@ -1205,6 +1333,60 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         # unshard the root FSDP module
         if self.world_size > 1:
             _reshard_fsdp_module(self.ref_policy.actor_module)
+
+        return output
+
+    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
+    @DistProfiler.annotate(color="olive", role="domain_teacher_compute_log_prob")
+    def compute_domain_teacher_log_probs(self, data: DataProto):
+        assert self._is_ref
+        if not self.domain_teacher_policies:
+            return DataProto.from_dict(tensors={})
+
+        self._prepare_ref_log_prob_meta(data)
+        calculate_entropy = bool(data.meta_info.get("mopd_compute_teacher_entropy", False))
+        data = data.to("cpu")
+        tensors = {}
+        computed_by_policy_id = {}
+        if "math_teacher_log_prob" in data.batch:
+            math_tensors = {
+                key: value
+                for key, value in data.batch.items()
+                if str(key).startswith("math_teacher")
+            }
+            computed_by_policy_id[id(self.ref_policy)] = ("math", math_tensors)
+        for domain, policy in self.domain_teacher_policies.items():
+            if domain == "math":
+                continue
+            cached = computed_by_policy_id.get(id(policy))
+            if cached is not None:
+                source_domain, cached_tensors = cached
+                tensors.update(
+                    _retag_teacher_tensors(
+                        cached_tensors,
+                        source_domain=source_domain,
+                        target_domain=domain,
+                    )
+                )
+                continue
+            domain_tensors = self._compute_teacher_policy_tensors(
+                    policy,
+                    data,
+                    domain=domain,
+                    calculate_entropy=calculate_entropy,
+                )
+            tensors.update(domain_tensors)
+            computed_by_policy_id[id(policy)] = (domain, domain_tensors)
+        output = DataProto.from_dict(tensors=tensors).to("cpu")
+
+        if self.world_size > 1:
+            seen_policy_ids = set()
+            for policy in self.domain_teacher_policies.values():
+                policy_id = id(policy)
+                if policy_id in seen_policy_ids:
+                    continue
+                seen_policy_ids.add(policy_id)
+                _reshard_fsdp_module(policy.actor_module)
 
         return output
     
@@ -1225,11 +1407,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         if not self._has_base_model:
             raise ValueError("Base model not initialized. Please set actor_rollout_ref.model.base_model_path in config.")
         
-        micro_batch_size = self.config.ref.log_prob_micro_batch_size_per_gpu
-        data.meta_info["micro_batch_size"] = micro_batch_size
-        data.meta_info["temperature"] = self.config.rollout.temperature
-        data.meta_info["max_token_len"] = self.config.ref.log_prob_max_token_len_per_gpu
-        data.meta_info["use_dynamic_bsz"] = self.config.ref.log_prob_use_dynamic_bsz
+        self._prepare_ref_log_prob_meta(data)
         
         with self.ulysses_sharding_manager:
             data = data.to("cpu")  # data will to device with each micro batch
@@ -1266,44 +1444,15 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         data.meta_info["temperature"] = self.config.rollout.temperature
         data.meta_info["max_token_len"] = self.config.ref.log_prob_max_token_len_per_gpu
         data.meta_info["use_dynamic_bsz"] = self.config.ref.log_prob_use_dynamic_bsz
-        teacher_topk_k = data.meta_info.get("teacher_topk_k", None)
-        teacher_topk_k = None if teacher_topk_k is None else int(teacher_topk_k)
-        support_source = str(data.meta_info.get("topk_distill_support_source", "teacher")).lower()
-        use_student_topk_support = support_source == "student" and "student_topk_ids" in data.batch
         calculate_entropy = bool(data.meta_info.get("mopd_compute_teacher_entropy", False))
-        
-        with self.ulysses_sharding_manager:
-            data = data.to("cpu")  # data will to device with each micro batch
-            if use_student_topk_support:
-                output, entropys, student_support_log_probs = self.base_ref_policy.compute_log_prob(
-                    data=data,
-                    calculate_entropy=calculate_entropy,
-                    gather_topk_ids_key="student_topk_ids",
-                )
-                tensors = {
-                    "code_teacher_log_prob": output,
-                    "code_teacher_student_topk_logprobs": student_support_log_probs,
-                }
-            elif teacher_topk_k is None:
-                output, entropys = self.base_ref_policy.compute_log_prob(
-                    data=data,
-                    calculate_entropy=calculate_entropy,
-                )
-                tensors = {"code_teacher_log_prob": output}
-            else:
-                output, entropys, topk_ids, topk_log_probs = self.base_ref_policy.compute_log_prob(
-                    data=data,
-                    calculate_entropy=calculate_entropy,
-                    topk=teacher_topk_k,
-                )
-                tensors = {
-                    "code_teacher_log_prob": output,
-                    "code_teacher_topk_ids": topk_ids,
-                    "code_teacher_topk_logprobs": topk_log_probs,
-                }
-            if calculate_entropy and entropys is not None:
-                tensors["code_teacher_entropy"] = entropys
-            output = DataProto.from_dict(tensors=tensors)
+        data = data.to("cpu")
+        tensors = self._compute_teacher_policy_tensors(
+            self.base_ref_policy,
+            data,
+            domain="code",
+            calculate_entropy=calculate_entropy,
+        )
+        output = DataProto.from_dict(tensors=tensors)
 
         output = output.to("cpu")
 
@@ -1331,39 +1480,43 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         with self.ulysses_sharding_manager:
             data = data.to("cpu")
+            batch_keys = {str(key) for key in data.batch.keys()}
             if support_source == "student" and "student_topk_ids" in data.batch:
-                if "math_teacher_student_topk_logprobs" in data.batch:
-                    tensors["math_teacher_student_cross_entropy"] = self.actor.compute_teacher_student_cross_entropy(
+                suffix = "_teacher_student_topk_logprobs"
+                for logprobs_key in sorted(batch_keys):
+                    if not logprobs_key.endswith(suffix):
+                        continue
+                    domain_prefix = logprobs_key[: -len(suffix)]
+                    if not domain_prefix:
+                        continue
+                    output_key = f"{domain_prefix}_teacher_student_cross_entropy"
+                    tensors[output_key] = self.actor.compute_teacher_student_cross_entropy(
                         data=data,
                         teacher_topk_ids_key="student_topk_ids",
-                        teacher_topk_logprobs_key="math_teacher_student_topk_logprobs",
+                        teacher_topk_logprobs_key=logprobs_key,
                         include_tail=include_tail,
                         distill_temperature=distill_temperature,
                     )
-                if "code_teacher_student_topk_logprobs" in data.batch:
-                    tensors["code_teacher_student_cross_entropy"] = self.actor.compute_teacher_student_cross_entropy(
+            else:
+                ids_suffix = "_teacher_topk_ids"
+                logprobs_suffix = "_teacher_topk_logprobs"
+                for ids_key in sorted(batch_keys):
+                    if not ids_key.endswith(ids_suffix):
+                        continue
+                    domain_prefix = ids_key[: -len(ids_suffix)]
+                    if not domain_prefix:
+                        continue
+                    logprobs_key = f"{domain_prefix}{logprobs_suffix}"
+                    if logprobs_key not in data.batch:
+                        continue
+                    output_key = f"{domain_prefix}_teacher_student_cross_entropy"
+                    tensors[output_key] = self.actor.compute_teacher_student_cross_entropy(
                         data=data,
-                        teacher_topk_ids_key="student_topk_ids",
-                        teacher_topk_logprobs_key="code_teacher_student_topk_logprobs",
+                        teacher_topk_ids_key=ids_key,
+                        teacher_topk_logprobs_key=logprobs_key,
                         include_tail=include_tail,
                         distill_temperature=distill_temperature,
                     )
-            elif "math_teacher_topk_ids" in data.batch and "math_teacher_topk_logprobs" in data.batch:
-                tensors["math_teacher_student_cross_entropy"] = self.actor.compute_teacher_student_cross_entropy(
-                    data=data,
-                    teacher_topk_ids_key="math_teacher_topk_ids",
-                    teacher_topk_logprobs_key="math_teacher_topk_logprobs",
-                    include_tail=include_tail,
-                    distill_temperature=distill_temperature,
-                )
-            if "code_teacher_topk_ids" in data.batch and "code_teacher_topk_logprobs" in data.batch:
-                tensors["code_teacher_student_cross_entropy"] = self.actor.compute_teacher_student_cross_entropy(
-                    data=data,
-                    teacher_topk_ids_key="code_teacher_topk_ids",
-                    teacher_topk_logprobs_key="code_teacher_topk_logprobs",
-                    include_tail=include_tail,
-                    distill_temperature=distill_temperature,
-                )
             output = DataProto.from_dict(tensors=tensors)
 
         output = output.to("cpu")

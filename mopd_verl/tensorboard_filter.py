@@ -213,7 +213,9 @@ CORE_TOKEN_GRAD = {
 CORE_TOKEN_GRAD_CONFLICT = {
     "conflict_to_other_max",
     "conflict_to_other_mean",
+    "other_cos_max",
     "other_cos_mean",
+    "other_cos_min",
     "other_cos_negative_frac",
     "other_cos_p05",
 }
@@ -482,9 +484,16 @@ def _keep_domain(category: str, metric: str, parts: list[str]) -> bool:
             )
         )
     if category == "token_grad_conflict":
-        return metric in CORE_TOKEN_GRAD_CONFLICT
+        return metric in CORE_TOKEN_GRAD_CONFLICT or metric.endswith(
+            ("_conflict", "_conflict_max", "_conflict_mean", "_cos", "_cos_mean")
+        )
     if category == "token_grad_contribution":
-        return metric in CORE_TOKEN_GRAD_CONTRIBUTION or metric.endswith("_projection_share")
+        return (
+            metric in CORE_TOKEN_GRAD_CONTRIBUTION
+            or metric.endswith("_projection_share")
+            or metric.endswith("_projection_share_mean")
+            or metric.endswith("_negative_projection_share_sum")
+        )
     if category == "token_grad_closure":
         return any(metric.endswith(f"_{name}") for name in CORE_TOKEN_GRAD_CLOSURE)
     if category == "token_grad_cost":

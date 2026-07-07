@@ -8,7 +8,7 @@ runtime:
 
 data:
   train_files:
-    - data/M2RL/if/train.parquet
+    - data/G-OPD-Training-Data/IF/train.parquet
   val_files:
     - eval/domains/ifbench/data/IFBench_test.parquet
   train_batch_size: 2048

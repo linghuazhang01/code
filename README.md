@@ -38,6 +38,9 @@ Three formal MOPD variants are kept with 2/4/6/8 GPU profiles, plus metrics smok
 | `configs/mopd_formal_audit_grad_consistency_2gpu_b16_1step_smoke.yaml` | 2-GPU gradient consistency smoke with batch size 16 and one training step. |
 | `configs/mopd_formal_audit_grad_consistency_2gpu_b32_2step_smoke.yaml` | 2-GPU gradient consistency smoke with batch size 32 and two training steps. |
 | `configs/mopd_formal_audit_grad_consistency_2gpu_b64_3step_smoke.yaml` | 2-GPU gradient consistency smoke with batch size 64 and three training steps. |
+| `configs/mopd_qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_2gpu_b16_2step_smoke.yaml` | 2-GPU smoke for Qwen3-4B student distilled from Qwen3-30B-A3B teachers over math/code/IF/science. The effective batch is 16 so the four domains sample 4 examples each. |
+| `configs/mopd_qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_6gpu.yaml` | 6-GPU Qwen30B split-teacher profile: 4 actor/rollout GPUs and 2 ref/teacher GPUs, equal math/code/IF/science sampling, policy-gradient distillation, domain-gradient audit every 2 steps, and token-gap full-vocab vectors. |
+| `configs/mopd_qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_6gpu_fsdp.yaml` | 6-GPU Qwen30B compatibility profile with the same four domains and split teacher placement, `actor.fsdp_size=1`, and batch size 512. |
 
 Formal 2/4/6/8 GPU profiles use:
 
@@ -77,7 +80,36 @@ The all-audit and loss-only smoke profiles are tracked as metrics test profiles.
 
 The gradient consistency smoke profiles use `../models/Qwen3-0.6B` to keep closure checks cheap. They enable sequence-masked domain targets, sample/token backward recompute, and token `top_p=1.0` closure checks so the full-token gradient can be compared against the domain gradient.
 
+### Qwen30B Split-Teacher Profiles
+
+The Qwen30B profiles use:
+
+- student: `../models/Qwen3-4B`
+- math/code/IF/science teachers: `../models/Qwen3-30B-A3B`
+- train files:
+  - math: `data/G-OPD-Training-Data/DeepMath-103K/train_filtered_level6.parquet`
+  - code: `data/G-OPD-Training-Data/Eurus/code_train.parquet`
+  - IF: `data/G-OPD-Training-Data/IF/train.parquet`
+  - science: `data/G-OPD-Training-Data/Science/train.parquet`
+- reward router: `grpo/rewards/mixed.py`
+- `data.load_parquet_direct=true`, which avoids Hugging Face Arrow cache materialization and normalizes mixed parquet schemas before concatenation.
+
+Current reward routing:
+
+| Domain | Current data source | Reward |
+| --- | --- | --- |
+| `math` | `DeepMath-103K` | Vendored verl default reward; DeepMath rows route to `math_verify.compute_score`. |
+| `code` | Eurus code rows such as `taco` | Vendored verl default reward; code contest rows use sandbox-fusion when configured, otherwise the vendored `prime_code` test-case scorer. |
+| `if` | `m2rl_ifbench` from Nemotron/Open-Instruct instruction-following data | `grpo.rewards.m2rl.compute_ifbench_reward`: uses `verifiable_instructions` first, then AllenAI IFBench strict checking as fallback. |
+| `science` | `m2rl_gpqa` or science/GPQA rows | `grpo.rewards.m2rl.compute_gpqa_reward`: extracts the final option letter and compares it to the metadata/label answer. |
+
+The main 6-GPU Qwen30B profile keeps `domain_sampling_weights` equal across `math`, `code`, `if`, and `science`, with `data.train_batch_size=504`, `actor.ppo_mini_batch_size=504`, and `actor.fsdp_size=2`. The compatibility `6gpu_fsdp` profile uses `data.train_batch_size=512`, `actor.ppo_mini_batch_size=512`, and `actor.fsdp_size=1`; with equal weights this gives 128 samples per domain per step.
+
+The 4-domain 2-GPU smoke profile was verified remotely on 2026-07-07 for 2 steps with `data.train_batch_size=16`; each domain sampled 4 examples per step, domain-gradient closure reached rel_l2=0 and cosine=1.0 on the audited step, and token-gap vocab vectors were emitted for all four domains. The remote data disk was 96% full in the previous run, so long runs should clean space before launch.
+
 Configs default to `logger: '["console","tensorboard","wandb"]'`, `runtime.wandb_entity: lz101-rice-university`, and `runtime.env_file: .env.local`. Put `WANDB_API_KEY` in `.env.local` on the machine that launches training. This file is gitignored and must not be committed. Override `runtime.wandb_mode=disabled` for local dry runs without W&B.
+
+On a fresh remote checkout, run `scripts/setup_remote_training_env.sh` after `git pull`. It installs the M2RL/IF verifier dependencies and, by default, runs `git lfs pull` plus a Parquet sanity check for the four repo-local training files under `data/G-OPD-Training-Data/`. Set `PULL_GIT_LFS_DATA=0` or `CHECK_MOPD_DATA=0` only when the data disk is managed separately.
 
 ## Launch
 
@@ -136,6 +168,19 @@ Download the 30B teacher used by the Qwen30B distillation smoke config:
 MODEL_ROOT=/root/autodl-tmp/opd_mopd/models \
   scripts/download_qwen30b_teacher.sh
 ```
+
+Four-domain Qwen30B configs declare all teacher domains:
+
+```yaml
+model:
+  domain_teacher_paths:
+    math: ../models/Qwen3-30B-A3B
+    code: ../models/Qwen3-30B-A3B
+    if: ../models/Qwen3-30B-A3B
+    science: ../models/Qwen3-30B-A3B
+```
+
+When `model.domain_teacher_paths` is present, the launcher renders `actor_rollout_ref.ref.model.teacher_paths` and the ref worker returns `{domain}_teacher_log_prob` tensors such as `if_teacher_log_prob` and `science_teacher_log_prob`. Older two-domain configs still use the legacy `ref.model.base_model_path` path for the code teacher.
 
 Metrics smoke:
 

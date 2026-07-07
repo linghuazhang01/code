@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
+import math
+import numbers
 import os
 import re
 import string
@@ -16,6 +19,10 @@ from typing import Any
 DEFAULT_VALID_LETTERS = list(string.ascii_uppercase[:8])
 IFBENCH_PASS_SCORE = 1.0
 IFBENCH_FAIL_SCORE = 0.0
+LOGGER = logging.getLogger(__name__)
+_IFBENCH_NLTK_LOOKUP_WARNED = False
+_VERIFIABLE_INSTRUCTIONS_IMPORT_WARNED = False
+_VERIFIABLE_INSTRUCTIONS_SCORE_WARNED = False
 
 
 def _normalize_metadata(value: Any) -> dict[str, Any]:
@@ -36,8 +43,14 @@ def _normalize_metadata(value: Any) -> dict[str, Any]:
 def _normalize_instruction_ids(raw_ids: Any) -> list[str]:
     if isinstance(raw_ids, str):
         raw_ids = [raw_ids]
-    if not isinstance(raw_ids, Sequence):
+    elif isinstance(raw_ids, Mapping) or raw_ids is None:
         return []
+    else:
+        try:
+            raw_ids = list(raw_ids)
+        except TypeError:
+            return []
+
     output: list[str] = []
     for entry in raw_ids:
         if entry is None:
@@ -46,6 +59,24 @@ def _normalize_instruction_ids(raw_ids: Any) -> list[str]:
         if text:
             output.append(text)
     return output
+
+
+def _is_missing_value(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, numbers.Real) and not isinstance(value, bool):
+        return math.isnan(float(value))
+    return False
+
+
+def _normalize_arg_value(value: Any) -> Any:
+    if isinstance(value, numbers.Integral) and not isinstance(value, bool):
+        return int(value)
+    if isinstance(value, numbers.Real) and not isinstance(value, bool):
+        numeric = float(value)
+        if numeric.is_integer():
+            return int(numeric)
+    return value
 
 
 def _coerce_kwargs_list(raw_kwargs: Any, num_instructions: int) -> list[dict[str, Any]]:
@@ -59,6 +90,8 @@ def _coerce_kwargs_list(raw_kwargs: Any, num_instructions: int) -> list[dict[str
         processed = [dict(item) if isinstance(item, Mapping) else {} for item in raw_kwargs]
     elif isinstance(raw_kwargs, Mapping):
         processed = [dict(raw_kwargs) for _ in range(num_instructions)]
+    elif isinstance(raw_kwargs, Iterable) and not isinstance(raw_kwargs, (str, bytes, bytearray)):
+        processed = [dict(item) if isinstance(item, Mapping) else {} for item in raw_kwargs]
     else:
         processed = [{} for _ in range(num_instructions)]
 
@@ -68,7 +101,10 @@ def _coerce_kwargs_list(raw_kwargs: Any, num_instructions: int) -> list[dict[str
     elif len(processed) > num_instructions:
         processed = processed[:num_instructions]
 
-    return [{key: value for key, value in item.items() if value is not None} for item in processed]
+    return [
+        {key: _normalize_arg_value(value) for key, value in item.items() if not _is_missing_value(value)}
+        for item in processed
+    ]
 
 
 def _candidate_ifbench_paths() -> list[Path]:
@@ -77,39 +113,134 @@ def _candidate_ifbench_paths() -> list[Path]:
         value = os.getenv(name)
         if value:
             candidates.append(Path(value).expanduser())
+
     current = Path.cwd()
+    repo_root = Path(__file__).resolve().parents[2]
     candidates.extend(
         [
             current / "IFBench",
             current.parent / "IFBench",
-            current.parent / "temp" / "IFBench",
-            Path(__file__).resolve().parents[3] / "temp" / "IFBench",
+            repo_root / "IFBench",
+            repo_root / "temp" / "IFBench",
+            repo_root.parent / "IFBench",
+            repo_root.parent / "temp" / "IFBench",
         ]
     )
     return candidates
 
 
-def _ensure_ifbench_importable() -> Any:
+def _configure_ifbench_data_path(path: Path) -> None:
+    nltk_data_dir = path / ".nltk_data"
+    if not nltk_data_dir.exists():
+        return
+
+    existing = os.getenv("NLTK_DATA", "")
+    paths = [item for item in existing.split(os.pathsep) if item]
+    data_path = str(nltk_data_dir)
+    if data_path not in paths:
+        os.environ["NLTK_DATA"] = os.pathsep.join([data_path, *paths])
+
+
+def _import_ifbench_module() -> Any:
+    """Import IFBench without letting import-time NLTK downloads hang training."""
+
+    if os.getenv("M2RL_IFBENCH_ALLOW_IMPORT_DOWNLOAD", "0") == "1":
+        return importlib.import_module("evaluation_lib")
+
+    try:
+        import nltk  # type: ignore[import-untyped]
+    except ImportError:
+        return importlib.import_module("evaluation_lib")
+
+    original_download = getattr(nltk, "download", None)
+    if original_download is None:
+        return importlib.import_module("evaluation_lib")
+
+    def _skip_import_time_download(*_args: Any, **_kwargs: Any) -> bool:
+        return False
+
+    nltk.download = _skip_import_time_download  # type: ignore[method-assign]
     try:
         return importlib.import_module("evaluation_lib")
+    finally:
+        nltk.download = original_download  # type: ignore[method-assign]
+
+
+def _ensure_verifiable_instruction_registry() -> Any:
+    return importlib.import_module("verifiable_instructions.instructions_registry")
+
+
+def _compute_verifiable_instruction_reward(
+    response: str,
+    instruction_ids: Sequence[str],
+    kwargs_list: Sequence[Mapping[str, Any]],
+    metadata: Mapping[str, Any],
+) -> float | None:
+    global _VERIFIABLE_INSTRUCTIONS_IMPORT_WARNED
+    global _VERIFIABLE_INSTRUCTIONS_SCORE_WARNED
+
+    try:
+        registry = _ensure_verifiable_instruction_registry()
+    except ImportError as exc:
+        if not _VERIFIABLE_INSTRUCTIONS_IMPORT_WARNED:
+            LOGGER.warning("verifiable_instructions is unavailable; falling back to IFBench: %s", exc)
+            _VERIFIABLE_INSTRUCTIONS_IMPORT_WARNED = True
+        return None
+
+    instruction_dict = getattr(registry, "INSTRUCTION_DICT", {})
+    if not any(instruction_id in instruction_dict for instruction_id in instruction_ids):
+        return None
+
+    follow_list: list[bool] = []
+    for instruction_id, kwargs in zip(instruction_ids, kwargs_list):
+        try:
+            instruction_cls = instruction_dict[instruction_id]
+            instruction = instruction_cls(instruction_id)
+            instruction.build_description(**dict(kwargs))
+            follow_list.append(bool(instruction.check_following(response)))
+        except Exception as exc:  # noqa: BLE001 - reward failures should not stop training
+            if not _VERIFIABLE_INSTRUCTIONS_SCORE_WARNED:
+                LOGGER.warning(
+                    "verifiable_instructions failed for instruction %s; marking it incorrect: %s",
+                    instruction_id,
+                    exc,
+                )
+                _VERIFIABLE_INSTRUCTIONS_SCORE_WARNED = True
+            follow_list.append(False)
+
+    grading_mode = str(metadata.get("grading_mode") or "binary").lower()
+    if grading_mode == "fraction":
+        return float(sum(follow_list) / len(follow_list)) if follow_list else IFBENCH_FAIL_SCORE
+    return IFBENCH_PASS_SCORE if follow_list and all(follow_list) else IFBENCH_FAIL_SCORE
+
+
+def _ensure_ifbench_importable() -> Any:
+    for path in _candidate_ifbench_paths():
+        if (path / "evaluation_lib.py").exists():
+            _configure_ifbench_data_path(path)
+
+    try:
+        return _import_ifbench_module()
     except ImportError:
         pass
 
     for path in _candidate_ifbench_paths():
         if (path / "evaluation_lib.py").exists():
+            _configure_ifbench_data_path(path)
             path_str = str(path)
             if path_str not in sys.path:
                 sys.path.insert(0, path_str)
-            return importlib.import_module("evaluation_lib")
+            return _import_ifbench_module()
 
     if os.getenv("M2RL_ALLOW_IFBENCH_AUTO_CLONE", "0") == "1":
-        target = Path(os.getenv("M2RL_IFBENCH_REPO", str(Path.cwd().parent / "IFBench"))).expanduser()
+        target = Path(os.getenv("M2RL_IFBENCH_REPO", str(Path.cwd() / "IFBench"))).expanduser()
         if not target.exists():
             subprocess.run(["git", "clone", "https://github.com/allenai/IFBench.git", str(target)], check=True)
         target_str = str(target)
         if target_str not in sys.path:
             sys.path.insert(0, target_str)
-        return importlib.import_module("evaluation_lib")
+        _configure_ifbench_data_path(target)
+        return _import_ifbench_module()
 
     raise RuntimeError(
         "IFBench reward requires allenai/IFBench. Set IFBENCH_REPO to a local clone, "
@@ -120,23 +251,35 @@ def _ensure_ifbench_importable() -> Any:
 def compute_ifbench_reward(response: str, metadata: Mapping[str, Any] | None = None) -> float:
     """Score a response with official IFBench strict instruction-following rules."""
 
+    global _IFBENCH_NLTK_LOOKUP_WARNED
+
     if not response or metadata is None:
         return IFBENCH_FAIL_SCORE
 
-    evaluation_lib = _ensure_ifbench_importable()
     instruction_ids = _normalize_instruction_ids(metadata.get("instruction_id_list"))
     if not instruction_ids:
         return IFBENCH_FAIL_SCORE
 
     prompt_text = str(metadata.get("prompt_text") or metadata.get("prompt") or "")
     kwargs_list = _coerce_kwargs_list(metadata.get("kwargs"), len(instruction_ids))
+    verifiable_reward = _compute_verifiable_instruction_reward(response, instruction_ids, kwargs_list, metadata)
+    if verifiable_reward is not None:
+        return verifiable_reward
+
+    evaluation_lib = _ensure_ifbench_importable()
     input_example = evaluation_lib.InputExample(
         key=int(metadata.get("record_id") or metadata.get("key") or 0),
         instruction_id_list=instruction_ids,
         prompt=prompt_text,
         kwargs=kwargs_list,
     )
-    result = evaluation_lib.test_instruction_following_strict(input_example, {prompt_text: response})
+    try:
+        result = evaluation_lib.test_instruction_following_strict(input_example, {prompt_text: response})
+    except LookupError as exc:
+        if not _IFBENCH_NLTK_LOOKUP_WARNED:
+            LOGGER.warning("IFBench lookup/scoring failed; returning 0 for affected samples: %s", exc)
+            _IFBENCH_NLTK_LOOKUP_WARNED = True
+        return IFBENCH_FAIL_SCORE
     return IFBENCH_PASS_SCORE if result.follow_all_instructions else IFBENCH_FAIL_SCORE
 
 
@@ -256,7 +399,7 @@ def compute_score(
     extra_info: dict[str, Any] | None = None,
     **_: Any,
 ) -> dict[str, float]:
-    """Return a verl-compatible reward dict with `score` as the primary scalar."""
+    """Return a verl-compatible reward dict with ``score`` as the primary scalar."""
 
     metadata = _normalize_metadata(extra_info)
     rm_type = _rm_type(data_source, metadata)

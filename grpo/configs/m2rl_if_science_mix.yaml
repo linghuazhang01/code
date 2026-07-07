@@ -8,20 +8,20 @@ runtime:
 
 data:
   train_files:
-    - data/M2RL/if/train.parquet
-    - data/M2RL/science/train.parquet
+    - data/G-OPD-Training-Data/IF/train.parquet
+    - data/G-OPD-Training-Data/Science/train.parquet
   domain_train_files:
     if:
-      - data/M2RL/if/train.parquet
+      - data/G-OPD-Training-Data/IF/train.parquet
     science:
-      - data/M2RL/science/train.parquet
+      - data/G-OPD-Training-Data/Science/train.parquet
   domain_sampling_weights:
     if: 0.5
     science: 0.5
   domain_sampling_replacement: true
   val_files:
-    - eval/domains/ifbench/data/IFBench_test.parquet
-    - eval/domains/science/data/gpqa.parquet
+    - data/G-OPD-Training-Data/IF/train.parquet
+    - data/G-OPD-Training-Data/Science/train.parquet
   train_batch_size: 2048
   val_batch_size: 512
   max_prompt_length: 2048
@@ -94,12 +94,12 @@ trainer:
   nnodes: 1
   save_freq: 20
   default_local_dir: checkpoints/qwen4b-non-thinking-m2rl-if-science-grpo
-  test_freq: 5
+  test_freq: -1
   total_epochs: 1
   total_training_steps: null
   critic_warmup: 0
-  val_before_train: true
-  log_val_generations: 10
+  val_before_train: false
+  log_val_generations: 0
 
 extra_overrides:
   - custom_reward_function.path=grpo/rewards/m2rl.py

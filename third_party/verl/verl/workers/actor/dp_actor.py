@@ -638,6 +638,17 @@ class DataParallelPPOActor(BasePPOActor):
             "student_suffix_mask",
         ):
             append_existing_batch_key(key)
+        for key in sorted(batch_keys):
+            if key.endswith(
+                (
+                    "_teacher_log_prob",
+                    "_teacher_topk_ids",
+                    "_teacher_topk_logprobs",
+                    "_teacher_student_topk_logprobs",
+                    "_teacher_entropy",
+                )
+            ):
+                append_existing_batch_key(key)
         # Include math_teacher_log_prob for only_reverse_kl_advantages mode
         teacher_prefix_config_active = bool(self.config.policy_loss.get("teacher_prefix_enabled", False))
         if (
@@ -646,7 +657,9 @@ class DataParallelPPOActor(BasePPOActor):
         ):
             append_existing_batch_key("math_teacher_log_prob")
         if teacher_prefix_config_active:
-            append_existing_batch_key("code_teacher_log_prob")
+            for key in sorted(batch_keys):
+                if key.endswith("_teacher_log_prob"):
+                    append_existing_batch_key(key)
 
         non_tensor_keys = set(data.non_tensor_batch.keys())
         has_multi_modal_inputs = "multi_modal_inputs" in non_tensor_keys

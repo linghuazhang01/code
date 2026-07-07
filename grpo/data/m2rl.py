@@ -133,7 +133,9 @@ def _label_from_row(row: Mapping[str, Any]) -> Any:
 
 def _sample_id(row: Mapping[str, Any], row_position: int, rm_type: str, domain: str) -> str:
     metadata = _normalize_mapping(row.get("metadata"))
-    row_id = _first_present(row, ("id", "key", "record_id")) or metadata.get("id") or metadata.get("key") or row_position
+    row_id = _first_present(row, ("id", "key", "record_id")) or metadata.get("id") or metadata.get("key")
+    if row_id is None:
+        row_id = row_position
     return f"{domain}:{rm_type}:{row_id}"
 
 

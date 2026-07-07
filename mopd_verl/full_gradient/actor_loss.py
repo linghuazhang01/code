@@ -11,7 +11,6 @@ from mopd_verl.full_gradient.config import _cfg_get
 from mopd_verl.full_gradient.labels import (
     _TEACHER_LABEL_KEY,
     _labels_from_mapping,
-    _non_tensor_list,
 )
 from mopd_verl.topk_distill import (
     DISTILL_LOSS_BUILDER_POLICY_GRADIENT,
@@ -24,6 +23,7 @@ from mopd_verl.topk_distill import (
     distill_loss_builder,
     resolved_topk_distill_mode,
     select_teacher_log_prob_tensor,
+    select_teacher_tensor_by_domain,
     teacher_prefix_forward_weight,
     teacher_prefix_masks,
     topk_distill_bucket_metrics,
@@ -65,71 +65,13 @@ def _topk_runtime_config(policy_loss_cfg: Any) -> tuple[bool, str]:
     return use_renormalized_support, effective_topk_logprob_mode
 
 
-def _opd_teacher_labels_from_inputs(model_inputs: dict[str, Any], batch_size: int) -> list[Any]:
-    """Return raw opd_teacher labels used by dp_actor.py for teacher selection.
-
-    Domain-like labels such as ``domain``/``source_domain``/``ability`` are audit
-    metadata. They must not influence teacher selection, otherwise recomputed
-    gradients can diverge from the real actor loss.
-    """
-    return _non_tensor_list(model_inputs.get(_TEACHER_LABEL_KEY), batch_size)
-
-
-def _code_teacher_mask_from_opd_teacher(
-    model_inputs: dict[str, Any],
-    batch_size: int,
-    device: torch.device,
-) -> torch.Tensor:
-    if _TEACHER_LABEL_KEY not in model_inputs:
-        return torch.zeros(batch_size, dtype=torch.bool, device=device)
-
-    labels = _opd_teacher_labels_from_inputs(model_inputs, batch_size)
-    return torch.as_tensor(
-        [label == "code" for label in labels],
-        dtype=torch.bool,
-        device=device,
-    )
-
-
-def _select_by_code_teacher(
-    math_tensor: torch.Tensor,
-    code_tensor: torch.Tensor | None,
-    model_inputs: dict[str, Any],
-    policy_loss_cfg: Any,
-) -> torch.Tensor:
-    if (
-        code_tensor is None
-        or not _is_multi_teacher_distill_cfg(policy_loss_cfg)
-        or _TEACHER_LABEL_KEY not in model_inputs
-    ):
-        return math_tensor
-
-    code_mask = _code_teacher_mask_from_opd_teacher(
-        model_inputs,
-        batch_size=int(math_tensor.shape[0]),
-        device=math_tensor.device,
-    )
-    if not bool(code_mask.any()):
-        return math_tensor
-    if bool(code_mask.all()):
-        return code_tensor
-
-    view_shape = (int(code_mask.shape[0]),) + (1,) * (math_tensor.dim() - 1)
-    return torch.where(code_mask.view(view_shape), code_tensor, math_tensor)
-
-
 def _selected_teacher_log_prob_from_inputs(
     model_inputs: dict[str, Any],
     policy_loss_cfg: Any,
 ) -> torch.Tensor:
     if "math_teacher_log_prob" not in model_inputs:
         raise ValueError("Reverse-KL advantages require math_teacher_log_prob in the batch.")
-    return _select_by_code_teacher(
-        math_tensor=model_inputs["math_teacher_log_prob"],
-        code_tensor=model_inputs.get("code_teacher_log_prob"),
-        model_inputs=model_inputs,
-        policy_loss_cfg=policy_loss_cfg,
-    )
+    return select_teacher_log_prob_tensor(model_inputs, policy_loss_cfg)
 
 
 def _selected_teacher_topk_from_inputs(
@@ -140,25 +82,16 @@ def _selected_teacher_topk_from_inputs(
         raise ValueError(
             "Top-k distillation requires math_teacher_topk_ids and math_teacher_topk_logprobs in the batch."
         )
-    math_ids = model_inputs["math_teacher_topk_ids"]
-    math_log_probs = model_inputs["math_teacher_topk_logprobs"]
-    if (
-        not _is_multi_teacher_distill_cfg(policy_loss_cfg)
-        or "code_teacher_topk_ids" not in model_inputs
-    ):
-        return math_ids, math_log_probs
     return (
-        _select_by_code_teacher(
-            math_tensor=math_ids,
-            code_tensor=model_inputs["code_teacher_topk_ids"],
-            model_inputs=model_inputs,
-            policy_loss_cfg=policy_loss_cfg,
+        select_teacher_tensor_by_domain(
+            model_inputs,
+            policy_loss_cfg,
+            suffix="topk_ids",
         ),
-        _select_by_code_teacher(
-            math_tensor=math_log_probs,
-            code_tensor=model_inputs.get("code_teacher_topk_logprobs", math_log_probs),
-            model_inputs=model_inputs,
-            policy_loss_cfg=policy_loss_cfg,
+        select_teacher_tensor_by_domain(
+            model_inputs,
+            policy_loss_cfg,
+            suffix="topk_logprobs",
         ),
     )
 
@@ -171,17 +104,10 @@ def _selected_student_topk_teacher_log_probs(
         raise ValueError(
             "Student top-k distillation requires math_teacher_student_topk_logprobs in the batch."
         )
-    math_log_probs = model_inputs["math_teacher_student_topk_logprobs"]
-    if (
-        not _is_multi_teacher_distill_cfg(policy_loss_cfg)
-        or "code_teacher_student_topk_logprobs" not in model_inputs
-    ):
-        return math_log_probs
-    return _select_by_code_teacher(
-        math_tensor=math_log_probs,
-        code_tensor=model_inputs["code_teacher_student_topk_logprobs"],
-        model_inputs=model_inputs,
-        policy_loss_cfg=policy_loss_cfg,
+    return select_teacher_tensor_by_domain(
+        model_inputs,
+        policy_loss_cfg,
+        suffix="student_topk_logprobs",
     )
 
 
@@ -242,7 +168,7 @@ def _actor_reverse_kl_advantages(
                     math_teacher_log_prob - base_log_prob
                 ) * lambda_vals
 
-    elif multi_teacher and _TEACHER_LABEL_KEY in model_inputs and "code_teacher_log_prob" in model_inputs:
+    elif multi_teacher and _TEACHER_LABEL_KEY in model_inputs:
         teacher_log_prob = _selected_teacher_log_prob_from_inputs(
             model_inputs,
             policy_loss_cfg,

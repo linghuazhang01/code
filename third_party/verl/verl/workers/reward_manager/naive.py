@@ -23,6 +23,15 @@ from verl.workers.reward_manager import register
 from verl.workers.reward_manager.abstract import AbstractRewardManager
 
 
+def _append_reward_extra_info(reward_extra_info: dict, row_index: int, row_info: dict[str, Any]) -> None:
+    for key in list(reward_extra_info.keys()):
+        reward_extra_info[key].append(row_info.get(key))
+    for key, value in row_info.items():
+        if key not in reward_extra_info:
+            reward_extra_info[key].extend([None] * row_index)
+            reward_extra_info[key].append(value)
+
+
 @register("naive")
 class NaiveRewardManager(AbstractRewardManager):
     """The reward manager."""
@@ -95,11 +104,12 @@ class NaiveRewardManager(AbstractRewardManager):
 
             if isinstance(score, dict):
                 reward = score["score"]
-                # Store the information including original reward
-                for key, value in score.items():
-                    reward_extra_info[key].append(value)
+                row_reward_extra_info = dict(score)
             else:
                 reward = score
+                row_reward_extra_info = {"score": score, "acc": score}
+
+            _append_reward_extra_info(reward_extra_info, i, row_reward_extra_info)
 
             reward_tensor[i, valid_response_length - 1] = reward
 

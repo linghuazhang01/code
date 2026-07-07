@@ -22,7 +22,6 @@ from mopd_verl.full_gradient.actor_loss import (
     _is_multi_teacher_distill_cfg,
     _labels_from_inputs,
     _response_token_id_matrix_from_inputs,
-    _select_by_code_teacher,
     _selected_student_topk_teacher_log_probs,
     _selected_teacher_log_prob_from_inputs,
     _selected_teacher_topk_from_inputs,
@@ -834,7 +833,7 @@ class SequentialBackwardDomainGradientTracker:
         self._expected_first_domain_samples: int | None = None
         self._started_at = 0.0
         self._domain_partition_meta = cfg.get("domain_partition", {})
-        self._prepared_supported = len(self.domains) in (1, 2)
+        self._prepared_supported = bool(self.domains)
         self._domain_partition_injected_domain = 0.0
         self._domain_partition_injected_opd_teacher = 0.0
         self._sample_records: list[dict[str, Any]] = []
@@ -890,7 +889,7 @@ class SequentialBackwardDomainGradientTracker:
             if partition_meta
             else self._distributed_world_size <= 1
         )
-        locally_supported = len(self.domains) in (1, 2) and partition_aligned
+        locally_supported = bool(self.domains) and partition_aligned
         buckets: dict[str, list[tuple[str, Any]]] = {domain: [] for domain in self.domains}
         if locally_supported:
             for micro_batch in original_micro_batches:
@@ -1967,50 +1966,58 @@ class SequentialBackwardDomainGradientTracker:
             metrics["global/audit/full_gradient_single_domain_target"] = 1.0
             return metrics, domain_targets
 
-        if len(available_domains) != 2:
+        domain_items: list[tuple[str, tuple[torch.Tensor, ...], float, float]] = []
+        for domain in available_domains:
+            chunks, norm_sq = domain_targets[domain]
+            if norm_sq <= 0.0:
+                continue
+            domain_items.append((domain, chunks, norm_sq, norm_sq**0.5))
+        if len(domain_items) < 2:
             return metrics, domain_targets
 
-        first_domain, second_domain = available_domains[0], available_domains[1]
-        first_chunks, first_norm_sq = domain_targets[first_domain]
-        second_chunks, second_norm_sq = domain_targets[second_domain]
-        if first_norm_sq <= 0.0 or second_norm_sq <= 0.0:
+        pairwise_dots: dict[tuple[str, str], float] = {}
+        required_pair_count = len(domain_items) * (len(domain_items) - 1) // 2
+        for left_idx, (left_domain, left_chunks, _left_norm_sq, left_norm) in enumerate(domain_items):
+            left_safe = _safe_name(left_domain)
+            for right_domain, right_chunks, _right_norm_sq, right_norm in domain_items[left_idx + 1 :]:
+                right_safe = _safe_name(right_domain)
+                dot = self._target_chunks_dot(left_chunks, right_chunks)
+                if dot is None:
+                    continue
+                pairwise_dots[(left_domain, right_domain)] = dot
+                pair = f"{left_safe}_vs_{right_safe}"
+                domain_cosine = _safe_cosine(dot, left_norm, right_norm)
+                if domain_cosine is not None:
+                    metrics[f"global/full_grad_conflict/{pair}/full_grad_cosine_train_i_k"] = domain_cosine
+                    metrics[f"global/full_grad_conflict/{pair}/conflict_magnitude_i_k"] = max(
+                        0.0,
+                        -domain_cosine,
+                    )
+
+        if len(pairwise_dots) != required_pair_count:
             return metrics, domain_targets
 
-        first_second_dot = self._target_chunks_dot(first_chunks, second_chunks)
-        if first_second_dot is None:
-            return metrics, domain_targets
-
-        first_norm = first_norm_sq**0.5
-        second_norm = second_norm_sq**0.5
-        total_norm_sq = max(first_norm_sq + second_norm_sq + 2.0 * first_second_dot, 0.0)
+        total_norm_sq = sum(norm_sq for _domain, _chunks, norm_sq, _norm in domain_items) + 2.0 * sum(
+            pairwise_dots.values()
+        )
+        total_norm_sq = max(total_norm_sq, 0.0)
         total_norm = total_norm_sq**0.5
-        first_total_dot = first_norm_sq + first_second_dot
-        second_total_dot = second_norm_sq + first_second_dot
-        first_safe = _safe_name(first_domain)
-        second_safe = _safe_name(second_domain)
-        pair = f"{first_safe}_vs_{second_safe}"
+        if total_norm_sq <= 0.0:
+            return metrics, domain_targets
 
-        domain_cosine = _safe_cosine(first_second_dot, first_norm, second_norm)
-        if domain_cosine is not None:
-            metrics[f"global/full_grad_conflict/{pair}/full_grad_cosine_train_i_k"] = domain_cosine
-            metrics[f"global/full_grad_conflict/{pair}/conflict_magnitude_i_k"] = max(0.0, -domain_cosine)
-
-        first_total_cosine = _safe_cosine(first_total_dot, first_norm, total_norm)
-        if first_total_cosine is not None:
-            metrics[f"global/full_grad_alignment/{first_safe}_vs_total/full_grad_cosine_domain_total"] = (
-                first_total_cosine
-            )
-        second_total_cosine = _safe_cosine(second_total_dot, second_norm, total_norm)
-        if second_total_cosine is not None:
-            metrics[f"global/full_grad_alignment/{second_safe}_vs_total/full_grad_cosine_domain_total"] = (
-                second_total_cosine
-            )
-        if total_norm_sq > 0.0:
-            metrics[f"global/full_grad_contribution/{first_safe}_to_total/signed_projection_share"] = (
-                first_total_dot / total_norm_sq
-            )
-            metrics[f"global/full_grad_contribution/{second_safe}_to_total/signed_projection_share"] = (
-                second_total_dot / total_norm_sq
+        for domain, _chunks, norm_sq, norm in domain_items:
+            domain_total_dot = norm_sq
+            for left_domain, right_domain in pairwise_dots:
+                if domain == left_domain or domain == right_domain:
+                    domain_total_dot += pairwise_dots[(left_domain, right_domain)]
+            safe_domain = _safe_name(domain)
+            domain_total_cosine = _safe_cosine(domain_total_dot, norm, total_norm)
+            if domain_total_cosine is not None:
+                metrics[f"global/full_grad_alignment/{safe_domain}_vs_total/full_grad_cosine_domain_total"] = (
+                    domain_total_cosine
+                )
+            metrics[f"global/full_grad_contribution/{safe_domain}_to_total/signed_projection_share"] = (
+                domain_total_dot / total_norm_sq
             )
         return metrics, domain_targets
 
@@ -2982,15 +2989,9 @@ class SequentialBackwardDomainGradientTracker:
                         restore_grads=self.token_gradient_strict_grad_restore,
                     )
                 token_recompute_attempted = True
-                other_domain = self._other_domain(domain, domain_targets)
+                other_domain_fields = self._token_gradient_other_domain_fields(domain, domain_targets, stats)
                 own_cos = stats.get(f"{_safe_name(domain)}_cos")
-                other_cos = stats.get(f"{_safe_name(other_domain)}_cos") if other_domain is not None else None
                 own_projection = stats.get(f"{_safe_name(domain)}_projection_share")
-                other_projection = (
-                    stats.get(f"{_safe_name(other_domain)}_projection_share")
-                    if other_domain is not None
-                    else None
-                )
                 selected_gap_mass = sum(
                     self._token_score_mass_value(row, "gap") for row in selected_metadata
                 )
@@ -3026,12 +3027,9 @@ class SequentialBackwardDomainGradientTracker:
                     "selection_scope": "global",
                     "rank": "global",
                     "world_size": world_size,
-                    "other_domain": other_domain,
                     "own_domain_cos": own_cos,
-                    "other_domain_cos": other_cos,
-                    "conflict_to_other": max(0.0, -float(other_cos)) if other_cos is not None else None,
                     "own_projection_share": own_projection,
-                    "other_projection_share": other_projection,
+                    **other_domain_fields,
                     "selected_token_count": float(len(selected_metadata)),
                     "selected_sample_count": float(selected_sample_count),
                     "selected_rank_count": float(len(rank_selected_token_counts)),
@@ -3439,6 +3437,67 @@ class SequentialBackwardDomainGradientTracker:
                 return candidate
         return None
 
+    def _token_gradient_other_domain_fields(
+        self,
+        domain: str,
+        domain_targets: dict[str, tuple[tuple[torch.Tensor, ...], float]],
+        stats: dict[str, Any],
+    ) -> dict[str, Any]:
+        other_domains = [candidate for candidate in sorted(domain_targets) if candidate != domain]
+        cos_by_domain: dict[str, float | None] = {}
+        projection_by_domain: dict[str, float | None] = {}
+        norm_ratio_by_domain: dict[str, float | None] = {}
+        conflict_by_domain: dict[str, float | None] = {}
+        finite_cos_items: list[tuple[str, float, float]] = []
+        for other_domain in other_domains:
+            safe_domain = _safe_name(other_domain)
+            cos_values = _finite_values([stats.get(f"{safe_domain}_cos")])
+            projection_values = _finite_values([stats.get(f"{safe_domain}_projection_share")])
+            norm_ratio_values = _finite_values([stats.get(f"{safe_domain}_norm_ratio")])
+            cos_value = cos_values[0] if cos_values else None
+            projection_value = projection_values[0] if projection_values else None
+            norm_ratio_value = norm_ratio_values[0] if norm_ratio_values else None
+            conflict_value = max(0.0, -cos_value) if cos_value is not None else None
+            cos_by_domain[other_domain] = cos_value
+            projection_by_domain[other_domain] = projection_value
+            norm_ratio_by_domain[other_domain] = norm_ratio_value
+            conflict_by_domain[other_domain] = conflict_value
+            if cos_value is not None and conflict_value is not None:
+                finite_cos_items.append((other_domain, cos_value, conflict_value))
+
+        primary_domain = None
+        if finite_cos_items:
+            primary_domain = sorted(finite_cos_items, key=lambda item: (-item[2], item[0]))[0][0]
+        elif other_domains:
+            primary_domain = other_domains[0]
+
+        other_cos = _finite_values(list(cos_by_domain.values()))
+        other_projection = _finite_values(list(projection_by_domain.values()))
+        other_conflict = _finite_values(list(conflict_by_domain.values()))
+        return {
+            "other_domain": primary_domain,
+            "other_domains": other_domains,
+            "other_domain_count": float(len(other_domains)),
+            "other_domain_cos": cos_by_domain.get(primary_domain) if primary_domain is not None else None,
+            "other_domain_cos_mean": _mean(other_cos),
+            "other_domain_cos_min": min(other_cos) if other_cos else None,
+            "other_domain_cos_max": max(other_cos) if other_cos else None,
+            "conflict_to_other": max(other_conflict) if other_conflict else None,
+            "conflict_to_other_mean": _mean(other_conflict),
+            "conflict_to_other_max": max(other_conflict) if other_conflict else None,
+            "other_projection_share": (
+                projection_by_domain.get(primary_domain) if primary_domain is not None else None
+            ),
+            "other_projection_share_mean": _mean(other_projection),
+            "negative_other_projection_share_sum": (
+                sum(max(0.0, -value) for value in other_projection) if other_projection else None
+            ),
+            "other_domain_cos_by_domain": cos_by_domain,
+            "other_projection_share_by_domain": projection_by_domain,
+            "other_norm_ratio_by_domain": norm_ratio_by_domain,
+            "conflict_to_other_by_domain": conflict_by_domain,
+        }
+
     def _recompute_token_selection_gradient_stats(
         self,
         selected_tokens: list[dict[str, Any]],
@@ -3823,6 +3882,8 @@ class SequentialBackwardDomainGradientTracker:
         other_cos: list[float] = []
         own_projection: list[float] = []
         other_projection: list[float] = []
+        other_cos_by_domain: dict[str, list[float]] = {}
+        other_projection_by_domain: dict[str, list[float]] = {}
         seconds = _finite_values([row.get("token_grad_seconds") for row in rows])
         autograd_seconds = _finite_values([row.get("token_grad_autograd_seconds") for row in rows])
         fallback_seconds = _finite_values([row.get("token_grad_backward_fallback_seconds") for row in rows])
@@ -3835,10 +3896,17 @@ class SequentialBackwardDomainGradientTracker:
         original_restore_rel_l2 = _finite_values([row.get("token_grad_restore_original_rel_l2") for row in rows])
         original_restore_max_abs = _finite_values([row.get("token_grad_restore_original_max_abs") for row in rows])
         for row in rows:
-            other_domain = row.get("other_domain")
-            if other_domain is not None:
-                other_cos.extend(_finite_values([row.get(f"{_safe_name(other_domain)}_cos")]))
-                other_projection.extend(_finite_values([row.get(f"{_safe_name(other_domain)}_projection_share")]))
+            other_domains = [str(value) for value in row.get("other_domains", [])]
+            if not other_domains and row.get("other_domain") is not None:
+                other_domains = [str(row["other_domain"])]
+            for other_domain in other_domains:
+                other_safe = _safe_name(other_domain)
+                cos_values = _finite_values([row.get(f"{other_safe}_cos")])
+                projection_values = _finite_values([row.get(f"{other_safe}_projection_share")])
+                other_cos.extend(cos_values)
+                other_projection.extend(projection_values)
+                other_cos_by_domain.setdefault(other_safe, []).extend(cos_values)
+                other_projection_by_domain.setdefault(other_safe, []).extend(projection_values)
             own_projection.extend(_finite_values([row.get(f"{safe_domain}_projection_share")]))
         selected_token_total = sum(
             float(row.get("selected_token_count", 1.0) or 0.0) for row in rows
@@ -3902,6 +3970,26 @@ class SequentialBackwardDomainGradientTracker:
                 metrics[
                     f"{safe_domain}/token_grad_contribution/{selection_key}_projection_share"
                 ] = float(own_projection_value)
+            other_domains = [str(value) for value in row.get("other_domains", [])]
+            if not other_domains and row.get("other_domain") is not None:
+                other_domains = [str(row["other_domain"])]
+            for other_domain in other_domains:
+                other_safe = _safe_name(other_domain)
+                other_cos_value = row.get(f"{other_safe}_cos")
+                other_projection_value = row.get(f"{other_safe}_projection_share")
+                if other_cos_value is not None:
+                    conflict = max(0.0, -float(other_cos_value))
+                    metrics[f"{safe_domain}/token_grad_conflict/{selection_key}_vs_{other_safe}_cos"] = (
+                        float(other_cos_value)
+                    )
+                    metrics[f"{safe_domain}/token_grad_conflict/{selection_key}_vs_{other_safe}_conflict"] = (
+                        conflict
+                    )
+                if other_projection_value is not None:
+                    metrics[
+                        f"{safe_domain}/token_grad_contribution/"
+                        f"{selection_key}_to_{other_safe}_projection_share"
+                    ] = float(other_projection_value)
             no_extra_available = row.get("token_sequence_scale_no_extra_available")
             no_extra_cos = row.get("token_sequence_scale_no_extra_cos")
             no_extra_projection = row.get("token_sequence_scale_no_extra_projection_share")
@@ -4047,12 +4135,25 @@ class SequentialBackwardDomainGradientTracker:
         if other_cos:
             conflicts = [max(0.0, -value) for value in other_cos]
             metrics[f"{safe_domain}/token_grad_conflict/other_cos_mean"] = _mean(other_cos) or 0.0
+            metrics[f"{safe_domain}/token_grad_conflict/other_cos_min"] = min(other_cos)
+            metrics[f"{safe_domain}/token_grad_conflict/other_cos_max"] = max(other_cos)
             metrics[f"{safe_domain}/token_grad_conflict/other_cos_p05"] = _percentile(other_cos, 5.0) or 0.0
             metrics[f"{safe_domain}/token_grad_conflict/other_cos_negative_frac"] = float(
                 np.mean([value < 0.0 for value in other_cos])
             )
             metrics[f"{safe_domain}/token_grad_conflict/conflict_to_other_mean"] = _mean(conflicts) or 0.0
             metrics[f"{safe_domain}/token_grad_conflict/conflict_to_other_max"] = max(conflicts)
+        for other_safe, values in sorted(other_cos_by_domain.items()):
+            if not values:
+                continue
+            conflicts = [max(0.0, -value) for value in values]
+            metrics[f"{safe_domain}/token_grad_conflict/other_{other_safe}_cos_mean"] = (
+                _mean(values) or 0.0
+            )
+            metrics[f"{safe_domain}/token_grad_conflict/other_{other_safe}_conflict_mean"] = (
+                _mean(conflicts) or 0.0
+            )
+            metrics[f"{safe_domain}/token_grad_conflict/other_{other_safe}_conflict_max"] = max(conflicts)
         if own_projection:
             metrics[f"{safe_domain}/token_grad_contribution/own_projection_share_mean"] = (
                 _mean(own_projection) or 0.0
@@ -4065,6 +4166,16 @@ class SequentialBackwardDomainGradientTracker:
             metrics[f"{safe_domain}/token_grad_contribution/negative_other_projection_share_sum"] = sum(
                 max(0.0, -value) for value in other_projection
             )
+        for other_safe, values in sorted(other_projection_by_domain.items()):
+            if not values:
+                continue
+            metrics[f"{safe_domain}/token_grad_contribution/other_{other_safe}_projection_share_mean"] = (
+                _mean(values) or 0.0
+            )
+            metrics[
+                f"{safe_domain}/token_grad_contribution/"
+                f"other_{other_safe}_negative_projection_share_sum"
+            ] = sum(max(0.0, -value) for value in values)
         return metrics
 
     def _summarize_global_token_gradient_cost(

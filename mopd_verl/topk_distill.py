@@ -209,6 +209,55 @@ def teacher_type_at(opd_teacher: object, index: int) -> object:
     return opd_teacher
 
 
+def teacher_tensor_prefix(domain: object) -> str:
+    text = str(domain or "math").strip().lower().replace("-", "_")
+    safe = "".join(char if (char.isalnum() or char == "_") else "_" for char in text)
+    safe = "_".join(part for part in safe.split("_") if part)
+    return safe or "math"
+
+
+def teacher_log_prob_key(domain: object) -> str:
+    return f"{teacher_tensor_prefix(domain)}_teacher_log_prob"
+
+
+def teacher_tensor_key(domain: object, suffix: str) -> str:
+    normalized_suffix = suffix.strip("_")
+    return f"{teacher_tensor_prefix(domain)}_teacher_{normalized_suffix}"
+
+
+def select_teacher_tensor_by_domain(
+    model_inputs: dict[str, Any],
+    policy_loss_config: Any,
+    *,
+    suffix: str,
+    math_key: str | None = None,
+    code_key: str | None = None,
+) -> torch.Tensor:
+    normalized_suffix = suffix.strip("_")
+    fallback_math_key = math_key or teacher_tensor_key("math", normalized_suffix)
+    fallback_code_key = code_key or teacher_tensor_key("code", normalized_suffix)
+    if fallback_math_key not in model_inputs:
+        raise ValueError(f"Teacher tensor selection requires {fallback_math_key!r} in model_inputs.")
+
+    math_tensor = model_inputs[fallback_math_key]
+    code_tensor = model_inputs.get(fallback_code_key, math_tensor)
+    if not bool(cfg_get(policy_loss_config, "multi_teacher_distill", False)) or "opd_teacher" not in model_inputs:
+        return math_tensor
+
+    opd_teacher = model_inputs["opd_teacher"]
+    selected = torch.empty_like(math_tensor)
+    for idx in range(int(math_tensor.shape[0])):
+        teacher_type = teacher_type_at(opd_teacher, idx)
+        dynamic_key = teacher_tensor_key(teacher_type, normalized_suffix)
+        if dynamic_key in model_inputs:
+            selected[idx] = model_inputs[dynamic_key][idx]
+        elif teacher_tensor_prefix(teacher_type) == "code" and fallback_code_key in model_inputs:
+            selected[idx] = code_tensor[idx]
+        else:
+            selected[idx] = math_tensor[idx]
+    return selected
+
+
 def select_teacher_log_prob_tensor(
     model_inputs: dict[str, Any],
     policy_loss_config: Any,
@@ -216,22 +265,13 @@ def select_teacher_log_prob_tensor(
     math_key: str = "math_teacher_log_prob",
     code_key: str = "code_teacher_log_prob",
 ) -> torch.Tensor:
-    if math_key not in model_inputs:
-        raise ValueError(f"Teacher log-prob selection requires {math_key!r} in model_inputs.")
-    math_log_prob = model_inputs[math_key]
-    code_log_prob = model_inputs.get(code_key, math_log_prob)
-    if not bool(cfg_get(policy_loss_config, "multi_teacher_distill", False)) or "opd_teacher" not in model_inputs:
-        return math_log_prob
-
-    opd_teacher = model_inputs["opd_teacher"]
-    selected = torch.empty_like(math_log_prob)
-    for idx in range(int(math_log_prob.shape[0])):
-        teacher_type = teacher_type_at(opd_teacher, idx)
-        if teacher_type == "code" and code_key in model_inputs:
-            selected[idx] = code_log_prob[idx]
-        else:
-            selected[idx] = math_log_prob[idx]
-    return selected
+    return select_teacher_tensor_by_domain(
+        model_inputs,
+        policy_loss_config,
+        suffix="log_prob",
+        math_key=math_key,
+        code_key=code_key,
+    )
 
 
 def teacher_prefix_masks(

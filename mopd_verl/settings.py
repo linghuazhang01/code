@@ -27,6 +27,7 @@ class DataConfig:
     domain_train_files: dict[str, list[str]] = field(default_factory=dict)
     domain_sampling_weights: dict[str, float] = field(default_factory=dict)
     domain_sampling_replacement: bool = True
+    load_parquet_direct: bool = False
     train_batch_size: int = 1024
     val_batch_size: int | None = None
     max_prompt_length: int = 2048
@@ -47,6 +48,8 @@ class ModelConfig:
     student_base_path: str | None
     math_teacher_path: str
     code_teacher_path: str
+    if_teacher_path: str | None
+    domain_teacher_paths: dict[str, str]
     reasoning_teacher_path: str | None
     primary_teacher_path: str
     secondary_teacher_path: str | None
@@ -309,6 +312,19 @@ def _float_mapping(value: Any, key: str) -> dict[str, float]:
     return output
 
 
+def _string_mapping(value: Any, key: str) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"Expected '{key}' to be a mapping.")
+    output: dict[str, str] = {}
+    for item_key, item_value in value.items():
+        if item_value is None:
+            continue
+        output[str(item_key)] = str(item_value)
+    return output
+
+
 def _string_list_mapping(value: Any, key: str) -> dict[str, list[str]]:
     if value is None:
         return {}
@@ -404,6 +420,7 @@ def load_config(path: str | Path) -> MOPDConfig:
         domain_sampling_replacement=bool(
             data_raw.get("domain_sampling_replacement", DataConfig.domain_sampling_replacement)
         ),
+        load_parquet_direct=bool(data_raw.get("load_parquet_direct", DataConfig.load_parquet_direct)),
         train_batch_size=int(data_raw.get("train_batch_size", DataConfig.train_batch_size)),
         val_batch_size=(
             None if data_raw.get("val_batch_size") is None else int(data_raw["val_batch_size"])
@@ -445,6 +462,26 @@ def load_config(path: str | Path) -> MOPDConfig:
         teacher_model_device = "gpu"
     if teacher_model_device not in {"cpu", "gpu"}:
         raise ValueError("Expected model.teacher_model_device to be one of: 'cpu', 'gpu', or 'cuda'.")
+    math_teacher_path = str(model_raw.get("math_teacher_path", primary_teacher_raw))
+    code_teacher_path = str(code_teacher_raw)
+    if_teacher_raw = model_raw.get("if_teacher_path")
+    if_teacher_path = None if if_teacher_raw is None else str(if_teacher_raw)
+    domain_teacher_paths = _string_mapping(
+        model_raw.get("domain_teacher_paths", model_raw.get("teacher_paths")),
+        "model.domain_teacher_paths",
+    )
+    if not domain_teacher_paths:
+        domain_teacher_paths = {
+            "math": math_teacher_path,
+            "code": code_teacher_path,
+        }
+        if if_teacher_path is not None:
+            domain_teacher_paths["if"] = if_teacher_path
+    else:
+        domain_teacher_paths.setdefault("math", math_teacher_path)
+        domain_teacher_paths.setdefault("code", code_teacher_path)
+        if if_teacher_path is not None:
+            domain_teacher_paths.setdefault("if", if_teacher_path)
     model = ModelConfig(
         student_path=str(model_raw["student_path"]),
         student_base_path=(
@@ -452,8 +489,10 @@ def load_config(path: str | Path) -> MOPDConfig:
             if model_raw.get("student_base_path", model_raw["student_path"]) is None
             else str(model_raw.get("student_base_path", model_raw["student_path"]))
         ),
-        math_teacher_path=str(model_raw.get("math_teacher_path", primary_teacher_raw)),
-        code_teacher_path=str(code_teacher_raw),
+        math_teacher_path=math_teacher_path,
+        code_teacher_path=code_teacher_path,
+        if_teacher_path=if_teacher_path,
+        domain_teacher_paths=domain_teacher_paths,
         reasoning_teacher_path=(
             None
             if model_raw.get("reasoning_teacher_path") is None

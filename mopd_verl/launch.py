@@ -32,6 +32,11 @@ def _hydra_float_dict(values: Mapping[str, float]) -> str:
     return "{" + items + "}"
 
 
+def _hydra_string_dict(values: Mapping[str, str]) -> str:
+    items = ", ".join(f"{key}: '{value}'" for key, value in values.items())
+    return "{" + items + "}"
+
+
 def _hydra_list_dict(values: Mapping[str, Sequence[str]]) -> str:
     items = ", ".join(f"{key}: {_hydra_list(file_paths)}" for key, file_paths in values.items())
     return "{" + items + "}"
@@ -242,7 +247,12 @@ def build_overrides(config: MOPDConfig) -> list[str]:
         model_overrides.append(f"+actor_rollout_ref.model.base_model_path={model.student_base_path}")
     model_overrides.append(f"+actor_rollout_ref.ref.model.path={model.primary_teacher_path}")
     model_overrides.append(f"+actor_rollout_ref.ref.model.teacher_model_device={model.teacher_model_device}")
-    if model.secondary_teacher_path is not None:
+    use_domain_teacher_paths = any(domain not in {"math", "code"} for domain in model.domain_teacher_paths)
+    if use_domain_teacher_paths:
+        model_overrides.append(
+            f"+actor_rollout_ref.ref.model.teacher_paths={_hydra_string_dict(model.domain_teacher_paths)}"
+        )
+    elif model.secondary_teacher_path is not None:
         model_overrides.append(f"+actor_rollout_ref.ref.model.base_model_path={model.secondary_teacher_path}")
 
     overrides = [
@@ -259,6 +269,7 @@ def build_overrides(config: MOPDConfig) -> list[str]:
         f"data.max_prompt_length={data.max_prompt_length}",
         f"data.max_response_length={data.max_response_length}",
         f"data.filter_overlong_prompts={_bool(data.filter_overlong_prompts)}",
+        f"+data.load_parquet_direct={_bool(data.load_parquet_direct)}",
         f"data.truncation={data.truncation}",
         f"data.shuffle={_bool(data.shuffle)}",
         f"data.validation_shuffle={_bool(data.validation_shuffle)}",

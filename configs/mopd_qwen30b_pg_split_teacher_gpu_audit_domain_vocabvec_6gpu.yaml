@@ -9,7 +9,7 @@
 # GPU_IDS=0,1,2,3,4,5.
 #
 # Enabled audit families:
-# - domain/full gradient audit
+# - four-domain full gradient audit
 # - token-gap vectors, including full-vocab token-id vectors
 #
 # Disabled audit families:
@@ -31,10 +31,17 @@ data:
       - data/G-OPD-Training-Data/DeepMath-103K/train_filtered_level6.parquet
     code:
       - data/G-OPD-Training-Data/Eurus/code_train.parquet
+    if:
+      - data/G-OPD-Training-Data/IF/train.parquet
+    science:
+      - data/G-OPD-Training-Data/Science/train.parquet
   domain_sampling_weights:
-    math: 0.5
-    code: 0.5
+    math: 1
+    code: 1
+    if: 1
+    science: 1
   domain_sampling_replacement: true
+  load_parquet_direct: true
   val_files:
     - eval/domains/math/data/AIME24/test.parquet
     - eval/domains/math/data/AIME25/test.parquet
@@ -43,7 +50,7 @@ data:
     - eval/domains/code/data/HumanEvalPlus/test.parquet
     - eval/domains/code/data/MBPPPlus/test.parquet
     # - eval/domains/code/data/LiveCodeBench/test.parquet
-  train_batch_size: 512
+  train_batch_size: 504
   max_prompt_length: 2048
   max_response_length: 10240
   val_batch_size: 1024
@@ -60,6 +67,12 @@ model:
   student_base_path: null
   math_teacher_path: ../models/Qwen3-30B-A3B
   code_teacher_path: ../models/Qwen3-30B-A3B
+  if_teacher_path: ../models/Qwen3-30B-A3B
+  domain_teacher_paths:
+    math: ../models/Qwen3-30B-A3B
+    code: ../models/Qwen3-30B-A3B
+    if: ../models/Qwen3-30B-A3B
+    science: ../models/Qwen3-30B-A3B
   teacher_model_device: gpu
 
 actor:
@@ -79,7 +92,7 @@ actor:
   topk_distill_loss_weight: 0.0
   topk_distill_logprob_chunk_size: 16
   topk_distill_logprob_mode: sparse
-  ppo_mini_batch_size: 512
+  ppo_mini_batch_size: 504
   ppo_micro_batch_size_per_gpu: 1
   use_kl_loss: true
   kl_loss_coef: 0
@@ -119,6 +132,10 @@ rollout_correction:
   rollout_rs: null
   bypass_mode: false
 
+extra_overrides:
+  - custom_reward_function.path=grpo/rewards/mixed.py
+  - custom_reward_function.name=compute_score
+
 worker_placement:
   separate_ref_policy: true
   actor_rollout:
@@ -130,10 +147,12 @@ worker_placement:
 
 audit:
   enabled: true
-  output_dir: audit/qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_6gpu
+  output_dir: audit/qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_6gpu_4domain
   domains:
     - math
     - code
+    - if
+    - science
   tensorboard_prefix: mopd
   tensorboard_layout: domain_category
   tensorboard_prune_mode: core
@@ -196,7 +215,7 @@ paper_eval:
   enabled: false
   script_path: eval/scripts/run_paper_eval_suite.sh
   model_path: null
-  output_dir: eval_outputs/paper_suite/qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_6gpu
+  output_dir: eval_outputs/paper_suite/qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_6gpu_4domain
   datasets:
     - aime24
     - aime25
@@ -212,7 +231,7 @@ paper_eval:
 
 trainer:
   project_name: MOPD
-  experiment_name: Qwen3-4B-from-Qwen3-30B-A3B-pg-split-teacher-gpu-audit-domain-vocabvec-6gpu
+  experiment_name: Qwen3-4B-from-Qwen3-30B-A3B-pg-split-teacher-gpu-audit-domain-vocabvec-6gpu-4domain
   logger: '["console","tensorboard","wandb"]'
   n_gpus_per_node: 4
   nnodes: 1
@@ -220,7 +239,7 @@ trainer:
   test_freq: -1
   total_epochs: 3
   total_training_steps: 200
-  default_local_dir: checkpoints/MOPD/Qwen3-4B-from-Qwen3-30B-A3B-pg-split-teacher-gpu-audit-domain-vocabvec-6gpu
+  default_local_dir: checkpoints/MOPD/Qwen3-4B-from-Qwen3-30B-A3B-pg-split-teacher-gpu-audit-domain-vocabvec-6gpu-4domain
   critic_warmup: 0
   val_before_train: false
   log_val_generations: 10
