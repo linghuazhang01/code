@@ -20,8 +20,8 @@ data:
     science: 0.5
   domain_sampling_replacement: true
   val_files:
-    - data/G-OPD-Training-Data/IF/train.parquet
-    - data/G-OPD-Training-Data/Science/train.parquet
+    - eval/domains/ifbench/data/IFBench_test.parquet
+    - eval/domains/science/data/gpqa.parquet
   train_batch_size: 2048
   val_batch_size: 512
   max_prompt_length: 2048

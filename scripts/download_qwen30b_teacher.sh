@@ -16,6 +16,7 @@ Defaults:
   DOWNLOAD_QWEN30B=1
   REQUIRE_QWEN30B=1
   MODEL_BACKEND=huggingface
+  PYTHON_BIN=<auto-detected python or python3>
   HF_HOME=$MODEL_ROOT/.hf_home
   HF_XET_CHUNK_CACHE_SIZE_BYTES=0
   MIN_FREE_GB=0
@@ -52,6 +53,7 @@ CODE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 MODEL_ROOT="${MODEL_ROOT:-$(cd "${CODE_DIR}/.." && pwd)/models}"
 MODEL_BACKEND="${MODEL_BACKEND:-huggingface}"
+PYTHON_BIN="${PYTHON_BIN:-}"
 HF_HOME="${HF_HOME:-${MODEL_ROOT}/.hf_home}"
 HF_XET_HIGH_PERFORMANCE="${HF_XET_HIGH_PERFORMANCE:-1}"
 HF_XET_CHUNK_CACHE_SIZE_BYTES="${HF_XET_CHUNK_CACHE_SIZE_BYTES:-0}"
@@ -67,6 +69,21 @@ export HF_XET_CHUNK_CACHE_SIZE_BYTES
 export PIP_ROOT_USER_ACTION="${PIP_ROOT_USER_ACTION:-ignore}"
 
 mkdir -p "${MODEL_ROOT}"
+
+ensure_python_bin() {
+  if [[ -n "${PYTHON_BIN}" ]]; then
+    return
+  fi
+
+  if command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="python"
+  elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="python3"
+  else
+    echo "python or python3 is required." >&2
+    exit 1
+  fi
+}
 
 check_disk_space() {
   if [[ "${MIN_FREE_GB}" == "0" ]]; then
@@ -87,7 +104,8 @@ check_disk_space() {
 }
 
 ensure_huggingface_hub() {
-  python - <<'PY' >/dev/null 2>&1 || python -m pip install --upgrade "huggingface_hub>=0.30.0,<1.0" hf_xet
+  ensure_python_bin
+  "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1 || "${PYTHON_BIN}" -m pip install --upgrade "huggingface_hub>=0.30.0,<1.0" hf_xet
 import importlib.metadata as metadata
 
 version = metadata.version("huggingface_hub")
@@ -102,7 +120,7 @@ download_huggingface() {
   local repo_id="$1"
   local target_dir="$2"
   ensure_huggingface_hub
-  python - "${repo_id}" "${target_dir}" <<'PY'
+  "${PYTHON_BIN}" - "${repo_id}" "${target_dir}" <<'PY'
 import sys
 from pathlib import Path
 
@@ -118,7 +136,8 @@ PY
 download_modelscope() {
   local repo_id="$1"
   local target_dir="$2"
-  python - "${repo_id}" "${target_dir}" <<'PY'
+  ensure_python_bin
+  "${PYTHON_BIN}" - "${repo_id}" "${target_dir}" <<'PY'
 import sys
 from pathlib import Path
 

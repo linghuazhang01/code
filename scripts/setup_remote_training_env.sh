@@ -16,11 +16,18 @@ Environment knobs:
   INSTALL_VERL_DEPS=1
   INSTALL_M2RL_IF_DEPS=1
   CHECK_MOPD_DATA=1
+  PREPARE_M2RL_EVAL_DATA=0
+  CHECK_M2RL_EVAL_DATA=0
+  REQUIRE_M2RL_EVAL_DATA=0
+  IF_VAL_SOURCE=/path/to/raw_if_val.parquet
+  SCIENCE_VAL_SOURCE=/path/to/raw_science_val.parquet
+  NEMOTRON_RL_SOURCE=/path/to/instruction_following.jsonl
   PULL_GIT_LFS_DATA=1
   DATA_DIR=$CODE_DIR/data/G-OPD-Training-Data
   FORCE_REINSTALL=0
   INSTALL_SGLANG=0
   USE_MEGATRON=0
+  REQUIREMENT_FILE=$CODE_DIR/requirement.txt
 
 The script does not clone G-OPD. Training imports verl from third_party/verl.
 USAGE
@@ -42,10 +49,22 @@ HF_HOME="${HF_HOME:-${CODE_DIR}/hf_home}"
 INSTALL_VERL_DEPS="${INSTALL_VERL_DEPS:-1}"
 INSTALL_M2RL_IF_DEPS="${INSTALL_M2RL_IF_DEPS:-1}"
 CHECK_MOPD_DATA="${CHECK_MOPD_DATA:-1}"
+PREPARE_M2RL_EVAL_DATA="${PREPARE_M2RL_EVAL_DATA:-0}"
+CHECK_M2RL_EVAL_DATA="${CHECK_M2RL_EVAL_DATA:-0}"
+REQUIRE_M2RL_EVAL_DATA="${REQUIRE_M2RL_EVAL_DATA:-0}"
+IF_VAL_SOURCE="${IF_VAL_SOURCE:-}"
+SCIENCE_VAL_SOURCE="${SCIENCE_VAL_SOURCE:-}"
+NEMOTRON_RL_SOURCE="${NEMOTRON_RL_SOURCE:-}"
+M2RL_EVAL_MAX_SAMPLES="${M2RL_EVAL_MAX_SAMPLES:-}"
+IF_VAL_MAX_SAMPLES="${IF_VAL_MAX_SAMPLES:-${M2RL_EVAL_MAX_SAMPLES}}"
+SCIENCE_VAL_MAX_SAMPLES="${SCIENCE_VAL_MAX_SAMPLES:-${M2RL_EVAL_MAX_SAMPLES}}"
+IF_EVAL_OUTPUT="${IF_EVAL_OUTPUT:-${CODE_DIR}/eval/domains/ifbench/data/IFBench_test.parquet}"
+SCIENCE_EVAL_OUTPUT="${SCIENCE_EVAL_OUTPUT:-${CODE_DIR}/eval/domains/science/data/gpqa.parquet}"
 PULL_GIT_LFS_DATA="${PULL_GIT_LFS_DATA:-1}"
 FORCE_REINSTALL="${FORCE_REINSTALL:-0}"
 INSTALL_SGLANG="${INSTALL_SGLANG:-0}"
 USE_MEGATRON="${USE_MEGATRON:-0}"
+REQUIREMENT_FILE="${REQUIREMENT_FILE:-${CODE_DIR}/requirement.txt}"
 INSTALL_STAMP="${LOG_DIR}/.mopd_vendored_verl_install_done"
 MOPD_REQUIRED_DATA_FILES=(
   "DeepMath-103K/train_filtered_level6.parquet"
@@ -102,18 +121,11 @@ if [[ "${INSTALL_VERL_DEPS}" == "1" ]]; then
   fi
 fi
 
-python -m pip install --upgrade \
-  "transformers[hf_xet]==4.51.3" \
-  "tokenizers>=0.21.1,<0.22" \
-  "huggingface_hub>=0.30.0,<1.0" \
-  pyyaml \
-  pandas \
-  pyarrow \
-  "tensorboard==2.20.0" \
-  "protobuf<5.0,>=3.20.3" \
-  "opentelemetry-exporter-prometheus==0.47b0" \
-  hf_xet \
-  modelscope
+[[ -f "${REQUIREMENT_FILE}" ]] || {
+  echo "Missing requirement file: ${REQUIREMENT_FILE}" >&2
+  exit 2
+}
+python -m pip install --upgrade -r "${REQUIREMENT_FILE}"
 
 if [[ "${INSTALL_M2RL_IF_DEPS}" == "1" ]]; then
   if ! python - <<'PY' >/dev/null 2>&1; then
@@ -121,17 +133,6 @@ import importlib
 
 for package in ("langdetect", "nltk", "immutabledict", "emoji", "syllapy", "unicodedata2"):
     importlib.import_module(package)
-PY
-    python -m pip install --no-cache-dir \
-      langdetect \
-      nltk \
-      immutabledict \
-      emoji \
-      syllapy \
-      unicodedata2
-  fi
-
-  if ! python - <<'PY' >/dev/null 2>&1; then
 from verifiable_instructions import instructions_registry
 
 required = {
@@ -143,9 +144,29 @@ missing = required.difference(instructions_registry.INSTRUCTION_DICT)
 if missing:
     raise RuntimeError(f"verifiable_instructions missing required ids: {sorted(missing)}")
 PY
-    python -m pip install --no-cache-dir \
-      git+https://github.com/abukharin-nv/verifiable-instructions.git
+    echo "IF/science dependencies are missing after installing ${REQUIREMENT_FILE}." >&2
+    exit 2
   fi
+fi
+
+if [[ "${PREPARE_M2RL_EVAL_DATA}" == "1" || -n "${IF_VAL_SOURCE}" || -n "${SCIENCE_VAL_SOURCE}" || -n "${NEMOTRON_RL_SOURCE}" ]]; then
+  PYTHON_BIN=python \
+  IF_VAL_SOURCE="${IF_VAL_SOURCE}" \
+  SCIENCE_VAL_SOURCE="${SCIENCE_VAL_SOURCE}" \
+  NEMOTRON_RL_SOURCE="${NEMOTRON_RL_SOURCE}" \
+  M2RL_EVAL_MAX_SAMPLES="${M2RL_EVAL_MAX_SAMPLES}" \
+  IF_VAL_MAX_SAMPLES="${IF_VAL_MAX_SAMPLES}" \
+  SCIENCE_VAL_MAX_SAMPLES="${SCIENCE_VAL_MAX_SAMPLES}" \
+  IF_EVAL_OUTPUT="${IF_EVAL_OUTPUT}" \
+  SCIENCE_EVAL_OUTPUT="${SCIENCE_EVAL_OUTPUT}" \
+  REQUIRE_M2RL_EVAL_DATA="${REQUIRE_M2RL_EVAL_DATA}" \
+    bash "${CODE_DIR}/scripts/prepare_m2rl_eval_data.sh"
+elif [[ "${CHECK_M2RL_EVAL_DATA}" == "1" ]]; then
+  PYTHON_BIN=python \
+  IF_EVAL_OUTPUT="${IF_EVAL_OUTPUT}" \
+  SCIENCE_EVAL_OUTPUT="${SCIENCE_EVAL_OUTPUT}" \
+  REQUIRE_M2RL_EVAL_DATA=1 \
+    bash "${CODE_DIR}/scripts/prepare_m2rl_eval_data.sh"
 fi
 
 python -m mopd_verl.smoke_data "${SMOKE_DATA_DIR}"
@@ -205,15 +226,22 @@ export HF_DATASETS_CACHE="\${HF_DATASETS_CACHE:-${HF_HOME}/datasets}"
 export WANDB_MODE="\${WANDB_MODE:-disabled}"
 export INSTALL_M2RL_IF_DEPS="${INSTALL_M2RL_IF_DEPS}"
 export CHECK_MOPD_DATA="${CHECK_MOPD_DATA}"
+export CHECK_M2RL_EVAL_DATA="${CHECK_M2RL_EVAL_DATA}"
+export IF_EVAL_OUTPUT="${IF_EVAL_OUTPUT}"
+export SCIENCE_EVAL_OUTPUT="${SCIENCE_EVAL_OUTPUT}"
 export PULL_GIT_LFS_DATA="${PULL_GIT_LFS_DATA}"
 export PYTHONPATH="${CODE_DIR}:${VERL_RUNTIME_DIR}:\${PYTHONPATH:-}"
 EOF
 
-python - <<'PY'
+INSTALL_VERL_DEPS="${INSTALL_VERL_DEPS}" python - <<'PY'
 import importlib
+import os
 import sys
 
-packages = ["yaml", "torch", "transformers", "vllm", "ray", "click", "pandas", "pyarrow", "verl"]
+packages = ["yaml", "transformers", "click", "pandas", "pyarrow"]
+if os.environ["INSTALL_VERL_DEPS"] == "1":
+    packages.extend(["torch", "vllm", "ray", "verl"])
+
 print("python", sys.version.split()[0], sys.executable)
 for package in packages:
     module = importlib.import_module(package)

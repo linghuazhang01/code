@@ -50,6 +50,9 @@ data:
     - eval/domains/code/data/HumanEvalPlus/test.parquet
     - eval/domains/code/data/MBPPPlus/test.parquet
     # - eval/domains/code/data/LiveCodeBench/test.parquet
+    # Enable after running scripts/prepare_m2rl_eval_data.sh:
+    # - eval/domains/ifbench/data/IFBench_test.parquet
+    # - eval/domains/science/data/gpqa.parquet
   train_batch_size: 512
   max_prompt_length: 2048
   max_response_length: 10240
@@ -122,7 +125,7 @@ rollout:
   top_p: 1.0
   val_n: 1
   val_do_sample: false
-  val_temperature: 1.0
+  val_temperature: 0.0
   val_top_p: 1.0
   seed: 42
 

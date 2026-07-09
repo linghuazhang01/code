@@ -17,8 +17,12 @@ from grpo.data.m2rl import m2rl_frame_to_verl
 DEFAULT_INPUT = Path("data/raw/nemotron-rl-instruction_following/instruction_following.jsonl")
 DEFAULT_SPLIT_DIR = Path("data/nemotron_rl/splits")
 DEFAULT_MANIFEST = Path("data/nemotron_rl/manifest.json")
-DEFAULT_IF_OUTPUT = Path("data/G-OPD-Training-Data/IF/train.parquet")
-DEFAULT_SCIENCE_OUTPUT = Path("data/G-OPD-Training-Data/Science/train.parquet")
+DEFAULT_IF_TRAIN_OUTPUT = Path("data/G-OPD-Training-Data/IF/train.parquet")
+DEFAULT_SCIENCE_TRAIN_OUTPUT = Path("data/G-OPD-Training-Data/Science/train.parquet")
+DEFAULT_IF_EVAL_OUTPUT = Path("eval/domains/ifbench/data/IFBench_test.parquet")
+DEFAULT_SCIENCE_EVAL_OUTPUT = Path("eval/domains/science/data/gpqa.parquet")
+DEFAULT_IF_OUTPUT = DEFAULT_IF_TRAIN_OUTPUT
+DEFAULT_SCIENCE_OUTPUT = DEFAULT_SCIENCE_TRAIN_OUTPUT
 
 IF_CATEGORY = "nano_v3_sft_profiled_instruction_following"
 SCIENCE_CATEGORY = "nano_v3_sft_profiled_stem_mcqa"
@@ -212,8 +216,10 @@ def prepare_nemotron_rl_data(
     if_output_path: Path,
     science_output_path: Path,
     *,
+    split: str,
     write_raw_splits: bool,
     if_max_samples: int | None,
+    science_max_samples: int | None,
 ) -> SplitOutputs:
     domains = ("math", "coding", "science", "if", "agent", "structured_outputs", "unknown")
     handles = _open_split_handles(split_dir, domains) if write_raw_splits else {}
@@ -241,7 +247,8 @@ def prepare_nemotron_rl_data(
                     if if_max_samples is None or len(if_rows) < if_max_samples:
                         if_rows.append(normalized)
                 elif domain == "science":
-                    science_rows.append(normalized)
+                    if science_max_samples is None or len(science_rows) < science_max_samples:
+                        science_rows.append(normalized)
             except ValueError as exc:
                 invalid_rows.append({"row_index": row_index, "domain": domain, "reason": str(exc)})
     finally:
@@ -255,14 +262,14 @@ def prepare_nemotron_rl_data(
     if if_rows:
         if_output_path.parent.mkdir(parents=True, exist_ok=True)
         if_frame = pd.DataFrame(if_rows)
-        if_verl = m2rl_frame_to_verl(if_frame, rm_type="ifbench", split="train", domain="if")
+        if_verl = m2rl_frame_to_verl(if_frame, rm_type="ifbench", split=split, domain="if")
         if_verl.to_parquet(if_output_path, index=False)
         verl_paths["if"] = if_output_path
 
     if science_rows:
         science_output_path.parent.mkdir(parents=True, exist_ok=True)
         science_frame = pd.DataFrame(science_rows)
-        science_verl = m2rl_frame_to_verl(science_frame, rm_type="gpqa", split="train", domain="science")
+        science_verl = m2rl_frame_to_verl(science_frame, rm_type="gpqa", split=split, domain="science")
         science_verl.to_parquet(science_output_path, index=False)
         verl_paths["science"] = science_output_path
 
@@ -273,6 +280,7 @@ def prepare_nemotron_rl_data(
     }
     manifest = {
         "input_path": str(input_path),
+        "split": split,
         "domain_counts": dict(sorted(domain_counts.items())),
         "category_counts": dict(sorted(category_counts.items())),
         "raw_split_paths": {key: str(path) for key, path in sorted(raw_split_paths.items())},
@@ -283,15 +291,39 @@ def prepare_nemotron_rl_data(
     return SplitOutputs(manifest_path=manifest_path, raw_split_paths=raw_split_paths, verl_paths=verl_paths)
 
 
+def _is_eval_split(split: str) -> bool:
+    return split.lower() in {"validation", "val", "eval", "test"}
+
+
+def _default_manifest_for_split(split: str) -> Path:
+    if _is_eval_split(split):
+        return Path(f"data/nemotron_rl/{split.lower()}_manifest.json")
+    return DEFAULT_MANIFEST
+
+
+def _default_if_output_for_split(split: str) -> Path:
+    if _is_eval_split(split):
+        return DEFAULT_IF_EVAL_OUTPUT
+    return DEFAULT_IF_TRAIN_OUTPUT
+
+
+def _default_science_output_for_split(split: str) -> Path:
+    if _is_eval_split(split):
+        return DEFAULT_SCIENCE_EVAL_OUTPUT
+    return DEFAULT_SCIENCE_TRAIN_OUTPUT
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT, help="Downloaded Nemotron RL JSONL.")
     parser.add_argument("--split-dir", type=Path, default=DEFAULT_SPLIT_DIR, help="Directory for raw domain JSONL splits.")
-    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help="Output manifest path.")
-    parser.add_argument("--if-output", type=Path, default=DEFAULT_IF_OUTPUT, help="Output verl IF train parquet.")
-    parser.add_argument("--science-output", type=Path, default=DEFAULT_SCIENCE_OUTPUT, help="Output verl science train parquet.")
+    parser.add_argument("--manifest", type=Path, default=None, help="Output manifest path. Defaults by split.")
+    parser.add_argument("--split", default="train", help="Split label to write into extra_info, e.g. train or validation.")
+    parser.add_argument("--if-output", type=Path, default=None, help="Output verl IF parquet. Defaults by split.")
+    parser.add_argument("--science-output", type=Path, default=None, help="Output verl science parquet. Defaults by split.")
     parser.add_argument("--write-raw-splits", action="store_true", help="Write raw JSONL split files for all domains.")
     parser.add_argument("--if-max-samples", type=int, default=None, help="Optional cap for IF rows.")
+    parser.add_argument("--science-max-samples", type=int, default=None, help="Optional cap for science rows.")
     return parser.parse_args(argv)
 
 
@@ -300,11 +332,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     outputs = prepare_nemotron_rl_data(
         args.input,
         args.split_dir,
-        args.manifest,
-        args.if_output,
-        args.science_output,
+        args.manifest or _default_manifest_for_split(args.split),
+        args.if_output or _default_if_output_for_split(args.split),
+        args.science_output or _default_science_output_for_split(args.split),
+        split=args.split,
         write_raw_splits=args.write_raw_splits,
         if_max_samples=args.if_max_samples,
+        science_max_samples=args.science_max_samples,
     )
     print(
         json.dumps(

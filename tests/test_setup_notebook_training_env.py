@@ -24,16 +24,23 @@ class NotebookEnvironmentSetupTests(unittest.TestCase):
             / "setup_remote_training_env.sh"
         )
         source = script_path.read_text(encoding="utf-8")
+        requirement_source = (
+            Path(__file__).resolve().parents[1] / "requirement.txt"
+        ).read_text(encoding="utf-8")
 
         self.assertIn('INSTALL_M2RL_IF_DEPS="${INSTALL_M2RL_IF_DEPS:-1}"', source)
-        self.assertIn("git+https://github.com/abukharin-nv/verifiable-instructions.git", source)
+        self.assertIn('python -m pip install --upgrade -r "${REQUIREMENT_FILE}"', source)
+        self.assertIn(
+            "git+https://github.com/abukharin-nv/verifiable-instructions.git",
+            requirement_source,
+        )
         self.assertIn("length_constraints:nth_paragraph_first_word", source)
         self.assertIn("last_word:last_word_answer", source)
-        self.assertIn("emoji", source)
-        self.assertIn("syllapy", source)
-        self.assertIn('"tensorboard==2.20.0"', source)
-        self.assertIn('"protobuf<5.0,>=3.20.3"', source)
-        self.assertIn('"opentelemetry-exporter-prometheus==0.47b0"', source)
+        self.assertIn("emoji", requirement_source)
+        self.assertIn("syllapy", requirement_source)
+        self.assertIn("tensorboard==2.20.0", requirement_source)
+        self.assertIn("protobuf<5.0,>=3.20.3", requirement_source)
+        self.assertIn("opentelemetry-exporter-prometheus==0.47b0", requirement_source)
 
     def test_vendored_installer_prefers_packaged_flash_attention_wheel(self) -> None:
         script_path = (

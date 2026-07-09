@@ -14,6 +14,80 @@ This checkout is the current OPD/MOPD training entrypoint. The training runtime 
 - Checkpoints: `OPD-code/checkpoints/`
 - Audit output: `OPD-code/audit/`
 
+## Fresh Setup
+
+Install the training environment on a fresh remote checkout:
+
+```bash
+cd /root/autodl-tmp/opd_mopd/OPD-code
+bash scripts/setup_training_env.sh
+source logs/activate_training_env.sh
+```
+
+Download and validate the assets for the Qwen30B four-domain profiles:
+
+```bash
+MODEL_ROOT=/root/autodl-tmp/opd_mopd/models \
+MIN_FREE_GB=300 \
+  scripts/download_training_assets.sh
+```
+
+The asset script prepares the four training domains
+(`math`, `code`, `if`, `science`), the Qwen3-4B student, and the shared
+Qwen3-30B-A3B teacher declared by `model.domain_teacher_paths`. IF/science
+validation parquet files are optional unless the config enables them. To
+prepare and require those files in the same pass:
+
+```bash
+IF_VAL_SOURCE=/path/to/raw_if_val.parquet \
+SCIENCE_VAL_SOURCE=/path/to/raw_science_val.parquet \
+REQUIRE_M2RL_EVAL_DATA=1 \
+  scripts/download_training_assets.sh
+```
+
+For a one-command bootstrap that runs the asset script inside the new conda
+environment, set `DOWNLOAD_ASSETS=1` on `scripts/setup_training_env.sh`;
+asset-specific variables are forwarded.
+
+To start from `git clone` and launch the Qwen30B four-domain run in one script,
+copy or run `scripts/bootstrap_qwen30b_mopd_training.sh` on the remote host:
+
+```bash
+GPU_PROFILE=8gpu \
+REPO_URL=http://github.com/linghuazhang01/code.git \
+CHECKOUT_DIR=/root/autodl-tmp/opd_mopd/OPD-code \
+MODEL_ROOT=/root/autodl-tmp/opd_mopd/models \
+  bash scripts/bootstrap_qwen30b_mopd_training.sh
+```
+
+Set `GPU_PROFILE=4gpu` for the 4-GPU split-teacher layout. The bootstrap uses
+the `6gpu_fsdp` config as the base and applies profile-specific overrides at
+launch time.
+
+If remote `git clone` or Git LFS is unreliable, use the zip deployment path.
+The local machine packages code plus the four-domain training data; the remote
+host only unpacks the bundle, installs the environment, downloads models, and
+launches training.
+
+```bash
+# Local: create the code + data bundle.
+scripts/package_qwen30b_mopd_bundle.sh
+
+# Local: upload the bundle and run the remote bootstrap.
+export SSHPASS='...'  # optional; SSH keys also work
+REMOTE=root@connect.westb.seetacloud.com \
+REMOTE_PORT=16968 \
+REMOTE_WORKDIR=/root/autodl-tmp/opd_mopd \
+GPU_PROFILE=8gpu \
+MODEL_BACKEND=modelscope \
+  scripts/deploy_qwen30b_mopd_zip_remote.sh
+```
+
+In zip mode, `DOWNLOAD_DATA=0` is the default because data comes from the
+uploaded bundle. `DOWNLOAD_MODELS=1` keeps Qwen3-4B and Qwen3-30B-A3B model
+download on the remote host. For a dry run, add
+`DRY_RUN=1 DOWNLOAD_MODELS=0 REQUIRE_MODELS=0`.
+
 ## Configs
 
 Three formal MOPD variants are kept with 2/4/6/8 GPU profiles, plus metrics smoke profiles:
@@ -103,13 +177,38 @@ Current reward routing:
 | `if` | `m2rl_ifbench` from Nemotron/Open-Instruct instruction-following data | `grpo.rewards.m2rl.compute_ifbench_reward`: uses `verifiable_instructions` first, then AllenAI IFBench strict checking as fallback. |
 | `science` | `m2rl_gpqa` or science/GPQA rows | `grpo.rewards.m2rl.compute_gpqa_reward`: extracts the final option letter and compares it to the metadata/label answer. |
 
+Evaluation is aligned with the sibling GRPO workspace through the same validation parquet convention:
+
+| Domain | Validation parquet | Reward during validation |
+| --- | --- | --- |
+| `if` | `eval/domains/ifbench/data/IFBench_test.parquet` | `grpo/rewards/mixed.py` -> IFBench/verifiable-instructions strict reward. |
+| `science` | `eval/domains/science/data/gpqa.parquet` | `grpo/rewards/mixed.py` -> GPQA option-letter reward. |
+
+Prepare those files from GRPO/M2RL-style raw sources with:
+
+```bash
+IF_VAL_SOURCE=/path/to/raw_if_val.parquet \
+SCIENCE_VAL_SOURCE=/path/to/raw_science_val.parquet \
+  scripts/prepare_m2rl_eval_data.sh
+```
+
+or from the Nemotron RL JSONL blend:
+
+```bash
+NEMOTRON_RL_SOURCE=/path/to/instruction_following.jsonl \
+M2RL_EVAL_MAX_SAMPLES=512 \
+  scripts/prepare_m2rl_eval_data.sh
+```
+
+The Qwen30B configs keep IF/science validation paths commented out until the files exist, because verl constructs validation datasets at startup even when periodic validation is disabled. After preparing the files, uncomment the two `eval/domains/...` entries and set `trainer.test_freq` / `trainer.val_before_train` as needed.
+
 The main 6-GPU Qwen30B profile keeps `domain_sampling_weights` equal across `math`, `code`, `if`, and `science`, with `data.train_batch_size=504`, `actor.ppo_mini_batch_size=504`, and `actor.fsdp_size=2`. The compatibility `6gpu_fsdp` profile uses `data.train_batch_size=512`, `actor.ppo_mini_batch_size=512`, and `actor.fsdp_size=1`; with equal weights this gives 128 samples per domain per step.
 
 The 4-domain 2-GPU smoke profile was verified remotely on 2026-07-07 for 2 steps with `data.train_batch_size=16`; each domain sampled 4 examples per step, domain-gradient closure reached rel_l2=0 and cosine=1.0 on the audited step, and token-gap vocab vectors were emitted for all four domains. The remote data disk was 96% full in the previous run, so long runs should clean space before launch.
 
 Configs default to `logger: '["console","tensorboard","wandb"]'`, `runtime.wandb_entity: lz101-rice-university`, and `runtime.env_file: .env.local`. Put `WANDB_API_KEY` in `.env.local` on the machine that launches training. This file is gitignored and must not be committed. Override `runtime.wandb_mode=disabled` for local dry runs without W&B.
 
-On a fresh remote checkout, run `scripts/setup_remote_training_env.sh` after `git pull`. It installs the M2RL/IF verifier dependencies and, by default, runs `git lfs pull` plus a Parquet sanity check for the four repo-local training files under `data/G-OPD-Training-Data/`. Set `PULL_GIT_LFS_DATA=0` or `CHECK_MOPD_DATA=0` only when the data disk is managed separately.
+On a fresh remote checkout, run `scripts/setup_remote_training_env.sh` after `git pull`. It installs the M2RL/IF verifier dependencies and, by default, runs `git lfs pull` plus a Parquet sanity check for the four repo-local training files under `data/G-OPD-Training-Data/`. Set `PULL_GIT_LFS_DATA=0` or `CHECK_MOPD_DATA=0` only when the data disk is managed separately. Set `PREPARE_M2RL_EVAL_DATA=1` with the source variables above to prepare IF/science validation data on the remote, or `CHECK_M2RL_EVAL_DATA=1` to require the prepared eval parquet files.
 
 ## Launch
 
@@ -162,11 +261,12 @@ Local dry-run:
 scripts/run_mopd.sh configs/mopd_formal_audit_all_2gpu.yaml --dry-run
 ```
 
-Download the 30B teacher used by the Qwen30B distillation smoke config:
+Download the complete Qwen30B four-domain training assets:
 
 ```bash
 MODEL_ROOT=/root/autodl-tmp/opd_mopd/models \
-  scripts/download_qwen30b_teacher.sh
+MIN_FREE_GB=300 \
+  scripts/download_training_assets.sh
 ```
 
 Four-domain Qwen30B configs declare all teacher domains:

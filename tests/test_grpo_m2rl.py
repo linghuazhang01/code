@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -195,6 +196,26 @@ class M2RLDataTests(unittest.TestCase):
         normalized = m2rl_frame_to_verl(frame, rm_type="ifbench", split="train", domain="if")
         self.assertEqual(normalized.iloc[0]["extra_info"]["rm_type"], "ifbench")
         self.assertEqual(normalized.iloc[0]["extra_info"]["opd_teacher"], "if")
+
+    def test_validate_accepts_verl_parquet_roundtrip_schema(self) -> None:
+        frame = pd.DataFrame(
+            [
+                {
+                    "prompt": "Which option is correct?",
+                    "label": "B",
+                    "metadata": {"choices": ["wrong", "right"], "correct_letter": "B"},
+                }
+            ]
+        )
+        normalized = m2rl_frame_to_verl(frame, rm_type="gpqa", split="validation", domain="science")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "science.parquet"
+            normalized.to_parquet(path, index=False)
+            roundtrip = pd.read_parquet(path)
+
+        report = validate_m2rl_frame(roundtrip, rm_type="gpqa")
+        self.assertTrue(report.is_valid)
 
     def test_nemotron_instruction_following_row_normalizes_for_ifbench(self) -> None:
         row = {

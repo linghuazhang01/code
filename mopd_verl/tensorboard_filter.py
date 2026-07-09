@@ -286,6 +286,7 @@ CORE_CONFLICT = {
 }
 CORE_AUDIT = {
     "error",
+    "full_gradient_configured_domain_count",
     "full_gradient_autograd_unavailable",
     "full_gradient_domain_direct_recompute_available",
     "full_gradient_domain_direct_recompute_error",
@@ -293,6 +294,11 @@ CORE_AUDIT = {
     "full_gradient_execution_timing_pre_update",
     "full_gradient_domain_sequential_available",
     "full_gradient_domain_sequential_unsupported",
+    "full_gradient_domain_target_count",
+    "full_gradient_domain_target_missing_count",
+    "full_gradient_domain_target_source",
+    "full_gradient_domain_target_source_sequence_masked_replay",
+    "full_gradient_domain_target_trusted",
     "full_gradient_replicated_all_reduce",
     "full_gradient_replica_count",
     "full_gradient_true_backward_fallback",
@@ -389,7 +395,15 @@ def keep_core_metric(key: str) -> bool:
 
 def _keep_global(category: str, metric: str, parts: list[str]) -> bool:
     if category == "audit":
-        return metric in CORE_AUDIT
+        return (
+            metric in CORE_AUDIT
+            or metric.startswith("full_gradient_configured_domain_")
+            or metric.startswith("full_gradient_domain_target_present_")
+            or (
+                metric.startswith("sequence_target_domain_")
+                and metric.endswith(("_available", "_error", "_nonfinite_norm", "_token_mask_sum"))
+            )
+        )
     if category == "cost":
         return metric in CORE_GLOBAL_COST
     if category == "full_grad_cost":

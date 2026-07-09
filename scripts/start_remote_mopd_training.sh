@@ -343,7 +343,9 @@ if [[ "${FOREGROUND}" != "1" ]]; then
   fi
 fi
 
-if command -v nvidia-smi >/dev/null 2>&1; then
+if [[ "${DRY_RUN_FLAG}" == "1" ]]; then
+  echo "Dry run: skipping GPU idle check."
+elif command -v nvidia-smi >/dev/null 2>&1; then
   for gpu_id in "${GPU_ID_LIST[@]}"; do
     GPU_USED="$(nvidia-smi --id="${gpu_id}" --query-gpu=memory.used --format=csv,noheader,nounits | head -n 1 | tr -dc '0-9')"
     if [[ -z "${GPU_USED}" ]]; then

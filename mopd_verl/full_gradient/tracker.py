@@ -1287,6 +1287,18 @@ class SequentialBackwardDomainGradientTracker:
         if not domain_targets:
             domain_target_source = 0.0
             domain_target_trusted = False
+        missing_target_domains = [domain for domain in self.domains if domain not in domain_targets]
+        metrics["global/audit/full_gradient_configured_domain_count"] = float(len(self.domains))
+        metrics["global/audit/full_gradient_domain_target_count"] = float(len(domain_targets))
+        metrics["global/audit/full_gradient_domain_target_missing_count"] = float(
+            len(missing_target_domains)
+        )
+        for domain in self.domains:
+            safe_domain = _safe_name(domain)
+            metrics[f"global/audit/full_gradient_configured_domain_{safe_domain}"] = 1.0
+            metrics[f"global/audit/full_gradient_domain_target_present_{safe_domain}"] = float(
+                domain in domain_targets
+            )
         metrics["global/audit/full_gradient_domain_target_source"] = domain_target_source
         metrics["global/audit/full_gradient_domain_target_source_sequence_masked_replay"] = float(
             domain_target_source == 4.0
@@ -1819,6 +1831,9 @@ class SequentialBackwardDomainGradientTracker:
                     ): value
                     for key, value in domain_metrics.items()
                 }
+            )
+            metrics[f"global/audit/sequence_target_domain_{safe_domain}_nonfinite_norm"] = float(
+                not math.isfinite(norm_sq)
             )
             if norm_sq > 0.0 and chunks:
                 domain_targets[domain] = (chunks, norm_sq)

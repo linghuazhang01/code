@@ -13,7 +13,7 @@ class DownloadMopdDataTests(unittest.TestCase):
 
         self.assertIn(
             "GOPD_REPO_URL="
-            '"${GOPD_REPO_URL:-https://github.com/RUCBM/G-OPD.git}"',
+            '"${GOPD_REPO_URL:-http://github.com/RUCBM/G-OPD.git}"',
             source,
         )
         self.assertIn(
@@ -47,7 +47,7 @@ class DownloadMopdDataTests(unittest.TestCase):
         source = script_path.read_text(encoding="utf-8")
 
         self.assertIn("ensure_parquet_support", source)
-        self.assertIn('python -m pip install "pandas>=2.0" "pyarrow>=19.0.0"', source)
+        self.assertIn('"${PYTHON_BIN}" -m pip install "pandas>=2.0" "pyarrow>=19.0.0"', source)
         self.assertIn("import pyarrow", source)
 
 

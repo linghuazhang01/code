@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,8 +25,45 @@ class M2RLSchemaReport:
     def is_valid(self) -> bool:
         return not self.invalid_rows
 
-    def to_dict(self) -> dict[str, Any]:
-        return {"count": self.count, "rm_type": self.rm_type, "invalid_rows": self.invalid_rows}
+    def to_dict(self, *, max_invalid_rows: int = 20) -> dict[str, Any]:
+        return {
+            "count": self.count,
+            "rm_type": self.rm_type,
+            "invalid_count": len(self.invalid_rows),
+            "invalid_rows": self.invalid_rows[:max_invalid_rows],
+        }
+
+
+def _to_builtin_sequence(value: Any) -> Any:
+    if isinstance(value, (str, bytes, bytearray, Mapping)):
+        return value
+    if hasattr(value, "tolist"):
+        return value.tolist()
+    return value
+
+
+def _is_missing(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, (str, bytes, bytearray, Mapping, Sequence)):
+        return False
+    if hasattr(value, "tolist"):
+        return False
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _has_value(value: Any) -> bool:
+    if _is_missing(value):
+        return False
+    value = _to_builtin_sequence(value)
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, str)):
+        return len(value) > 0
+    return True
 
 
 def _load_json(value: str) -> Any:
@@ -36,7 +73,7 @@ def _load_json(value: str) -> Any:
 def _normalize_mapping(value: Any) -> dict[str, Any]:
     if isinstance(value, Mapping):
         return dict(value)
-    if value is None or (isinstance(value, float) and pd.isna(value)):
+    if _is_missing(value):
         return {}
     if isinstance(value, str):
         stripped = value.strip()
@@ -51,9 +88,11 @@ def _normalize_mapping(value: Any) -> dict[str, Any]:
 def _normalize_messages(value: Any) -> list[dict[str, str]]:
     if isinstance(value, str):
         return [{"role": "user", "content": value}]
+    value = _to_builtin_sequence(value)
     if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, str)):
         messages: list[dict[str, str]] = []
         for item in value:
+            item = _to_builtin_sequence(item)
             if not isinstance(item, Mapping):
                 continue
             role = str(item.get("role") or "user")
@@ -63,12 +102,14 @@ def _normalize_messages(value: Any) -> list[dict[str, str]]:
             messages.append({"role": role, "content": str(content)})
         if messages:
             return messages
+    if isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray, str, Mapping)):
+        return _normalize_messages(list(value))
     raise ValueError("row is missing a usable prompt/messages value")
 
 
 def _prompt_value(row: Mapping[str, Any]) -> Any:
     for key in ("prompt", "messages", "question", "input"):
-        if key in row and row[key] is not None:
+        if key in row and not _is_missing(row[key]):
             return row[key]
     raise ValueError("row is missing prompt/messages/question/input")
 
@@ -83,7 +124,7 @@ def _prompt_text(messages: Sequence[Mapping[str, str]]) -> str:
 def _first_present(row: Mapping[str, Any], keys: Sequence[str]) -> Any:
     for key in keys:
         value = row.get(key)
-        if value is not None and not (isinstance(value, float) and pd.isna(value)):
+        if not _is_missing(value):
             return value
     return None
 
@@ -106,7 +147,7 @@ def _metadata_from_row(row: Mapping[str, Any], rm_type: str, messages: Sequence[
         "correct_answer",
         "answer_text",
     ):
-        if key in row and row[key] is not None:
+        if key in row and not _is_missing(row[key]):
             metadata.setdefault(key, row[key])
 
     metadata.setdefault("prompt_text", _prompt_text(messages))
@@ -196,17 +237,19 @@ def _row_invalid_reasons(row: Mapping[str, Any], rm_type: str) -> list[str]:
         instruction_ids = metadata.get("instruction_id_list")
         if isinstance(instruction_ids, str):
             instruction_ids = [instruction_ids]
-        if not instruction_ids:
+        if not _has_value(instruction_ids):
             reasons.append("missing IFBench instruction_id_list metadata")
-        if not metadata.get("prompt_text"):
+        if not _has_value(metadata.get("prompt_text")):
             reasons.append("missing IFBench prompt_text metadata")
     elif rm_type == "gpqa":
         choices = metadata.get("choices")
         correct_letter = metadata.get("correct_letter")
-        has_label = label is not None
-        if not correct_letter and not has_label:
+        has_label = _has_value(label)
+        has_correct_letter = _has_value(correct_letter)
+        has_choices = _has_value(choices)
+        if not has_correct_letter and not has_label:
             reasons.append("missing GPQA correct_letter or label/answer")
-        if choices is None and not correct_letter and not (isinstance(label, str) and len(label.strip()) == 1):
+        if not has_choices and not has_correct_letter and not (isinstance(label, str) and len(label.strip()) == 1):
             reasons.append("missing GPQA choices for non-letter label")
     else:
         reasons.append(f"unsupported rm_type {rm_type!r}")

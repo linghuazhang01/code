@@ -93,6 +93,15 @@ data/G-OPD-Training-Data/IF/train.parquet
 data/G-OPD-Training-Data/Science/train.parquet
 ```
 
+Validation uses the same paths as the sibling GRPO workspace:
+
+```text
+eval/domains/ifbench/data/IFBench_test.parquet
+eval/domains/science/data/gpqa.parquet
+```
+
+During verl validation, generations are scored by the configured reward function. The mixed Qwen30B configs use `grpo/rewards/mixed.py`, which routes `m2rl_ifbench` rows to IFBench/verifiable-instructions strict scoring and `m2rl_gpqa` rows to GPQA option-letter scoring. Validation metrics are grouped by `data_source`, so these appear as `val-core/m2rl_ifbench/...` and `val-core/m2rl_gpqa/...`.
+
 The current local copies were prepared from the sibling GRPO workspace's Nemotron/Open-Instruct source data. Keep launch configs pointed at the repo-local `data/G-OPD-Training-Data/...` paths; the sibling workspace is only a regeneration source.
 
 Regenerate the repo-local data with:
@@ -114,6 +123,24 @@ python scripts/prepare_nemotron_rl_data.py \
   --if-max-samples 32
 ```
 
+Prepare IF/science validation files from M2RL/GRPO-style raw sources:
+
+```bash
+IF_VAL_SOURCE=/path/to/raw_if_val.parquet \
+SCIENCE_VAL_SOURCE=/path/to/raw_science_val.parquet \
+  scripts/prepare_m2rl_eval_data.sh
+```
+
+Or prepare a capped validation subset from the Nemotron RL JSONL blend:
+
+```bash
+NEMOTRON_RL_SOURCE=/path/to/instruction_following.jsonl \
+M2RL_EVAL_MAX_SAMPLES=512 \
+  scripts/prepare_m2rl_eval_data.sh
+```
+
+The script validates both outputs with `grpo.data.m2rl validate`. Set `REQUIRE_M2RL_EVAL_DATA=1` when a missing eval parquet should fail setup instead of printing a readiness warning.
+
 For local training, convert any M2RL-style parquet/json/jsonl with:
 
 ```bash
@@ -132,6 +159,24 @@ python -m grpo.data.m2rl prepare \
   --output data/G-OPD-Training-Data/Science/train.parquet \
   --rm-type gpqa \
   --split train \
+  --domain science
+```
+
+The same converter can prepare validation files directly:
+
+```bash
+python -m grpo.data.m2rl prepare \
+  --input /path/to/if_val.parquet \
+  --output eval/domains/ifbench/data/IFBench_test.parquet \
+  --rm-type ifbench \
+  --split validation \
+  --domain if
+
+python -m grpo.data.m2rl prepare \
+  --input /path/to/science_val.parquet \
+  --output eval/domains/science/data/gpqa.parquet \
+  --rm-type gpqa \
+  --split validation \
   --domain science
 ```
 
@@ -209,6 +254,6 @@ Reward side:
 
 Data side:
 
-- M2RL's expected per-domain parquet files are not directly present in this workspace.
-- The public Nemotron blend is available, but requires filtering into IF and Science splits.
-- Training should not start until `grpo.data.m2rl validate` passes for both train and validation parquet files.
+- Training parquets are tracked under `data/G-OPD-Training-Data/`.
+- IF/science validation parquets are generated under `eval/domains/...` and are intentionally not committed.
+- Training with IF/science validation enabled should not start until `grpo.data.m2rl validate` passes for both train and validation parquet files.

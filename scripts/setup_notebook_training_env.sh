@@ -177,13 +177,14 @@ else
   echo "Using existing conda environment: ${ENV_NAME}"
 fi
 
-CONDA_ROOT="${CONDA_ROOT}" \
-ENV_NAME="${ENV_NAME}" \
-INSTALL_VERL_DEPS="${INSTALL_VERL_DEPS}" \
-FORCE_REINSTALL="${FORCE_REINSTALL}" \
-INSTALL_SGLANG="${INSTALL_SGLANG}" \
-USE_MEGATRON="${USE_MEGATRON}" \
-bash "${SCRIPT_DIR}/setup_remote_training_env.sh"
+conda run --no-capture-output -n "${ENV_NAME}" \
+  env \
+  INSTALL_VERL_DEPS="${INSTALL_VERL_DEPS}" \
+  FORCE_REINSTALL="${FORCE_REINSTALL}" \
+  INSTALL_SGLANG="${INSTALL_SGLANG}" \
+  USE_MEGATRON="${USE_MEGATRON}" \
+  REQUIREMENT_FILE="${REQUIREMENT_FILE:-${CODE_DIR}/requirement.txt}" \
+  bash "${SCRIPT_DIR}/setup_remote_training_env.sh"
 
 if [[ "${REGISTER_KERNEL}" == "1" ]]; then
   conda run --no-capture-output -n "${ENV_NAME}" \

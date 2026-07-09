@@ -29,6 +29,9 @@ Model directories prepared by default:
   $MODEL_ROOT/Qwen3-4B-Non-Thinking-RL-Math-Step500
   $MODEL_ROOT/Qwen3-4B-Non-Thinking-RL-Code-Step300
 
+Python:
+  PYTHON_BIN=<auto-detected python or python3>
+
 Default 4B base hub id:
   BASE_4B_MODEL_ID=Qwen/Qwen3-4B
 
@@ -63,6 +66,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 MODEL_ROOT="${MODEL_ROOT:-$(cd "${CODE_DIR}/.." && pwd)/models}"
+PYTHON_BIN="${PYTHON_BIN:-}"
 MODEL_BACKEND="${MODEL_BACKEND:-huggingface}"
 HF_XET_HIGH_PERFORMANCE="${HF_XET_HIGH_PERFORMANCE:-1}"
 
@@ -94,8 +98,24 @@ export PIP_ROOT_USER_ACTION="${PIP_ROOT_USER_ACTION:-ignore}"
 
 mkdir -p "${MODEL_ROOT}"
 
+ensure_python_bin() {
+  if [[ -n "${PYTHON_BIN}" ]]; then
+    return
+  fi
+
+  if command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="python"
+  elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="python3"
+  else
+    echo "python or python3 is required." >&2
+    exit 1
+  fi
+}
+
 ensure_huggingface_hub() {
-  python - <<'PY' >/dev/null 2>&1 || python -m pip install --upgrade "huggingface_hub>=0.30.0,<1.0" hf_xet
+  ensure_python_bin
+  "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1 || "${PYTHON_BIN}" -m pip install --upgrade "huggingface_hub>=0.30.0,<1.0" hf_xet
 import importlib.metadata as metadata
 
 version = metadata.version("huggingface_hub")
@@ -110,7 +130,7 @@ download_huggingface() {
   local repo_id="$1"
   local target_dir="$2"
   ensure_huggingface_hub
-  python - "${repo_id}" "${target_dir}" <<'PY'
+  "${PYTHON_BIN}" - "${repo_id}" "${target_dir}" <<'PY'
 import sys
 from pathlib import Path
 
@@ -126,7 +146,8 @@ PY
 download_modelscope() {
   local repo_id="$1"
   local target_dir="$2"
-  python - "${repo_id}" "${target_dir}" <<'PY'
+  ensure_python_bin
+  "${PYTHON_BIN}" - "${repo_id}" "${target_dir}" <<'PY'
 import sys
 from pathlib import Path
 

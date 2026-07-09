@@ -12,6 +12,75 @@
 - checkpoint 目录：`OPD-code/checkpoints/`
 - audit 目录：`OPD-code/audit/`
 
+## 新机器安装
+
+远端新 checkout 先安装训练环境：
+
+```bash
+cd /root/autodl-tmp/opd_mopd/OPD-code
+bash scripts/setup_training_env.sh
+source logs/activate_training_env.sh
+```
+
+然后下载并校验 Qwen30B 四领域训练所需数据与模型：
+
+```bash
+MODEL_ROOT=/root/autodl-tmp/opd_mopd/models \
+MIN_FREE_GB=300 \
+  scripts/download_training_assets.sh
+```
+
+该脚本会准备 `math`、`code`、`if`、`science` 四个训练 parquet，
+下载 Qwen3-4B student，并下载四个 domain 共用的
+Qwen3-30B-A3B teacher。IF/science validation parquet 只有在 config
+启用对应验证路径时才必须存在；如需一并准备并强制校验：
+
+```bash
+IF_VAL_SOURCE=/path/to/raw_if_val.parquet \
+SCIENCE_VAL_SOURCE=/path/to/raw_science_val.parquet \
+REQUIRE_M2RL_EVAL_DATA=1 \
+  scripts/download_training_assets.sh
+```
+
+也可以用一条命令完成环境和 assets，并让下载脚本在新 conda env 中运行：
+对 `scripts/setup_training_env.sh` 设置 `DOWNLOAD_ASSETS=1`，模型/数据相关
+环境变量会继续透传。
+
+如果要从 `git clone` 开始并直接启动 Qwen30B 四领域训练，可以在远端运行
+`scripts/bootstrap_qwen30b_mopd_training.sh`：
+
+```bash
+GPU_PROFILE=8gpu \
+REPO_URL=http://github.com/linghuazhang01/code.git \
+CHECKOUT_DIR=/root/autodl-tmp/opd_mopd/OPD-code \
+MODEL_ROOT=/root/autodl-tmp/opd_mopd/models \
+  bash scripts/bootstrap_qwen30b_mopd_training.sh
+```
+
+设置 `GPU_PROFILE=4gpu` 可切到 4 卡 split-teacher layout。bootstrap 会以
+`6gpu_fsdp` config 为基底，在 launch 时应用对应的 4GPU/8GPU override。
+
+如果服务器 `git clone` / Git LFS 不稳定，推荐使用 zip 部署：本地把代码和
+四领域训练数据打成 zip，服务器只负责解压、安装环境、下载模型并启动训练。
+
+```bash
+# 本地执行：生成 code + data bundle
+scripts/package_qwen30b_mopd_bundle.sh
+
+# 本地执行：上传 bundle 并在远端运行 bootstrap
+export SSHPASS='...'  # 可选；也可以用 SSH key
+REMOTE=root@connect.westb.seetacloud.com \
+REMOTE_PORT=16968 \
+REMOTE_WORKDIR=/root/autodl-tmp/opd_mopd \
+GPU_PROFILE=8gpu \
+MODEL_BACKEND=modelscope \
+  scripts/deploy_qwen30b_mopd_zip_remote.sh
+```
+
+zip 模式下 `DOWNLOAD_DATA=0` 默认生效，训练数据来自上传的 bundle；
+`DOWNLOAD_MODELS=1` 默认在远端下载 Qwen3-4B student 与 Qwen3-30B-A3B
+teacher。测试命令可加 `DRY_RUN=1 DOWNLOAD_MODELS=0 REQUIRE_MODELS=0`。
+
 ## 配置文件
 
 现在保留三个正式 MOPD 版本，每个版本提供 2/4/6/8 卡配置；另外保留指标 smoke profile：
@@ -75,7 +144,43 @@ all-audit 和 loss-only smoke profile 作为指标测试 profile 保留并纳入
 
 gradient consistency smoke profile 使用 `../models/Qwen3-0.6B` 降低闭合验证成本。它们启用 sequence-masked domain target、sample/token backward recompute，并通过 token `top_p=1.0` closure 检查把 full-token gradient 与 domain gradient 对齐比较。
 
+### Qwen30B 四领域与 Eval
+
+Qwen30B split-teacher profiles 使用 Qwen3-4B student 和 Qwen3-30B-A3B math/code/IF/science teachers。训练数据路径为：
+
+- math: `data/G-OPD-Training-Data/DeepMath-103K/train_filtered_level6.parquet`
+- code: `data/G-OPD-Training-Data/Eurus/code_train.parquet`
+- IF: `data/G-OPD-Training-Data/IF/train.parquet`
+- science: `data/G-OPD-Training-Data/Science/train.parquet`
+
+IF/science 的 validation 路径与同级 GRPO workspace 对齐：
+
+| Domain | Validation parquet | Validation reward |
+| --- | --- | --- |
+| `if` | `eval/domains/ifbench/data/IFBench_test.parquet` | `grpo/rewards/mixed.py` -> IFBench/verifiable-instructions strict reward |
+| `science` | `eval/domains/science/data/gpqa.parquet` | `grpo/rewards/mixed.py` -> GPQA option-letter reward |
+
+准备这些 eval 文件：
+
+```bash
+IF_VAL_SOURCE=/path/to/raw_if_val.parquet \
+SCIENCE_VAL_SOURCE=/path/to/raw_science_val.parquet \
+  scripts/prepare_m2rl_eval_data.sh
+```
+
+或者从 Nemotron RL JSONL 中过滤：
+
+```bash
+NEMOTRON_RL_SOURCE=/path/to/instruction_following.jsonl \
+M2RL_EVAL_MAX_SAMPLES=512 \
+  scripts/prepare_m2rl_eval_data.sh
+```
+
+Qwen30B configs 中 IF/science validation 路径默认保持注释，因为 verl 即使在 `trainer.test_freq=-1` 时也会启动时构造 validation dataset；如果文件不存在，训练会直接失败。生成 parquet 后，再取消注释 `eval/domains/...` 两行，并按需要打开 `trainer.test_freq` / `trainer.val_before_train`。
+
 配置默认使用 `logger: '["console","tensorboard","wandb"]'`、`runtime.wandb_entity: lz101-rice-university` 和 `runtime.env_file: .env.local`。在启动训练的机器上把 `WANDB_API_KEY` 放入 `.env.local`；该文件已 gitignore，不能提交。无需 W&B 的本地 dry-run 可以覆盖 `runtime.wandb_mode=disabled`。
+
+远端新 checkout 在 `git pull` 后运行 `scripts/setup_remote_training_env.sh`。默认会安装 M2RL/IF verifier 依赖、拉取四领域训练 parquet 并做 sanity check。若要在远端准备 eval parquet，设置 `PREPARE_M2RL_EVAL_DATA=1` 并传入上面的 source 变量；若只想强制检查 eval 文件，设置 `CHECK_M2RL_EVAL_DATA=1`。
 
 ## 启动
 
@@ -128,11 +233,12 @@ GPU_IDS=0,1,2,3,4,5,6,7 bash scripts/start_remote_mopd_training.sh \
 scripts/run_mopd.sh configs/mopd_formal_audit_all_2gpu.yaml --dry-run
 ```
 
-下载 Qwen30B distillation smoke config 使用的 30B teacher：
+下载完整 Qwen30B 四领域训练 assets：
 
 ```bash
 MODEL_ROOT=/root/autodl-tmp/opd_mopd/models \
-  scripts/download_qwen30b_teacher.sh
+MIN_FREE_GB=300 \
+  scripts/download_training_assets.sh
 ```
 
 指标 smoke：
