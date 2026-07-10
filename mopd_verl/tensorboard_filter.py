@@ -282,7 +282,10 @@ CORE_FULL_GRAD_TRAINING_PARITY_GROUPS = {
 }
 CORE_CONFLICT = {
     "conflict_magnitude_i_k",
+    "cosine_invalid",
+    "dot_available",
     "full_grad_cosine_train_i_k",
+    "shape_mismatch",
 }
 CORE_AUDIT = {
     "error",
@@ -299,6 +302,13 @@ CORE_AUDIT = {
     "full_gradient_domain_target_source",
     "full_gradient_domain_target_source_sequence_masked_replay",
     "full_gradient_domain_target_trusted",
+    "full_gradient_domain_sequence_masked_incomplete",
+    "full_gradient_domain_sequence_masked_missing_count",
+    "full_gradient_domain_sequence_masked_target_count",
+    "full_gradient_pairwise_dot_attempt_count",
+    "full_gradient_pairwise_dot_available_count",
+    "full_gradient_pairwise_dot_missing_count",
+    "full_gradient_pairwise_dot_shape_mismatch_count",
     "full_gradient_replicated_all_reduce",
     "full_gradient_replica_count",
     "full_gradient_true_backward_fallback",

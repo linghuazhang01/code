@@ -1252,38 +1252,48 @@ class SequentialBackwardDomainGradientTracker:
             if keep_parity_chunks and sequence_total_chunks:
                 self._last_sequence_total_chunks = sequence_total_chunks
             if self.sequence_masked_target_use_as_primary and sequence_targets:
-                sequence_closure_rel_l2 = sequence_metrics.get(
-                    "global/full_grad_sequence/domain_sum_vs_total/rel_l2"
+                sequence_missing_domains = [domain for domain in self.domains if domain not in sequence_targets]
+                metrics["global/audit/full_gradient_domain_sequence_masked_target_count"] = float(
+                    len(sequence_targets)
                 )
-                sequence_target_trusted = False
-                if sequence_closure_rel_l2 is not None:
-                    try:
-                        sequence_target_trusted = (
-                            float(sequence_closure_rel_l2)
-                            <= self.sequence_masked_target_closure_rel_l2_threshold
-                        )
-                    except (TypeError, ValueError):
-                        sequence_target_trusted = False
-                sequence_domain_metrics, sequence_domain_targets = self._finish_direct_domain_gradient_metrics(
-                    sequence_targets
+                metrics["global/audit/full_gradient_domain_sequence_masked_missing_count"] = float(
+                    len(sequence_missing_domains)
                 )
-                metrics.update(sequence_domain_metrics)
-                domain_targets = sequence_domain_targets
-                domain_target_source = 4.0
-                domain_target_trusted = sequence_target_trusted
-                metrics["global/audit/full_gradient_domain_sequence_masked_primary_used"] = 1.0
-                metrics["global/audit/full_gradient_domain_sequence_masked_replay_used"] = 1.0
-                metrics[
-                    "global/audit/full_gradient_domain_sequence_masked_replay_trusted"
-                ] = float(sequence_target_trusted)
-                metrics[
-                    "global/audit/full_gradient_domain_sequence_masked_replay_closure_rel_l2_threshold"
-                ] = self.sequence_masked_target_closure_rel_l2_threshold
-                if not sequence_target_trusted:
+                if sequence_missing_domains:
+                    metrics["global/audit/full_gradient_domain_sequence_masked_incomplete"] = 1.0
+                else:
+                    sequence_closure_rel_l2 = sequence_metrics.get(
+                        "global/full_grad_sequence/domain_sum_vs_total/rel_l2"
+                    )
+                    sequence_target_trusted = False
+                    if sequence_closure_rel_l2 is not None:
+                        try:
+                            sequence_target_trusted = (
+                                float(sequence_closure_rel_l2)
+                                <= self.sequence_masked_target_closure_rel_l2_threshold
+                            )
+                        except (TypeError, ValueError):
+                            sequence_target_trusted = False
+                    sequence_domain_metrics, sequence_domain_targets = self._finish_direct_domain_gradient_metrics(
+                        sequence_targets
+                    )
+                    metrics.update(sequence_domain_metrics)
+                    domain_targets = sequence_domain_targets
+                    domain_target_source = 4.0
+                    domain_target_trusted = sequence_target_trusted
+                    metrics["global/audit/full_gradient_domain_sequence_masked_primary_used"] = 1.0
+                    metrics["global/audit/full_gradient_domain_sequence_masked_replay_used"] = 1.0
                     metrics[
-                        "global/audit/full_gradient_domain_sequence_masked_replay_rejected_by_closure"
-                    ] = 1.0
-                metrics["global/audit/full_gradient_domain_direct_recompute_used"] = 0.0
+                        "global/audit/full_gradient_domain_sequence_masked_replay_trusted"
+                    ] = float(sequence_target_trusted)
+                    metrics[
+                        "global/audit/full_gradient_domain_sequence_masked_replay_closure_rel_l2_threshold"
+                    ] = self.sequence_masked_target_closure_rel_l2_threshold
+                    if not sequence_target_trusted:
+                        metrics[
+                            "global/audit/full_gradient_domain_sequence_masked_replay_rejected_by_closure"
+                        ] = 1.0
+                    metrics["global/audit/full_gradient_domain_direct_recompute_used"] = 0.0
         if not domain_targets:
             domain_target_source = 0.0
             domain_target_trusted = False
@@ -1854,16 +1864,30 @@ class SequentialBackwardDomainGradientTracker:
         left_chunks: tuple[torch.Tensor, ...],
         right_chunks: tuple[torch.Tensor, ...],
     ) -> float | None:
+        dot, _reason = self._target_chunks_dot_status(left_chunks, right_chunks)
+        return dot
+
+    def _target_chunks_dot_status(
+        self,
+        left_chunks: tuple[torch.Tensor, ...],
+        right_chunks: tuple[torch.Tensor, ...],
+    ) -> tuple[float | None, str]:
         if len(left_chunks) != len(right_chunks):
-            return None
+            return None, "chunk_count_mismatch"
         local_dot = 0.0
         for left, right in zip(left_chunks, right_chunks):
             if left.numel() != right.numel():
-                return None
+                return None, "chunk_size_mismatch"
             dot = _chunked_vector_dot(left.float(), right.float())
-            if dot is not None:
-                local_dot += dot
-        return _reduce_gradient_scalars(self.actor, [local_dot])[0]
+            if dot is None:
+                return None, "chunk_dot_unavailable"
+            if not math.isfinite(dot):
+                return None, "chunk_dot_nonfinite"
+            local_dot += dot
+        reduced_dot = _reduce_gradient_scalars(self.actor, [local_dot])[0]
+        if not math.isfinite(reduced_dot):
+            return None, "reduced_dot_nonfinite"
+        return reduced_dot, ""
 
     def _summed_domain_target_reference_chunks(
         self,
@@ -1992,22 +2016,41 @@ class SequentialBackwardDomainGradientTracker:
 
         pairwise_dots: dict[tuple[str, str], float] = {}
         required_pair_count = len(domain_items) * (len(domain_items) - 1) // 2
+        pairwise_dot_available_count = 0
+        pairwise_dot_shape_mismatch_count = 0
         for left_idx, (left_domain, left_chunks, _left_norm_sq, left_norm) in enumerate(domain_items):
             left_safe = _safe_name(left_domain)
             for right_domain, right_chunks, _right_norm_sq, right_norm in domain_items[left_idx + 1 :]:
                 right_safe = _safe_name(right_domain)
-                dot = self._target_chunks_dot(left_chunks, right_chunks)
-                if dot is None:
-                    continue
-                pairwise_dots[(left_domain, right_domain)] = dot
                 pair = f"{left_safe}_vs_{right_safe}"
+                dot, dot_status = self._target_chunks_dot_status(left_chunks, right_chunks)
+                dot_available = dot is not None
+                metrics[f"global/full_grad_conflict/{pair}/dot_available"] = float(dot_available)
+                if dot_status in {"chunk_count_mismatch", "chunk_size_mismatch"}:
+                    pairwise_dot_shape_mismatch_count += 1
+                    metrics[f"global/full_grad_conflict/{pair}/shape_mismatch"] = 1.0
+                if not dot_available:
+                    continue
+                pairwise_dot_available_count += 1
+                pairwise_dots[(left_domain, right_domain)] = dot
                 domain_cosine = _safe_cosine(dot, left_norm, right_norm)
-                if domain_cosine is not None:
+                if domain_cosine is not None and math.isfinite(domain_cosine):
                     metrics[f"global/full_grad_conflict/{pair}/full_grad_cosine_train_i_k"] = domain_cosine
                     metrics[f"global/full_grad_conflict/{pair}/conflict_magnitude_i_k"] = max(
                         0.0,
                         -domain_cosine,
                     )
+                else:
+                    metrics[f"global/full_grad_conflict/{pair}/cosine_invalid"] = 1.0
+
+        metrics["global/audit/full_gradient_pairwise_dot_attempt_count"] = float(required_pair_count)
+        metrics["global/audit/full_gradient_pairwise_dot_available_count"] = float(pairwise_dot_available_count)
+        metrics["global/audit/full_gradient_pairwise_dot_missing_count"] = float(
+            required_pair_count - pairwise_dot_available_count
+        )
+        metrics["global/audit/full_gradient_pairwise_dot_shape_mismatch_count"] = float(
+            pairwise_dot_shape_mismatch_count
+        )
 
         if len(pairwise_dots) != required_pair_count:
             return metrics, domain_targets
