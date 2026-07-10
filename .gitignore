@@ -63,8 +63,10 @@ hf_home/
 G-OPD/
 G-OPD-Training-Data/
 /eval/domains.zip
-!data/G-OPD-Training-Data/
-!data/G-OPD-Training-Data/**/*.parquet
+data/G-OPD-Training-Data/**/*.parquet
+data/G-OPD-Training-Data/.cache/
+deliverables/*.zip
+deliverables/*.zip.part-*
 data/agentic_benchmarks/sources/
 data/agentic_benchmarks/cache/
 data/agentic_benchmarks/processed/

@@ -18,6 +18,7 @@ from mopd_verl.domain_sampling import (
     normalize_domain_sampling_weights,
 )
 from mopd_verl.general_reasoner_data import general_reasoner_to_verl_parquet
+from mopd_verl.eval_launch import build_eval_command, build_eval_overrides
 from mopd_verl.launch import build_command, format_command
 from mopd_verl.prepare_data import (
     evalplus_jsonl_to_verl_parquet,
@@ -398,6 +399,57 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("eval/domains/code/data/HumanEvalPlus/test.parquet", rendered)
         self.assertIn("eval/domains/code/data/MBPPPlus/test.parquet", rendered)
         self.assertNotIn("eval/domains/code/data/LiveCodeBench/test.parquet", rendered)
+
+    def test_eval_only_command_runs_initial_validation_without_training_loop(self) -> None:
+        config_path = (
+            Path(__file__).resolve().parents[1]
+            / "configs"
+            / "mopd_qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_6gpu_math_code_fsdp.yaml"
+        )
+        config = load_config(config_path)
+        command = build_eval_command(
+            config,
+            model_path="checkpoints/MOPD/example_run/global_step_200/actor",
+            run_id="math_code_eval",
+        )
+        rendered = format_command(command)
+
+        self.assertIn("trainer.experiment_name=math_code_eval", rendered)
+        self.assertIn("trainer.val_before_train=True", rendered)
+        self.assertIn("trainer.val_only=True", rendered)
+        self.assertIn("trainer.test_freq=-1", rendered)
+        self.assertIn("trainer.save_freq=-1", rendered)
+        self.assertIn("trainer.total_epochs=1", rendered)
+        self.assertIn("trainer.total_training_steps=1", rendered)
+        self.assertIn("actor_rollout_ref.model.path=checkpoints/MOPD/example_run/global_step_200/actor", rendered)
+        self.assertIn("eval/domains/math/data/AIME24/test.parquet", rendered)
+        self.assertIn("eval/domains/code/data/MBPPPlus/test.parquet", rendered)
+
+    def test_eval_only_paper_eval_overrides_are_complete_when_enabled(self) -> None:
+        config_path = (
+            Path(__file__).resolve().parents[1]
+            / "configs"
+            / "mopd_qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_6gpu_math_code_fsdp.yaml"
+        )
+        config = load_config(config_path)
+        overrides = build_eval_overrides(
+            config,
+            run_id="math_code_eval",
+            paper_eval=True,
+            paper_datasets=["aime24", "humaneval_plus"],
+            paper_timeout_seconds=3600,
+            paper_fail_on_error=True,
+        )
+
+        self.assertIn("+paper_eval.enabled=true", overrides)
+        self.assertIn("+paper_eval.script_path=eval/scripts/run_paper_eval_suite.sh", overrides)
+        self.assertIn("+paper_eval.model_path=null", overrides)
+        self.assertIn("+paper_eval.output_dir=eval_outputs/verl_validation/math_code_eval/paper_suite", overrides)
+        self.assertIn("+paper_eval.datasets=['aime24', 'humaneval_plus']", overrides)
+        self.assertIn("+paper_eval.run_on_initial_validation=true", overrides)
+        self.assertIn("+paper_eval.evaluate_current_checkpoint=false", overrides)
+        self.assertIn("+paper_eval.fail_on_error=true", overrides)
+        self.assertIn("+paper_eval.timeout_seconds=3600", overrides)
 
     def test_teacher_model_device_command_is_config_controlled(self) -> None:
         config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_formal_audit_all_2gpu.yaml"
