@@ -6,9 +6,9 @@ usage() {
 Usage:
   REMOTE=root@host REMOTE_PORT=22 scripts/deploy_qwen30b_mopd_zip_remote.sh [-- <extra hydra overrides...>]
 
-Build a local code+data zip bundle, upload it to the remote data disk, and run
-the remote bootstrap. Models and the conda environment are installed on the
-remote host.
+Build a local data-only zip bundle, upload it to the remote data disk, and run
+the remote bootstrap. Code is cloned from Git; models and the conda environment
+are installed on the remote host.
 
 Required:
   REMOTE=root@connect.westb.seetacloud.com
@@ -16,7 +16,7 @@ Required:
 Common knobs:
   REMOTE_PORT=22
   REMOTE_WORKDIR=/root/autodl-tmp/opd_mopd
-  BUNDLE_ZIP=<auto-created by package_qwen30b_mopd_bundle.sh>
+  BUNDLE_ZIP=<auto-created data zip by package_qwen30b_mopd_bundle.sh>
   GPU_PROFILE=8gpu                 # 8gpu or 4gpu
   DRY_RUN=0
   INSTALL_ENV=1
@@ -104,9 +104,9 @@ if [[ -n "${SSHPASS:-}" ]] && command -v sshpass >/dev/null 2>&1; then
 fi
 
 if [[ -z "${BUNDLE_ZIP}" ]]; then
-  log_step "STEP 1/5 local package: code + four-domain data zip"
+  log_step "STEP 1/5 local package: four-domain data zip"
   "${SCRIPT_DIR}/package_qwen30b_mopd_bundle.sh"
-  BUNDLE_ZIP="$(ls -t "${CODE_DIR}"/temp/opd_qwen30b_mopd_bundle_*.zip | head -n 1)"
+  BUNDLE_ZIP="$(ls -t "${CODE_DIR}"/temp/opd_qwen30b_mopd_data_*.zip | head -n 1)"
   log_done "STEP 1/5 local package finished"
 else
   log_step "STEP 1/5 local package skipped: BUNDLE_ZIP=${BUNDLE_ZIP}"

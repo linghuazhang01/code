@@ -60,12 +60,18 @@ MODEL_ROOT=/root/autodl-tmp/opd_mopd/models \
 设置 `GPU_PROFILE=4gpu` 可切到 4 卡 split-teacher layout。bootstrap 会以
 `6gpu_fsdp` config 为基底，在 launch 时应用对应的 4GPU/8GPU override。
 
-如果服务器 `git clone` / Git LFS 不稳定，推荐使用 zip 部署：本地把代码和
-四领域训练数据打成 zip，服务器只负责解压、安装环境、下载模型并启动训练。
+如果 Git LFS 数据传输不稳定，推荐使用 zip 部署：本地只把四领域训练数据
+打成 zip，服务器从 Git 拉取代码，再把数据 bundle 覆盖到 checkout 中，
+然后安装环境、下载模型并启动训练。
 
 ```bash
-# 本地执行：生成 code + data bundle
+# 本地执行：生成 data-only bundle
 scripts/package_qwen30b_mopd_bundle.sh
+
+# 可选：生成适合手动传输的 split data-only parts
+SPLIT_BUNDLE=1 \
+BUNDLE_ZIP=deliverables/opd_qwen30b_mopd_data.zip \
+  scripts/package_qwen30b_mopd_bundle.sh
 
 # 本地执行：上传 bundle 并在远端运行 bootstrap
 export SSHPASS='...'  # 可选；也可以用 SSH key
@@ -78,8 +84,13 @@ MODEL_BACKEND=modelscope \
 ```
 
 zip 模式下 `DOWNLOAD_DATA=0` 默认生效，训练数据来自上传的 bundle；
-`DOWNLOAD_MODELS=1` 默认在远端下载 Qwen3-4B student 与 Qwen3-30B-A3B
-teacher。测试命令可加 `DRY_RUN=1 DOWNLOAD_MODELS=0 REQUIRE_MODELS=0`。
+代码仍来自配置的 Git 分支。`DOWNLOAD_MODELS=1` 默认在远端下载 Qwen3-4B
+student 与 Qwen3-30B-A3B teacher。测试命令可加
+`DRY_RUN=1 DOWNLOAD_MODELS=0 REQUIRE_MODELS=0`。
+
+生成的 zip 是 data-only：顶层只包含 repo-relative 数据路径，例如
+`data/G-OPD-Training-Data/...` 与 `eval/domains/<domain>/data/...`；不包含
+`OPD-code/`、源码、模型、checkpoint 或日志。
 
 ## 配置文件
 

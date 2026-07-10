@@ -129,10 +129,11 @@ class TrainingSetupAssetScriptTests(unittest.TestCase):
             'REPO_URL="${REPO_URL:-http://github.com/linghuazhang01/code.git}"',
             'REPO_REF="${REPO_REF:-bowen}"',
             'BUNDLE_ZIP="${BUNDLE_ZIP:-}"',
-            "unpack_bundle",
+            "unpack_data_bundle",
+            "validate_data_bundle_entries",
             "git clone",
             "STEP 1/4 git clone/update",
-            "STEP 1/4 code/data bundle unpack",
+            "STEP 1/4 data bundle overlay",
             "STEP 2/4 environment install",
             "STEP 3/4 asset preparation",
             "STEP 4/4 launch training",
@@ -164,7 +165,7 @@ class TrainingSetupAssetScriptTests(unittest.TestCase):
         ):
             self.assertIn(expected, source)
 
-    def test_package_script_bundles_code_and_required_data_without_models(self) -> None:
+    def test_package_script_bundles_only_required_data_without_code(self) -> None:
         script_path = (
             Path(__file__).resolve().parents[1]
             / "scripts"
@@ -173,7 +174,8 @@ class TrainingSetupAssetScriptTests(unittest.TestCase):
         source = script_path.read_text(encoding="utf-8")
 
         for expected in (
-            "BUNDLE_ROOT_NAME",
+            "data-only",
+            "opd_qwen30b_mopd_data_",
             "DeepMath-103K/train_filtered_level6.parquet",
             "Eurus/code_train.parquet",
             "IF/train.parquet",
@@ -181,12 +183,14 @@ class TrainingSetupAssetScriptTests(unittest.TestCase):
             "AIME24/test.parquet",
             "HumanEvalPlus/test.parquet",
             "is_lfs_pointer",
-            "--exclude '.git/'",
-            "--exclude 'models/'",
-            "--exclude 'checkpoints/'",
+            "zip_paths",
+            "data/G-OPD-Training-Data",
+            "eval/domains",
             "zip -qr",
         ):
             self.assertIn(expected, source)
+        self.assertNotIn("BUNDLE_ROOT_NAME", source)
+        self.assertNotIn("rsync -a", source)
 
     def test_zip_deploy_script_uploads_bundle_and_runs_remote_bootstrap(self) -> None:
         script_path = (
@@ -200,6 +204,7 @@ class TrainingSetupAssetScriptTests(unittest.TestCase):
             "package_qwen30b_mopd_bundle.sh",
             "scp",
             "BUNDLE_ZIP",
+            "opd_qwen30b_mopd_data_",
             "REMOTE_WORKDIR",
             "MODEL_BACKEND=modelscope",
             "DOWNLOAD_DATA=0",

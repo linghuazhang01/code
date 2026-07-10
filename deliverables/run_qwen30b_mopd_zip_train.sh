@@ -7,16 +7,17 @@ Usage:
   ./run_qwen30b_mopd_zip_train.sh [-- <extra hydra overrides...>]
 
 This script is self-contained when placed next to split parts:
-  opd_qwen30b_mopd_code_data.zip.part-00
-  opd_qwen30b_mopd_code_data.zip.part-01
+  opd_qwen30b_mopd_data.zip.part-00
+  opd_qwen30b_mopd_data.zip.part-01
 
-It uploads the code+data zip parts to the remote data disk, reconstructs the
-zip remotely, extracts the bootstrap script locally from the parts, uploads it,
-installs/validates the environment and models remotely, then starts real
-Qwen30B MOPD training.
+It uploads the data-only zip parts to the remote data disk, reconstructs the
+zip remotely, uploads the bootstrap script from the local checkout, clones code
+on the remote host, overlays the data bundle, installs/validates the environment
+and models remotely, then starts real Qwen30B MOPD training.
 
 Common environment knobs:
-  BUNDLE_ZIP=./opd_qwen30b_mopd_code_data.zip
+  BUNDLE_ZIP=./opd_qwen30b_mopd_data.zip
+  BOOTSTRAP_SOURCE=../scripts/bootstrap_qwen30b_mopd_training.sh
   REMOTE=root@connect.westb.seetacloud.com
   REMOTE_PORT=16968
   REMOTE_WORKDIR=/root/autodl-tmp/opd_mopd_zip_train
@@ -43,7 +44,8 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-BUNDLE_ZIP="${BUNDLE_ZIP:-${SCRIPT_DIR}/opd_qwen30b_mopd_code_data.zip}"
+BUNDLE_ZIP="${BUNDLE_ZIP:-${SCRIPT_DIR}/opd_qwen30b_mopd_data.zip}"
+BOOTSTRAP_SOURCE="${BOOTSTRAP_SOURCE:-${SCRIPT_DIR}/../scripts/bootstrap_qwen30b_mopd_training.sh}"
 REMOTE="${REMOTE:-root@connect.westb.seetacloud.com}"
 REMOTE_PORT="${REMOTE_PORT:-16968}"
 REMOTE_WORKDIR="${REMOTE_WORKDIR:-/root/autodl-tmp/opd_mopd_zip_train}"
@@ -100,10 +102,6 @@ EOF
   esac
 }
 
-command -v unzip >/dev/null 2>&1 || {
-  echo "unzip is required to extract the remote bootstrap from the zip." >&2
-  exit 2
-}
 command -v ssh >/dev/null 2>&1 || {
   echo "ssh is required." >&2
   exit 2
@@ -120,7 +118,6 @@ cleanup() {
 trap cleanup EXIT
 
 BUNDLE_PARTS=()
-LOCAL_BUNDLE_FOR_READ="${BUNDLE_ZIP}"
 if [[ ! -f "${BUNDLE_ZIP}" ]]; then
   shopt -s nullglob
   BUNDLE_PARTS=("${BUNDLE_ZIP}".part-*)
@@ -129,15 +126,14 @@ if [[ ! -f "${BUNDLE_ZIP}" ]]; then
     echo "Missing bundle zip or split parts: ${BUNDLE_ZIP}(.part-*)" >&2
     exit 2
   fi
-  LOCAL_BUNDLE_FOR_READ="${TMP_DIR}/$(basename "${BUNDLE_ZIP}")"
-  cat "${BUNDLE_PARTS[@]}" > "${LOCAL_BUNDLE_FOR_READ}"
 fi
 
 BOOTSTRAP_LOCAL="${TMP_DIR}/bootstrap_qwen30b_mopd_training.sh"
-unzip -p "${LOCAL_BUNDLE_FOR_READ}" OPD-code/scripts/bootstrap_qwen30b_mopd_training.sh > "${BOOTSTRAP_LOCAL}" || {
-  echo "Failed to extract OPD-code/scripts/bootstrap_qwen30b_mopd_training.sh from ${BUNDLE_ZIP}" >&2
+[[ -f "${BOOTSTRAP_SOURCE}" ]] || {
+  echo "BOOTSTRAP_SOURCE does not exist: ${BOOTSTRAP_SOURCE}" >&2
   exit 2
 }
+cp "${BOOTSTRAP_SOURCE}" "${BOOTSTRAP_LOCAL}"
 chmod +x "${BOOTSTRAP_LOCAL}"
 
 ssh_base=(ssh -p "${REMOTE_PORT}" -o StrictHostKeyChecking=no)
@@ -158,6 +154,7 @@ remote_part_dir_q="$(quote "${REMOTE_PART_DIR}")"
 cat <<EOF
 == Qwen30B MOPD zip train ==
 BUNDLE_ZIP=${BUNDLE_ZIP}
+BOOTSTRAP_SOURCE=${BOOTSTRAP_SOURCE}
 REMOTE=${REMOTE}
 REMOTE_PORT=${REMOTE_PORT}
 REMOTE_WORKDIR=${REMOTE_WORKDIR}
@@ -187,7 +184,7 @@ log_step "STEP 1/5 remote prepare directories"
 "${ssh_base[@]}" "${REMOTE}" "mkdir -p ${remote_workdir_q}/bundles"
 log_done "STEP 1/5 remote directories ready"
 
-log_step "STEP 2/5 upload code+data zip parts and bootstrap"
+log_step "STEP 2/5 upload data zip parts and bootstrap"
 if [[ "${#BUNDLE_PARTS[@]}" -gt 0 ]]; then
   "${ssh_base[@]}" "${REMOTE}" "rm -rf ${remote_part_dir_q}; mkdir -p ${remote_part_dir_q}"
   "${scp_base[@]}" "${BUNDLE_PARTS[@]}" "${REMOTE}:${REMOTE_PART_DIR}/"

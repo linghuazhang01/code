@@ -6,8 +6,9 @@ usage() {
 Usage:
   bash bootstrap_qwen30b_mopd_training.sh [-- <extra hydra overrides...>]
 
-Unpack or clone OPD-code, install the training environment, download Qwen30B
-models, verify four-domain assets, and launch the split-teacher MOPD run.
+Clone or update OPD-code, optionally overlay a data-only zip, install the
+training environment, download Qwen30B models, verify four-domain assets, and
+launch the split-teacher MOPD run.
 
 Defaults target the fsdp compatibility profile derived from:
   configs/mopd_qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_6gpu_fsdp.yaml
@@ -16,9 +17,9 @@ Environment knobs:
   REPO_URL=http://github.com/linghuazhang01/code.git
   REPO_REF=bowen
   CHECKOUT_DIR=/root/autodl-tmp/opd_mopd/OPD-code
-  BUNDLE_ZIP=                      # zip created by package_qwen30b_mopd_bundle.sh
+  BUNDLE_ZIP=                      # data-only zip created by package_qwen30b_mopd_bundle.sh
   BUNDLE_EXTRACT_DIR=/root/autodl-tmp/opd_mopd/bundle_extract
-  BUNDLE_REPLACE_EXISTING=1
+  BUNDLE_REPLACE_EXISTING=1       # overwrite existing data files when overlaying
   UPDATE_EXISTING=1
   GIT_TIMEOUT_SECONDS=300
   GIT_HTTP_VERSION=HTTP/1.1
@@ -139,8 +140,27 @@ run_git() {
   return "${status}"
 }
 
-unpack_bundle() {
-  log_step "STEP 1/4 code/data bundle unpack: ${BUNDLE_ZIP} -> ${CHECKOUT_DIR}"
+validate_data_bundle_entries() {
+  local entry
+  while IFS= read -r entry; do
+    [[ -n "${entry}" ]] || continue
+    case "${entry}" in
+      /*|../*|*/../*)
+        echo "Unsafe bundle entry: ${entry}" >&2
+        exit 2
+        ;;
+      data/G-OPD-Training-Data/*|eval/domains/*/data/*)
+        ;;
+      *)
+        echo "Non-data bundle entry is not allowed: ${entry}" >&2
+        exit 2
+        ;;
+    esac
+  done < <(unzip -Z1 "${BUNDLE_ZIP}")
+}
+
+unpack_data_bundle() {
+  log_step "STEP 1/4 data bundle overlay: ${BUNDLE_ZIP} -> ${CHECKOUT_DIR}"
   [[ -f "${BUNDLE_ZIP}" ]] || {
     echo "BUNDLE_ZIP does not exist: ${BUNDLE_ZIP}" >&2
     exit 2
@@ -150,35 +170,15 @@ unpack_bundle() {
     exit 2
   fi
 
-  local unpack_dir="${BUNDLE_EXTRACT_DIR}/unpack_$(date +%Y%m%d_%H%M%S)"
-  mkdir -p "${unpack_dir}" "$(dirname "${CHECKOUT_DIR}")"
-  echo "Bundle extract dir: ${unpack_dir}"
-  unzip -q "${BUNDLE_ZIP}" -d "${unpack_dir}"
-
-  shopt -s nullglob dotglob
-  local entries=("${unpack_dir}"/*)
-  shopt -u nullglob dotglob
-  local source_dir="${unpack_dir}"
-  if [[ "${#entries[@]}" == "1" && -d "${entries[0]}" ]]; then
-    source_dir="${entries[0]}"
+  validate_data_bundle_entries
+  mkdir -p "${BUNDLE_EXTRACT_DIR}" "${CHECKOUT_DIR}"
+  echo "Data bundle extract root: ${CHECKOUT_DIR}"
+  if [[ "${BUNDLE_REPLACE_EXISTING}" == "1" ]]; then
+    unzip -oq "${BUNDLE_ZIP}" -d "${CHECKOUT_DIR}"
+  else
+    unzip -nq "${BUNDLE_ZIP}" -d "${CHECKOUT_DIR}"
   fi
-
-  if [[ -e "${CHECKOUT_DIR}" ]]; then
-    if [[ "${BUNDLE_REPLACE_EXISTING}" == "1" ]]; then
-      local backup_dir="${CHECKOUT_DIR}.backup.$(date +%Y%m%d_%H%M%S)"
-      echo "Moving existing checkout aside: ${backup_dir}"
-      mv "${CHECKOUT_DIR}" "${backup_dir}"
-    else
-      echo "CHECKOUT_DIR already exists and BUNDLE_REPLACE_EXISTING=0: ${CHECKOUT_DIR}" >&2
-      exit 2
-    fi
-  fi
-
-  mv "${source_dir}" "${CHECKOUT_DIR}"
-  if compgen -G "${CHECKOUT_DIR}/scripts/*.sh" >/dev/null; then
-    chmod +x "${CHECKOUT_DIR}"/scripts/*.sh
-  fi
-  log_done "STEP 1/4 code/data bundle ready"
+  log_done "STEP 1/4 data bundle overlay ready"
 }
 
 clone_or_update_repo() {
@@ -235,10 +235,9 @@ clone_or_update_repo() {
 }
 
 prepare_code() {
+  clone_or_update_repo
   if [[ -n "${BUNDLE_ZIP}" ]]; then
-    unpack_bundle
-  else
-    clone_or_update_repo
+    unpack_data_bundle
   fi
 }
 

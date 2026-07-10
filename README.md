@@ -64,14 +64,19 @@ Set `GPU_PROFILE=4gpu` for the 4-GPU split-teacher layout. The bootstrap uses
 the `6gpu_fsdp` config as the base and applies profile-specific overrides at
 launch time.
 
-If remote `git clone` or Git LFS is unreliable, use the zip deployment path.
-The local machine packages code plus the four-domain training data; the remote
-host only unpacks the bundle, installs the environment, downloads models, and
-launches training.
+If Git LFS data transfer is unreliable, use the zip deployment path. The local
+machine packages only the four-domain data; the remote host clones the code
+from Git, overlays the data bundle, installs the environment, downloads models,
+and launches training.
 
 ```bash
-# Local: create the code + data bundle.
+# Local: create the data-only bundle.
 scripts/package_qwen30b_mopd_bundle.sh
+
+# Optional: create split data-only parts for manual transfer.
+SPLIT_BUNDLE=1 \
+BUNDLE_ZIP=deliverables/opd_qwen30b_mopd_data.zip \
+  scripts/package_qwen30b_mopd_bundle.sh
 
 # Local: upload the bundle and run the remote bootstrap.
 export SSHPASS='...'  # optional; SSH keys also work
@@ -84,9 +89,15 @@ MODEL_BACKEND=modelscope \
 ```
 
 In zip mode, `DOWNLOAD_DATA=0` is the default because data comes from the
-uploaded bundle. `DOWNLOAD_MODELS=1` keeps Qwen3-4B and Qwen3-30B-A3B model
-download on the remote host. For a dry run, add
+uploaded bundle. Code still comes from the configured Git branch.
+`DOWNLOAD_MODELS=1` keeps Qwen3-4B and Qwen3-30B-A3B model download on the
+remote host. For a dry run, add
 `DRY_RUN=1 DOWNLOAD_MODELS=0 REQUIRE_MODELS=0`.
+
+The generated zip is data-only. Its top-level entries are repo-relative data
+paths such as `data/G-OPD-Training-Data/...` and
+`eval/domains/<domain>/data/...`; it does not contain `OPD-code/`, source files,
+models, checkpoints, or logs.
 
 ## Configs
 
