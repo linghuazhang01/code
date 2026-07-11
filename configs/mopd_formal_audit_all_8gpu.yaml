@@ -1,7 +1,8 @@
 # Formal math+code MOPD/ExOPD profile for eight NVIDIA A800 80GB GPUs.
-# Canonical all-audit profile: teacher top-k distillation is enabled so
-# teacher-student cross entropy is available, and every MOPD audit family is on.
-# Use configs/mopd_formal_audit_off_8gpu.yaml for the same objective without audit.
+# Physical placement: six GPUs for the Qwen3-4B student actor/rollout pool and
+# two GPUs for the independent Qwen3-4B-RL teacher/reference pool.
+# Keep trainer.n_gpus_per_node equal to the six-GPU actor/rollout pool size;
+# launch with all eight physical GPUs via GPU_IDS=0,1,2,3,4,5,6,7.
 
 runtime:
   python_bin: python
@@ -22,14 +23,14 @@ data:
     code: 0.5
   domain_sampling_replacement: true
   val_files:
-    - eval/domains/math/data/AIME24/test.parquet
-    - eval/domains/math/data/AIME25/test.parquet
-    - eval/domains/math/data/HMMT25Feb/test.parquet
-    - eval/domains/math/data/HMMT25Nov/test.parquet
-    - eval/domains/code/data/HumanEvalPlus/test.parquet
-    - eval/domains/code/data/MBPPPlus/test.parquet
-    # - eval/domains/code/data/LiveCodeBench/test.parquet
-  train_batch_size: 1024
+    - data/eval_data/math/AIME24/test.parquet
+    - data/eval_data/math/AIME25/test.parquet
+    - data/eval_data/math/HMMT25Feb/test.parquet
+    - data/eval_data/math/HMMT25Nov/test.parquet
+    - data/eval_data/code/HumanEvalPlus/test.parquet
+    - data/eval_data/code/MBPPPlus/test.parquet
+    # - data/eval_data/code/LiveCodeBench/test.parquet
+  train_batch_size: 768
   max_prompt_length: 2048
   max_response_length: 16384
   val_batch_size: 1024
@@ -46,24 +47,26 @@ model:
   student_base_path: null
   math_teacher_path: ../models/Qwen3-4B-Non-Thinking-RL-Math-Step500
   code_teacher_path: ../models/Qwen3-4B-Non-Thinking-RL-Code-Step300
+  teacher_model_device: gpu
 
 actor:
   learning_rate: "1e-5"
   lr_warmup_steps_ratio: 0.0
-  only_reverse_kl_advantages: true
+  only_reverse_kl_advantages: false
   lambda_vals: 1.0
   multi_teacher_distill: true
-  distill_mode: chosen_token_reverse_kl
-  topk_distill_enabled: true
+  distill_loss_builder: policy_gradient
+  distill_mode: chosen_token_policy_gradient
+  topk_distill_enabled: false
   topk_distill_kl_direction: reverse
   topk_distill_k: 32
   topk_distill_support_source: teacher
   topk_distill_tail_bucket: false
   topk_distill_temperature: 1.0
-  topk_distill_loss_weight: 1.0
+  topk_distill_loss_weight: 0.0
   topk_distill_logprob_chunk_size: 16
   topk_distill_logprob_mode: sparse
-  ppo_mini_batch_size: 1024
+  ppo_mini_batch_size: 768
   ppo_micro_batch_size_per_gpu: 1
   use_kl_loss: true
   kl_loss_coef: 0
@@ -79,14 +82,15 @@ actor:
 rollout:
   calculate_log_probs: true
   log_prob_micro_batch_size_per_gpu: 1
-  tensor_model_parallel_size: 4
+  tensor_model_parallel_size: 2
   name: vllm
-  gpu_memory_utilization: 0.7
+  mode: sync
+  gpu_memory_utilization: 0.6
   enforce_eager: true
   enable_chunked_prefill: false
   n: 1
   max_num_batched_tokens: 32768
-  max_num_seqs: 16
+  max_num_seqs: 24
   temperature: 1.0
   top_p: 1.0
   val_n: 1
@@ -101,9 +105,18 @@ rollout_correction:
   rollout_rs: null
   bypass_mode: false
 
+worker_placement:
+  separate_ref_policy: true
+  actor_rollout:
+    n_gpus_per_node: 6
+    nnodes: 1
+  ref_policy:
+    n_gpus_per_node: 2
+    nnodes: 1
+
 audit:
   enabled: true
-  output_dir: audit/formal_audit_all_8gpu
+  output_dir: audit/formal_audit_all_8gpu_split_6student_2teacher
   domains:
     - math
     - code
@@ -159,7 +172,7 @@ paper_eval:
   enabled: false
   script_path: eval/scripts/run_paper_eval_suite.sh
   model_path: null
-  output_dir: eval_outputs/paper_suite/formal_audit_all_8gpu
+  output_dir: eval_outputs/paper_suite/formal_audit_all_8gpu_split_6student_2teacher
   datasets:
     - aime24
     - aime25
@@ -175,12 +188,12 @@ paper_eval:
 
 trainer:
   project_name: MOPD
-  experiment_name: Qwen3-4B-Multi-Teacher-ExOPD-formal-audit-all-8gpu
+  experiment_name: Qwen3-4B-RL-Teacher-ExOPD-audit-8gpu-split-6student-2teacher
   logger: '["console","tensorboard","wandb"]'
-  n_gpus_per_node: 8
+  n_gpus_per_node: 6
   nnodes: 1
   save_freq: 5
-  default_local_dir: checkpoints/formal_audit_all_8gpu
+  default_local_dir: checkpoints/formal_audit_all_8gpu_split_6student_2teacher
   test_freq: -1
   total_epochs: 3
   total_training_steps: 200
