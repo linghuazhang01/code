@@ -411,7 +411,17 @@ def _keep_global(category: str, metric: str, parts: list[str]) -> bool:
             or metric.startswith("full_gradient_domain_target_present_")
             or (
                 metric.startswith("sequence_target_domain_")
-                and metric.endswith(("_available", "_error", "_nonfinite_norm", "_token_mask_sum"))
+                and metric.endswith(
+                    (
+                        "_available",
+                        "_error",
+                        "_independent_accumulation",
+                        "_no_sync_count",
+                        "_nonfinite_norm",
+                        "_sync_backward_count",
+                        "_token_mask_sum",
+                    )
+                )
             )
         )
     if category == "cost":
@@ -426,6 +436,11 @@ def _keep_global(category: str, metric: str, parts: list[str]) -> bool:
         }
     if category == "full_grad_closure":
         return metric in CORE_FULL_GRAD_CLOSURE
+    if category == "full_grad_sequence":
+        return (
+            metric == "total_replay_norm"
+            or (len(parts) >= 4 and parts[2] == "domain_sum_vs_total" and metric in CORE_FULL_GRAD_CLOSURE)
+        )
     if category == "token_grad_cost":
         return metric in CORE_TOKEN_GRAD_COST
     if category == "full_grad_alignment":

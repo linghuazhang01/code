@@ -428,6 +428,22 @@ def _clear_parameter_grads(parameters: tuple[torch.nn.Parameter, ...]) -> None:
         parameter.grad = None
 
 
+def _accumulate_current_grads_cpu_float(
+    parameters: tuple[torch.nn.Parameter, ...],
+    accumulator: list[torch.Tensor] | None,
+) -> list[torch.Tensor]:
+    if accumulator is None:
+        accumulator = [
+            torch.zeros(parameter.numel(), dtype=torch.float32, device="cpu")
+            for parameter in parameters
+        ]
+    for parameter, total in zip(parameters, accumulator):
+        if parameter.grad is None:
+            continue
+        total.add_(parameter.grad.detach().reshape(-1).to(device="cpu", dtype=torch.float32))
+    return accumulator
+
+
 def _parameter_grad_dtypes(parameters: tuple[torch.nn.Parameter, ...]) -> tuple[torch.dtype | None, ...]:
     return tuple(parameter.grad.dtype if parameter.grad is not None else None for parameter in parameters)
 
@@ -1706,8 +1722,18 @@ class SequentialBackwardDomainGradientTracker:
             and target_type == "domain"
             and bool(target_domain)
         )
-        executed_micro_count = 0
-        skipped_micro_count = 0
+        replay_schedule = [
+            slot
+            for slot in schedule
+            if not (
+                skip_non_target_domain_slots
+                and str(slot.get("domain", "")) != target_domain
+            )
+        ]
+        executed_micro_count = len(replay_schedule)
+        skipped_micro_count = len(schedule) - executed_micro_count
+        synchronized_micro_count = 0
+        accumulated_grad_chunks: list[torch.Tensor] | None = None
         actor_config = getattr(self.actor, "config", {})
         loss_agg_mode = str(_cfg_get(actor_config, "loss_agg_mode", "token-mean"))
         apply_contribution_scale = bool(target_spec.get("apply_token_mask_contribution_scale", False))
@@ -1715,10 +1741,9 @@ class SequentialBackwardDomainGradientTracker:
             _finalize_fsdp_after_auxiliary_backward(self.actor)
             _clear_parameter_grads(parameters)
             micro_count = len(schedule)
-            for _seq_idx, slot in enumerate(schedule):
-                if skip_non_target_domain_slots and str(slot.get("domain", "")) != target_domain:
-                    skipped_micro_count += 1
-                    continue
+            replay_micro_count = len(replay_schedule)
+            for slot in replay_schedule:
+                _clear_parameter_grads(parameters)
                 micro_batch = slot["micro_batch"].to(get_device_id())
                 response_mask = micro_batch.batch["response_mask"]
                 token_mask = self._build_sequence_target_mask(
@@ -1748,16 +1773,21 @@ class SequentialBackwardDomainGradientTracker:
                 )
                 loss.backward()
                 del loss
+                synchronized_micro_count += 1
+                _finalize_fsdp_after_auxiliary_backward(self.actor)
+                accumulated_grad_chunks = _accumulate_current_grads_cpu_float(
+                    parameters,
+                    accumulated_grad_chunks,
+                )
                 try:
                     micro_batch.to("cpu")
                 except Exception:
                     pass
-                executed_micro_count += 1
             _finalize_fsdp_after_auxiliary_backward(self.actor)
-            chunks = _snapshot_current_grad_chunks(
-                self.actor,
-                storage_dtype,
-                grads_are_scaled=False,
+            storage_torch_dtype = _storage_dtype(storage_dtype)
+            chunks = tuple(
+                chunk.to(dtype=storage_torch_dtype)
+                for chunk in (accumulated_grad_chunks or [])
             )
             local_norm_sq = _chunks_local_sumsq(chunks)
             norm_sq = _reduce_gradient_scalars(self.actor, [local_norm_sq])[0]
@@ -1780,6 +1810,11 @@ class SequentialBackwardDomainGradientTracker:
             metrics[f"global/audit/sequence_target_{target_type}_skip_non_target_domains"] = float(
                 skip_non_target_domain_slots
             )
+            metrics[f"global/audit/sequence_target_{target_type}_no_sync_count"] = 0.0
+            metrics[f"global/audit/sequence_target_{target_type}_sync_backward_count"] = float(
+                synchronized_micro_count
+            )
+            metrics[f"global/audit/sequence_target_{target_type}_independent_accumulation"] = 1.0
             metrics[f"global/audit/sequence_target_{target_type}_token_mask_sum"] = float(global_token_mask_sum)
             metrics[f"global/audit/sequence_target_{target_type}_contribution_scale_sum"] = float(
                 global_contribution_scale_sum

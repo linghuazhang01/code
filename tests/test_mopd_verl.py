@@ -376,6 +376,126 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertEqual([item["domain"] for item in domain_specs], ["math", "code"])
         self.assertTrue(all(item.get("apply_token_mask_contribution_scale") for item in domain_specs))
 
+    def test_sequence_replay_gradient_is_invariant_to_domain_order(self) -> None:
+        try:
+            import torch
+            from torch import nn
+
+            from mopd_verl.full_gradient.tracker import SequentialBackwardDomainGradientTracker
+        except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
+            self.skipTest(f"gradient tracker dependencies are not installed: {exc}")
+
+        class SyncSensitiveModule(nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.weight = nn.Parameter(torch.zeros(1))
+                self.in_no_sync = False
+                self.no_sync_entries = 0
+                self.sync_backward_count = 0
+
+            def no_sync(self):
+                module = self
+
+                class NoSyncContext:
+                    def __enter__(self):
+                        module.in_no_sync = True
+                        module.no_sync_entries += 1
+                        return self
+
+                    def __exit__(self, exc_type, exc_value, traceback):
+                        module.in_no_sync = False
+                        return False
+
+                return NoSyncContext()
+
+        class ToyActor:
+            def __init__(self) -> None:
+                self.actor_module = SyncSensitiveModule()
+                self.config = {
+                    "fsdp_config": {"fsdp_size": 1},
+                    "loss_agg_mode": "token-mean",
+                }
+
+        class FakeMicroBatch:
+            def __init__(self, domain: str) -> None:
+                self.domain = domain
+                self.batch = {"response_mask": torch.ones(1, 1)}
+
+            def to(self, _device):
+                return self
+
+        class FakeLoss:
+            def __init__(self, module: SyncSensitiveModule, contribution: float) -> None:
+                self.module = module
+                self.contribution = contribution
+
+            def backward(self) -> None:
+                parameter = self.module.weight
+                if parameter.grad is None:
+                    parameter.grad = torch.zeros_like(parameter)
+                if not self.module.in_no_sync:
+                    if self.module.sync_backward_count > 0:
+                        parameter.grad.mul_(0.5)
+                    self.module.sync_backward_count += 1
+                parameter.grad.add_(self.contribution)
+
+        def replay(order: list[str], target_domain: str) -> tuple[float, dict[str, float]]:
+            actor = ToyActor()
+            tracker = SequentialBackwardDomainGradientTracker(
+                actor,
+                {
+                    "enabled": True,
+                    "domains": order,
+                    "sequence_masked_target_enabled": True,
+                    "sequence_replay_skip_non_target_domains": False,
+                },
+            )
+            tracker._schedule_candidates = [
+                {
+                    "domain": domain,
+                    "micro_batch": FakeMicroBatch(domain),
+                    "loss_scale_factor": 1.0,
+                    "on_policy": True,
+                }
+                for domain in order
+                for _ in range(6)
+            ]
+
+            def fake_loss(_actor, micro_batch, *, response_mask_override, **_kwargs):
+                domain_scale = {"math": 1.0, "code": 3.0}[micro_batch.domain]
+                contribution = domain_scale if float(response_mask_override.sum().item()) > 0.0 else 0.0
+                return FakeLoss(actor.actor_module, contribution)
+
+            with (
+                patch("mopd_verl.full_gradient.tracker._distributed_world_size", return_value=2),
+                patch("mopd_verl.full_gradient.tracker._actor_micro_batch_loss", side_effect=fake_loss),
+                patch("mopd_verl.full_gradient.tracker._finalize_fsdp_after_auxiliary_backward"),
+            ):
+                metrics, chunks, _norm_sq = tracker._recompute_masked_schedule_target(
+                    {"type": "domain", "domain": target_domain},
+                    storage_dtype="float32",
+                )
+
+            self.assertEqual(actor.actor_module.no_sync_entries, 0)
+            self.assertEqual(actor.actor_module.sync_backward_count, 12)
+            return float(chunks[0].item()), metrics
+
+        math_first, math_first_metrics = replay(["math", "code"], "math")
+        math_second, math_second_metrics = replay(["code", "math"], "math")
+        code_first, _code_first_metrics = replay(["code", "math"], "code")
+        code_second, _code_second_metrics = replay(["math", "code"], "code")
+
+        self.assertEqual(math_first, 6.0)
+        self.assertEqual(math_second, 6.0)
+        self.assertEqual(code_first, 18.0)
+        self.assertEqual(code_second, 18.0)
+        self.assertEqual(math_first_metrics["global/audit/sequence_target_domain_no_sync_count"], 0.0)
+        self.assertEqual(math_second_metrics["global/audit/sequence_target_domain_sync_backward_count"], 12.0)
+        self.assertEqual(
+            math_second_metrics["global/audit/sequence_target_domain_independent_accumulation"],
+            1.0,
+        )
+
     def test_default_command_contains_multi_teacher_setting(self) -> None:
         config_path = Path(__file__).resolve().parents[1] / "configs" / "mopd_formal_audit_all_2gpu.yaml"
         config = load_config(config_path)
@@ -399,6 +519,26 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("eval/domains/code/data/HumanEvalPlus/test.parquet", rendered)
         self.assertIn("eval/domains/code/data/MBPPPlus/test.parquet", rendered)
         self.assertNotIn("eval/domains/code/data/LiveCodeBench/test.parquet", rendered)
+
+    def test_three_gpu_four_domain_smoke_config(self) -> None:
+        config_path = (
+            Path(__file__).resolve().parents[1]
+            / "configs"
+            / "mopd_qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_3gpu_4domain_smoke.yaml"
+        )
+        config = load_config(config_path)
+        command = build_command(config)
+
+        self.assertEqual(config.audit.domains, ["math", "code", "if", "science"])
+        self.assertEqual(config.data.train_batch_size, 24)
+        self.assertEqual(config.actor.ppo_mini_batch_size, 24)
+        self.assertEqual(config.worker_placement.actor_rollout.n_gpus_per_node, 2)
+        self.assertEqual(config.worker_placement.ref_policy.n_gpus_per_node, 1)
+        self.assertEqual(config.trainer.total_training_steps, 4)
+        self.assertIn("+mopd_audit.domains=['math', 'code', 'if', 'science']", command)
+        self.assertIn("+data.domain_sampling_weights={math: 1, code: 1, if: 1, science: 1}", command)
+        self.assertIn("data/G-OPD-Training-Data/IF/train.parquet", " ".join(command))
+        self.assertIn("data/G-OPD-Training-Data/Science/train.parquet", " ".join(command))
 
     def test_eval_only_command_runs_initial_validation_without_training_loop(self) -> None:
         config_path = (
@@ -1921,6 +2061,11 @@ model:
             "global/full_grad_cost/finish_mini_batch_seconds": 2.0,
             "global/full_grad_closure/domain_sum_vs_training/cosine": 1.0,
             "global/full_grad_closure/domain_sum_vs_training/rel_l2": 0.0,
+            "global/full_grad_sequence/domain_sum_vs_total/rel_l2": 0.0,
+            "global/full_grad_sequence/domain_sum_vs_total/cosine": 1.0,
+            "global/audit/sequence_target_domain_math_independent_accumulation": 1.0,
+            "global/audit/sequence_target_domain_math_sync_backward_count": 12.0,
+            "global/audit/sequence_target_domain_math_no_sync_count": 0.0,
             "global/audit/full_gradient_domain_sequential_available": 1.0,
             "global/audit/full_gradient_domain_sequential_unsupported": 0.0,
             "global/audit/full_gradient_replicated_all_reduce": 1.0,
@@ -2025,6 +2170,11 @@ model:
         self.assertIn("global/full_grad_contribution/math_to_total/signed_projection_share", filtered)
         self.assertIn("global/full_grad_closure/domain_sum_vs_training/cosine", filtered)
         self.assertIn("global/full_grad_closure/domain_sum_vs_training/rel_l2", filtered)
+        self.assertIn("global/full_grad_sequence/domain_sum_vs_total/rel_l2", filtered)
+        self.assertIn("global/full_grad_sequence/domain_sum_vs_total/cosine", filtered)
+        self.assertIn("global/audit/sequence_target_domain_math_independent_accumulation", filtered)
+        self.assertIn("global/audit/sequence_target_domain_math_sync_backward_count", filtered)
+        self.assertIn("global/audit/sequence_target_domain_math_no_sync_count", filtered)
         self.assertIn("global/full_grad_cost/backward_seconds", filtered)
         self.assertIn("global/full_grad_cost/domain_summary_seconds", filtered)
         self.assertIn("global/full_grad_cost/finish_mini_batch_seconds", filtered)
