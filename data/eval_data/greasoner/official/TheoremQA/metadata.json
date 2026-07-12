@@ -1,0 +1,15 @@
+{
+  "dataset": "TheoremQA",
+  "key": "theoremqa",
+  "source": "TIGER-Lab/TheoremQA",
+  "loader_name": "TIGER-Lab/TheoremQA",
+  "split": "test",
+  "rows": 800,
+  "columns": [
+    "Question",
+    "Answer",
+    "Answer_type",
+    "Picture"
+  ],
+  "output_file": "eval/domains/greasoner/data/official/TheoremQA/test.parquet"
+}

@@ -1,0 +1,19 @@
+{
+  "dataset": "MMLU-Pro",
+  "key": "mmlupro",
+  "source": "TIGER-Lab/MMLU-Pro",
+  "loader_name": "TIGER-Lab/MMLU-Pro",
+  "split": "test",
+  "rows": 12032,
+  "columns": [
+    "question_id",
+    "question",
+    "options",
+    "answer",
+    "answer_index",
+    "cot_content",
+    "category",
+    "src"
+  ],
+  "output_file": "eval/domains/greasoner/data/official/MMLU-Pro/test.parquet"
+}

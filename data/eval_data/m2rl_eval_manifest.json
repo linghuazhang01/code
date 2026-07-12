@@ -1,0 +1,41 @@
+{
+  "comparability": {
+    "gpqa_diamond": "paper-aligned 198-question Diamond split",
+    "hle_text_only": "inference input only; not directly comparable with M2RL full-HLE results",
+    "ifbench": "paper-aligned benchmark data; prompt-level scoring must match the selected strict/loose protocol",
+    "ifeval": "paper-aligned benchmark data; strict prompt scoring"
+  },
+  "counts": {
+    "gpqa_diamond": 198,
+    "hle_text_only": 2158,
+    "ifbench": 300,
+    "ifeval": 541
+  },
+  "gpqa_choice_shuffle_seed": 42,
+  "gpqa_source_sha256": "41d1213cd7a4998605a26c2798500652572007161b3a92817ba46b35befcd305",
+  "hf_revisions": {
+    "allenai/IFBench_test": "2e8a48de45ff3bf41242f927254ca81b59ca3ae2",
+    "cais/hle": "5a81a4c7271a2a2a312b9a690f0c2fde837e4c29",
+    "google/IFEval": "966cd89545d6b6acfd7638bc708b98261ca58e84"
+  },
+  "hle_image_rows_excluded": 342,
+  "hle_official_total": 2500,
+  "limitations": [
+    "HLE is restricted to text-only rows because the OPD Qwen3-4B evaluation path is text-only.",
+    "HLE output is inference-only: current verl rewards do not implement the official exact-match/judge protocol.",
+    "Do not add HLE_text_only_inference.parquet to verl val_files or compare it with M2RL full-HLE scores."
+  ],
+  "outputs": {
+    "gpqa_diamond": "data/eval_data/science/gpqa.parquet",
+    "hle_text_only": "data/eval_data/science/HLE_text_only_inference.parquet",
+    "ifbench": "data/eval_data/ifbench/IFBench_test.parquet",
+    "ifeval": "data/eval_data/ifbench/IFEval.parquet"
+  },
+  "protocol": "M2RL paper benchmark families: IF={IFEval, IFBench}; Science={HLE, GPQA-Diamond}",
+  "sources": {
+    "gpqa_diamond": "data/eval_data/greasoner/official/_raw/GPQA-D/gpqa_diamond.csv",
+    "hle": "cais/hle:test",
+    "ifbench": "allenai/IFBench_test:train",
+    "ifeval": "google/IFEval:train"
+  }
+}
