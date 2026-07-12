@@ -108,6 +108,9 @@ else:
 | --- | --- | --- |
 | `global/token_gap_vocab_cosine/<domain_i>_vs_<domain_j>/gap_signed_sum_cosine` | 两个 domain 的全词表 signed gap sum vector cosine。 | 对两个 domain 的 `gap_signed_sum_vector_vocab` 计算 cosine；任一 vector 为零向量时不写该指标。 |
 | `global/token_gap_vocab_cosine/<domain_i>_vs_<domain_j>/gap_abs_sum_cosine` | 两个 domain 的全词表 abs gap sum vector cosine。 | 对两个 domain 的 `gap_abs_sum_vector_vocab` 计算 cosine；任一 vector 为零向量时不写该指标。 |
+| `global/token_gap_vocab_cosine/<domain_i>_vs_<domain_j>/gap_signed_mean_cosine` | 两个 domain 的全词表 signed gap mean vector cosine。 | 对两个 domain 的 `gap_signed_mean_vector_vocab` 计算 cosine；任一 vector 为零向量时不写该指标。 |
+| `global/token_gap_vocab_cosine/<domain_i>_vs_<domain_j>/gap_abs_mean_cosine` | 两个 domain 的全词表 abs gap mean vector cosine。 | 对两个 domain 的 `gap_abs_mean_vector_vocab` 计算 cosine；任一 vector 为零向量时不写该指标。 |
+| `global/token_gap_vocab_cosine/<domain_i>_vs_<domain_j>/token_count_cosine` | 两个 domain 的 token occurrence count vector cosine。 | 对共享 token-id 坐标上的 `token_count_vector_vocab` 计算 cosine。 |
 | `<domain>/entropy/sum_teacher_entropy` | 当前 domain teacher entropy 总和。 | `sum_t H(p_teacher(. | state_t))`，只统计 `response_mask > 0` 的 token。 |
 | `<domain>/entropy/sum_student_entropy` | 当前 domain student entropy 总和。 | `sum_t H(p_student(. | state_t))`，来自 actor log-prob/entropy pass。 |
 | `<domain>/entropy/sum_teacher_student_cross_entropy` | 当前 domain teacher-student cross entropy 总和。 | `sum_t H(p_teacher, p_student)`。开启 top-k distill 时，这个值使用 teacher top-k local support 的重归一化分布，不是 full-vocab CE。 |
@@ -123,7 +126,7 @@ else:
 - `teacher_student_cross_entropy_mean_vector_vocab`: 每个 token id 的 `H(p_teacher, p_student)` 均值，count 为 0 的维度为 0。
 - `token_count_vector_vocab` / `nonzero_token_ids`: 与 `token_gap_vocab_vectors.jsonl` 相同，记录 token occurrence count 和非零 token id。
 
-同时会输出 `global/entropy_vocab_cosine/<domain_i>_vs_<domain_j>/student_entropy_sum_cosine` 和 `global/entropy_vocab_cosine/<domain_i>_vs_<domain_j>/teacher_student_cross_entropy_sum_cosine`，用于比较两个 domain 的 entropy / CE mass 是否集中在同一批 token id 上。
+同时会对实际生成的 `token_count_vector_vocab`、student entropy 和 teacher-student cross entropy 的 sum/mean vector 输出 `global/entropy_vocab_cosine/<domain_i>_vs_<domain_j>/*_cosine`，用于比较两个 domain 的 token 分布及 entropy / CE mass 是否集中在同一批 token id 上。若开启 `logp_abs_vector_enabled`，还会输出 `global/logp_abs_vocab_cosine/<domain_i>_vs_<domain_j>/token_count_cosine`、`logp_abs_sum_cosine` 和 `logp_abs_mean_cosine`。所有 cosine 只在对应 vector 开关及 frequency 生效时计算；任一 vector 为零向量时不写该项。
 
 ## Advantage Metrics
 

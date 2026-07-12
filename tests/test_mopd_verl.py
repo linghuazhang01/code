@@ -1342,6 +1342,26 @@ model:
             places=5,
         )
         self.assertAlmostEqual(
+            metrics["global/token_gap_vocab_cosine/math_vs_code/token_count_cosine"],
+            2 / (10**0.5),
+            places=5,
+        )
+        self.assertAlmostEqual(
+            metrics["global/token_gap_vocab_cosine/math_vs_code/gap_abs_mean_cosine"],
+            2**-0.5,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            metrics["global/logp_abs_vocab_cosine/math_vs_code/logp_abs_sum_cosine"],
+            2**-0.5,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            metrics["global/logp_abs_vocab_cosine/math_vs_code/logp_abs_mean_cosine"],
+            2**-0.5,
+            places=5,
+        )
+        self.assertAlmostEqual(
             metrics[
                 "global/entropy_vocab_cosine/math_vs_code/"
                 "teacher_student_cross_entropy_sum_cosine"
@@ -1352,6 +1372,19 @@ model:
         self.assertAlmostEqual(
             metrics["global/entropy_vocab_cosine/math_vs_code/student_entropy_sum_cosine"],
             0.75 / ((0.61 * 3.06) ** 0.5),
+            places=5,
+        )
+        self.assertAlmostEqual(
+            metrics["global/entropy_vocab_cosine/math_vs_code/student_entropy_mean_cosine"],
+            0.375 / ((0.61 * 1.3725) ** 0.5),
+            places=5,
+        )
+        self.assertAlmostEqual(
+            metrics[
+                "global/entropy_vocab_cosine/math_vs_code/"
+                "teacher_student_cross_entropy_mean_cosine"
+            ],
+            2.25 / ((3.25**0.5) * 3.75),
             places=5,
         )
         self.assertNotIn("global/token_gap_vocab_cosine/math_vs_code/gap_signed_sum_cosine", metrics)
@@ -1507,6 +1540,17 @@ model:
         self.assertAlmostEqual(metrics["math/entropy/sum_teacher_student_cross_entropy"], 21.0, places=6)
         self.assertAlmostEqual(metrics["code/entropy/sum_teacher_student_cross_entropy"], 41.0, places=6)
         self.assertAlmostEqual(metrics["if/entropy/sum_teacher_student_cross_entropy"], 61.0, places=6)
+        entropy_ce_cosine_keys = {
+            key
+            for key in metrics
+            if key.startswith("global/entropy_vocab_cosine/")
+            and key.endswith("/teacher_student_cross_entropy_sum_cosine")
+        }
+        self.assertEqual(len(entropy_ce_cosine_keys), 3)
+        self.assertIn(
+            "global/entropy_vocab_cosine/math_vs_code/teacher_student_cross_entropy_sum_cosine",
+            metrics,
+        )
         self.assertIn(
             "global/entropy_vocab_cosine/math_vs_if/teacher_student_cross_entropy_sum_cosine",
             metrics,
@@ -2119,7 +2163,10 @@ model:
             "math/token_gap/gap_abs_sum": 3.0,
             "math/token_gap/gap_signed_p95": 0.8,
             "global/token_gap_vocab_cosine/math_vs_code/gap_abs_sum_cosine": 0.7,
+            "global/token_gap_vocab_cosine/math_vs_code/gap_abs_mean_cosine": 0.65,
+            "global/logp_abs_vocab_cosine/math_vs_code/logp_abs_sum_cosine": 0.7,
             "global/entropy_vocab_cosine/math_vs_code/teacher_student_cross_entropy_sum_cosine": 0.6,
+            "global/entropy_vocab_cosine/math_vs_code/teacher_student_cross_entropy_mean_cosine": 0.55,
             "global/entropy_vocab_cosine/math_vs_code/student_entropy_sum_cosine": 0.5,
             "math/entropy/sum_teacher_entropy": 12.0,
             "math/entropy/teacher_entropy_mean": 0.7,
@@ -2227,8 +2274,14 @@ model:
         self.assertIn("math/token_gap/gap_abs_sum", filtered)
         self.assertIn("math/token_gap/gap_signed_p95", filtered)
         self.assertIn("global/token_gap_vocab_cosine/math_vs_code/gap_abs_sum_cosine", filtered)
+        self.assertIn("global/token_gap_vocab_cosine/math_vs_code/gap_abs_mean_cosine", filtered)
+        self.assertIn("global/logp_abs_vocab_cosine/math_vs_code/logp_abs_sum_cosine", filtered)
         self.assertIn(
             "global/entropy_vocab_cosine/math_vs_code/teacher_student_cross_entropy_sum_cosine",
+            filtered,
+        )
+        self.assertIn(
+            "global/entropy_vocab_cosine/math_vs_code/teacher_student_cross_entropy_mean_cosine",
             filtered,
         )
         self.assertIn("global/entropy_vocab_cosine/math_vs_code/student_entropy_sum_cosine", filtered)
