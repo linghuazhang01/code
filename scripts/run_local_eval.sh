@@ -6,7 +6,7 @@ CODE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 usage() {
   cat <<'USAGE'
-Run the parquet-based OPD evaluation with the local Transformers runtime.
+Run the parquet-based OPD evaluation with Transformers or vLLM.
 
 Usage:
   scripts/run_local_eval.sh --model-path PATH [options]
@@ -24,6 +24,12 @@ Options:
   --temperature FLOAT     Sampling temperature (default: 0; GRPO AIME paper eval: 1).
   --top-p FLOAT           Nucleus sampling threshold (default: 1.0).
   --seed N                Base generation seed (default: 42).
+  --backend NAME          transformers or vllm (default: transformers).
+  --tensor-parallel-size N
+                          vLLM tensor-parallel GPU count (default: 1).
+  --batch-size N          vLLM generation batch size (default: 8).
+  --gpu-memory FLOAT      vLLM GPU memory utilization (default: 0.9).
+  --torch-dtype NAME      Model dtype (default: auto).
   --output-dir PATH       Result directory (default: data/eval_data/results/<run-id>).
   --run-id ID             Run identifier used in the report.
   --python PATH           Python executable (default: $PYTHON or python3).
@@ -39,6 +45,10 @@ Examples:
 
   scripts/run_local_eval.sh --model-path Qwen/Qwen3-4B \
     --datasets aime24,humaneval_plus --modes non_thinking,thinking --score-code
+
+  CUDA_VISIBLE_DEVICES=0,1,2,3 scripts/run_local_eval.sh \
+    --model-path Qwen/Qwen3-30B-A3B --backend vllm \
+    --tensor-parallel-size 4 --datasets aime24,gpqa_diamond
 USAGE
 }
 
@@ -51,6 +61,11 @@ NUM_SAMPLES="${NUM_SAMPLES:-1}"
 TEMPERATURE="${TEMPERATURE:-0}"
 TOP_P="${TOP_P:-1.0}"
 SEED="${SEED:-42}"
+BACKEND="${BACKEND:-transformers}"
+TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-1}"
+BATCH_SIZE="${BATCH_SIZE:-8}"
+GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.9}"
+TORCH_DTYPE="${TORCH_DTYPE:-auto}"
 RUN_ID="${RUN_ID:-local_eval_$(date +%Y%m%d_%H%M%S)}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
 PYTHON_BIN="${PYTHON:-python3}"
@@ -69,6 +84,11 @@ while [[ $# -gt 0 ]]; do
     --temperature) TEMPERATURE="${2:?--temperature requires a value}"; shift 2 ;;
     --top-p) TOP_P="${2:?--top-p requires a value}"; shift 2 ;;
     --seed) SEED="${2:?--seed requires a value}"; shift 2 ;;
+    --backend) BACKEND="${2:?--backend requires a value}"; shift 2 ;;
+    --tensor-parallel-size) TENSOR_PARALLEL_SIZE="${2:?--tensor-parallel-size requires a value}"; shift 2 ;;
+    --batch-size) BATCH_SIZE="${2:?--batch-size requires a value}"; shift 2 ;;
+    --gpu-memory) GPU_MEMORY_UTILIZATION="${2:?--gpu-memory requires a value}"; shift 2 ;;
+    --torch-dtype) TORCH_DTYPE="${2:?--torch-dtype requires a value}"; shift 2 ;;
     --output-dir) OUTPUT_DIR="${2:?--output-dir requires a value}"; shift 2 ;;
     --run-id) RUN_ID="${2:?--run-id requires a value}"; shift 2 ;;
     --python) PYTHON_BIN="${2:?--python requires a value}"; shift 2 ;;
@@ -87,6 +107,15 @@ done
 }
 [[ "${NUM_SAMPLES}" =~ ^[1-9][0-9]*$ ]] || { echo "--num-samples must be a positive integer" >&2; exit 2; }
 [[ "${SEED}" =~ ^[0-9]+$ ]] || { echo "--seed must be a non-negative integer" >&2; exit 2; }
+[[ "${BACKEND}" == "transformers" || "${BACKEND}" == "vllm" ]] || {
+  echo "--backend must be transformers or vllm" >&2
+  exit 2
+}
+[[ "${TENSOR_PARALLEL_SIZE}" =~ ^[1-9][0-9]*$ ]] || {
+  echo "--tensor-parallel-size must be a positive integer" >&2
+  exit 2
+}
+[[ "${BATCH_SIZE}" =~ ^[1-9][0-9]*$ ]] || { echo "--batch-size must be a positive integer" >&2; exit 2; }
 if [[ -n "${MAX_SAMPLES}" && ! "${MAX_SAMPLES}" =~ ^[1-9][0-9]*$ ]]; then
   echo "--max-samples must be a positive integer" >&2
   exit 2
@@ -143,9 +172,8 @@ CMD=(
   --data-files "${DATA_FILES[@]}"
   --output-dir "${OUTPUT_DIR}"
   --modes "${MODE_NAMES[@]}"
-  --backend transformers
-  --device-map auto
-  --torch-dtype auto
+  --backend "${BACKEND}"
+  --torch-dtype "${TORCH_DTYPE}"
   --max-new-tokens-thinking "${MAX_NEW_TOKENS}"
   --max-new-tokens-non-thinking "${MAX_NEW_TOKENS}"
   --num-samples "${NUM_SAMPLES}"
@@ -153,6 +181,15 @@ CMD=(
   --top-p "${TOP_P}"
   --seed "${SEED}"
 )
+if [[ "${BACKEND}" == "vllm" ]]; then
+  CMD+=(
+    --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}"
+    --batch-size "${BATCH_SIZE}"
+    --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}"
+  )
+else
+  CMD+=(--device-map auto)
+fi
 [[ -z "${MAX_SAMPLES}" ]] || CMD+=(--max-samples-per-dataset "${MAX_SAMPLES}")
 [[ "${SCORE_CODE}" == "0" ]] || CMD+=(--score-code)
 [[ "${SAVE_COMPLETIONS}" == "0" ]] || CMD+=(--save-completions)
@@ -160,6 +197,10 @@ CMD=(
 printf '[local-eval] model: %s\n' "${MODEL_PATH}"
 printf '[local-eval] datasets: %s\n' "${DATASETS}"
 printf '[local-eval] modes: %s\n' "${MODES}"
+printf '[local-eval] backend: %s\n' "${BACKEND}"
+if [[ "${BACKEND}" == "vllm" ]]; then
+  printf '[local-eval] tensor parallel size: %s\n' "${TENSOR_PARALLEL_SIZE}"
+fi
 printf '[local-eval] output: %s\n' "${OUTPUT_DIR}"
 
 if [[ "${DRY_RUN}" == "1" ]]; then
@@ -173,8 +214,11 @@ command -v "${PYTHON_BIN}" >/dev/null 2>&1 || {
   echo "Python executable not found: ${PYTHON_BIN}" >&2
   exit 2
 }
-"${PYTHON_BIN}" -c 'import accelerate, pandas, pyarrow, torch, transformers' || {
-  echo "Missing local eval dependencies; install transformers, accelerate, torch, pandas, and pyarrow." >&2
+REQUIRED_MODULES='import pandas, pyarrow, torch, transformers'
+[[ "${BACKEND}" != "transformers" ]] || REQUIRED_MODULES+=', accelerate'
+[[ "${BACKEND}" != "vllm" ]] || REQUIRED_MODULES+=', vllm'
+"${PYTHON_BIN}" -c "${REQUIRED_MODULES}" || {
+  echo "Missing dependencies for eval backend '${BACKEND}'." >&2
   exit 2
 }
 

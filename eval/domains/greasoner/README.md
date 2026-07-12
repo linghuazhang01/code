@@ -57,35 +57,20 @@ python -m eval.domains.greasoner.prepare_data \
 - `prepare_data.py`: eval-focused wrapper around the General-Reasoner parquet
   converter.
 - `download_official_data.py`: downloads the five paper benchmark datasets.
-- `official_eval.py`: standalone wrappers for official GReasoner benchmarks
+- `official_eval.py`: internal evaluators for official GReasoner benchmarks
   including MMLU-Pro, GPQA-D, SuperGPQA, TheoremQA, and BBEH.
 - `mopd_verl/general_reasoner_data.py`: shared train/eval converter.
 
-## Official Benchmark Wrappers
+## Launch Policy
 
-Run through the unified entrypoint:
-
-```bash
-eval/scripts/run_official_eval.sh \
-  --domains greasoner \
-  --datasets mmlupro gpqa_d supergpqa theoremqa bbeh \
-  --model-path /path/to/model \
-  --tensor-parallel-size 4
-```
+The only user-facing evaluation entrypoint is `scripts/run_local_eval.sh`.
+The General-Reasoner official benchmark modules are internal implementations
+and are not launched directly. Add their dataset routing to `run_local_eval.sh`
+before exposing them as supported public evaluation modes.
 
 The wrapper preserves the original benchmark prompts and scoring style while
 making model path, tensor parallelism, output directory, sample cap, and
 `enable_thinking` configurable.
 
-`theoremqa` is an open-ended benchmark. To match the paper setting, pass a judge
-API:
-
-```bash
-eval/scripts/run_official_eval.sh \
-  --domains greasoner \
-  --datasets theoremqa \
-  --model-path /path/to/model \
-  --judge-base-url "$OPENAI_BASE_URL" \
-  --judge-api-key "$OPENAI_API_KEY" \
-  --judge-model gpt-4o
-```
+`theoremqa` is an open-ended benchmark and its internal evaluator requires a
+judge API for paper-aligned scoring.

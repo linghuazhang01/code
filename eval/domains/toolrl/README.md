@@ -32,7 +32,7 @@ The generic thinking evaluator can load ToolRL parquet files and report token
 cost. That parquet path still marks examples with
 `requires_external_tool_eval=true` and does not fabricate a reward.
 
-For official benchmark scoring, use the standalone wrappers:
+Internal official benchmark implementations include:
 
 - `api_bank`: local ToolRL-style exact/soft tool-call scoring, no external API.
 - `bfcl`: configured handler plus launcher for an external BFCL harness.
@@ -42,28 +42,22 @@ For official benchmark scoring, use the standalone wrappers:
 
 - `__init__.py`: ToolRL eval dataset metadata.
 - `prepare_data.py`: generic JSONL-to-parquet staging helper.
-- `api_bank.py`: standalone API-Bank official benchmark wrapper.
+- `api_bank.py`: internal API-Bank official benchmark implementation.
 - `bfcl_handler.py`: ToolRL/RLLA BFCL handler adapted from the upstream repo.
-- `bfcl.py`: external BFCL harness launcher.
-- `bamboogle.py`: Bamboogle wrapper with configurable Serper and judge APIs.
+- `bfcl.py`: internal external-BFCL-harness adapter.
+- `bamboogle.py`: internal Bamboogle implementation with configurable services.
 
-## Official Benchmark Wrappers
+## Launch Policy
 
-Run through the unified entrypoint:
+The only user-facing evaluation entrypoint is `scripts/run_local_eval.sh`.
+The ToolRL official benchmark modules are internal implementations and are not
+launched directly. Add ToolRL benchmark routing to `run_local_eval.sh` before
+exposing it as a supported public evaluation mode.
 
-```bash
-eval/scripts/run_official_eval.sh \
-  --domains toolrl \
-  --datasets api_bank bfcl bamboogle \
-  --model-path /path/to/model
-```
+Internally, `api_bank` is local and does not require an external API.
 
-`api_bank` is local and does not require an external API.
-
-`bfcl` requires an external BFCL harness command through `--bfcl-command`; the
+The internal `bfcl` implementation requires an external BFCL harness. Its
 launcher passes model, output, handler, and optional API endpoint settings via
 environment variables.
 
-`bamboogle` requires search and judge services. Configure them with
-`--serper-base-url`, `--serper-api-key`, `--judge-base-url`, `--judge-api-key`,
-and `--judge-model`.
+The internal `bamboogle` implementation requires search and judge services.

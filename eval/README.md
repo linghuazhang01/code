@@ -1,7 +1,15 @@
 # OPD Evaluation
 
-This directory is the single home for OPD evaluation code, evaluation data, and
-evaluation run artifacts.
+This directory contains OPD evaluation implementations, data, and run artifacts.
+The only user-facing evaluation launch entrypoint is:
+
+```bash
+scripts/run_local_eval.sh --model-path /path/to/model [options]
+```
+
+Run it from `code/`. Do not invoke `python -m eval.runner` or model-evaluation
+scripts under `eval/scripts/` directly; they are internal implementation details.
+Data-preparation utilities under `eval/scripts/` may still be run separately.
 
 ## Layout
 
@@ -11,11 +19,8 @@ evaluation run artifacts.
 - `paper_eval.py`: runtime hook used by patched verl validation.
 - `data_prep/`: JSONL-to-parquet conversion code for paper-eval datasets.
 - `domains/`: domain-specific metadata, preparation scripts, and eval data.
-- `scripts/`: launch wrappers for local/remote evaluation.
-- `results/`: local evaluation outputs.
-
-Root-level `scripts/*eval*.sh` are compatibility wrappers. New eval code should
-go under `eval/`.
+- `scripts/`: internal and legacy evaluation helpers; not public launch entrypoints.
+- `../data/eval_data/results/`: outputs from the public local-eval entrypoint.
 
 ## Domains
 
@@ -25,8 +30,8 @@ go under `eval/`.
 | Code | `domains/code/` | `../data/eval_data/code/{HumanEvalPlus,MBPPPlus,LiveCodeBench}/test.parquet` | Ready |
 | IF | `domains/ifbench/` | `../data/eval_data/ifbench/IFBench_test.parquet` | verl validation path; generate with `scripts/prepare_m2rl_eval_data.sh` |
 | Science | `domains/science/` | `../data/eval_data/science/gpqa.parquet` | verl validation path; generate with `scripts/prepare_m2rl_eval_data.sh` |
-| GReasoner | `domains/greasoner/` | `../data/eval_data/greasoner/official/{MMLU-Pro,GPQA-D,SuperGPQA,TheoremQA,BBEH}/test.parquet` | General-Reasoner paper benchmarks ready; WebInstructVerified is only for training/verl validation |
-| ToolRL | `domains/toolrl/` | `../data/eval_data/toolrl/{BFCL,API-Bank,Bamboogle}/test.parquet` | API-Bank / BFCL / Bamboogle wrappers ready; BFCL needs the external harness, Bamboogle is optional paid eval |
+| GReasoner | `domains/greasoner/` | `../data/eval_data/greasoner/official/{MMLU-Pro,GPQA-D,SuperGPQA,TheoremQA,BBEH}/test.parquet` | Data/internal evaluators exist; official datasets are not yet exposed by `run_local_eval.sh` |
+| ToolRL | `domains/toolrl/` | `../data/eval_data/toolrl/{BFCL,API-Bank,Bamboogle}/test.parquet` | Data/internal evaluators exist; ToolRL datasets are not yet exposed by `run_local_eval.sh` |
 
 SearchQA support remains in `domains/search/` because the thinking evaluator can
 still include `data/SearchQA/test.parquet`, but SearchQA is not one of the four
@@ -82,22 +87,47 @@ M2RL_EVAL_MAX_SAMPLES=512 \
   scripts/prepare_m2rl_eval_data.sh
 ```
 
-## Thinking-Mode Validation
+## Running Evaluation
 
-Run the Qwen thinking/non-thinking comparison:
+Run all local evaluations through the single public entrypoint:
 
 ```bash
-eval/scripts/run_qwen3_thinking_validation.sh
+scripts/run_local_eval.sh \
+  --model-path ../models/Qwen3-4B-Non-Thinking-RL-Math-Step500 \
+  --datasets aime24,humaneval_plus,ifeval,gpqa_diamond \
+  --modes non_thinking \
+  --max-samples 8 \
+  --save-completions
 ```
 
-Useful switches:
+Important options:
 
-- `MODEL_PATH=/path/to/model`
-- `MAX_SAMPLES_PER_DATASET=8`
-- `INCLUDE_GREASONER=0`
-- `INCLUDE_TOOLRL=0`
-- `INCLUDE_SEARCH=0`
-- `BACKEND=hf` or `BACKEND=vllm`
+- `--datasets`: comma-separated dataset keys.
+- `--modes`: `non_thinking`, `thinking`, or both as a comma-separated list.
+- `--max-samples`: maximum examples per dataset.
+- `--max-new-tokens`: generation limit for every selected mode.
+- `--num-samples`, `--temperature`, `--top-p`, `--seed`: sampling controls.
+- `--backend transformers|vllm`: inference backend.
+- `--tensor-parallel-size`, `--batch-size`, `--gpu-memory`: vLLM controls.
+- `--score-code`: execute generated code for Code scoring; use only in isolation.
+- `--save-completions`: retain full completions.
+- `--dry-run`: validate inputs and print the resolved command without running it.
+
+Supported dataset keys are `aime24`, `aime25`, `hmmt25feb`, `hmmt25nov`,
+`humaneval_plus`, `mbpp_plus`, `livecodebench`, `ifeval`, `ifbench`, and
+`gpqa_diamond`.
+
+For example, compare thinking and non-thinking with vLLM:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 scripts/run_local_eval.sh \
+  --model-path /path/to/model \
+  --datasets aime24,gpqa_diamond \
+  --modes non_thinking,thinking \
+  --backend vllm \
+  --tensor-parallel-size 2 \
+  --batch-size 8
+```
 
 Outputs are written to `data/eval_data/results/<RUN_ID>/`:
 
@@ -128,32 +158,11 @@ MOPD configs now point validation paths to this directory:
 Training data remains under `data/G-OPD-Training-Data/` and is intentionally not
 mixed with eval data.
 
-## Official Benchmark Wrappers
+## Internal Evaluators
 
-Standalone official benchmark wrappers are available through:
-
-```bash
-eval/scripts/run_official_eval.sh \
-  --domains greasoner toolrl \
-  --datasets mmlupro api_bank \
-  --model-path /path/to/model
-```
-
-Supported datasets:
-
-- GReasoner: `mmlupro`, `gpqa_d`, `supergpqa`, `theoremqa`, `bbeh`
-- ToolRL: `api_bank`, `bfcl`, `bamboogle`
-- `all`: every dataset under the selected domains
-
-External API configuration is passed through CLI flags or environment variables:
-
-- `--judge-base-url`, `--judge-api-key`, `--judge-model` for Bamboogle judge.
-- `--serper-base-url`, `--serper-api-key` for Bamboogle search.
-- `--api-base-url`, `--api-key` for BFCL external harness integration.
-
-BFCL ships as a configured RLLA handler plus launcher because the upstream file
-is a handler for the BFCL harness, not a complete standalone runner.
-
-`theoremqa` is open-ended and requires a judge/equality API through
-`--judge-base-url`, `--judge-api-key`, and `--judge-model` for paper-aligned
-scoring.
+`eval/runner.py`, `eval/official_runner.py`, and model-evaluation scripts under
+`eval/scripts/` remain implementation modules for development and compatibility.
+They are not supported as independent user launch entrypoints. Data-preparation
+utilities are not launch entrypoints and remain directly usable. Extend
+`scripts/run_local_eval.sh` first when exposing another benchmark or evaluation
+behavior.

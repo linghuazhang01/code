@@ -1,6 +1,15 @@
 # OPD 评测说明
 
-这个目录是 OPD 项目中评测代码、评测数据和评测运行结果的统一入口。
+这个目录保存 OPD 的评测实现、评测数据和运行结果。唯一面向用户的 eval
+启动入口是：
+
+```bash
+scripts/run_local_eval.sh --model-path /path/to/model [options]
+```
+
+请从 `code/` 目录运行。不要直接调用 `python -m eval.runner`，也不要直接运行
+`eval/scripts/` 下的 model-eval 脚本；这些文件只作为内部实现与兼容代码保留。
+`eval/scripts/` 下的数据准备工具仍可单独运行。
 
 ## 目录结构
 
@@ -10,11 +19,8 @@
 - `paper_eval.py`: patched verl validation 调用的运行时入口。
 - `data_prep/`: 将 paper-eval JSONL 转换为 verl parquet 的数据准备代码。
 - `domains/`: 各 domain 的 metadata、数据准备脚本和评测数据。
-- `scripts/`: 本地或远程评测启动脚本。
-- `results/`: 本地评测输出目录。
-
-根目录下的 `scripts/*eval*.sh` 只是兼容 wrapper。新的 eval 相关代码应放在
-`eval/` 下面。
+- `scripts/`: 内部或 legacy eval helper，不是公开启动入口。
+- `../data/eval_data/results/`: 公开本地 eval 入口的输出目录。
 
 ## Domain 划分
 
@@ -24,8 +30,8 @@
 | Code | `domains/code/` | `../data/eval_data/code/{HumanEvalPlus,MBPPPlus,LiveCodeBench}/test.parquet` | 已就绪 |
 | IF | `domains/ifbench/` | `../data/eval_data/ifbench/IFBench_test.parquet` | verl validation 路径；用 `scripts/prepare_m2rl_eval_data.sh` 生成 |
 | Science | `domains/science/` | `../data/eval_data/science/gpqa.parquet` | verl validation 路径；用 `scripts/prepare_m2rl_eval_data.sh` 生成 |
-| GReasoner | `domains/greasoner/` | `../data/eval_data/greasoner/official/{MMLU-Pro,GPQA-D,SuperGPQA,TheoremQA,BBEH}/test.parquet` | 已接 General-Reasoner 论文五个 benchmark；WebInstructVerified 仅用于训练/verl validation |
-| ToolRL | `domains/toolrl/` | `../data/eval_data/toolrl/{BFCL,API-Bank,Bamboogle}/test.parquet` | 已接 API-Bank / BFCL / Bamboogle wrapper；BFCL 需要外部 harness，Bamboogle optional paid |
+| GReasoner | `domains/greasoner/` | `../data/eval_data/greasoner/official/{MMLU-Pro,GPQA-D,SuperGPQA,TheoremQA,BBEH}/test.parquet` | 数据与内部 evaluator 已存在；official datasets 尚未接入 `run_local_eval.sh` |
+| ToolRL | `domains/toolrl/` | `../data/eval_data/toolrl/{BFCL,API-Bank,Bamboogle}/test.parquet` | 数据与内部 evaluator 已存在；ToolRL datasets 尚未接入 `run_local_eval.sh` |
 
 SearchQA 仍保留在 `domains/search/`，因为 thinking evaluator 可以继续包含
 `data/SearchQA/test.parquet`。不过 SearchQA 不是这次整理出的四个核心 eval
@@ -110,22 +116,47 @@ Code prompt 由 `domains/code/prompting.py` 统一构建：
 也就是说，数据里的用户侧 problem instruction 已经对齐 paper；thinking /
 non-thinking 的对比仍由当前 runner 显式控制。
 
-## Thinking-Mode Validation
+## 运行 Eval
 
-运行 Qwen thinking / non-thinking 对比：
+所有本地 eval 都通过唯一公开入口启动：
 
 ```bash
-eval/scripts/run_qwen3_thinking_validation.sh
+scripts/run_local_eval.sh \
+  --model-path ../models/Qwen3-4B-Non-Thinking-RL-Math-Step500 \
+  --datasets aime24,humaneval_plus,ifeval,gpqa_diamond \
+  --modes non_thinking \
+  --max-samples 8 \
+  --save-completions
 ```
 
-常用环境变量：
+基础参数：
 
-- `MODEL_PATH=/path/to/model`
-- `MAX_SAMPLES_PER_DATASET=8`
-- `INCLUDE_GREASONER=0`
-- `INCLUDE_TOOLRL=0`
-- `INCLUDE_SEARCH=0`
-- `BACKEND=hf` 或 `BACKEND=vllm`
+- `--datasets`：逗号分隔的 dataset key。
+- `--modes`：`non_thinking`、`thinking`，或逗号分隔的两种模式。
+- `--max-samples`：每个 dataset 最多评测多少条。
+- `--max-new-tokens`：所有选中模式的生成长度上限。
+- `--num-samples`、`--temperature`、`--top-p`、`--seed`：采样行为。
+- `--backend transformers|vllm`：推理后端。
+- `--tensor-parallel-size`、`--batch-size`、`--gpu-memory`：vLLM 参数。
+- `--score-code`：执行生成代码并评分，只能在隔离环境使用。
+- `--save-completions`：保存完整 completion。
+- `--dry-run`：只校验参数并打印最终命令，不启动模型。
+
+支持的 dataset key：`aime24`、`aime25`、`hmmt25feb`、`hmmt25nov`、
+`humaneval_plus`、`mbpp_plus`、`livecodebench`、`ifeval`、`ifbench`、
+`gpqa_diamond`。
+
+例如，使用两张 GPU 和 vLLM 对比 thinking / non-thinking：
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 scripts/run_local_eval.sh \
+  --model-path /path/to/model \
+  --datasets aime24,gpqa_diamond \
+  --modes non_thinking,thinking \
+  --backend vllm \
+  --tensor-parallel-size 2 \
+  --batch-size 8
+```
 
 输出会写入：
 
@@ -165,107 +196,14 @@ MOPD 配置已经将 validation path 指向当前目录：
 ## 推荐使用方式
 
 1. 先运行 `eval/scripts/prepare_paper_eval_data.sh` 准备或刷新 Math / Code eval parquet。
-2. 再运行 `eval/scripts/run_qwen3_thinking_validation.sh` 做 thinking / non-thinking 对比。
-3. 用 `eval/report.py` 或输出目录里的 `README.md` 查看聚合指标和样本级记录。
+2. 使用 `scripts/run_local_eval.sh` 启动全部本地 eval。
+3. 查看输出目录里的 `README.md`、JSON 和 CSV 结果。
 
 如果刚修改过 prompt builder，需要重新运行数据准备脚本，否则已有 parquet 里仍可能保留旧 prompt。
 
-## 官方 Benchmark Eval
+## 内部 Evaluator
 
-除了 parquet-based thinking evaluator，`eval/` 也提供官方 benchmark wrapper：
-
-```bash
-eval/scripts/run_official_eval.sh \
-  --domains greasoner toolrl \
-  --datasets mmlupro api_bank \
-  --model-path /path/to/model \
-  --output-dir data/eval_data/results/official_smoke
-```
-
-可选择的 domain：
-
-- `greasoner`
-- `toolrl`
-
-可选择的 dataset：
-
-- GReasoner: `mmlupro`, `gpqa_d`, `supergpqa`, `theoremqa`, `bbeh`
-- ToolRL: `api_bank`, `bfcl`, `bamboogle`
-- `all`: 运行所选 domain 下所有 dataset
-
-示例：只跑 General-Reasoner 论文五个 benchmark：
-
-```bash
-eval/scripts/run_official_eval.sh \
-  --domains greasoner \
-  --datasets mmlupro gpqa_d supergpqa theoremqa bbeh \
-  --model-path /path/to/model \
-  --tensor-parallel-size 4 \
-  --judge-base-url "$OPENAI_BASE_URL" \
-  --judge-api-key "$OPENAI_API_KEY"
-```
-
-其中 `theoremqa` 是 open-ended QA，按论文评测逻辑需要 judge/equality API。
-
-专门的 Qwen3-4B non-thinking 官方评测启动脚本：
-
-```bash
-scripts/run_qwen3_4b_nonthinking_official_eval.sh
-```
-
-脚本会自动 source 根目录 `api.sh`，并兼容：
-
-- `dashscope_ak` -> `OPENAI_API_KEY`
-- `dashscope_baseurl` -> `OPENAI_BASE_URL`
-- `model` -> `JUDGE_MODEL`
-
-默认运行：
-
-- GReasoner: `mmlupro gpqa_d supergpqa theoremqa bbeh`
-- ToolRL: `api_bank`
-
-可用环境变量覆盖 `DOMAINS`、`DATASETS`、`MODEL_PATH`、`MAX_SAMPLES`、
-`OUTPUT_DIR`、`API_BANK_LEVELS`。
-
-示例：只跑 ToolRL API-Bank：
-
-```bash
-eval/scripts/run_official_eval.sh \
-  --domains toolrl \
-  --datasets api_bank \
-  --model-path /path/to/model \
-  --api-bank-dir ../temp/grpo_sources/ToolRL/benchmarks/API-Bank
-```
-
-BFCL 当前提供 ToolRL/RLLA handler 和外部 harness launcher。运行时需要提供
-BFCL 官方 harness 命令：
-
-```bash
-eval/scripts/run_official_eval.sh \
-  --domains toolrl \
-  --datasets bfcl \
-  --model-path /path/to/model \
-  --bfcl-command "python -m bfcl_eval ..."
-```
-
-该 launcher 会向外部命令注入：
-
-- `BFCL_MODEL_PATH`
-- `BFCL_OUTPUT_DIR`
-- `BFCL_HANDLER`
-- `BFCL_API_BASE_URL`
-- `BFCL_API_KEY`
-
-Bamboogle 需要搜索 API 和 judge API，均支持自定义 endpoint：
-
-```bash
-eval/scripts/run_official_eval.sh \
-  --domains toolrl \
-  --datasets bamboogle \
-  --model-path /path/to/model \
-  --serper-base-url https://google.serper.dev/search \
-  --serper-api-key "$SERPER_API_KEY" \
-  --judge-base-url "$OPENAI_BASE_URL" \
-  --judge-api-key "$OPENAI_API_KEY" \
-  --judge-model gpt-4o
-```
+`eval/runner.py`、`eval/official_runner.py` 和 `eval/scripts/` 下的 model-eval
+脚本作为开发、兼容实现保留，但不再作为独立的用户启动入口。数据准备工具不是
+eval 启动入口，仍可直接使用。如果要公开新的 benchmark 或 eval 行为，应先将其
+接入 `scripts/run_local_eval.sh`。
