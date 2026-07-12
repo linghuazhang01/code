@@ -20,12 +20,12 @@
 
 | Domain | 代码位置 | 评测数据 | 状态 |
 |---|---|---|---|
-| Math | `domains/math/` | `domains/math/data/{AIME24,AIME25,HMMT25Feb,HMMT25Nov}/test.parquet` | 已就绪 |
-| Code | `domains/code/` | `domains/code/data/{HumanEvalPlus,MBPPPlus,LiveCodeBench}/test.parquet` | 已就绪 |
-| IF | `domains/ifbench/` | `domains/ifbench/data/IFBench_test.parquet` | 与同级 GRPO workspace 对齐的 verl validation 路径；用 `scripts/prepare_m2rl_eval_data.sh` 生成 |
-| Science | `domains/science/` | `domains/science/data/gpqa.parquet` | 与同级 GRPO workspace 对齐的 verl validation 路径；用 `scripts/prepare_m2rl_eval_data.sh` 生成 |
-| GReasoner | `domains/greasoner/` | `domains/greasoner/data/official/{MMLU-Pro,GPQA-D,SuperGPQA,TheoremQA,BBEH}/test.parquet` | 已接 General-Reasoner 论文五个 benchmark；WebInstructVerified 仅用于训练/verl validation |
-| ToolRL | `domains/toolrl/` | `domains/toolrl/data/{BFCL,API-Bank,Bamboogle}/test.parquet` | 已接 API-Bank / BFCL / Bamboogle wrapper；BFCL 需要外部 harness，Bamboogle optional paid |
+| Math | `domains/math/` | `../data/eval_data/math/{AIME24,AIME25,HMMT25Feb,HMMT25Nov}/test.parquet` | 已就绪 |
+| Code | `domains/code/` | `../data/eval_data/code/{HumanEvalPlus,MBPPPlus,LiveCodeBench}/test.parquet` | 已就绪 |
+| IF | `domains/ifbench/` | `../data/eval_data/ifbench/IFBench_test.parquet` | verl validation 路径；用 `scripts/prepare_m2rl_eval_data.sh` 生成 |
+| Science | `domains/science/` | `../data/eval_data/science/gpqa.parquet` | verl validation 路径；用 `scripts/prepare_m2rl_eval_data.sh` 生成 |
+| GReasoner | `domains/greasoner/` | `../data/eval_data/greasoner/official/{MMLU-Pro,GPQA-D,SuperGPQA,TheoremQA,BBEH}/test.parquet` | 已接 General-Reasoner 论文五个 benchmark；WebInstructVerified 仅用于训练/verl validation |
+| ToolRL | `domains/toolrl/` | `../data/eval_data/toolrl/{BFCL,API-Bank,Bamboogle}/test.parquet` | 已接 API-Bank / BFCL / Bamboogle wrapper；BFCL 需要外部 harness，Bamboogle optional paid |
 
 SearchQA 仍保留在 `domains/search/`，因为 thinking evaluator 可以继续包含
 `data/SearchQA/test.parquet`。不过 SearchQA 不是这次整理出的四个核心 eval
@@ -58,7 +58,7 @@ python -m eval.domains.greasoner.download_official_data --force
 ```bash
 python -m eval.domains.greasoner.prepare_data \
   --from-hf \
-  --output-dir eval/domains/greasoner/data/WebInstructVerified \
+  --output-dir data/eval_data/greasoner/WebInstructVerified \
   --max-samples 100
 ```
 
@@ -68,10 +68,10 @@ python -m eval.domains.greasoner.prepare_data \
 python -m eval.domains.toolrl.prepare_data \
   --dataset BFCL \
   --input /path/to/bfcl.jsonl \
-  --output eval/domains/toolrl/data/BFCL/test.parquet
+  --output data/eval_data/toolrl/BFCL/test.parquet
 ```
 
-准备与同级 GRPO workspace 对齐的 M2RL IF / Science validation parquet：
+准备 M2RL IF / Science validation parquet：
 
 ```bash
 IF_VAL_SOURCE=/path/to/raw_if_val.parquet \
@@ -130,7 +130,7 @@ eval/scripts/run_qwen3_thinking_validation.sh
 输出会写入：
 
 ```text
-eval/results/<RUN_ID>/
+data/eval_data/results/<RUN_ID>/
 ```
 
 主要输出文件：
@@ -147,7 +147,7 @@ eval/results/<RUN_ID>/
   可用，则走原项目 reward。
 - Code 通过 vendored verl reward router 调用 `mopd_verl/code_reward.py`。
 - IF / Science validation 与训练共用同一条 verl reward 路径：
-  `grpo/rewards/mixed.py` 将 `m2rl_ifbench` 路由到 IFBench /
+  `mopd_verl/mixed_reward.py` 将 `m2rl_ifbench` 路由到 IFBench /
   verifiable-instructions strict scoring，将 `m2rl_gpqa` 路由到 GPQA
   option-letter scoring。
 - ToolRL parquet 数据可以被加载，用于 token / cost 报告。
@@ -159,9 +159,6 @@ eval/results/<RUN_ID>/
 MOPD 配置已经将 validation path 指向当前目录：
 
 - `configs/mopd_qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_*.yaml`
-- `grpo/configs/m2rl_if.yaml`
-- `grpo/configs/m2rl_science.yaml`
-- `grpo/configs/m2rl_if_science_mix.yaml`
 
 训练数据仍保留在 `data/G-OPD-Training-Data/`，不会和 `eval/` 下的评测数据混在一起。
 
@@ -182,7 +179,7 @@ eval/scripts/run_official_eval.sh \
   --domains greasoner toolrl \
   --datasets mmlupro api_bank \
   --model-path /path/to/model \
-  --output-dir eval/results/official_smoke
+  --output-dir data/eval_data/results/official_smoke
 ```
 
 可选择的 domain：

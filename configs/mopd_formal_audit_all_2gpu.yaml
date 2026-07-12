@@ -22,13 +22,13 @@ data:
     code: 0.5
   domain_sampling_replacement: true
   val_files:
-    - eval/domains/math/data/AIME24/test.parquet
-    - eval/domains/math/data/AIME25/test.parquet
-    - eval/domains/math/data/HMMT25Feb/test.parquet
-    - eval/domains/math/data/HMMT25Nov/test.parquet
-    - eval/domains/code/data/HumanEvalPlus/test.parquet
-    - eval/domains/code/data/MBPPPlus/test.parquet
-    # - eval/domains/code/data/LiveCodeBench/test.parquet
+    - data/eval_data/math/AIME24/test.parquet
+    - data/eval_data/math/AIME25/test.parquet
+    - data/eval_data/math/HMMT25Feb/test.parquet
+    - data/eval_data/math/HMMT25Nov/test.parquet
+    - data/eval_data/code/HumanEvalPlus/test.parquet
+    - data/eval_data/code/MBPPPlus/test.parquet
+    # - data/eval_data/code/LiveCodeBench/test.parquet
   train_batch_size: 256
   max_prompt_length: 2048
   max_response_length: 16384

@@ -26,7 +26,7 @@ fi
 
 MODEL_PATH="${MODEL_PATH:-Qwen/Qwen3-4B}"
 RUN_ID="${RUN_ID:-qwen3_4b_nonthinking_greasoner_$(date +%Y%m%d_%H%M%S)}"
-OUTPUT_DIR="${OUTPUT_DIR:-${CODE_DIR}/eval/results/${RUN_ID}}"
+OUTPUT_DIR="${OUTPUT_DIR:-${CODE_DIR}/data/eval_data/results/${RUN_ID}}"
 LOG_FILE="${LOG_FILE:-${OUTPUT_DIR}/run.log}"
 
 DOMAINS="${DOMAINS:-greasoner}"

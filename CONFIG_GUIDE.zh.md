@@ -1,6 +1,6 @@
 # OPD / MOPD 配置说明
 
-本文档说明当前保留的正式配置矩阵。训练入口仍是 `scripts/run_mopd.sh` 或 `scripts/start_remote_mopd_training.sh`；YAML 会由 `mopd_verl/launch.py` 转换成 `verl.trainer.main_ppo` 的 Hydra overrides。
+本文档说明当前保留的正式配置矩阵。训练入口仍是 `scripts/run_mopd.sh` 或 `scripts/run_local_mopd_training.sh`；YAML 会由 `mopd_verl/launch.py` 转换成 `verl.trainer.main_ppo` 的 Hydra overrides。
 
 ## 配置文件总览
 
@@ -9,7 +9,7 @@
 | `configs/mopd_formal_audit_all_2gpu.yaml` | 2 卡正式诊断训练 | 4B student，math/code 4B teachers，teacher top-k distillation，所有 audit 开启 |
 | `configs/mopd_formal_audit_all_4gpu.yaml` | 4 卡正式诊断训练 | 同 objective，batch 按卡数放大 |
 | `configs/mopd_formal_audit_all_6gpu.yaml` | 6 卡正式诊断训练 | TP=2，6 卡 batch，沿用 audit-off 实测显存安全 profile |
-| `configs/mopd_formal_audit_all_8gpu.yaml` | 8 卡正式诊断训练 | TP=4，8 卡 batch |
+| `configs/mopd_formal_audit_all_8gpu.yaml` | 8 卡 OPD 正式诊断训练 | 6 student + 2 teacher 分离部署，policy-gradient objective，audit-only CE/logp vectors |
 | `configs/mopd_formal_audit_loss_only_2gpu.yaml` | 2 卡 loss-only 诊断训练 | 同 all-audit surface，但 token-gradient selection 只用 loss |
 | `configs/mopd_formal_audit_loss_only_4gpu.yaml` | 4 卡 loss-only 诊断训练 | 同 objective，batch 按卡数放大 |
 | `configs/mopd_formal_audit_loss_only_6gpu.yaml` | 6 卡 loss-only 诊断训练 | TP=2，6 卡 batch，fsdp=2 sequence replay，token-gradient selection 只用 loss |
@@ -31,7 +31,7 @@
 | 2 | `_2gpu` | 2 | 2 | 256 | 256 | 8 |
 | 4 | `_4gpu` | 4 | 4 | 512 | 512 | 16 |
 | 6 | `_6gpu` | 6 | 2 | 768 | 768 | 24 |
-| 8 | `_8gpu` | 8 | 4 | 1024 | 1024 | 32 |
+| 8 | `_8gpu` | 8（标准 profile）/ 6（OPD split profile） | 4（标准 profile）/ 2（OPD split profile） | 1024（标准 profile）/ 768（OPD split profile） | 1024（标准 profile）/ 768（OPD split profile） | 32 |
 
 指标 smoke profile 使用独立设置：`trainer.n_gpus_per_node=2`、`rollout.tensor_model_parallel_size=2`、`data.train_batch_size=32`、`actor.ppo_mini_batch_size=32`、`trainer.total_training_steps=1`；response 长度保持正式配置的 `data.max_response_length=16384`。
 
@@ -58,7 +58,7 @@ data:
 
 ## 蒸馏目标
 
-当前保留配置默认使用 teacher top-k local-support distillation：
+除 8 卡 OPD split profile 外，formal 配置默认使用 teacher top-k local-support distillation：
 
 ```yaml
 actor:
@@ -70,7 +70,17 @@ actor:
   topk_distill_tail_bucket: false
 ```
 
-保留 teacher top-k 是因为真实训练中的 `teacher_student_cross_entropy` 指标来自该 local-support CE 路径；关闭 top-k 时 CE vector 不一定可用。
+`topk_distill_enabled` 只控制训练 objective 是否使用 teacher top-k distillation。Policy-gradient 配置可以保持该开关关闭，同时通过 audit 的 `topk_teacher_student_cross_entropy_vocab_enabled` 独立收集 teacher/student cross-entropy vocab vector，不改变训练 loss。
+
+8 卡 OPD split profile 使用：
+
+```yaml
+actor:
+  distill_loss_builder: policy_gradient
+  distill_mode: chosen_token_policy_gradient
+  topk_distill_enabled: false
+  topk_distill_loss_weight: 0.0
+```
 
 ## Audit All
 
@@ -90,6 +100,8 @@ audit:
   token_gap_vocab_vector_enabled: true
   entropy_enabled: true
   entropy_vocab_vector_enabled: true
+  topk_teacher_student_cross_entropy_vocab_enabled: true
+  logp_abs_vector_enabled: true
   token_conflict_enabled: true
   token_gradient_enabled: true
   token_gradient_gap_selection_enabled: true
@@ -127,6 +139,8 @@ audit:
   token_gap_vocab_vector_enabled: true
   entropy_enabled: true
   entropy_vocab_vector_enabled: true
+  topk_teacher_student_cross_entropy_vocab_enabled: true
+  logp_abs_vector_enabled: true
   token_conflict_enabled: true
   token_gradient_enabled: true
   token_gradient_gap_selection_enabled: false
@@ -163,6 +177,8 @@ audit:
   token_gap_vocab_vector_enabled: true
   token_gap_vocab_size: null
   entropy_vocab_vector_enabled: true
+  topk_teacher_student_cross_entropy_vocab_enabled: true
+  logp_abs_vector_enabled: true
   token_gradient_enabled: true
   token_gradient_gap_selection_enabled: true
   token_gradient_gap_abs_selection_enabled: true
@@ -202,6 +218,8 @@ audit:
   token_gap_vocab_vector_enabled: false
   entropy_enabled: false
   entropy_vocab_vector_enabled: false
+  topk_teacher_student_cross_entropy_vocab_enabled: false
+  logp_abs_vector_enabled: false
   token_conflict_enabled: false
   token_gradient_enabled: false
   token_gradient_gap_selection_enabled: true
@@ -214,33 +232,33 @@ audit:
 ## 常用启动
 
 ```bash
-GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
+GPU_IDS=0,1 bash scripts/run_local_mopd_training.sh \
   configs/mopd_formal_audit_all_2gpu.yaml \
   --run-id mopd_audit_all_2gpu_$(date +%Y%m%d_%H%M%S)
 ```
 
 ```bash
-GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
+GPU_IDS=0,1 bash scripts/run_local_mopd_training.sh \
   configs/mopd_formal_audit_off_2gpu.yaml \
   --run-id mopd_audit_off_2gpu_$(date +%Y%m%d_%H%M%S)
 ```
 
 ```bash
-GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
+GPU_IDS=0,1 bash scripts/run_local_mopd_training.sh \
   configs/mopd_formal_audit_loss_only_2gpu.yaml \
   --run-id mopd_audit_loss_only_2gpu_$(date +%Y%m%d_%H%M%S)
 ```
 
 ```bash
-GPU_IDS=0,1,2,3 bash scripts/start_remote_mopd_training.sh \
+GPU_IDS=0,1,2,3 bash scripts/run_local_mopd_training.sh \
   configs/mopd_formal_audit_all_4gpu.yaml \
   --run-id mopd_audit_all_4gpu_$(date +%Y%m%d_%H%M%S)
 
-GPU_IDS=0,1,2,3,4,5 bash scripts/start_remote_mopd_training.sh \
+GPU_IDS=0,1,2,3,4,5 bash scripts/run_local_mopd_training.sh \
   configs/mopd_formal_audit_all_6gpu.yaml \
   --run-id mopd_audit_all_6gpu_$(date +%Y%m%d_%H%M%S)
 
-GPU_IDS=0,1,2,3,4,5,6,7 bash scripts/start_remote_mopd_training.sh \
+GPU_IDS=0,1,2,3,4,5,6,7 bash scripts/run_local_mopd_training.sh \
   configs/mopd_formal_audit_all_8gpu.yaml \
   --run-id mopd_audit_all_8gpu_$(date +%Y%m%d_%H%M%S)
 ```
@@ -248,11 +266,11 @@ GPU_IDS=0,1,2,3,4,5,6,7 bash scripts/start_remote_mopd_training.sh \
 指标 smoke 测试直接使用维护中的 smoke YAML：
 
 ```bash
-GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
+GPU_IDS=0,1 bash scripts/run_local_mopd_training.sh \
   configs/mopd_formal_audit_all_smoke.yaml \
   --run-id mopd_metrics_smoke_$(date +%Y%m%d_%H%M%S)
 
-GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
+GPU_IDS=0,1 bash scripts/run_local_mopd_training.sh \
   configs/mopd_formal_audit_loss_only_smoke.yaml \
   --run-id mopd_metrics_loss_only_smoke_$(date +%Y%m%d_%H%M%S)
 ```

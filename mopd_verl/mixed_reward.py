@@ -1,4 +1,4 @@
-"""Reward router for mixed MOPD math/code and M2RL IF/Science training."""
+"""Reward router for mixed MOPD math/code and IF/Science training."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from grpo.rewards.m2rl import compute_score as compute_m2rl_score
+from mopd_verl.m2rl_reward import compute_score as compute_m2rl_score
 
 
 def _normalize_metadata(value: Any) -> dict[str, Any]:

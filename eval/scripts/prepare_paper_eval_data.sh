@@ -59,14 +59,14 @@ fi
 
 python -m mopd_verl.prepare_data prepare-paper-eval \
   --gopd-dir "${G_OPD_DIR}" \
-  --output-root "${CODE_DIR}/eval/domains"
+  --output-root "${CODE_DIR}/data/eval_data"
 
 python - <<'PY'
 import os
 from pathlib import Path
 import pandas as pd
 
-root = Path(os.environ["CODE_DIR"]) / "eval/domains"
+root = Path(os.environ["CODE_DIR"]) / "data/eval_data"
 paths = {
     "AIME24": root / "math/data/AIME24/test.parquet",
     "AIME25": root / "math/data/AIME25/test.parquet",

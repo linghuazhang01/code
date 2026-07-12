@@ -54,12 +54,41 @@ from mopd_verl.topk_distill import (
     uses_topk_distill_loss,
 )
 from mopd_verl.teacher_prefix import build_dataset_teacher_prefix
-from grpo.data.m2rl import m2rl_frame_to_verl
-from grpo.rewards.m2rl import compute_score as compute_m2rl_score
+from mopd_verl.m2rl_data import m2rl_frame_to_verl
+from mopd_verl.m2rl_reward import compute_score as compute_m2rl_score
 from mopd_verl.verl_audit import MOPDAuditLogger
 
 
 class MOPDVerlTests(unittest.TestCase):
+    def test_audit_only_vector_frequency_is_loss_builder_independent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = MOPDAuditLogger(
+                {
+                    "mopd_audit": {
+                        "enabled": True,
+                        "output_dir": tmpdir,
+                        "topk_teacher_student_cross_entropy_vocab_enabled": True,
+                        "topk_teacher_student_cross_entropy_vocab_freq_steps": 2,
+                        "logp_abs_vector_enabled": True,
+                        "logp_abs_vector_freq_steps": 3,
+                    }
+                }
+            )
+
+            self.assertFalse(logger.should_log_topk_teacher_student_cross_entropy_vocab(1))
+            self.assertTrue(logger.should_log_topk_teacher_student_cross_entropy_vocab(2))
+            self.assertFalse(logger.should_log_logp_abs_vector(2))
+            self.assertTrue(logger.should_log_logp_abs_vector(3))
+
+        builders = (
+            ({"distill_loss_builder": "policy_gradient"}, DISTILL_LOSS_BUILDER_POLICY_GRADIENT),
+            ({"distill_loss_builder": "chosen_token_reverse_kl"}, "chosen_token_reverse_kl"),
+            ({"distill_loss_builder": "topk_kl"}, DISTILL_LOSS_BUILDER_TOPK_KL),
+        )
+        for policy_loss_config, expected_builder in builders:
+            with self.subTest(builder=expected_builder):
+                self.assertEqual(distill_loss_builder(policy_loss_config), expected_builder)
+
     def test_domain_gradient_batch_balance_aligns_two_actor_ranks(self) -> None:
         try:
             import torch
@@ -514,11 +543,11 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("data/G-OPD-Training-Data/DeepMath-103K/train_filtered_level6.parquet", rendered)
         self.assertIn("data/G-OPD-Training-Data/Eurus/code_train.parquet", rendered)
         self.assertNotIn("math_and_code/train.parquet", rendered)
-        self.assertIn("eval/domains/math/data/HMMT25Feb/test.parquet", rendered)
-        self.assertIn("eval/domains/math/data/HMMT25Nov/test.parquet", rendered)
-        self.assertIn("eval/domains/code/data/HumanEvalPlus/test.parquet", rendered)
-        self.assertIn("eval/domains/code/data/MBPPPlus/test.parquet", rendered)
-        self.assertNotIn("eval/domains/code/data/LiveCodeBench/test.parquet", rendered)
+        self.assertIn("data/eval_data/math/HMMT25Feb/test.parquet", rendered)
+        self.assertIn("data/eval_data/math/HMMT25Nov/test.parquet", rendered)
+        self.assertIn("data/eval_data/code/HumanEvalPlus/test.parquet", rendered)
+        self.assertIn("data/eval_data/code/MBPPPlus/test.parquet", rendered)
+        self.assertNotIn("data/eval_data/code/LiveCodeBench/test.parquet", rendered)
 
     def test_three_gpu_four_domain_smoke_config(self) -> None:
         config_path = (
@@ -562,8 +591,8 @@ class MOPDVerlTests(unittest.TestCase):
         self.assertIn("trainer.total_epochs=1", rendered)
         self.assertIn("trainer.total_training_steps=1", rendered)
         self.assertIn("actor_rollout_ref.model.path=checkpoints/MOPD/example_run/global_step_200/actor", rendered)
-        self.assertIn("eval/domains/math/data/AIME24/test.parquet", rendered)
-        self.assertIn("eval/domains/code/data/MBPPPlus/test.parquet", rendered)
+        self.assertIn("data/eval_data/math/AIME24/test.parquet", rendered)
+        self.assertIn("data/eval_data/code/MBPPPlus/test.parquet", rendered)
 
     def test_eval_only_paper_eval_overrides_are_complete_when_enabled(self) -> None:
         config_path = (
@@ -1033,29 +1062,6 @@ model:
         expected_gathered_logits = logits.gather(dim=-1, index=gather_ids)
         self.assertTrue(torch.allclose(gathered_logits, expected_gathered_logits, atol=1e-6))
 
-    def test_m2rl_if_command_uses_custom_reward(self) -> None:
-        config_path = Path(__file__).resolve().parents[1] / "grpo" / "configs" / "m2rl_if.yaml"
-        config = load_config(config_path)
-        rendered = format_command(build_command(config))
-
-        self.assertIn("data/G-OPD-Training-Data/IF/train.parquet", rendered)
-        self.assertIn("actor_rollout_ref.actor.policy_loss.multi_teacher_distill=false", rendered)
-        self.assertIn("custom_reward_function.path=grpo/rewards/m2rl.py", rendered)
-        self.assertIn("custom_reward_function.name=compute_score", rendered)
-        self.assertIn("actor_rollout_ref.rollout.n=16", rendered)
-        self.assertIn("actor_rollout_ref.rollout.max_model_len=34816", rendered)
-
-    def test_m2rl_mixed_command_uses_domain_sampling(self) -> None:
-        config_path = Path(__file__).resolve().parents[1] / "grpo" / "configs" / "m2rl_if_science_mix.yaml"
-        config = load_config(config_path)
-        rendered = format_command(build_command(config))
-
-        self.assertIn("data/G-OPD-Training-Data/IF/train.parquet", rendered)
-        self.assertIn("data/G-OPD-Training-Data/Science/train.parquet", rendered)
-        self.assertIn("+data.domain_sampling_weights={if: 0.5, science: 0.5}", rendered)
-        self.assertIn("custom_reward_function.path=grpo/rewards/m2rl.py", rendered)
-        self.assertIn("custom_reward_function.name=compute_score", rendered)
-
     def test_qwen30b_6gpu_config_uses_equal_four_domain_batches(self) -> None:
         config_path = (
             Path(__file__).resolve().parents[1]
@@ -1074,7 +1080,7 @@ model:
         self.assertIn("+data.domain_sampling_weights={math: 1, code: 1, if: 1, science: 1}", rendered)
         self.assertIn("+mopd_audit.domains=['math', 'code', 'if', 'science']", rendered)
         self.assertIn("+mopd_audit.training_gradient_from_domain_sum_enabled=true", rendered)
-        self.assertIn("custom_reward_function.path=grpo/rewards/mixed.py", rendered)
+        self.assertIn("custom_reward_function.path=mopd_verl/mixed_reward.py", rendered)
         self.assertIn("custom_reward_function.name=compute_score", rendered)
         self.assertEqual(config.model.if_teacher_path, "../models/Qwen3-30B-A3B")
         self.assertEqual(
@@ -1111,7 +1117,7 @@ model:
         self.assertIn("+data.domain_sampling_weights={math: 1, code: 1, if: 1, science: 1}", rendered)
         self.assertIn("+mopd_audit.domains=['math', 'code', 'if', 'science']", rendered)
         self.assertIn("+mopd_audit.training_gradient_from_domain_sum_enabled=true", rendered)
-        self.assertIn("custom_reward_function.path=grpo/rewards/mixed.py", rendered)
+        self.assertIn("custom_reward_function.path=mopd_verl/mixed_reward.py", rendered)
         self.assertIn("custom_reward_function.name=compute_score", rendered)
         self.assertEqual(config.model.if_teacher_path, "../models/Qwen3-30B-A3B")
         self.assertEqual(
@@ -1279,6 +1285,8 @@ model:
                         "token_gap_vocab_vector_enabled": True,
                         "token_gap_vocab_size": 8,
                         "entropy_vocab_vector_enabled": True,
+                        "topk_teacher_student_cross_entropy_vocab_enabled": True,
+                        "logp_abs_vector_enabled": True,
                     },
                     "actor_rollout_ref": {
                         "actor": {"policy_loss": {"lambda_vals": 1.0}},
@@ -1302,6 +1310,20 @@ model:
             entropy_vocab_rows = [
                 json.loads(line)
                 for line in (Path(tmpdir) / "entropy_vocab_vectors.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+            topk_cross_entropy_vocab_rows = [
+                json.loads(line)
+                for line in (
+                    Path(tmpdir) / "topk_teacher_student_cross_entropy_vocab_vectors.jsonl"
+                ).read_text(encoding="utf-8").splitlines()
+            ]
+            logp_abs_rows = [
+                json.loads(line)
+                for line in (Path(tmpdir) / "logp_abs_vectors.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+            logp_abs_vocab_rows = [
+                json.loads(line)
+                for line in (Path(tmpdir) / "logp_abs_vocab_vectors.jsonl").read_text(encoding="utf-8").splitlines()
             ]
 
         self.assertAlmostEqual(metrics["math/token_gap/gap_abs_sum"], 2.0)
@@ -1340,6 +1362,9 @@ model:
         self.assertEqual(vectors["code"], [1.0, -1.0, 0.0])
         self.assertEqual(signed_vectors["math"], [1.0, -1.0])
         self.assertEqual(abs_vectors["math"], [1.0, 1.0])
+        logp_abs_vectors = {row["domain"]: row["logp_abs_vector_domain"] for row in logp_abs_rows}
+        self.assertEqual(logp_abs_vectors["math"], [1.0, 1.0])
+        self.assertEqual(logp_abs_vectors["code"], [1.0, 1.0, 0.0])
         vocab_vectors = {row["domain"]: row for row in vocab_rows}
         self.assertEqual(vocab_vectors["math"]["vocab_size"], 8)
         self.assertEqual(vocab_vectors["math"]["vocab_size_source"], "config")
@@ -1354,6 +1379,9 @@ model:
         self.assertEqual(vocab_vectors["code"]["token_count_vector_vocab"][5], 2.0)
         self.assertEqual(vocab_vectors["code"]["gap_signed_sum_vector_vocab"][5], 0.0)
         self.assertEqual(vocab_vectors["code"]["gap_abs_sum_vector_vocab"][5], 2.0)
+        logp_abs_vocab_vectors = {row["domain"]: row for row in logp_abs_vocab_rows}
+        self.assertEqual(logp_abs_vocab_vectors["math"]["logp_abs_sum_vector_vocab"][5], 1.0)
+        self.assertEqual(logp_abs_vocab_vectors["code"]["logp_abs_sum_vector_vocab"][5], 2.0)
         entropy_vocab_vectors = {row["domain"]: row for row in entropy_vocab_rows}
         self.assertEqual(entropy_vocab_vectors["math"]["vocab_size"], 8)
         self.assertEqual(entropy_vocab_vectors["math"]["vocab_size_source"], "config")
@@ -1378,6 +1406,13 @@ model:
         )
         self.assertAlmostEqual(entropy_vocab_vectors["code"]["student_entropy_sum_vector_vocab"][5], 1.5)
         self.assertAlmostEqual(entropy_vocab_vectors["code"]["student_entropy_mean_vector_vocab"][5], 0.75)
+        self.assertEqual(len(topk_cross_entropy_vocab_rows), 2)
+        self.assertTrue(
+            all(
+                "teacher_student_cross_entropy_sum_vector_vocab" in row
+                for row in topk_cross_entropy_vocab_rows
+            )
+        )
         entropy_vectors = {row["domain"]: row for row in entropy_rows}
         self.assertEqual(
             [round(value, 1) for value in entropy_vectors["math"]["teacher_entropy_vector_domain"]],
@@ -1866,12 +1901,12 @@ model:
         self.assertIn("+data.domain_train_files=", rendered)
         self.assertIn("DeepMath-103K/train_filtered_level6.parquet", rendered)
         self.assertIn("Eurus/code_train.parquet", rendered)
-        self.assertIn("eval/domains/math/data/AIME24/test.parquet", rendered)
-        self.assertIn("eval/domains/math/data/AIME25/test.parquet", rendered)
-        self.assertIn("eval/domains/math/data/HMMT25Feb/test.parquet", rendered)
-        self.assertIn("eval/domains/math/data/HMMT25Nov/test.parquet", rendered)
-        self.assertIn("eval/domains/code/data/MBPPPlus/test.parquet", rendered)
-        self.assertNotIn("eval/domains/code/data/LiveCodeBench/test.parquet", rendered)
+        self.assertIn("data/eval_data/math/AIME24/test.parquet", rendered)
+        self.assertIn("data/eval_data/math/AIME25/test.parquet", rendered)
+        self.assertIn("data/eval_data/math/HMMT25Feb/test.parquet", rendered)
+        self.assertIn("data/eval_data/math/HMMT25Nov/test.parquet", rendered)
+        self.assertIn("data/eval_data/code/MBPPPlus/test.parquet", rendered)
+        self.assertNotIn("data/eval_data/code/LiveCodeBench/test.parquet", rendered)
         self.assertIn("trainer.default_local_dir=checkpoints/formal_audit_all_2gpu", rendered)
         self.assertNotIn("/root/autodl-tmp/opd_mopd/G-OPD/G-OPD-Training-Data", rendered)
         self.assertNotIn("/root/autodl-tmp/opd_mopd/OPD-code", rendered)

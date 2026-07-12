@@ -12,7 +12,7 @@ from mopd_verl.general_reasoner_data import (
     prepare_general_reasoner_hf_dataset,
 )
 
-DEFAULT_OUTPUT_DIR = Path("eval/domains/greasoner/data/WebInstructVerified")
+DEFAULT_OUTPUT_DIR = Path("data/eval_data/greasoner/WebInstructVerified")
 
 
 def parse_args() -> argparse.Namespace:

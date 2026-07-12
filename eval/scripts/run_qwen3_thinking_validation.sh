@@ -36,21 +36,21 @@ SAVE_COMPLETIONS="${SAVE_COMPLETIONS:-1}"
 INCLUDE_SEARCH="${INCLUDE_SEARCH:-1}"
 SEARCH_DATA_FILES="${SEARCH_DATA_FILES:-${CODE_DIR}/data/SearchQA/test.parquet}"
 INCLUDE_GREASONER="${INCLUDE_GREASONER:-1}"
-GREASONER_DATA_FILES="${GREASONER_DATA_FILES:-${CODE_DIR}/eval/domains/greasoner/data/WebInstructVerified/test.parquet}"
+GREASONER_DATA_FILES="${GREASONER_DATA_FILES:-${CODE_DIR}/data/eval_data/greasoner/WebInstructVerified/test.parquet}"
 INCLUDE_TOOLRL="${INCLUDE_TOOLRL:-1}"
-TOOLRL_DATA_FILES="${TOOLRL_DATA_FILES:-${CODE_DIR}/eval/domains/toolrl/data/BFCL/test.parquet ${CODE_DIR}/eval/domains/toolrl/data/API-Bank/test.parquet ${CODE_DIR}/eval/domains/toolrl/data/Bamboogle/test.parquet}"
+TOOLRL_DATA_FILES="${TOOLRL_DATA_FILES:-${CODE_DIR}/data/eval_data/toolrl/BFCL/test.parquet ${CODE_DIR}/data/eval_data/toolrl/API-Bank/test.parquet ${CODE_DIR}/data/eval_data/toolrl/Bamboogle/test.parquet}"
 
 export CUDA_VISIBLE_DEVICES
 export HF_HOME
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 export PYTHONPATH="${CODE_DIR}:${CODE_DIR}/third_party/verl:${PYTHONPATH:-}"
 DATA_FILES=(
-  "${CODE_DIR}/eval/domains/math/data/AIME24/test.parquet"
-  "${CODE_DIR}/eval/domains/math/data/AIME25/test.parquet"
-  "${CODE_DIR}/eval/domains/math/data/HMMT25Feb/test.parquet"
-  "${CODE_DIR}/eval/domains/math/data/HMMT25Nov/test.parquet"
-  "${CODE_DIR}/eval/domains/code/data/HumanEvalPlus/test.parquet"
-  "${CODE_DIR}/eval/domains/code/data/MBPPPlus/test.parquet"
+  "${CODE_DIR}/data/eval_data/math/AIME24/test.parquet"
+  "${CODE_DIR}/data/eval_data/math/AIME25/test.parquet"
+  "${CODE_DIR}/data/eval_data/math/HMMT25Feb/test.parquet"
+  "${CODE_DIR}/data/eval_data/math/HMMT25Nov/test.parquet"
+  "${CODE_DIR}/data/eval_data/code/HumanEvalPlus/test.parquet"
+  "${CODE_DIR}/data/eval_data/code/MBPPPlus/test.parquet"
 )
 if [[ "${INCLUDE_GREASONER}" == "1" ]]; then
   for greasoner_data_file in ${GREASONER_DATA_FILES}; do

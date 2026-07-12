@@ -21,12 +21,12 @@ go under `eval/`.
 
 | Domain | Code | Eval data | Status |
 |---|---|---|---|
-| Math | `domains/math/` | `domains/math/data/{AIME24,AIME25,HMMT25Feb,HMMT25Nov}/test.parquet` | Ready |
-| Code | `domains/code/` | `domains/code/data/{HumanEvalPlus,MBPPPlus,LiveCodeBench}/test.parquet` | Ready |
-| IF | `domains/ifbench/` | `domains/ifbench/data/IFBench_test.parquet` | GRPO-aligned verl validation path; generate with `scripts/prepare_m2rl_eval_data.sh` |
-| Science | `domains/science/` | `domains/science/data/gpqa.parquet` | GRPO-aligned verl validation path; generate with `scripts/prepare_m2rl_eval_data.sh` |
-| GReasoner | `domains/greasoner/` | `domains/greasoner/data/official/{MMLU-Pro,GPQA-D,SuperGPQA,TheoremQA,BBEH}/test.parquet` | General-Reasoner paper benchmarks ready; WebInstructVerified is only for training/verl validation |
-| ToolRL | `domains/toolrl/` | `domains/toolrl/data/{BFCL,API-Bank,Bamboogle}/test.parquet` | API-Bank / BFCL / Bamboogle wrappers ready; BFCL needs the external harness, Bamboogle is optional paid eval |
+| Math | `domains/math/` | `../data/eval_data/math/{AIME24,AIME25,HMMT25Feb,HMMT25Nov}/test.parquet` | Ready |
+| Code | `domains/code/` | `../data/eval_data/code/{HumanEvalPlus,MBPPPlus,LiveCodeBench}/test.parquet` | Ready |
+| IF | `domains/ifbench/` | `../data/eval_data/ifbench/IFBench_test.parquet` | verl validation path; generate with `scripts/prepare_m2rl_eval_data.sh` |
+| Science | `domains/science/` | `../data/eval_data/science/gpqa.parquet` | verl validation path; generate with `scripts/prepare_m2rl_eval_data.sh` |
+| GReasoner | `domains/greasoner/` | `../data/eval_data/greasoner/official/{MMLU-Pro,GPQA-D,SuperGPQA,TheoremQA,BBEH}/test.parquet` | General-Reasoner paper benchmarks ready; WebInstructVerified is only for training/verl validation |
+| ToolRL | `domains/toolrl/` | `../data/eval_data/toolrl/{BFCL,API-Bank,Bamboogle}/test.parquet` | API-Bank / BFCL / Bamboogle wrappers ready; BFCL needs the external harness, Bamboogle is optional paid eval |
 
 SearchQA support remains in `domains/search/` because the thinking evaluator can
 still include `data/SearchQA/test.parquet`, but SearchQA is not one of the four
@@ -53,7 +53,7 @@ General-Reasoner/WebInstruct training or verl validation subset:
 ```bash
 python -m eval.domains.greasoner.prepare_data \
   --from-hf \
-  --output-dir eval/domains/greasoner/data/WebInstructVerified \
+  --output-dir data/eval_data/greasoner/WebInstructVerified \
   --max-samples 100
 ```
 
@@ -63,10 +63,10 @@ ToolRL local JSONL staging:
 python -m eval.domains.toolrl.prepare_data \
   --dataset BFCL \
   --input /path/to/bfcl.jsonl \
-  --output eval/domains/toolrl/data/BFCL/test.parquet
+  --output data/eval_data/toolrl/BFCL/test.parquet
 ```
 
-M2RL IF/science validation data, aligned with the sibling GRPO workspace:
+Prepare M2RL IF/science validation data:
 
 ```bash
 IF_VAL_SOURCE=/path/to/raw_if_val.parquet \
@@ -99,7 +99,7 @@ Useful switches:
 - `INCLUDE_SEARCH=0`
 - `BACKEND=hf` or `BACKEND=vllm`
 
-Outputs are written to `eval/results/<RUN_ID>/`:
+Outputs are written to `data/eval_data/results/<RUN_ID>/`:
 
 - `thinking_eval_samples.jsonl`
 - `thinking_eval_summary.json`
@@ -113,7 +113,7 @@ Outputs are written to `eval/results/<RUN_ID>/`:
   router when available.
 - Code uses `mopd_verl/code_reward.py` through the vendored verl reward router.
 - IF/science validation uses the same verl reward path as training:
-  `grpo/rewards/mixed.py` routes `m2rl_ifbench` to IFBench/verifiable-instructions
+  `mopd_verl/mixed_reward.py` routes `m2rl_ifbench` to IFBench/verifiable-instructions
   strict scoring and `m2rl_gpqa` to GPQA option-letter scoring.
 - ToolRL parquet data is loadable for cost/token reports.
 - ToolRL official benchmark wrappers support API-Bank local scoring, the BFCL
@@ -124,9 +124,6 @@ Outputs are written to `eval/results/<RUN_ID>/`:
 MOPD configs now point validation paths to this directory:
 
 - `configs/mopd_qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_*.yaml`
-- `grpo/configs/m2rl_if.yaml`
-- `grpo/configs/m2rl_science.yaml`
-- `grpo/configs/m2rl_if_science_mix.yaml`
 
 Training data remains under `data/G-OPD-Training-Data/` and is intentionally not
 mixed with eval data.

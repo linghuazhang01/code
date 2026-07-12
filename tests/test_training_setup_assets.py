@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 class TrainingSetupAssetScriptTests(unittest.TestCase):
-    def test_setup_training_env_creates_conda_env_and_runs_remote_setup(self) -> None:
+    def test_setup_training_env_syncs_the_single_environment_file(self) -> None:
         script_path = (
             Path(__file__).resolve().parents[1]
             / "scripts"
@@ -16,46 +16,41 @@ class TrainingSetupAssetScriptTests(unittest.TestCase):
         source = script_path.read_text(encoding="utf-8")
 
         self.assertIn('ENV_NAME="${ENV_NAME:-mopd-verl}"', source)
-        self.assertIn('PYTHON_VERSION="${PYTHON_VERSION:-3.10}"', source)
-        self.assertIn("--override-channels", source)
-        self.assertIn('--channel "${CONDA_CHANNEL}"', source)
+        self.assertIn('ENV_FILE="${ENV_FILE:-${CODE_DIR}/environment.yml}"', source)
+        self.assertIn('UPDATE_ENV="${UPDATE_ENV:-1}"', source)
+        self.assertIn('conda env create --name "${ENV_NAME}" --file "${ENV_FILE}"', source)
+        self.assertIn('conda env update --name "${ENV_NAME}" --file "${ENV_FILE}" --prune', source)
         self.assertIn('conda run --no-capture-output -n "${ENV_NAME}"', source)
         self.assertIn('if [[ -n "${CONDA_ROOT:-}" ]]', source)
         self.assertIn("ensure_git_lfs", source)
         self.assertIn('INSTALL_GIT_LFS="${INSTALL_GIT_LFS:-1}"', source)
-        self.assertIn('REQUIREMENT_FILE="${REQUIREMENT_FILE:-${CODE_DIR}/requirement.txt}"', source)
-        self.assertIn("setup_remote_training_env.sh", source)
+        self.assertIn("verify_environment", source)
+        self.assertNotIn("install_training_deps.sh", source)
+        self.assertNotIn("pip install", source)
         self.assertIn("download_training_assets.sh", source)
 
-    def test_remote_setup_installs_dependencies_from_requirements_files(self) -> None:
-        script_path = (
-            Path(__file__).resolve().parents[1]
-            / "scripts"
-            / "setup_remote_training_env.sh"
-        )
-        source = script_path.read_text(encoding="utf-8")
-
-        self.assertIn('REQUIREMENT_FILE="${REQUIREMENT_FILE:-${CODE_DIR}/requirement.txt}"', source)
-        self.assertIn('python -m pip install --upgrade -r "${REQUIREMENT_FILE}"', source)
-        self.assertIn("IF/science dependencies are missing after installing", source)
-        self.assertIn('if os.environ["INSTALL_VERL_DEPS"] == "1"', source)
-
-        requirement_source = (
-            Path(__file__).resolve().parents[1] / "requirement.txt"
-        ).read_text(encoding="utf-8")
+    def test_environment_yaml_is_the_only_dependency_definition(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        environment_source = (root / "environment.yml").read_text(encoding="utf-8")
+        self.assertFalse((root / "requirement.txt").exists())
+        self.assertFalse((root / "scripts" / "install_training_deps.sh").exists())
         for expected in (
+            "python=3.10",
+            "torch==2.6.0",
+            "vllm==0.8.5.post1",
+            "flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE",
             "transformers[hf_xet]==4.51.3",
             "tokenizers>=0.21.1,<0.22",
             "huggingface_hub>=0.30.0,<1.0",
             "tensorboard==2.20.0",
-            "protobuf<5.0,>=3.20.3",
+            "protobuf>=3.20.3,<5.0",
             "click",
             "modelscope",
             "langdetect",
             "nltk",
-            "git+https://github.com/abukharin-nv/verifiable-instructions.git",
+            "git+https://github.com/abukharin-nv/verifiable-instructions.git@f46a5ac87b1400a4f8973039844b6be9b56e3faf",
         ):
-            self.assertIn(expected, requirement_source)
+            self.assertIn(expected, environment_source)
 
     def test_asset_script_targets_qwen30b_four_domain_training(self) -> None:
         script_path = (
@@ -105,136 +100,24 @@ class TrainingSetupAssetScriptTests(unittest.TestCase):
         self.assertIn("is_lfs_pointer", source)
         self.assertIn('git -C "${CODE_DIR}" lfs pull', source)
 
-    def test_notebook_setup_runs_remote_setup_inside_target_env(self) -> None:
+    def test_local_training_script_launches_profile_with_local_env(self) -> None:
         script_path = (
             Path(__file__).resolve().parents[1]
             / "scripts"
-            / "setup_notebook_training_env.sh"
-        )
-        source = script_path.read_text(encoding="utf-8")
-
-        self.assertIn('conda run --no-capture-output -n "${ENV_NAME}"', source)
-        self.assertIn('bash "${SCRIPT_DIR}/setup_remote_training_env.sh"', source)
-        self.assertIn('REQUIREMENT_FILE="${REQUIREMENT_FILE:-${CODE_DIR}/requirement.txt}"', source)
-
-    def test_bootstrap_script_clones_assets_and_launches_profile_overrides(self) -> None:
-        script_path = (
-            Path(__file__).resolve().parents[1]
-            / "scripts"
-            / "bootstrap_qwen30b_mopd_training.sh"
+            / "run_local_mopd_training.sh"
         )
         source = script_path.read_text(encoding="utf-8")
 
         for expected in (
-            'REPO_URL="${REPO_URL:-http://github.com/linghuazhang01/code.git}"',
-            'REPO_REF="${REPO_REF:-bowen}"',
-            'BUNDLE_ZIP="${BUNDLE_ZIP:-}"',
-            "unpack_data_bundle",
-            "validate_data_bundle_entries",
-            "git clone",
-            "STEP 1/4 git clone/update",
-            "STEP 1/4 data bundle overlay",
-            "STEP 2/4 environment install",
-            "STEP 3/4 asset preparation",
-            "STEP 4/4 launch training",
-            'GIT_TIMEOUT_SECONDS="${GIT_TIMEOUT_SECONDS:-300}"',
-            'GIT_HTTP_VERSION="${GIT_HTTP_VERSION:-HTTP/1.1}"',
-            'GIT_CLONE_DEPTH="${GIT_CLONE_DEPTH:-1}"',
-            "clone_args=(clone)",
-            'run_git "${clone_args[@]}"',
-            "--single-branch",
-            "scripts/setup_training_env.sh",
-            "scripts/download_training_assets.sh",
-            "configs/mopd_qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_6gpu_fsdp.yaml",
-            'GPU_PROFILE="4gpu"',
-            'PROFILE_ACTOR_GPUS=3',
-            'PROFILE_REF_GPUS=1',
-            'PROFILE_TRAIN_BATCH_SIZE=384',
-            'GPU_PROFILE="8gpu"',
-            'PROFILE_ACTOR_GPUS=6',
-            'PROFILE_REF_GPUS=2',
-            'PROFILE_TRAIN_BATCH_SIZE=768',
-            'PROFILE_ROLLOUT_TP=1',
-            'CONDA_ROOT="${CONDA_ROOT:-/root/autodl-tmp/opd_mopd/miniconda3}"',
-            'MODEL_BACKEND="${MODEL_BACKEND:-modelscope}"',
-            'MIN_FREE_GB="${MIN_FREE_GB:-100}"',
-            'DOWNLOAD_DATA=0',
-            "actor_rollout_ref.worker_placement.actor_rollout.n_gpus_per_node",
-            "actor_rollout_ref.worker_placement.ref_policy.n_gpus_per_node",
-            "scripts/start_remote_mopd_training.sh",
-        ):
-            self.assertIn(expected, source)
-
-    def test_package_script_bundles_only_required_data_without_code(self) -> None:
-        script_path = (
-            Path(__file__).resolve().parents[1]
-            / "scripts"
-            / "package_qwen30b_mopd_bundle.sh"
-        )
-        source = script_path.read_text(encoding="utf-8")
-
-        for expected in (
-            "data-only",
-            "opd_qwen30b_mopd_data_",
-            "DeepMath-103K/train_filtered_level6.parquet",
-            "Eurus/code_train.parquet",
-            "IF/train.parquet",
-            "Science/train.parquet",
-            "AIME24/test.parquet",
-            "HumanEvalPlus/test.parquet",
-            "is_lfs_pointer",
-            "zip_paths",
-            "data/G-OPD-Training-Data",
-            "eval/domains",
-            "zip -qr",
-        ):
-            self.assertIn(expected, source)
-        self.assertNotIn("BUNDLE_ROOT_NAME", source)
-        self.assertNotIn("rsync -a", source)
-
-    def test_zip_deploy_script_uploads_bundle_and_runs_remote_bootstrap(self) -> None:
-        script_path = (
-            Path(__file__).resolve().parents[1]
-            / "scripts"
-            / "deploy_qwen30b_mopd_zip_remote.sh"
-        )
-        source = script_path.read_text(encoding="utf-8")
-
-        for expected in (
-            "package_qwen30b_mopd_bundle.sh",
-            "scp",
-            "BUNDLE_ZIP",
-            "opd_qwen30b_mopd_data_",
-            "REMOTE_WORKDIR",
-            "MODEL_BACKEND=modelscope",
-            "DOWNLOAD_DATA=0",
-            "DOWNLOAD_MODELS=1",
-            "INSTALL_VERL_DEPS",
-            "BUNDLE_REPLACE_EXISTING",
-            "bootstrap_qwen30b_mopd_training.sh",
-        ):
-            self.assertIn(expected, source)
-
-    def test_full_zip_dryrun_script_resets_remote_then_runs_complete_flow(self) -> None:
-        script_path = (
-            Path(__file__).resolve().parents[1]
-            / "scripts"
-            / "run_qwen30b_mopd_zip_full_dryrun_remote.sh"
-        )
-        source = script_path.read_text(encoding="utf-8")
-
-        for expected in (
-            "REMOTE_WORKDIR=/root/autodl-tmp/opd_mopd_full_dryrun",
-            "RESET_REMOTE=1",
-            "rm -rf",
-            "/root/autodl-tmp/opd_*",
-            "deploy_qwen30b_mopd_zip_remote.sh",
-            "DRY_RUN=1",
-            "INSTALL_ENV=1",
-            "DOWNLOAD_DATA=0",
-            "DOWNLOAD_MODELS=1",
-            "REQUIRE_MODELS=1",
-            "MODEL_BACKEND=modelscope",
+            "scripts/run_local_mopd_training.sh",
+            'CONDA_ROOT="${CONDA_ROOT:-${HOME}/miniconda3}"',
+            'ENV_NAME="${ENV_NAME:-mopd-verl}"',
+            "MOPD_LOCAL_CONDA_ENV",
+            "Local training launch",
+            "scripts/run_mopd.sh",
+            "CUDA_VISIBLE_DEVICES",
+            "GPU_IDLE_MEMORY_LIMIT_MB",
+            "REQUIRED_GPUS",
         ):
             self.assertIn(expected, source)
 

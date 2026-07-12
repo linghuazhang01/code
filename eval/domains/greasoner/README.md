@@ -37,7 +37,7 @@ Prepare the WebInstruct parquet with:
 ```bash
 python -m eval.domains.greasoner.prepare_data \
   --from-hf \
-  --output-dir eval/domains/greasoner/data/WebInstructVerified \
+  --output-dir data/eval_data/greasoner/WebInstructVerified \
   --max-samples 100
 ```
 
@@ -46,7 +46,7 @@ For a local JSON/JSONL/parquet test split:
 ```bash
 python -m eval.domains.greasoner.prepare_data \
   --input /path/to/test.jsonl \
-  --output eval/domains/greasoner/data/WebInstructVerified/test.parquet \
+  --output data/eval_data/greasoner/WebInstructVerified/test.parquet \
   --split test \
   --max-samples 100
 ```

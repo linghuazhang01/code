@@ -12,7 +12,6 @@ class MOPDProfileTests(unittest.TestCase):
         ("all", 2, 256, 2, 0.7, 8, 8),
         ("all", 4, 512, 4, 0.7, 16, 16),
         ("all", 6, 768, 2, 0.6, 24, 24),
-        ("all", 8, 1024, 4, 0.7, 16, 32),
         ("loss_only", 2, 256, 2, 0.7, 8, 8),
         ("loss_only", 4, 512, 4, 0.7, 16, 16),
         ("loss_only", 6, 768, 2, 0.6, 24, 24),
@@ -113,6 +112,34 @@ class MOPDProfileTests(unittest.TestCase):
                 self.assertIsNone(config.audit.token_conflict_top_k)
                 self.assertEqual(config.audit.token_gradient_top_k, 100)
                 self.assertEqual(config.audit.token_gradient_top_p, 0.10)
+
+    def test_eight_gpu_opd_profile_uses_split_placement_and_audit_only_ce(self) -> None:
+        config_path = (
+            Path(__file__).resolve().parents[1]
+            / "configs"
+            / "mopd_formal_audit_all_8gpu.yaml"
+        )
+        config = load_config(config_path)
+        rendered = format_command(build_command(config))
+
+        self.assertEqual(config.actor.distill_loss_builder, "policy_gradient")
+        self.assertEqual(config.actor.distill_mode, "chosen_token_policy_gradient")
+        self.assertFalse(config.actor.topk_distill_enabled)
+        self.assertEqual(config.actor.topk_distill_loss_weight, 0.0)
+        self.assertEqual(config.trainer.n_gpus_per_node, 6)
+        self.assertEqual(config.worker_placement.actor_rollout.n_gpus_per_node, 6)
+        self.assertEqual(config.worker_placement.ref_policy.n_gpus_per_node, 2)
+        self.assertTrue(config.audit.topk_teacher_student_cross_entropy_vocab_enabled)
+        self.assertEqual(config.audit.topk_teacher_student_cross_entropy_vocab_freq_steps, 1)
+        self.assertEqual(config.audit.topk_teacher_student_cross_entropy_k, 32)
+        self.assertFalse(config.audit.topk_teacher_student_cross_entropy_include_tail)
+        self.assertTrue(config.audit.logp_abs_vector_enabled)
+        self.assertEqual(config.audit.logp_abs_vector_freq_steps, 1)
+        self.assertIn(
+            "+mopd_audit.topk_teacher_student_cross_entropy_vocab_enabled=true",
+            rendered,
+        )
+        self.assertIn("+mopd_audit.logp_abs_vector_enabled=true", rendered)
 
     def test_loss_only_profile_uses_only_loss_token_gradient_selection(self) -> None:
         config_dir = Path(__file__).resolve().parents[1] / "configs"

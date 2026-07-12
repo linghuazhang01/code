@@ -43,13 +43,16 @@ data:
   domain_sampling_replacement: true
   load_parquet_direct: true
   val_files:
-    - eval/domains/math/data/AIME24/test.parquet
-    - eval/domains/math/data/AIME25/test.parquet
-    - eval/domains/math/data/HMMT25Feb/test.parquet
-    - eval/domains/math/data/HMMT25Nov/test.parquet
-    - eval/domains/code/data/HumanEvalPlus/test.parquet
-    - eval/domains/code/data/MBPPPlus/test.parquet
-    # - eval/domains/code/data/LiveCodeBench/test.parquet
+    - data/eval_data/math/AIME24/test.parquet
+    - data/eval_data/math/AIME25/test.parquet
+    - data/eval_data/math/HMMT25Feb/test.parquet
+    - data/eval_data/math/HMMT25Nov/test.parquet
+    - data/eval_data/code/HumanEvalPlus/test.parquet
+    - data/eval_data/code/MBPPPlus/test.parquet
+    - data/eval_data/ifbench/IFEval.parquet
+    - data/eval_data/ifbench/IFBench_test.parquet
+    - data/eval_data/science/gpqa.parquet
+    # - data/eval_data/code/LiveCodeBench/test.parquet
   train_batch_size: 24
   max_prompt_length: 2048
   max_response_length: 10240
@@ -133,7 +136,7 @@ rollout_correction:
   bypass_mode: false
 
 extra_overrides:
-  - custom_reward_function.path=grpo/rewards/mixed.py
+  - custom_reward_function.path=mopd_verl/mixed_reward.py
   - custom_reward_function.name=compute_score
 
 worker_placement:

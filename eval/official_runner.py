@@ -26,7 +26,7 @@ DOMAIN_TO_DATASETS = {
 
 def _default_output_dir() -> str:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return f"eval/results/official_{timestamp}"
+    return f"data/eval_data/results/official_{timestamp}"
 
 
 def _env_or_arg(value: str | None, env_name: str) -> str | None:

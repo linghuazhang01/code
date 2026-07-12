@@ -79,7 +79,7 @@ def run_bfcl(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-path", required=True)
-    parser.add_argument("--output-dir", default="eval/results/official_toolrl/bfcl")
+    parser.add_argument("--output-dir", default="data/eval_data/results/official_toolrl/bfcl")
     parser.add_argument("--bfcl-command", default=None)
     parser.add_argument("--api-base-url", default=None)
     parser.add_argument("--api-key", default=None)

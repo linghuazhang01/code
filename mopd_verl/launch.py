@@ -167,6 +167,18 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"+mopd_audit.entropy_freq_steps={audit.entropy_freq_steps}",
         f"+mopd_audit.entropy_vocab_vector_enabled={str(audit.entropy_vocab_vector_enabled).lower()}",
         f"+mopd_audit.entropy_vocab_vector_freq_steps={audit.entropy_vocab_vector_freq_steps}",
+        "+mopd_audit.topk_teacher_student_cross_entropy_vocab_enabled="
+        f"{str(audit.topk_teacher_student_cross_entropy_vocab_enabled).lower()}",
+        "+mopd_audit.topk_teacher_student_cross_entropy_vocab_freq_steps="
+        f"{audit.topk_teacher_student_cross_entropy_vocab_freq_steps}",
+        "+mopd_audit.topk_teacher_student_cross_entropy_k="
+        f"{audit.topk_teacher_student_cross_entropy_k}",
+        "+mopd_audit.topk_teacher_student_cross_entropy_include_tail="
+        f"{str(audit.topk_teacher_student_cross_entropy_include_tail).lower()}",
+        "+mopd_audit.topk_teacher_student_cross_entropy_temperature="
+        f"{audit.topk_teacher_student_cross_entropy_temperature}",
+        f"+mopd_audit.logp_abs_vector_enabled={str(audit.logp_abs_vector_enabled).lower()}",
+        f"+mopd_audit.logp_abs_vector_freq_steps={audit.logp_abs_vector_freq_steps}",
         f"+mopd_audit.token_conflict_enabled={str(audit.token_conflict_enabled).lower()}",
         f"+mopd_audit.token_conflict_freq_steps={audit.token_conflict_freq_steps}",
         f"+mopd_audit.token_conflict_top_k={_hydra_scalar(audit.token_conflict_top_k)}",

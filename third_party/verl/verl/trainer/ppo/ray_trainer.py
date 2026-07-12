@@ -1357,7 +1357,13 @@ class RayPPOTrainer:
                     # compute global_valid tokens
                     batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
                     policy_loss_config = self.config.actor_rollout_ref.actor.policy_loss
-                    if uses_topk_distill_loss(policy_loss_config):
+                    topk_distill_loss_active = uses_topk_distill_loss(policy_loss_config)
+                    topk_cross_entropy_audit_active = (
+                        self.mopd_audit_logger.should_log_topk_teacher_student_cross_entropy_vocab(
+                            self.global_steps
+                        )
+                    )
+                    if topk_distill_loss_active:
                         support_source = topk_distill_support_source(policy_loss_config)
                         batch.meta_info["topk_distill_support_source"] = support_source
                         if support_source == TOPK_SUPPORT_SOURCE_STUDENT:
@@ -1366,6 +1372,13 @@ class RayPPOTrainer:
                         else:
                             batch.meta_info["teacher_topk_k"] = topk_distill_k(policy_loss_config)
                             batch.meta_info.pop("student_topk_k", None)
+                    elif topk_cross_entropy_audit_active:
+                        support_source = TOPK_SUPPORT_SOURCE_TEACHER
+                        batch.meta_info["topk_distill_support_source"] = support_source
+                        batch.meta_info["teacher_topk_k"] = (
+                            self.mopd_audit_logger.topk_teacher_student_cross_entropy_k
+                        )
+                        batch.meta_info.pop("student_topk_k", None)
                     else:
                         support_source = TOPK_SUPPORT_SOURCE_TEACHER
                         batch.meta_info.pop("teacher_topk_k", None)
@@ -1548,10 +1561,16 @@ class RayPPOTrainer:
                                 code_teacher_log_prob_shape,
                             )
 
+                    topk_cross_entropy_logging_active = (
+                        topk_cross_entropy_audit_active
+                        or (
+                            self.mopd_audit_logger.should_log_entropy(self.global_steps)
+                            and topk_distill_loss_active
+                        )
+                    )
                     if (
                         self.mopd_audit_logger.enabled
-                        and self.mopd_audit_logger.should_log_entropy(self.global_steps)
-                        and uses_topk_distill_loss(policy_loss_config)
+                        and topk_cross_entropy_logging_active
                         and (
                             "math_teacher_topk_ids" in batch.batch
                             or (
@@ -1561,8 +1580,20 @@ class RayPPOTrainer:
                         )
                     ):
                         with marked_timer("teacher_student_ce", timing_raw, color="purple"):
-                            batch.meta_info["topk_distill_include_tail"] = topk_distill_include_tail(policy_loss_config)
-                            batch.meta_info["topk_distill_temperature"] = topk_distill_temperature(policy_loss_config)
+                            if topk_distill_loss_active:
+                                batch.meta_info["topk_distill_include_tail"] = topk_distill_include_tail(
+                                    policy_loss_config
+                                )
+                                batch.meta_info["topk_distill_temperature"] = topk_distill_temperature(
+                                    policy_loss_config
+                                )
+                            else:
+                                batch.meta_info["topk_distill_include_tail"] = (
+                                    self.mopd_audit_logger.topk_teacher_student_cross_entropy_include_tail
+                                )
+                                batch.meta_info["topk_distill_temperature"] = (
+                                    self.mopd_audit_logger.topk_teacher_student_cross_entropy_temperature
+                                )
                             teacher_student_ce = self.actor_rollout_wg.compute_teacher_student_cross_entropy(batch)
                             batch = batch.union(teacher_student_ce)
                     

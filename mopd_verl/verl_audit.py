@@ -749,6 +749,31 @@ class MOPDAuditLogger:
             1,
             int(_cfg_get(audit_config, "entropy_vocab_vector_freq_steps", 1)),
         )
+        self.topk_teacher_student_cross_entropy_vocab_enabled = bool(
+            _cfg_get(audit_config, "topk_teacher_student_cross_entropy_vocab_enabled", False)
+        )
+        self.topk_teacher_student_cross_entropy_vocab_freq_steps = max(
+            1,
+            int(_cfg_get(audit_config, "topk_teacher_student_cross_entropy_vocab_freq_steps", 1)),
+        )
+        self.topk_teacher_student_cross_entropy_k = max(
+            1,
+            int(_cfg_get(audit_config, "topk_teacher_student_cross_entropy_k", 32)),
+        )
+        self.topk_teacher_student_cross_entropy_include_tail = bool(
+            _cfg_get(audit_config, "topk_teacher_student_cross_entropy_include_tail", False)
+        )
+        self.topk_teacher_student_cross_entropy_temperature = max(
+            1e-6,
+            float(_cfg_get(audit_config, "topk_teacher_student_cross_entropy_temperature", 1.0)),
+        )
+        self.logp_abs_vector_enabled = bool(
+            _cfg_get(audit_config, "logp_abs_vector_enabled", False)
+        )
+        self.logp_abs_vector_freq_steps = max(
+            1,
+            int(_cfg_get(audit_config, "logp_abs_vector_freq_steps", 1)),
+        )
         self.token_conflict_enabled = bool(_cfg_get(audit_config, "token_conflict_enabled", True))
         self.token_conflict_freq_steps = max(1, int(_cfg_get(audit_config, "token_conflict_freq_steps", 1)))
         self.token_conflict_top_k = _optional_positive_int(_cfg_get(audit_config, "token_conflict_top_k", None))
@@ -854,6 +879,20 @@ class MOPDAuditLogger:
         return self._freq_active(
             self.entropy_vocab_vector_enabled,
             self.entropy_vocab_vector_freq_steps,
+            step,
+        )
+
+    def should_log_topk_teacher_student_cross_entropy_vocab(self, step: int) -> bool:
+        return self._freq_active(
+            self.topk_teacher_student_cross_entropy_vocab_enabled,
+            self.topk_teacher_student_cross_entropy_vocab_freq_steps,
+            step,
+        )
+
+    def should_log_logp_abs_vector(self, step: int) -> bool:
+        return self._freq_active(
+            self.logp_abs_vector_enabled,
+            self.logp_abs_vector_freq_steps,
             step,
         )
 
@@ -1113,10 +1152,26 @@ class MOPDAuditLogger:
             self._write_jsonl("token_gap_vectors.jsonl", token_gap_rows)
         if token_gap_vocab_rows:
             self._write_jsonl("token_gap_vocab_vectors.jsonl", token_gap_vocab_rows)
+            logp_abs_vocab_rows = [
+                row for row in token_gap_vocab_rows if "logp_abs_sum_vector_vocab" in row
+            ]
+            self._write_jsonl("logp_abs_vocab_vectors.jsonl", logp_abs_vocab_rows)
+        if token_gap_rows:
+            logp_abs_rows = [row for row in token_gap_rows if "logp_abs_vector_domain" in row]
+            self._write_jsonl("logp_abs_vectors.jsonl", logp_abs_rows)
         if entropy_distribution_rows:
             self._write_jsonl("entropy_distribution_vectors.jsonl", entropy_distribution_rows)
         if entropy_vocab_rows:
             self._write_jsonl("entropy_vocab_vectors.jsonl", entropy_vocab_rows)
+            topk_cross_entropy_vocab_rows = [
+                row
+                for row in entropy_vocab_rows
+                if "teacher_student_cross_entropy_sum_vector_vocab" in row
+            ]
+            self._write_jsonl(
+                "topk_teacher_student_cross_entropy_vocab_vectors.jsonl",
+                topk_cross_entropy_vocab_rows,
+            )
         return metrics
 
     def log_validation_metrics(self, val_metrics: dict[str, Any], step: int) -> dict[str, float]:
@@ -1134,6 +1189,9 @@ class MOPDAuditLogger:
 
         tensor_batch = batch.batch
         non_tensor = batch.non_tensor_batch
+        batch_meta_info = getattr(batch, "meta_info", {})
+        if not isinstance(batch_meta_info, dict):
+            batch_meta_info = {}
         old_log_probs = tensor_batch["old_log_probs"].detach().float()
         response_mask = response_mask_from_batch(tensor_batch, old_log_probs)
         batch_keys = set(tensor_batch.keys())
@@ -1243,9 +1301,16 @@ class MOPDAuditLogger:
         entropy_vocab_rows: list[dict[str, Any]] = []
         entropy_vocab_vectors_by_domain: dict[str, dict[str, Any]] = {}
         token_gap_active = self.should_log_token_gap(step)
+        logp_abs_active = self.should_log_logp_abs_vector(step)
+        logp_vector_active = token_gap_active or logp_abs_active
         token_gap_vocab_active = token_gap_active and self.should_log_token_gap_vocab_vector(step)
-        entropy_active = self.should_log_entropy(step)
-        entropy_vocab_active = entropy_active and self.should_log_entropy_vocab_vector(step)
+        topk_cross_entropy_vocab_active = (
+            self.should_log_topk_teacher_student_cross_entropy_vocab(step)
+        )
+        entropy_active = self.should_log_entropy(step) or topk_cross_entropy_vocab_active
+        entropy_vocab_active = (
+            self.should_log_entropy(step) and self.should_log_entropy_vocab_vector(step)
+        ) or topk_cross_entropy_vocab_active
         token_conflict_active = self.should_log_token_conflict(step)
         sample_level_active = self.should_log_sample_level(step)
 
@@ -1269,11 +1334,11 @@ class MOPDAuditLogger:
         sample_count_by_domain = {domain: len(indices) for domain, indices in indices_by_domain.items()}
         token_conflict_summaries: dict[str, dict[str, float]] = {}
         token_ids = None
-        if token_conflict_active or token_gap_active or entropy_vocab_active:
+        if token_conflict_active or logp_vector_active or entropy_vocab_active:
             token_ids = _response_token_id_matrix(tensor_batch, batch_keys, response_mask)
         token_gap_vocab_size = self.token_gap_vocab_size
         token_gap_vocab_size_source = self.token_gap_vocab_size_source
-        if (token_gap_active or entropy_vocab_active) and token_ids is not None and token_gap_vocab_size is None:
+        if (logp_vector_active or entropy_vocab_active) and token_ids is not None and token_gap_vocab_size is None:
             observed_valid_ids = token_ids[response_mask.detach().bool().cpu()]
             if int(observed_valid_ids.numel()) > 0:
                 token_gap_vocab_size = int(observed_valid_ids.max().item()) + 1
@@ -1314,27 +1379,37 @@ class MOPDAuditLogger:
             )
             signed_gap_stats: dict[str, float | None] = {}
             abs_gap_stats: dict[str, float | None] = {}
-            if token_gap_active:
+            if logp_vector_active:
                 domain_gap_vector = None
                 domain_gap_abs_vector = None
                 if indices:
                     domain_valid_mask = response_mask[indices].detach().bool()
                     domain_gap_vector = gap_signed[indices][domain_valid_mask]
                     domain_gap_abs_vector = gap_abs[indices][domain_valid_mask]
-                signed_gap_stats = _token_distribution_stats(domain_gap_vector, "gap_signed")
-                abs_gap_stats = _token_distribution_stats(domain_gap_abs_vector, "gap_abs")
+                if token_gap_active:
+                    signed_gap_stats = _token_distribution_stats(domain_gap_vector, "gap_signed")
+                if token_gap_active or logp_abs_active:
+                    abs_gap_stats = _token_distribution_stats(domain_gap_abs_vector, "gap_abs")
                 if domain_gap_vector is not None and int(domain_gap_vector.numel()) > 0:
-                    token_gap_rows.append(
-                        {
-                            "step": step,
-                            "domain": domain,
-                            "learning_rate": learning_rate,
-                            "token_count": int(domain_gap_vector.numel()),
-                            "gap_signed_vector_domain": _tensor_to_float_list(domain_gap_vector),
-                            "gap_abs_vector_domain": _tensor_to_float_list(domain_gap_abs_vector),
-                            "gap_vector_domain": _tensor_to_float_list(domain_gap_vector),
-                        }
-                    )
+                    token_gap_row = {
+                        "step": step,
+                        "domain": domain,
+                        "learning_rate": learning_rate,
+                        "token_count": int(domain_gap_vector.numel()),
+                    }
+                    if token_gap_active:
+                        token_gap_row.update(
+                            {
+                                "gap_signed_vector_domain": _tensor_to_float_list(domain_gap_vector),
+                                "gap_abs_vector_domain": _tensor_to_float_list(domain_gap_abs_vector),
+                                "gap_vector_domain": _tensor_to_float_list(domain_gap_vector),
+                            }
+                        )
+                    if logp_abs_active:
+                        token_gap_row["logp_abs_vector_domain"] = _tensor_to_float_list(
+                            domain_gap_abs_vector
+                        )
+                    token_gap_rows.append(token_gap_row)
                 if token_ids is not None and indices and token_gap_vocab_size is not None:
                     domain_token_ids = token_ids[indices]
                     vocab_vectors = _token_gap_vocab_tensors(
@@ -1346,16 +1421,22 @@ class MOPDAuditLogger:
                     )
                     if vocab_vectors is not None:
                         token_gap_vocab_vectors_by_domain[domain] = vocab_vectors
-                        if token_gap_vocab_active:
-                            token_gap_vocab_rows.append(
-                                {
-                                    "step": step,
-                                    "domain": domain,
-                                    "learning_rate": learning_rate,
-                                    "vocab_size_source": token_gap_vocab_size_source,
-                                    **_token_gap_vocab_json_fields(vocab_vectors),
-                                }
-                            )
+                        if token_gap_vocab_active or logp_abs_active:
+                            vocab_row = {
+                                "step": step,
+                                "domain": domain,
+                                "learning_rate": learning_rate,
+                                "vocab_size_source": token_gap_vocab_size_source,
+                                **_token_gap_vocab_json_fields(vocab_vectors),
+                            }
+                            if logp_abs_active:
+                                vocab_row["logp_abs_sum_vector_vocab"] = vocab_row[
+                                    "gap_abs_sum_vector_vocab"
+                                ]
+                                vocab_row["logp_abs_mean_vector_vocab"] = vocab_row[
+                                    "gap_abs_mean_vector_vocab"
+                                ]
+                            token_gap_vocab_rows.append(vocab_row)
             entropy_metrics: dict[str, float | None] = {}
             teacher_entropy_stats: dict[str, float | None] = {}
             student_entropy_stats: dict[str, float | None] = {}
@@ -1430,15 +1511,43 @@ class MOPDAuditLogger:
                     )
                     if vocab_vectors is not None:
                         entropy_vocab_vectors_by_domain[domain] = vocab_vectors
-                        entropy_vocab_rows.append(
-                            {
-                                "step": step,
-                                "domain": domain,
-                                "learning_rate": learning_rate,
-                                "vocab_size_source": token_gap_vocab_size_source,
-                                **_entropy_vocab_json_fields(vocab_vectors),
-                            }
-                        )
+                        entropy_vocab_row = {
+                            "step": step,
+                            "domain": domain,
+                            "learning_rate": learning_rate,
+                            "vocab_size_source": token_gap_vocab_size_source,
+                            **_entropy_vocab_json_fields(vocab_vectors),
+                        }
+                        if "teacher_student_cross_entropy_sum_vector_vocab" in entropy_vocab_row:
+                            entropy_vocab_row.update(
+                                {
+                                    "topk_support_source": str(
+                                        batch_meta_info.get("topk_distill_support_source", "teacher")
+                                    ),
+                                    "topk_k": int(
+                                        batch_meta_info.get(
+                                            "teacher_topk_k",
+                                            batch_meta_info.get(
+                                                "student_topk_k",
+                                                self.topk_teacher_student_cross_entropy_k,
+                                            ),
+                                        )
+                                    ),
+                                    "topk_include_tail": bool(
+                                        batch_meta_info.get(
+                                            "topk_distill_include_tail",
+                                            self.topk_teacher_student_cross_entropy_include_tail,
+                                        )
+                                    ),
+                                    "topk_temperature": float(
+                                        batch_meta_info.get(
+                                            "topk_distill_temperature",
+                                            self.topk_teacher_student_cross_entropy_temperature,
+                                        )
+                                    ),
+                                }
+                            )
+                        entropy_vocab_rows.append(entropy_vocab_row)
             domain_sample_losses = [opd_losses[idx] for idx in indices]
             domain_sample_stats = _sample_value_stats(domain_sample_losses)
 

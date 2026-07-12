@@ -16,10 +16,21 @@ This checkout is the current OPD/MOPD training entrypoint. The training runtime 
 
 ## Fresh Setup
 
-Install the training environment on a fresh remote checkout:
+Use these local scripts for a fresh machine or a new local checkout:
+
+| Purpose | Script |
+| --- | --- |
+| Create or refresh the Conda/Python environment from `environment.yml` | `scripts/setup_training_env.sh` |
+| Download or validate training data only | `scripts/download_mopd_data.sh` |
+| Download or validate model assets only | `scripts/download_mopd_models.sh`, `scripts/download_qwen30b_teacher.sh` |
+| Download and validate the current data + model bundle | `scripts/download_training_assets.sh` |
+| Launch a local training run | `scripts/run_local_mopd_training.sh` |
+| Render/check a config without launching training | `scripts/run_mopd.sh --dry-run` |
+
+Install the training environment from this checkout:
 
 ```bash
-cd /root/autodl-tmp/opd_mopd/OPD-code
+cd /path/to/OPD-code
 bash scripts/setup_training_env.sh
 source logs/activate_training_env.sh
 ```
@@ -27,16 +38,54 @@ source logs/activate_training_env.sh
 Download and validate the assets for the Qwen30B four-domain profiles:
 
 ```bash
-MODEL_ROOT=/root/autodl-tmp/opd_mopd/models \
+MODEL_ROOT=$(pwd)/../models \
 MIN_FREE_GB=300 \
   scripts/download_training_assets.sh
 ```
 
-The asset script prepares the four training domains
+For the current Qwen30B four-domain configs, `scripts/download_training_assets.sh`
+is the recommended entrypoint. It prepares the four training domains
 (`math`, `code`, `if`, `science`), the Qwen3-4B student, and the shared
-Qwen3-30B-A3B teacher declared by `model.domain_teacher_paths`. IF/science
-validation parquet files are optional unless the config enables them. To
-prepare and require those files in the same pass:
+Qwen3-30B-A3B teacher declared by `model.domain_teacher_paths`.
+
+To fetch only data with the same defaults:
+
+```bash
+DOWNLOAD_MODELS=0 \
+REQUIRE_MODELS=0 \
+  scripts/download_training_assets.sh
+```
+
+To fetch only models with the same defaults:
+
+```bash
+DOWNLOAD_DATA=0 \
+MODEL_ROOT=$(pwd)/../models \
+MIN_FREE_GB=300 \
+  scripts/download_training_assets.sh
+```
+
+The lower-level scripts are also available when you need to operate on one
+asset family directly:
+
+```bash
+# Four-domain training parquet data.
+scripts/download_mopd_data.sh
+
+# Qwen3-4B student/base helper used by the current asset bundle.
+MODEL_ROOT=$(pwd)/../models \
+DOWNLOAD_STUDENT=0 \
+DOWNLOAD_BASE_4B=1 \
+  scripts/download_mopd_models.sh
+
+# Qwen3-30B-A3B teacher.
+MODEL_ROOT=$(pwd)/../models \
+MIN_FREE_GB=300 \
+  scripts/download_qwen30b_teacher.sh
+```
+
+IF/science validation parquet files are optional unless the config enables
+them. To prepare and require those files in the same pass:
 
 ```bash
 IF_VAL_SOURCE=/path/to/raw_if_val.parquet \
@@ -48,56 +97,6 @@ REQUIRE_M2RL_EVAL_DATA=1 \
 For a one-command bootstrap that runs the asset script inside the new conda
 environment, set `DOWNLOAD_ASSETS=1` on `scripts/setup_training_env.sh`;
 asset-specific variables are forwarded.
-
-To start from `git clone` and launch the Qwen30B four-domain run in one script,
-copy or run `scripts/bootstrap_qwen30b_mopd_training.sh` on the remote host:
-
-```bash
-GPU_PROFILE=8gpu \
-REPO_URL=http://github.com/linghuazhang01/code.git \
-CHECKOUT_DIR=/root/autodl-tmp/opd_mopd/OPD-code \
-MODEL_ROOT=/root/autodl-tmp/opd_mopd/models \
-  bash scripts/bootstrap_qwen30b_mopd_training.sh
-```
-
-Set `GPU_PROFILE=4gpu` for the 4-GPU split-teacher layout. The bootstrap uses
-the `6gpu_fsdp` config as the base and applies profile-specific overrides at
-launch time.
-
-If Git LFS data transfer is unreliable, use the zip deployment path. The local
-machine packages only the four-domain data; the remote host clones the code
-from Git, overlays the data bundle, installs the environment, downloads models,
-and launches training.
-
-```bash
-# Local: create the data-only bundle.
-scripts/package_qwen30b_mopd_bundle.sh
-
-# Optional: create split data-only parts for manual transfer.
-SPLIT_BUNDLE=1 \
-BUNDLE_ZIP=deliverables/opd_qwen30b_mopd_data.zip \
-  scripts/package_qwen30b_mopd_bundle.sh
-
-# Local: upload the bundle and run the remote bootstrap.
-export SSHPASS='...'  # optional; SSH keys also work
-REMOTE=root@connect.westb.seetacloud.com \
-REMOTE_PORT=16968 \
-REMOTE_WORKDIR=/root/autodl-tmp/opd_mopd \
-GPU_PROFILE=8gpu \
-MODEL_BACKEND=modelscope \
-  scripts/deploy_qwen30b_mopd_zip_remote.sh
-```
-
-In zip mode, `DOWNLOAD_DATA=0` is the default because data comes from the
-uploaded bundle. Code still comes from the configured Git branch.
-`DOWNLOAD_MODELS=1` keeps Qwen3-4B and Qwen3-30B-A3B model download on the
-remote host. For a dry run, add
-`DRY_RUN=1 DOWNLOAD_MODELS=0 REQUIRE_MODELS=0`.
-
-The generated zip is data-only. Its top-level entries are repo-relative data
-paths such as `data/G-OPD-Training-Data/...` and
-`eval/domains/<domain>/data/...`; it does not contain `OPD-code/`, source files,
-models, checkpoints, or logs.
 
 ## Configs
 
@@ -176,7 +175,7 @@ The Qwen30B profiles use:
   - code: `data/G-OPD-Training-Data/Eurus/code_train.parquet`
   - IF: `data/G-OPD-Training-Data/IF/train.parquet`
   - science: `data/G-OPD-Training-Data/Science/train.parquet`
-- reward router: `grpo/rewards/mixed.py`
+- reward router: `mopd_verl/mixed_reward.py`
 - `data.load_parquet_direct=true`, which avoids Hugging Face Arrow cache materialization and normalizes mixed parquet schemas before concatenation.
 
 Current reward routing:
@@ -185,17 +184,17 @@ Current reward routing:
 | --- | --- | --- |
 | `math` | `DeepMath-103K` | Vendored verl default reward; DeepMath rows route to `math_verify.compute_score`. |
 | `code` | Eurus code rows such as `taco` | Vendored verl default reward; code contest rows use sandbox-fusion when configured, otherwise the vendored `prime_code` test-case scorer. |
-| `if` | `m2rl_ifbench` from Nemotron/Open-Instruct instruction-following data | `grpo.rewards.m2rl.compute_ifbench_reward`: uses `verifiable_instructions` first, then AllenAI IFBench strict checking as fallback. |
-| `science` | `m2rl_gpqa` or science/GPQA rows | `grpo.rewards.m2rl.compute_gpqa_reward`: extracts the final option letter and compares it to the metadata/label answer. |
+| `if` | `m2rl_ifbench` from instruction-following data | `mopd_verl.m2rl_reward.compute_ifbench_reward`: uses `verifiable_instructions` first, then AllenAI IFBench strict checking as fallback. |
+| `science` | `m2rl_gpqa` or science/GPQA rows | `mopd_verl.m2rl_reward.compute_gpqa_reward`: extracts the final option letter and compares it to the metadata/label answer. |
 
-Evaluation is aligned with the sibling GRPO workspace through the same validation parquet convention:
+Evaluation uses the following validation parquet convention:
 
 | Domain | Validation parquet | Reward during validation |
 | --- | --- | --- |
-| `if` | `eval/domains/ifbench/data/IFBench_test.parquet` | `grpo/rewards/mixed.py` -> IFBench/verifiable-instructions strict reward. |
-| `science` | `eval/domains/science/data/gpqa.parquet` | `grpo/rewards/mixed.py` -> GPQA option-letter reward. |
+| `if` | `data/eval_data/ifbench/IFBench_test.parquet` | `mopd_verl/mixed_reward.py` -> IFBench/verifiable-instructions strict reward. |
+| `science` | `data/eval_data/science/gpqa.parquet` | `mopd_verl/mixed_reward.py` -> GPQA option-letter reward. |
 
-Prepare those files from GRPO/M2RL-style raw sources with:
+Prepare those files from M2RL-style raw sources with:
 
 ```bash
 IF_VAL_SOURCE=/path/to/raw_if_val.parquet \
@@ -219,25 +218,31 @@ The 4-domain 2-GPU smoke profile was verified remotely on 2026-07-07 for 2 steps
 
 Configs default to `logger: '["console","tensorboard","wandb"]'`, `runtime.wandb_entity: lz101-rice-university`, and `runtime.env_file: .env.local`. Put `WANDB_API_KEY` in `.env.local` on the machine that launches training. This file is gitignored and must not be committed. Override `runtime.wandb_mode=disabled` for local dry runs without W&B.
 
-On a fresh remote checkout, run `scripts/setup_remote_training_env.sh` after `git pull`. It installs the M2RL/IF verifier dependencies and, by default, runs `git lfs pull` plus a Parquet sanity check for the four repo-local training files under `data/G-OPD-Training-Data/`. Set `PULL_GIT_LFS_DATA=0` or `CHECK_MOPD_DATA=0` only when the data disk is managed separately. Set `PREPARE_M2RL_EVAL_DATA=1` with the source variables above to prepare IF/science validation data on the remote, or `CHECK_M2RL_EVAL_DATA=1` to require the prepared eval parquet files.
+Run `scripts/setup_training_env.sh` to create or update the local Conda
+environment. `environment.yml` is the only dependency definition; the setup
+script does not maintain a second pip requirements or dependency installer.
+Use `scripts/prepare_m2rl_eval_data.sh` separately to prepare IF/science
+validation parquet files.
 
 ## Launch
 
-Run on a synced remote checkout:
+Run from the local checkout:
 
 ```bash
-cd /root/autodl-tmp/opd_mopd/OPD-code
-GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
+cd /path/to/OPD-code
+GPU_IDS=0,1 bash scripts/run_local_mopd_training.sh \
   configs/mopd_formal_audit_all_2gpu.yaml \
   --run-id mopd_audit_all_2gpu_$(date +%Y%m%d_%H%M%S)
 ```
 
-`scripts/start_remote_mopd_training.sh` defaults to `/root/miniconda3/envs/mopd-verl` when that environment exists and prints the resolved Python path at launch.
+`scripts/run_local_mopd_training.sh` uses `CONDA_ROOT=$HOME/miniconda3` and
+`ENV_NAME=mopd-verl` by default. It prints the resolved Python path in the
+launch log.
 
 Run the audit-off profile:
 
 ```bash
-GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
+GPU_IDS=0,1 bash scripts/run_local_mopd_training.sh \
   configs/mopd_formal_audit_off_2gpu.yaml \
   --run-id mopd_audit_off_2gpu_$(date +%Y%m%d_%H%M%S)
 ```
@@ -245,7 +250,7 @@ GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
 Run the loss-only token-gradient audit profile:
 
 ```bash
-GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
+GPU_IDS=0,1 bash scripts/run_local_mopd_training.sh \
   configs/mopd_formal_audit_loss_only_2gpu.yaml \
   --run-id mopd_audit_loss_only_2gpu_$(date +%Y%m%d_%H%M%S)
 ```
@@ -253,15 +258,15 @@ GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
 Use the matching GPU list for larger profiles:
 
 ```bash
-GPU_IDS=0,1,2,3 bash scripts/start_remote_mopd_training.sh \
+GPU_IDS=0,1,2,3 bash scripts/run_local_mopd_training.sh \
   configs/mopd_formal_audit_all_4gpu.yaml \
   --run-id mopd_audit_all_4gpu_$(date +%Y%m%d_%H%M%S)
 
-GPU_IDS=0,1,2,3,4,5 bash scripts/start_remote_mopd_training.sh \
+GPU_IDS=0,1,2,3,4,5 bash scripts/run_local_mopd_training.sh \
   configs/mopd_formal_audit_all_6gpu.yaml \
   --run-id mopd_audit_all_6gpu_$(date +%Y%m%d_%H%M%S)
 
-GPU_IDS=0,1,2,3,4,5,6,7 bash scripts/start_remote_mopd_training.sh \
+GPU_IDS=0,1,2,3,4,5,6,7 bash scripts/run_local_mopd_training.sh \
   configs/mopd_formal_audit_all_8gpu.yaml \
   --run-id mopd_audit_all_8gpu_$(date +%Y%m%d_%H%M%S)
 ```
@@ -275,7 +280,7 @@ scripts/run_mopd.sh configs/mopd_formal_audit_all_2gpu.yaml --dry-run
 Download the complete Qwen30B four-domain training assets:
 
 ```bash
-MODEL_ROOT=/root/autodl-tmp/opd_mopd/models \
+MODEL_ROOT=$(pwd)/../models \
 MIN_FREE_GB=300 \
   scripts/download_training_assets.sh
 ```
@@ -296,27 +301,13 @@ When `model.domain_teacher_paths` is present, the launcher renders `actor_rollou
 Metrics smoke:
 
 ```bash
-GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
+GPU_IDS=0,1 bash scripts/run_local_mopd_training.sh \
   configs/mopd_formal_audit_all_smoke.yaml \
   --run-id mopd_metrics_smoke_$(date +%Y%m%d_%H%M%S)
 
-GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
+GPU_IDS=0,1 bash scripts/run_local_mopd_training.sh \
   configs/mopd_formal_audit_loss_only_smoke.yaml \
   --run-id mopd_metrics_loss_only_smoke_$(date +%Y%m%d_%H%M%S)
-```
-
-Sync from local without launching:
-
-```bash
-ASSUME_YES=1 bash scripts/sync_and_start_remote_mopd.sh --sync-only
-```
-
-Sync and launch:
-
-```bash
-ASSUME_YES=1 bash scripts/sync_and_start_remote_mopd.sh \
-  configs/mopd_formal_audit_all_2gpu.yaml \
-  --run-id mopd_audit_all_2gpu_$(date +%Y%m%d_%H%M%S)
 ```
 
 ## Audit Files

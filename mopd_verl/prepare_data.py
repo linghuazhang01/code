@@ -24,12 +24,7 @@ from mopd_verl.general_reasoner_data import (
     prepare_general_reasoner_hf_dataset,
 )
 from mopd_verl.searchqa_data import searchqa_to_verl_parquet
-from grpo.data.m2rl import m2rl_to_verl_parquet
-
-try:
-    from grpo.data.toolrl import toolrl_to_verl_parquet
-except ImportError:
-    toolrl_to_verl_parquet = None
+from mopd_verl.m2rl_data import m2rl_to_verl_parquet
 
 if hasattr(sys, "set_int_max_str_digits"):
     sys.set_int_max_str_digits(0)
@@ -211,7 +206,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     paper_eval_parser.add_argument(
         "--output-root",
         default=None,
-        help="Output root for generated parquets. Defaults to <gopd-dir>/eval/domains.",
+        help="Output root for generated parquets. Defaults to <gopd-dir>/data/eval_data.",
     )
     searchqa_parser = subparsers.add_parser(
         "prepare-searchqa",
@@ -256,16 +251,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=100,
         help="Cap test/validation examples for validation cost control. Use -1 for all.",
     )
-    toolrl_parser = subparsers.add_parser(
-        "prepare-toolrl",
-        help="Convert ToolRL/RLLA parquet into the shared verl parquet format.",
-    )
-    toolrl_parser.add_argument("--input", required=True, help="Input ToolRL .parquet file.")
-    toolrl_parser.add_argument("--output", required=True, help="Output verl parquet file.")
-    toolrl_parser.add_argument("--split", default="train", help="Split name to record in extra_info.")
-    toolrl_parser.add_argument("--teacher", default="tool", choices=sorted(VALID_TEACHERS), help="OPD teacher label.")
-    toolrl_parser.add_argument("--data-source", default="toolrl_rlla", help="Data source tag for reward logging.")
-    toolrl_parser.add_argument("--max-samples", type=int, default=None, help="Optional cap for quick tests.")
     m2rl_parser = subparsers.add_parser(
         "prepare-m2rl",
         help="Convert M2RL IFBench/Science parquet, JSON, or JSONL into the shared verl parquet format.",
@@ -333,31 +318,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         payload = {"counts": counts, "output_dir": args.output_dir}
         sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
         return 0
-    if args.command == "prepare-toolrl":
-        if toolrl_to_verl_parquet is None:
-            raise RuntimeError(
-                "Legacy ToolRL adapter was removed when code/grpo was reset for M2RL-style GRPO. "
-                "Restore temp/grpo_legacy_backup_*/grpo if ToolRL is still needed."
-            )
-        count = toolrl_to_verl_parquet(
-            args.input,
-            args.output,
-            split=args.split,
-            teacher=args.teacher,
-            data_source=args.data_source,
-            max_samples=args.max_samples,
-        )
-        validation = validate_teacher_labels(args.output)
-        sample_validation = validate_sample_ids(args.output)
-        payload = {
-            "count": count,
-            "counts": validation.counts,
-            "invalid_rows": validation.invalid_rows[:20],
-            "sample_id_duplicate_count": sample_validation.duplicate_count,
-            "sample_id_invalid_rows": sample_validation.invalid_rows[:20],
-        }
-        sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
-        return 0 if validation.is_valid and sample_validation.is_valid else 1
     if args.command == "prepare-m2rl":
         teacher = args.teacher or ("if" if args.rm_type == "ifbench" else "science")
         report = m2rl_to_verl_parquet(

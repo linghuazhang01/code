@@ -3,6 +3,21 @@ from pathlib import Path
 
 
 class DownloadMopdDataTests(unittest.TestCase):
+    def test_training_data_defaults_to_versionable_public_hub_dataset(self) -> None:
+        script_path = (
+            Path(__file__).resolve().parents[1]
+            / "scripts"
+            / "download_mopd_data.sh"
+        )
+        source = script_path.read_text(encoding="utf-8")
+
+        self.assertIn(
+            'DATASET_ID="${DATASET_ID:-icemoon28/MOPD-Training-Data}"',
+            source,
+        )
+        self.assertIn('DATASET_REVISION="${DATASET_REVISION:-main}"', source)
+        self.assertIn("revision=dataset_revision", source)
+
     def test_eval_data_comes_from_pinned_official_gopd_sources(self) -> None:
         script_path = (
             Path(__file__).resolve().parents[1]
@@ -34,7 +49,7 @@ class DownloadMopdDataTests(unittest.TestCase):
 
         self.assertIn('DOWNLOAD_LCB="${DOWNLOAD_LCB:-0}"', source)
         self.assertIn(
-            'eval_required_files+=("code/data/LiveCodeBench/test.parquet")',
+            'eval_required_files+=("code/LiveCodeBench/test.parquet")',
             source,
         )
 

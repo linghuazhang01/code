@@ -96,6 +96,8 @@ def generate_one(
     top_p: float,
     score_code: bool,
     save_completion: bool,
+    rollout_index: int = 0,
+    generation_seed: int | None = None,
 ) -> EvalResult:
     import torch
 
@@ -114,6 +116,8 @@ def generate_one(
 
     start_time = time.perf_counter()
     with torch.inference_mode():
+        if generation_seed is not None:
+            torch.manual_seed(generation_seed)
         outputs = model.generate(input_ids, **generation_kwargs)
     latency_seconds = time.perf_counter() - start_time
 
@@ -135,7 +139,7 @@ def generate_one(
         ground_truth=sample.ground_truth,
         prediction=prediction,
         score=score,
-        correct=None if score is None else score > 0,
+        correct=None if score is None else score == 1.0,
         prompt_tokens=prompt_tokens,
         generated_tokens=generated_tokens,
         thinking_tokens=thinking_tokens,
@@ -144,6 +148,8 @@ def generate_one(
         latency_seconds=latency_seconds,
         generated_tokens_per_second=tokens_per_second,
         completion_preview=cleaned_preview,
+        rollout_index=rollout_index,
+        generation_seed=generation_seed,
         max_new_tokens=max_new_tokens,
         messages=sample.messages if save_completion else None,
         prompt=prompt_text if save_completion else None,
@@ -175,6 +181,8 @@ def generate_vllm_batch(
     top_p: float,
     score_code: bool,
     save_completion: bool,
+    rollout_index: int = 0,
+    generation_seed: int | None = None,
 ) -> list[EvalResult]:
     from vllm import SamplingParams
 
@@ -185,6 +193,7 @@ def generate_vllm_batch(
         max_tokens=max_new_tokens,
         temperature=temperature,
         top_p=top_p,
+        seed=generation_seed,
     )
 
     start_time = time.perf_counter()
@@ -209,7 +218,7 @@ def generate_vllm_batch(
                 ground_truth=sample.ground_truth,
                 prediction=prediction,
                 score=score,
-                correct=None if score is None else score > 0,
+                correct=None if score is None else score == 1.0,
                 prompt_tokens=prompt_token_count,
                 generated_tokens=generated_tokens,
                 thinking_tokens=thinking_tokens,
@@ -218,6 +227,8 @@ def generate_vllm_batch(
                 latency_seconds=batch_latency,
                 generated_tokens_per_second=tokens_per_second,
                 completion_preview=remove_think_block(completion)[:600],
+                rollout_index=rollout_index,
+                generation_seed=generation_seed,
                 max_new_tokens=max_new_tokens,
                 messages=sample.messages if save_completion else None,
                 prompt=prompts[index] if save_completion else None,
@@ -244,7 +255,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-path", default="../models/Qwen3-4B", help="HF model id or local model directory.")
     parser.add_argument("--data-files", nargs="+", default=list(DEFAULT_DATA_FILES), help="Validation parquet files.")
-    parser.add_argument("--output-dir", default="eval/results/qwen3_4b_thinking", help="Output directory.")
+    parser.add_argument("--output-dir", default="data/eval_data/results/qwen3_4b_thinking", help="Output directory.")
     parser.add_argument("--modes", nargs="+", default=list(THINKING_MODES), choices=THINKING_MODES)
     parser.add_argument("--max-samples-per-dataset", type=int, default=None)
     parser.add_argument("--max-new-tokens-thinking", type=int, default=32768)
@@ -264,6 +275,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--score-code", action="store_true", help="Execute code validation rewards when code data is included.")
     parser.add_argument("--save-completions", action="store_true", help="Store full completions in samples JSONL.")
     parser.add_argument("--skip-missing-data-files", action="store_true", help="Skip missing validation parquet files.")
+    parser.add_argument("--num-samples", type=int, default=1, help="Rollouts per prompt; use 32 for GRPO AIME Avg@32.")
+    parser.add_argument("--seed", type=int, default=42, help="Base generation seed for reproducible sampling.")
     return parser.parse_args()
 
 
@@ -278,10 +291,18 @@ def main() -> None:
     )
     if not samples:
         raise ValueError("No validation samples loaded.")
+    if args.num_samples < 1:
+        raise ValueError("--num-samples must be at least 1.")
+    if args.num_samples > 1 and args.temperature <= 0:
+        LOGGER.warning("num_samples=%d with temperature=0 produces repeated greedy outputs.", args.num_samples)
 
     results: list[EvalResult] = []
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "eval_run_config.json").write_text(
+        json.dumps(vars(args), indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     incremental_samples_path = output_dir / "thinking_eval_samples.jsonl"
     if incremental_samples_path.exists():
         incremental_samples_path.unlink()
@@ -299,78 +320,90 @@ def main() -> None:
         llm = load_vllm_model(args.model_path, args.torch_dtype, args.tensor_parallel_size, args.gpu_memory_utilization)
         tokenizer = llm.get_tokenizer()
         for mode in args.modes:
-            for start in range(0, len(samples), args.batch_size):
-                batch = samples[start : start + args.batch_size]
-                batch_max_new_tokens = max(
-                    resolve_max_new_tokens(sample, mode, mode_token_limits, ability_token_limits) for sample in batch
-                )
-                LOGGER.info(
-                    "Evaluating backend=vllm mode=%s samples=%d-%d/%d max_new_tokens=%d",
-                    mode,
-                    start + 1,
-                    start + len(batch),
-                    len(samples),
-                    batch_max_new_tokens,
-                )
-                batch_results = generate_vllm_batch(
-                    llm,
-                    tokenizer,
-                    batch,
-                    mode=mode,
-                    max_new_tokens=batch_max_new_tokens,
-                    temperature=args.temperature,
-                    top_p=args.top_p,
-                    score_code=args.score_code,
-                    save_completion=args.save_completions,
-                )
-                results.extend(batch_results)
-                append_sample_outputs(batch_results, output_dir)
-                for result in batch_results:
+            for rollout_index in range(args.num_samples):
+                for start in range(0, len(samples), args.batch_size):
+                    generation_seed = args.seed + rollout_index * len(samples) + start
+                    batch = samples[start : start + args.batch_size]
+                    batch_max_new_tokens = max(
+                        resolve_max_new_tokens(sample, mode, mode_token_limits, ability_token_limits)
+                        for sample in batch
+                    )
                     LOGGER.info(
-                        "mode=%s dataset=%s score=%s generated_tokens=%d thinking_tokens=%d batch_latency=%.2fs",
+                        "Evaluating backend=vllm mode=%s rollout=%d samples=%d-%d/%d max_new_tokens=%d",
                         mode,
-                        result.dataset,
+                        rollout_index,
+                        start + 1,
+                        start + len(batch),
+                        len(samples),
+                        batch_max_new_tokens,
+                    )
+                    batch_results = generate_vllm_batch(
+                        llm,
+                        tokenizer,
+                        batch,
+                        mode=mode,
+                        max_new_tokens=batch_max_new_tokens,
+                        temperature=args.temperature,
+                        top_p=args.top_p,
+                        score_code=args.score_code,
+                        save_completion=args.save_completions,
+                        rollout_index=rollout_index,
+                        generation_seed=generation_seed,
+                    )
+                    results.extend(batch_results)
+                    append_sample_outputs(batch_results, output_dir)
+                    for result in batch_results:
+                        LOGGER.info(
+                            "mode=%s dataset=%s score=%s generated_tokens=%d "
+                            "thinking_tokens=%d batch_latency=%.2fs",
+                            mode,
+                            result.dataset,
+                            result.score,
+                            result.generated_tokens,
+                            result.thinking_tokens,
+                            result.latency_seconds,
+                        )
+    else:
+        model, tokenizer = load_model_and_tokenizer(args.model_path, args.torch_dtype, args.device_map)
+        for mode in args.modes:
+            for rollout_index in range(args.num_samples):
+                for index, sample in enumerate(samples, start=1):
+                    generation_seed = args.seed + rollout_index * len(samples) + index - 1
+                    max_new_tokens = resolve_max_new_tokens(sample, mode, mode_token_limits, ability_token_limits)
+                    LOGGER.info(
+                        "Evaluating mode=%s rollout=%d sample=%d/%d dataset=%s id=%s max_new_tokens=%d",
+                        mode,
+                        rollout_index,
+                        index,
+                        len(samples),
+                        sample.dataset,
+                        sample.sample_id,
+                        max_new_tokens,
+                    )
+                    result = generate_one(
+                        model,
+                        tokenizer,
+                        sample,
+                        mode=mode,
+                        max_new_tokens=max_new_tokens,
+                        temperature=args.temperature,
+                        top_p=args.top_p,
+                        score_code=args.score_code,
+                        save_completion=args.save_completions,
+                        rollout_index=rollout_index,
+                        generation_seed=generation_seed,
+                    )
+                    results.append(result)
+                    append_sample_outputs([result], output_dir)
+                    LOGGER.info(
+                        "mode=%s dataset=%s score=%s generated_tokens=%d thinking_tokens=%d latency=%.2fs",
+                        mode,
+                        sample.dataset,
                         result.score,
                         result.generated_tokens,
                         result.thinking_tokens,
                         result.latency_seconds,
                     )
-    else:
-        model, tokenizer = load_model_and_tokenizer(args.model_path, args.torch_dtype, args.device_map)
-        for mode in args.modes:
-            for index, sample in enumerate(samples, start=1):
-                max_new_tokens = resolve_max_new_tokens(sample, mode, mode_token_limits, ability_token_limits)
-                LOGGER.info(
-                    "Evaluating mode=%s sample=%d/%d dataset=%s id=%s max_new_tokens=%d",
-                    mode,
-                    index,
-                    len(samples),
-                    sample.dataset,
-                    sample.sample_id,
-                    max_new_tokens,
-                )
-                result = generate_one(
-                    model,
-                    tokenizer,
-                    sample,
-                    mode=mode,
-                    max_new_tokens=max_new_tokens,
-                    temperature=args.temperature,
-                    top_p=args.top_p,
-                    score_code=args.score_code,
-                    save_completion=args.save_completions,
-                )
-                results.append(result)
-                append_sample_outputs([result], output_dir)
-                LOGGER.info(
-                    "mode=%s dataset=%s score=%s generated_tokens=%d thinking_tokens=%d latency=%.2fs",
-                    mode,
-                    sample.dataset,
-                    result.score,
-                    result.generated_tokens,
-                    result.thinking_tokens,
-                    result.latency_seconds,
-                )
 
     write_outputs(results, output_dir)
     print(json.dumps(summarize_results(results), indent=2, ensure_ascii=False))

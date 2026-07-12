@@ -9,7 +9,7 @@ from typing import Any, Mapping
 
 import pandas as pd
 
-DEFAULT_OUTPUT_DIR = Path("eval/domains/toolrl/data")
+DEFAULT_OUTPUT_DIR = Path("data/eval_data/toolrl")
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:

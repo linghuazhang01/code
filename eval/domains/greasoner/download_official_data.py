@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_OUTPUT_DIR = Path("eval/domains/greasoner/data/official")
+DEFAULT_OUTPUT_DIR = Path("data/eval_data/greasoner/official")
 GPQA_D_CSV_URL = "https://openaipublic.blob.core.windows.net/simple-evals/gpqa_diamond.csv"
 
 

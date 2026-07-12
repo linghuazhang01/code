@@ -15,14 +15,14 @@ PAPER_MATH_EVAL_PROMPT = (
     "Please reason step by step, and put your final answer within \\boxed{}."
 )
 PAPER_MATH_EVAL_SPECS = {
-    "aime24": ("AIME2024", "data/aime24/test.jsonl", "math/data/AIME24/test.parquet"),
-    "aime25": ("AIME2025", "data/aime25/test.jsonl", "math/data/AIME25/test.parquet"),
-    "hmmt25_feb": ("HMMT25Feb", "data/hmmt25_feb/test.jsonl", "math/data/HMMT25Feb/test.parquet"),
-    "hmmt25_nov": ("HMMT25Nov", "data/hmmt25_nov/test.jsonl", "math/data/HMMT25Nov/test.parquet"),
+    "aime24": ("AIME2024", "data/aime24/test.jsonl", "math/AIME24/test.parquet"),
+    "aime25": ("AIME2025", "data/aime25/test.jsonl", "math/AIME25/test.parquet"),
+    "hmmt25_feb": ("HMMT25Feb", "data/hmmt25_feb/test.jsonl", "math/HMMT25Feb/test.parquet"),
+    "hmmt25_nov": ("HMMT25Nov", "data/hmmt25_nov/test.jsonl", "math/HMMT25Nov/test.parquet"),
 }
 PAPER_CODE_EVAL_SPECS = {
-    "humaneval_plus": ("HumanEvalPlus", "code_eval/data/HumanEvalPlus.jsonl", "code/data/HumanEvalPlus/test.parquet"),
-    "mbpp_plus": ("MBPPPlus", "code_eval/data/MbppPlus.jsonl", "code/data/MBPPPlus/test.parquet"),
+    "humaneval_plus": ("HumanEvalPlus", "code_eval/data/HumanEvalPlus.jsonl", "code/HumanEvalPlus/test.parquet"),
+    "mbpp_plus": ("MBPPPlus", "code_eval/data/MbppPlus.jsonl", "code/MBPPPlus/test.parquet"),
 }
 LCB_RELEASE_FILES = {
     "release_v1": ["test.jsonl"],
@@ -223,10 +223,10 @@ def lcb_jsonl_to_verl_parquet(input_paths: Sequence[str | Path], output_path: st
 
 
 def prepare_paper_eval_data(gopd_dir: str | Path, output_root: str | Path | None = None) -> dict[str, int]:
-    """Prepare paper-eval validation parquets under an eval/domains tree."""
+    """Prepare paper-eval validation parquets under data/eval_data."""
 
     root = Path(gopd_dir)
-    target_root = Path(output_root) if output_root is not None else root / "eval/domains"
+    target_root = Path(output_root) if output_root is not None else root / "data/eval_data"
     counts: dict[str, int] = {}
     for dataset_name, (data_source, jsonl_relative, parquet_relative) in PAPER_MATH_EVAL_SPECS.items():
         counts[dataset_name] = math_eval_jsonl_to_verl_parquet(
@@ -244,6 +244,6 @@ def prepare_paper_eval_data(gopd_dir: str | Path, output_root: str | Path | None
     lcb_files = [lcb_root / name for name in LCB_RELEASE_FILES["release_v6"]]
     counts["lcb"] = lcb_jsonl_to_verl_parquet(
         input_paths=lcb_files,
-        output_path=target_root / "code/data/LiveCodeBench/test.parquet",
+        output_path=target_root / "code/LiveCodeBench/test.parquet",
     )
     return counts

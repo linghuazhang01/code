@@ -14,10 +14,21 @@
 
 ## 新机器安装
 
-远端新 checkout 先安装训练环境：
+本地新机器或新 checkout 使用下面这些脚本：
+
+| 用途 | 脚本 |
+| --- | --- |
+| 根据 `environment.yml` 创建或刷新 conda/Python 训练环境 | `scripts/setup_training_env.sh` |
+| 只下载或校验训练数据 | `scripts/download_mopd_data.sh` |
+| 只下载或校验模型 | `scripts/download_mopd_models.sh`、`scripts/download_qwen30b_teacher.sh` |
+| 下载并校验当前训练所需的数据 + 模型 | `scripts/download_training_assets.sh` |
+| 启动本地训练 | `scripts/run_local_mopd_training.sh` |
+| 只渲染/检查 config，不启动训练 | `scripts/run_mopd.sh --dry-run` |
+
+在本地 checkout 中先安装训练环境：
 
 ```bash
-cd /root/autodl-tmp/opd_mopd/OPD-code
+cd /path/to/OPD-code
 bash scripts/setup_training_env.sh
 source logs/activate_training_env.sh
 ```
@@ -25,15 +36,53 @@ source logs/activate_training_env.sh
 然后下载并校验 Qwen30B 四领域训练所需数据与模型：
 
 ```bash
-MODEL_ROOT=/root/autodl-tmp/opd_mopd/models \
+MODEL_ROOT=$(pwd)/../models \
 MIN_FREE_GB=300 \
   scripts/download_training_assets.sh
 ```
 
-该脚本会准备 `math`、`code`、`if`、`science` 四个训练 parquet，
-下载 Qwen3-4B student，并下载四个 domain 共用的
-Qwen3-30B-A3B teacher。IF/science validation parquet 只有在 config
-启用对应验证路径时才必须存在；如需一并准备并强制校验：
+对当前 Qwen30B 四领域 config，推荐入口是
+`scripts/download_training_assets.sh`。它会准备 `math`、`code`、`if`、
+`science` 四个训练 parquet，下载 Qwen3-4B student，并下载四个 domain
+共用的 Qwen3-30B-A3B teacher。
+
+如果只想下载数据，使用同一个入口关闭模型下载：
+
+```bash
+DOWNLOAD_MODELS=0 \
+REQUIRE_MODELS=0 \
+  scripts/download_training_assets.sh
+```
+
+如果只想下载模型，使用同一个入口关闭数据下载：
+
+```bash
+DOWNLOAD_DATA=0 \
+MODEL_ROOT=$(pwd)/../models \
+MIN_FREE_GB=300 \
+  scripts/download_training_assets.sh
+```
+
+也可以直接调用底层单项脚本：
+
+```bash
+# 四领域训练 parquet 数据。
+scripts/download_mopd_data.sh
+
+# 当前 asset bundle 使用的 Qwen3-4B student/base helper。
+MODEL_ROOT=$(pwd)/../models \
+DOWNLOAD_STUDENT=0 \
+DOWNLOAD_BASE_4B=1 \
+  scripts/download_mopd_models.sh
+
+# Qwen3-30B-A3B teacher。
+MODEL_ROOT=$(pwd)/../models \
+MIN_FREE_GB=300 \
+  scripts/download_qwen30b_teacher.sh
+```
+
+IF/science validation parquet 只有在 config 启用对应验证路径时才必须存在；
+如需一并准备并强制校验：
 
 ```bash
 IF_VAL_SOURCE=/path/to/raw_if_val.parquet \
@@ -45,52 +94,6 @@ REQUIRE_M2RL_EVAL_DATA=1 \
 也可以用一条命令完成环境和 assets，并让下载脚本在新 conda env 中运行：
 对 `scripts/setup_training_env.sh` 设置 `DOWNLOAD_ASSETS=1`，模型/数据相关
 环境变量会继续透传。
-
-如果要从 `git clone` 开始并直接启动 Qwen30B 四领域训练，可以在远端运行
-`scripts/bootstrap_qwen30b_mopd_training.sh`：
-
-```bash
-GPU_PROFILE=8gpu \
-REPO_URL=http://github.com/linghuazhang01/code.git \
-CHECKOUT_DIR=/root/autodl-tmp/opd_mopd/OPD-code \
-MODEL_ROOT=/root/autodl-tmp/opd_mopd/models \
-  bash scripts/bootstrap_qwen30b_mopd_training.sh
-```
-
-设置 `GPU_PROFILE=4gpu` 可切到 4 卡 split-teacher layout。bootstrap 会以
-`6gpu_fsdp` config 为基底，在 launch 时应用对应的 4GPU/8GPU override。
-
-如果 Git LFS 数据传输不稳定，推荐使用 zip 部署：本地只把四领域训练数据
-打成 zip，服务器从 Git 拉取代码，再把数据 bundle 覆盖到 checkout 中，
-然后安装环境、下载模型并启动训练。
-
-```bash
-# 本地执行：生成 data-only bundle
-scripts/package_qwen30b_mopd_bundle.sh
-
-# 可选：生成适合手动传输的 split data-only parts
-SPLIT_BUNDLE=1 \
-BUNDLE_ZIP=deliverables/opd_qwen30b_mopd_data.zip \
-  scripts/package_qwen30b_mopd_bundle.sh
-
-# 本地执行：上传 bundle 并在远端运行 bootstrap
-export SSHPASS='...'  # 可选；也可以用 SSH key
-REMOTE=root@connect.westb.seetacloud.com \
-REMOTE_PORT=16968 \
-REMOTE_WORKDIR=/root/autodl-tmp/opd_mopd \
-GPU_PROFILE=8gpu \
-MODEL_BACKEND=modelscope \
-  scripts/deploy_qwen30b_mopd_zip_remote.sh
-```
-
-zip 模式下 `DOWNLOAD_DATA=0` 默认生效，训练数据来自上传的 bundle；
-代码仍来自配置的 Git 分支。`DOWNLOAD_MODELS=1` 默认在远端下载 Qwen3-4B
-student 与 Qwen3-30B-A3B teacher。测试命令可加
-`DRY_RUN=1 DOWNLOAD_MODELS=0 REQUIRE_MODELS=0`。
-
-生成的 zip 是 data-only：顶层只包含 repo-relative 数据路径，例如
-`data/G-OPD-Training-Data/...` 与 `eval/domains/<domain>/data/...`；不包含
-`OPD-code/`、源码、模型、checkpoint 或日志。
 
 ## 配置文件
 
@@ -164,12 +167,12 @@ Qwen30B split-teacher profiles 使用 Qwen3-4B student 和 Qwen3-30B-A3B math/co
 - IF: `data/G-OPD-Training-Data/IF/train.parquet`
 - science: `data/G-OPD-Training-Data/Science/train.parquet`
 
-IF/science 的 validation 路径与同级 GRPO workspace 对齐：
+IF/science 使用以下 validation parquet 路径：
 
 | Domain | Validation parquet | Validation reward |
 | --- | --- | --- |
-| `if` | `eval/domains/ifbench/data/IFBench_test.parquet` | `grpo/rewards/mixed.py` -> IFBench/verifiable-instructions strict reward |
-| `science` | `eval/domains/science/data/gpqa.parquet` | `grpo/rewards/mixed.py` -> GPQA option-letter reward |
+| `if` | `data/eval_data/ifbench/IFBench_test.parquet` | `mopd_verl/mixed_reward.py` -> IFBench/verifiable-instructions strict reward |
+| `science` | `data/eval_data/science/gpqa.parquet` | `mopd_verl/mixed_reward.py` -> GPQA option-letter reward |
 
 准备这些 eval 文件：
 
@@ -191,25 +194,29 @@ Qwen30B configs 中 IF/science validation 路径默认保持注释，因为 verl
 
 配置默认使用 `logger: '["console","tensorboard","wandb"]'`、`runtime.wandb_entity: lz101-rice-university` 和 `runtime.env_file: .env.local`。在启动训练的机器上把 `WANDB_API_KEY` 放入 `.env.local`；该文件已 gitignore，不能提交。无需 W&B 的本地 dry-run 可以覆盖 `runtime.wandb_mode=disabled`。
 
-远端新 checkout 在 `git pull` 后运行 `scripts/setup_remote_training_env.sh`。默认会安装 M2RL/IF verifier 依赖、拉取四领域训练 parquet 并做 sanity check。若要在远端准备 eval parquet，设置 `PREPARE_M2RL_EVAL_DATA=1` 并传入上面的 source 变量；若只想强制检查 eval 文件，设置 `CHECK_M2RL_EVAL_DATA=1`。
+运行 `scripts/setup_training_env.sh` 创建或更新本地 Conda 环境。
+`environment.yml` 是唯一依赖定义，setup script 不再维护第二套 pip requirements
+或依赖安装脚本。IF/science validation parquet 使用
+`scripts/prepare_m2rl_eval_data.sh` 单独准备。
 
 ## 启动
 
-远端已同步 checkout 中启动：
+在本地 checkout 中启动：
 
 ```bash
-cd /root/autodl-tmp/opd_mopd/OPD-code
-GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
+cd /path/to/OPD-code
+GPU_IDS=0,1 bash scripts/run_local_mopd_training.sh \
   configs/mopd_formal_audit_all_2gpu.yaml \
   --run-id mopd_audit_all_2gpu_$(date +%Y%m%d_%H%M%S)
 ```
 
-`scripts/start_remote_mopd_training.sh` 在 `/root/miniconda3/envs/mopd-verl` 存在时会默认使用这个环境，并在 launch 日志里打印实际 Python 路径。
+`scripts/run_local_mopd_training.sh` 默认使用 `CONDA_ROOT=$HOME/miniconda3`
+和 `ENV_NAME=mopd-verl`，并在 launch 日志里打印实际 Python 路径。
 
 启动 audit-off 版本：
 
 ```bash
-GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
+GPU_IDS=0,1 bash scripts/run_local_mopd_training.sh \
   configs/mopd_formal_audit_off_2gpu.yaml \
   --run-id mopd_audit_off_2gpu_$(date +%Y%m%d_%H%M%S)
 ```
@@ -217,7 +224,7 @@ GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
 启动 loss-only token-gradient audit 版本：
 
 ```bash
-GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
+GPU_IDS=0,1 bash scripts/run_local_mopd_training.sh \
   configs/mopd_formal_audit_loss_only_2gpu.yaml \
   --run-id mopd_audit_loss_only_2gpu_$(date +%Y%m%d_%H%M%S)
 ```
@@ -225,15 +232,15 @@ GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
 4/8 卡使用对应 GPU 列表与 YAML：
 
 ```bash
-GPU_IDS=0,1,2,3 bash scripts/start_remote_mopd_training.sh \
+GPU_IDS=0,1,2,3 bash scripts/run_local_mopd_training.sh \
   configs/mopd_formal_audit_all_4gpu.yaml \
   --run-id mopd_audit_all_4gpu_$(date +%Y%m%d_%H%M%S)
 
-GPU_IDS=0,1,2,3,4,5 bash scripts/start_remote_mopd_training.sh \
+GPU_IDS=0,1,2,3,4,5 bash scripts/run_local_mopd_training.sh \
   configs/mopd_formal_audit_all_6gpu.yaml \
   --run-id mopd_audit_all_6gpu_$(date +%Y%m%d_%H%M%S)
 
-GPU_IDS=0,1,2,3,4,5,6,7 bash scripts/start_remote_mopd_training.sh \
+GPU_IDS=0,1,2,3,4,5,6,7 bash scripts/run_local_mopd_training.sh \
   configs/mopd_formal_audit_all_8gpu.yaml \
   --run-id mopd_audit_all_8gpu_$(date +%Y%m%d_%H%M%S)
 ```
@@ -247,7 +254,7 @@ scripts/run_mopd.sh configs/mopd_formal_audit_all_2gpu.yaml --dry-run
 下载完整 Qwen30B 四领域训练 assets：
 
 ```bash
-MODEL_ROOT=/root/autodl-tmp/opd_mopd/models \
+MODEL_ROOT=$(pwd)/../models \
 MIN_FREE_GB=300 \
   scripts/download_training_assets.sh
 ```
@@ -255,32 +262,18 @@ MIN_FREE_GB=300 \
 指标 smoke：
 
 ```bash
-GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
+GPU_IDS=0,1 bash scripts/run_local_mopd_training.sh \
   configs/mopd_formal_audit_all_smoke.yaml \
   --run-id mopd_metrics_smoke_$(date +%Y%m%d_%H%M%S)
 
-GPU_IDS=0,1 bash scripts/start_remote_mopd_training.sh \
+GPU_IDS=0,1 bash scripts/run_local_mopd_training.sh \
   configs/mopd_formal_audit_loss_only_smoke.yaml \
   --run-id mopd_metrics_loss_only_smoke_$(date +%Y%m%d_%H%M%S)
 ```
 
-只同步不启动：
-
-```bash
-ASSUME_YES=1 bash scripts/sync_and_start_remote_mopd.sh --sync-only
-```
-
-同步并启动：
-
-```bash
-ASSUME_YES=1 bash scripts/sync_and_start_remote_mopd.sh \
-  configs/mopd_formal_audit_all_2gpu.yaml \
-  --run-id mopd_audit_all_2gpu_$(date +%Y%m%d_%H%M%S)
-```
-
 ## Audit 文件
 
-使用 `mopd_formal_audit_all_*gpu.yaml` 或 `mopd_formal_audit_loss_only_*gpu.yaml` 时，JSONL audit 文件写入对应目录，例如 `audit/formal_audit_all_2gpu/` 或 `audit/formal_audit_loss_only_2gpu/`。
+使用 `scripts/run_local_mopd_training.sh --run-id RUN_ID` 启动 `mopd_formal_audit_all_*gpu.yaml` 或 `mopd_formal_audit_loss_only_*gpu.yaml` 时，JSONL audit 文件会写入配置目录下的 run 子目录，例如 `audit/formal_audit_all_2gpu/RUN_ID/` 或 `audit/formal_audit_loss_only_2gpu/RUN_ID/`。如果显式传入 `mopd_audit.output_dir` override，则使用手动指定的目录。
 
 重点文件包括：
 

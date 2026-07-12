@@ -1,21 +1,19 @@
-# Six-GPU profile for split Qwen3-30B GPU teacher with the narrow audit surface.
+# Eight-GPU single-domain Qwen3-30B policy-gradient profile for science.
 #
 # Physical GPU layout:
-# - actor/rollout pool: 4 GPUs for Qwen3-4B student + vLLM
-# - ref/teacher pool: 2 GPUs for Qwen3-30B-A3B teacher
+# - actor/rollout pool: 6 GPUs for the Qwen3-4B student + vLLM
+# - ref/teacher pool: 2 GPUs for the Qwen3-30B-A3B teacher
 #
-# Keep trainer.n_gpus_per_node equal to the actor/rollout pool size, because
-# verl uses trainer.* as the actor DP world size. Launch with all six GPUs, e.g.
-# GPU_IDS=0,1,2,3,4,5.
+# Keep trainer.n_gpus_per_node equal to the six-GPU actor/rollout pool size.
+# Launch with GPU_IDS=0,1,2,3,4,5,6,7.
 #
 # Enabled audit families:
-# - math/code full gradient audit
-# - token-gap vectors, including full-vocab token-id vectors
+# - single-domain full-gradient audit
+# - token-gap and logp-abs sequence/full-vocab vectors
+# - entropy distribution and full-vocab entropy vectors
+# - top-k teacher-student cross-entropy full-vocab vectors
 #
-# Disabled audit families:
-# - token gradients
-# - sample gradients
-# - entropy and token-conflict diagnostics
+# Sample gradients, token gradients, and token-conflict diagnostics remain disabled.
 
 runtime:
   python_bin: python
@@ -27,24 +25,16 @@ runtime:
 
 data:
   domain_train_files:
-    math:
-      - data/G-OPD-Training-Data/DeepMath-103K/train_filtered_level6.parquet
-    code:
-      - data/G-OPD-Training-Data/Eurus/code_train.parquet
+    science:
+      - data/G-OPD-Training-Data/Science/train.parquet
   domain_sampling_weights:
-    math: 1
-    code: 1
+    science: 1
   domain_sampling_replacement: true
   load_parquet_direct: true
   val_files:
-    - data/eval_data/math/AIME24/test.parquet
-    - data/eval_data/math/AIME25/test.parquet
-    - data/eval_data/math/HMMT25Feb/test.parquet
-    - data/eval_data/math/HMMT25Nov/test.parquet
-    - data/eval_data/code/HumanEvalPlus/test.parquet
-    - data/eval_data/code/MBPPPlus/test.parquet
-    # - data/eval_data/code/LiveCodeBench/test.parquet
-  train_batch_size: 512
+    # Prepare with scripts/prepare_m2rl_eval_data.sh.
+    - data/eval_data/science/gpqa.parquet
+  train_batch_size: 504
   max_prompt_length: 2048
   max_response_length: 10240
   val_batch_size: 1024
@@ -61,9 +51,9 @@ model:
   student_base_path: null
   math_teacher_path: ../models/Qwen3-30B-A3B
   code_teacher_path: ../models/Qwen3-30B-A3B
+  if_teacher_path: ../models/Qwen3-30B-A3B
   domain_teacher_paths:
-    math: ../models/Qwen3-30B-A3B
-    code: ../models/Qwen3-30B-A3B
+    science: ../models/Qwen3-30B-A3B
   teacher_model_device: gpu
 
 actor:
@@ -83,7 +73,7 @@ actor:
   topk_distill_loss_weight: 0.0
   topk_distill_logprob_chunk_size: 16
   topk_distill_logprob_mode: sparse
-  ppo_mini_batch_size: 512
+  ppo_mini_batch_size: 504
   ppo_micro_batch_size_per_gpu: 1
   use_kl_loss: true
   kl_loss_coef: 0
@@ -93,7 +83,7 @@ actor:
   gradient_checkpointing: true
   param_offload: true
   optimizer_offload: true
-  fsdp_size: 1
+  fsdp_size: 2
   use_dynamic_bsz: false
 
 rollout:
@@ -130,7 +120,7 @@ extra_overrides:
 worker_placement:
   separate_ref_policy: true
   actor_rollout:
-    n_gpus_per_node: 4
+    n_gpus_per_node: 6
     nnodes: 1
   ref_policy:
     n_gpus_per_node: 2
@@ -138,10 +128,9 @@ worker_placement:
 
 audit:
   enabled: true
-  output_dir: audit/qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_6gpu_math_code_fsdp
+  output_dir: audit/qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_8gpu_6student_2teacher_science
   domains:
-    - math
-    - code
+    - science
   tensorboard_prefix: mopd
   tensorboard_layout: domain_category
   tensorboard_prune_mode: core
@@ -155,7 +144,7 @@ audit:
   tier2_window_size: 20
   calibration_bins: 10
   full_gradient_enabled: true
-  full_gradient_freq_steps: 2
+  full_gradient_freq_steps: 1
   full_grad_training_parity_freq_steps: -1
   full_gradient_train_max_samples_per_domain: null
   full_gradient_micro_batch_size_per_gpu: 1
@@ -182,10 +171,17 @@ audit:
   token_gap_vocab_vector_enabled: true
   token_gap_vocab_vector_freq_steps: 1
   token_gap_vocab_size: null
-  entropy_enabled: false
+  entropy_enabled: true
   entropy_freq_steps: 1
-  entropy_vocab_vector_enabled: false
+  entropy_vocab_vector_enabled: true
   entropy_vocab_vector_freq_steps: 1
+  topk_teacher_student_cross_entropy_vocab_enabled: true
+  topk_teacher_student_cross_entropy_vocab_freq_steps: 1
+  topk_teacher_student_cross_entropy_k: 32
+  topk_teacher_student_cross_entropy_include_tail: false
+  topk_teacher_student_cross_entropy_temperature: 1.0
+  logp_abs_vector_enabled: true
+  logp_abs_vector_freq_steps: 1
   token_conflict_enabled: false
   token_conflict_freq_steps: 1
   token_conflict_top_k: null
@@ -204,15 +200,9 @@ paper_eval:
   enabled: false
   script_path: eval/scripts/run_paper_eval_suite.sh
   model_path: null
-  output_dir: eval_outputs/paper_suite/qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_6gpu_math_code_fsdp
-  datasets:
-    - aime24
-    - aime25
-    - hmmt25_feb
-    - hmmt25_nov
-    - humaneval_plus
-    - mbpp_plus
-    - lcb
+  output_dir: eval_outputs/paper_suite/qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_8gpu_6student_2teacher_science
+  # GPQA validation is provided through data.val_files above.
+  datasets: []
   run_on_initial_validation: true
   evaluate_current_checkpoint: true
   fail_on_error: false
@@ -220,15 +210,15 @@ paper_eval:
 
 trainer:
   project_name: MOPD
-  experiment_name: Qwen3-4B-from-Qwen3-30B-A3B-pg-split-teacher-gpu-audit-domain-vocabvec-6gpu-math-code-fsdp
+  experiment_name: Qwen3-4B-from-Qwen3-30B-A3B-pg-8gpu-6student-2teacher-science
   logger: '["console","tensorboard","wandb"]'
-  n_gpus_per_node: 4
+  n_gpus_per_node: 6
   nnodes: 1
   save_freq: 5
   test_freq: -1
   total_epochs: 3
   total_training_steps: 200
-  default_local_dir: checkpoints/MOPD/Qwen3-4B-from-Qwen3-30B-A3B-pg-split-teacher-gpu-audit-domain-vocabvec-6gpu-math-code-fsdp
+  default_local_dir: checkpoints/MOPD/Qwen3-4B-from-Qwen3-30B-A3B-pg-8gpu-6student-2teacher-science
   critic_warmup: 0
   val_before_train: false
   log_val_generations: 10
@@ -238,4 +228,4 @@ trainer:
 ray_kwargs:
   ray_init:
     include_dashboard: false
-    num_cpus: 24
+    num_cpus: 32

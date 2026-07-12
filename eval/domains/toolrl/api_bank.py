@@ -106,7 +106,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--source-dir", default="../temp/grpo_sources/ToolRL/benchmarks/API-Bank")
-    parser.add_argument("--output-dir", default="eval/results/official_toolrl/api_bank")
+    parser.add_argument("--output-dir", default="data/eval_data/results/official_toolrl/api_bank")
     parser.add_argument("--levels", nargs="+", default=list(LEVELS), choices=LEVELS)
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--tensor-parallel-size", type=int, default=1)

@@ -6,8 +6,9 @@ usage() {
 Usage:
   scripts/download_mopd_models.sh
 
-Downloads or verifies the model directories used by the current single-A800
-config plus the optional 4B-base student run.
+Downloads or verifies reusable MOPD model directories. The current Qwen30B
+four-domain asset flow calls this script for the Qwen3-4B student/base model
+and uses scripts/download_qwen30b_teacher.sh for the Qwen3-30B-A3B teacher.
 
 Defaults:
   MODEL_ROOT=<parent of OPD-code>/models
@@ -15,19 +16,15 @@ Defaults:
   STUDENT_DIR_NAME=Qwen3-0.6B
   DOWNLOAD_STUDENT=1
   DOWNLOAD_BASE_4B=1
-  DOWNLOAD_TEACHERS=1
   DOWNLOAD_REASONING_TEACHER=0
   DOWNLOAD_REASONING_BASE_14B=0
   REQUIRE_STUDENT=$DOWNLOAD_STUDENT
   REQUIRE_BASE_4B=$DOWNLOAD_BASE_4B
-  REQUIRE_MATH_CODE_TEACHERS=$DOWNLOAD_TEACHERS
   REQUIRE_REASONING_TEACHER=$DOWNLOAD_REASONING_TEACHER
 
 Model directories prepared by default:
   $MODEL_ROOT/Qwen3-0.6B
   $MODEL_ROOT/Qwen3-4B
-  $MODEL_ROOT/Qwen3-4B-Non-Thinking-RL-Math-Step500
-  $MODEL_ROOT/Qwen3-4B-Non-Thinking-RL-Code-Step300
 
 Python:
   PYTHON_BIN=<auto-detected python or python3>
@@ -39,18 +36,12 @@ Default General-Reasoner 14B hub ids:
   BASE_14B_MODEL_ID=Qwen/Qwen3-14B
   REASONING_TEACHER_MODEL_ID=TIGER-Lab/General-Reasoner-Qwen3-14B
 
-Default teacher hub ids:
-  MATH_TEACHER_MODEL_ID=Keven16/Qwen3-4B-Non-Thinking-RL-Math-Step500
-  CODE_TEACHER_MODEL_ID=Keven16/Qwen3-4B-Non-Thinking-RL-Code-Step300
-
 Set DOWNLOAD_BASE_4B=0 to skip downloading and validating the 4B base model.
-Set DOWNLOAD_TEACHERS=0 to skip downloading math/code teachers; keep
-REQUIRE_MATH_CODE_TEACHERS=1 if you only want to verify existing directories.
 Set DOWNLOAD_REASONING_TEACHER=1 to prepare General-Reasoner-Qwen3-14B.
 Set DOWNLOAD_REASONING_BASE_14B=1 only when the reasoning teacher needs the
 Qwen3-14B base checkpoint separately.
 For a General-Reasoner-only MOPD run, set DOWNLOAD_STUDENT=0,
-REQUIRE_STUDENT=0, DOWNLOAD_TEACHERS=0, and REQUIRE_MATH_CODE_TEACHERS=0.
+REQUIRE_STUDENT=0.
 
 Backend:
   MODEL_BACKEND=huggingface | modelscope
@@ -72,12 +63,10 @@ HF_XET_HIGH_PERFORMANCE="${HF_XET_HIGH_PERFORMANCE:-1}"
 
 DOWNLOAD_STUDENT="${DOWNLOAD_STUDENT:-1}"
 DOWNLOAD_BASE_4B="${DOWNLOAD_BASE_4B:-1}"
-DOWNLOAD_TEACHERS="${DOWNLOAD_TEACHERS:-1}"
 DOWNLOAD_REASONING_TEACHER="${DOWNLOAD_REASONING_TEACHER:-0}"
 DOWNLOAD_REASONING_BASE_14B="${DOWNLOAD_REASONING_BASE_14B:-0}"
 REQUIRE_STUDENT="${REQUIRE_STUDENT:-${DOWNLOAD_STUDENT}}"
 REQUIRE_BASE_4B="${REQUIRE_BASE_4B:-${DOWNLOAD_BASE_4B}}"
-REQUIRE_MATH_CODE_TEACHERS="${REQUIRE_MATH_CODE_TEACHERS:-${DOWNLOAD_TEACHERS}}"
 REQUIRE_REASONING_TEACHER="${REQUIRE_REASONING_TEACHER:-${DOWNLOAD_REASONING_TEACHER}}"
 
 STUDENT_MODEL_ID="${STUDENT_MODEL_ID:-Qwen/Qwen3-0.6B}"
@@ -86,10 +75,6 @@ BASE_4B_MODEL_ID="${BASE_4B_MODEL_ID:-Qwen/Qwen3-4B}"
 BASE_4B_DIR_NAME="${BASE_4B_DIR_NAME:-Qwen3-4B}"
 BASE_14B_MODEL_ID="${BASE_14B_MODEL_ID:-Qwen/Qwen3-14B}"
 BASE_14B_DIR_NAME="${BASE_14B_DIR_NAME:-Qwen3-14B}"
-MATH_TEACHER_MODEL_ID="${MATH_TEACHER_MODEL_ID:-Keven16/Qwen3-4B-Non-Thinking-RL-Math-Step500}"
-MATH_TEACHER_DIR_NAME="${MATH_TEACHER_DIR_NAME:-Qwen3-4B-Non-Thinking-RL-Math-Step500}"
-CODE_TEACHER_MODEL_ID="${CODE_TEACHER_MODEL_ID:-Keven16/Qwen3-4B-Non-Thinking-RL-Code-Step300}"
-CODE_TEACHER_DIR_NAME="${CODE_TEACHER_DIR_NAME:-Qwen3-4B-Non-Thinking-RL-Code-Step300}"
 REASONING_TEACHER_MODEL_ID="${REASONING_TEACHER_MODEL_ID:-TIGER-Lab/General-Reasoner-Qwen3-14B}"
 REASONING_TEACHER_DIR_NAME="${REASONING_TEACHER_DIR_NAME:-General-Reasoner-Qwen3-14B}"
 
@@ -197,8 +182,6 @@ validate_model_dir() {
 student_dir="${MODEL_ROOT}/${STUDENT_DIR_NAME}"
 base_4b_dir="${MODEL_ROOT}/${BASE_4B_DIR_NAME}"
 base_14b_dir="${MODEL_ROOT}/${BASE_14B_DIR_NAME}"
-math_teacher_dir="${MODEL_ROOT}/${MATH_TEACHER_DIR_NAME}"
-code_teacher_dir="${MODEL_ROOT}/${CODE_TEACHER_DIR_NAME}"
 reasoning_teacher_dir="${MODEL_ROOT}/${REASONING_TEACHER_DIR_NAME}"
 
 if [[ "${DOWNLOAD_STUDENT}" == "1" ]]; then
@@ -211,11 +194,6 @@ fi
 
 if [[ "${DOWNLOAD_REASONING_BASE_14B}" == "1" ]]; then
   download_repo "${BASE_14B_MODEL_ID}" "${base_14b_dir}"
-fi
-
-if [[ "${DOWNLOAD_TEACHERS}" == "1" ]]; then
-  download_repo "${MATH_TEACHER_MODEL_ID}" "${math_teacher_dir}"
-  download_repo "${CODE_TEACHER_MODEL_ID}" "${code_teacher_dir}"
 fi
 
 if [[ "${DOWNLOAD_REASONING_TEACHER}" == "1" ]]; then
@@ -238,36 +216,6 @@ if [[ "${DOWNLOAD_REASONING_BASE_14B}" == "1" ]]; then
   validate_model_dir "14B base" "${base_14b_dir}"
 else
   echo "14B base skipped: ${base_14b_dir}"
-fi
-
-if [[ "${REQUIRE_MATH_CODE_TEACHERS}" == "1" ]]; then
-  teacher_missing=0
-  validate_model_dir "math teacher" "${math_teacher_dir}" || teacher_missing=1
-  validate_model_dir "code teacher" "${code_teacher_dir}" || teacher_missing=1
-
-  if [[ "${teacher_missing}" == "1" ]]; then
-    cat >&2 <<EOF
-Teacher model directories are missing.
-
-Either place the checkpoints under:
-  ${math_teacher_dir}
-  ${code_teacher_dir}
-
-or rerun with:
-  scripts/download_mopd_models.sh
-
-To override the default teacher hub ids, run:
-  DOWNLOAD_TEACHERS=1 \\
-  MATH_TEACHER_MODEL_ID=<math-teacher-hub-id> \\
-  CODE_TEACHER_MODEL_ID=<code-teacher-hub-id> \\
-  scripts/download_mopd_models.sh
-EOF
-    exit 2
-  fi
-else
-  echo "math/code teacher validation skipped:"
-  echo "  ${math_teacher_dir}"
-  echo "  ${code_teacher_dir}"
 fi
 
 if [[ "${REQUIRE_REASONING_TEACHER}" == "1" ]]; then

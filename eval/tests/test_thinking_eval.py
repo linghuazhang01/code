@@ -5,11 +5,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from eval.common import (
     DEFAULT_DATA_FILES,
     DEFAULT_GREASONER_DATA_FILES,
+    DEFAULT_IF_DATA_FILES,
+    DEFAULT_SCIENCE_DATA_FILES,
     DEFAULT_SEARCH_DATA_FILES,
     DEFAULT_TOOLRL_DATA_FILES,
     EvalResult,
@@ -26,16 +29,19 @@ from eval.domains.toolrl.prepare_data import toolrl_jsonl_to_verl_parquet
 from eval.report import _ability
 from eval.report import _compact_record, _detail_record
 from eval.runner import resolve_max_new_tokens
+from eval.domains.scoring import score_completion
 
 
 class ThinkingEvalTest(unittest.TestCase):
     def test_default_data_files_include_small_code_validation(self) -> None:
-        self.assertIn("eval/domains/code/data/HumanEvalPlus/test.parquet", DEFAULT_DATA_FILES)
-        self.assertIn("eval/domains/code/data/MBPPPlus/test.parquet", DEFAULT_DATA_FILES)
-        self.assertIn("eval/domains/greasoner/data/WebInstructVerified/test.parquet", DEFAULT_GREASONER_DATA_FILES)
-        self.assertIn("eval/domains/toolrl/data/BFCL/test.parquet", DEFAULT_TOOLRL_DATA_FILES)
+        self.assertIn("data/eval_data/code/HumanEvalPlus/test.parquet", DEFAULT_DATA_FILES)
+        self.assertIn("data/eval_data/code/MBPPPlus/test.parquet", DEFAULT_DATA_FILES)
+        self.assertIn("data/eval_data/greasoner/WebInstructVerified/test.parquet", DEFAULT_GREASONER_DATA_FILES)
+        self.assertIn("data/eval_data/toolrl/BFCL/test.parquet", DEFAULT_TOOLRL_DATA_FILES)
         self.assertIn("data/SearchQA/test.parquet", DEFAULT_SEARCH_DATA_FILES)
         self.assertIn("data/SearchQA/test.parquet", DEFAULT_DATA_FILES)
+        self.assertIn("data/eval_data/ifbench/IFEval.parquet", DEFAULT_IF_DATA_FILES)
+        self.assertIn("data/eval_data/science/gpqa.parquet", DEFAULT_SCIENCE_DATA_FILES)
 
     def test_extracts_nested_boxed_answer(self) -> None:
         self.assertEqual(extract_boxed_answer(r"Thus \boxed{\frac{1}{2}}."), r"\frac{1}{2}")
@@ -75,6 +81,115 @@ class ThinkingEvalTest(unittest.TestCase):
         self.assertEqual(samples[0].sample_id, "validation:AIME2025:0")
         self.assertEqual(samples[0].messages[0]["content"], "Question?")
         self.assertEqual(samples[0].ground_truth, "42")
+        self.assertEqual(samples[0].extra_info["validation_dataset"], "AIME2025")
+
+    def test_gpqa_scoring_preserves_m2rl_metadata(self) -> None:
+        sample = EvalSample(
+            sample_id="science:gpqa:0",
+            dataset="m2rl_gpqa_diamond",
+            ability="science",
+            messages=[{"role": "user", "content": "Question?"}],
+            ground_truth="B",
+            extra_info={"rm_type": "gpqa", "correct_letter": "B", "valid_letters": np.array(list("ABCD"))},
+        )
+
+        score, prediction, metadata = score_completion(
+            sample,
+            "<think>work</think>\nAnswer: B",
+            score_code=False,
+        )
+
+        self.assertEqual(score, 1.0)
+        self.assertEqual(prediction, "Answer: B")
+        self.assertEqual(metadata[0]["m2rl_gpqa"], 1.0)
+
+    def test_humaneval_plus_executes_generated_code(self) -> None:
+        samples = load_eval_samples(
+            [Path("data/eval_data/code/HumanEvalPlus/test.parquet")],
+            max_samples_per_dataset=1,
+        )
+        completion = """```python
+from typing import List
+def has_close_elements(numbers: List[float], threshold: float) -> bool:
+    return any(abs(a - b) < threshold for i, a in enumerate(numbers) for b in numbers[i + 1:])
+```"""
+
+        score, _, metadata = score_completion(samples[0], completion, score_code=True)
+
+        self.assertEqual(score, 1.0)
+        self.assertTrue(metadata[0]["passed"])
+
+    def test_hle_is_not_silently_scored_with_gpqa(self) -> None:
+        sample = EvalSample(
+            sample_id="science:hle:0",
+            dataset="m2rl_hle",
+            ability="science",
+            messages=[{"role": "user", "content": "Question?"}],
+            ground_truth="answer",
+            extra_info={"rm_type": "hle"},
+        )
+
+        score, _, metadata = score_completion(sample, "answer", score_code=False)
+
+        self.assertIsNone(score)
+        self.assertEqual(metadata[0]["scorer"], "official_hle_judge_required")
+
+    def test_fractional_score_is_not_complete_prompt_success(self) -> None:
+        result = EvalResult(
+            mode="non_thinking",
+            enable_thinking=False,
+            sample_id="if-0",
+            dataset="m2rl_ifeval",
+            ability="if",
+            ground_truth="",
+            prediction="response",
+            score=0.5,
+            correct=False,
+            prompt_tokens=1,
+            generated_tokens=2,
+            thinking_tokens=0,
+            answer_tokens=2,
+            total_tokens=3,
+            latency_seconds=0.1,
+            generated_tokens_per_second=20.0,
+            completion_preview="response",
+        )
+
+        summary = next(row for row in summarize_results([result]) if row["dataset"] == "m2rl_ifeval")
+
+        self.assertEqual(summary["accuracy"], 0.0)
+        self.assertEqual(summary["avg_score"], 0.5)
+
+    def test_summary_reports_avg_at_k_and_pass_at_k(self) -> None:
+        base = {
+            "mode": "thinking",
+            "enable_thinking": True,
+            "dataset": "AIME2024",
+            "ability": "math",
+            "ground_truth": "1",
+            "prediction": "1",
+            "prompt_tokens": 1,
+            "generated_tokens": 2,
+            "thinking_tokens": 1,
+            "answer_tokens": 1,
+            "total_tokens": 3,
+            "latency_seconds": 0.1,
+            "generated_tokens_per_second": 20.0,
+            "completion_preview": "",
+        }
+        results = [
+            EvalResult(sample_id="q1", score=1.0, correct=True, rollout_index=0, **base),
+            EvalResult(sample_id="q1", score=0.0, correct=False, rollout_index=1, **base),
+            EvalResult(sample_id="q2", score=0.0, correct=False, rollout_index=0, **base),
+            EvalResult(sample_id="q2", score=0.0, correct=False, rollout_index=1, **base),
+        ]
+
+        summary = next(row for row in summarize_results(results) if row["dataset"] == "AIME2024")
+
+        self.assertEqual(summary["unique_sample_count"], 2)
+        self.assertEqual(summary["min_samples_per_prompt"], 2)
+        self.assertEqual(summary["avg_at_k"], 0.25)
+        self.assertEqual(summary["observed_pass_at_k"], 0.5)
 
     def test_load_eval_samples_normalizes_searchqa_domain(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

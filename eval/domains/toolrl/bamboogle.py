@@ -283,7 +283,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--source-file", default="../temp/grpo_sources/ToolRL/benchmarks/Bamboogle/data.json")
-    parser.add_argument("--output-dir", default="eval/results/official_toolrl/bamboogle")
+    parser.add_argument("--output-dir", default="data/eval_data/results/official_toolrl/bamboogle")
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--tensor-parallel-size", type=int, default=1)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.3)

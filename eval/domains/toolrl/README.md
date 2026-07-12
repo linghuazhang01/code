@@ -21,7 +21,7 @@ If you have local JSONL files with `question`/`instruction`/`prompt` and
 python -m eval.domains.toolrl.prepare_data \
   --dataset BFCL \
   --input /path/to/bfcl.jsonl \
-  --output eval/domains/toolrl/data/BFCL/test.parquet
+  --output data/eval_data/toolrl/BFCL/test.parquet
 ```
 
 Repeat with `--dataset API-Bank` or `--dataset Bamboogle` for the other slots.

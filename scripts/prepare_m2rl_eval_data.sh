@@ -6,11 +6,11 @@ usage() {
 Usage:
   scripts/prepare_m2rl_eval_data.sh
 
-Prepare GRPO-aligned M2RL evaluation parquet files for OPD validation.
+Prepare M2RL evaluation parquet files for OPD validation.
 
 Output defaults:
-  eval/domains/ifbench/data/IFBench_test.parquet
-  eval/domains/science/data/gpqa.parquet
+  data/eval_data/ifbench/IFBench_test.parquet
+  data/eval_data/science/gpqa.parquet
 
 Source variables:
   IF_VAL_SOURCE=/path/to/raw_if_val.parquet
@@ -19,8 +19,8 @@ Source variables:
 
 Optional variables:
   PYTHON_BIN=python
-  IF_EVAL_OUTPUT=eval/domains/ifbench/data/IFBench_test.parquet
-  SCIENCE_EVAL_OUTPUT=eval/domains/science/data/gpqa.parquet
+  IF_EVAL_OUTPUT=data/eval_data/ifbench/IFBench_test.parquet
+  SCIENCE_EVAL_OUTPUT=data/eval_data/science/gpqa.parquet
   M2RL_EVAL_MAX_SAMPLES=128
   IF_VAL_MAX_SAMPLES=128
   SCIENCE_VAL_MAX_SAMPLES=128
@@ -40,8 +40,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
-IF_EVAL_OUTPUT="${IF_EVAL_OUTPUT:-${CODE_DIR}/eval/domains/ifbench/data/IFBench_test.parquet}"
-SCIENCE_EVAL_OUTPUT="${SCIENCE_EVAL_OUTPUT:-${CODE_DIR}/eval/domains/science/data/gpqa.parquet}"
+IF_EVAL_OUTPUT="${IF_EVAL_OUTPUT:-${CODE_DIR}/data/eval_data/ifbench/IFBench_test.parquet}"
+SCIENCE_EVAL_OUTPUT="${SCIENCE_EVAL_OUTPUT:-${CODE_DIR}/data/eval_data/science/gpqa.parquet}"
 NEMOTRON_RL_SOURCE="${NEMOTRON_RL_SOURCE:-}"
 IF_VAL_SOURCE="${IF_VAL_SOURCE:-}"
 SCIENCE_VAL_SOURCE="${SCIENCE_VAL_SOURCE:-}"
@@ -99,7 +99,7 @@ prepare_with_m2rl_converter() {
   fi
 
   local args=(
-    -m grpo.data.m2rl prepare
+    -m mopd_verl.m2rl_data prepare
     --input "${source_path}"
     --output "${output_path}"
     --rm-type "${rm_type}"
@@ -125,7 +125,7 @@ validate_output() {
   fi
 
   echo "Validating ${label} eval parquet: ${output_path}"
-  "${PYTHON_BIN}" -m grpo.data.m2rl validate --input "${output_path}" --rm-type "${rm_type}"
+  "${PYTHON_BIN}" -m mopd_verl.m2rl_data validate --input "${output_path}" --rm-type "${rm_type}"
 }
 
 if [[ -n "${NEMOTRON_RL_SOURCE}" ]]; then

@@ -37,12 +37,19 @@ COMPACT_RECORD_FIELDS = (
     "max_new_tokens",
     "prediction",
     "completion_preview",
+    "rollout_index",
+    "generation_seed",
     "source",
     "record_index",
 )
 
 
 def _ability(dataset: str) -> str:
+    normalized = dataset.lower()
+    if "ifeval" in normalized or "ifbench" in normalized:
+        return "if"
+    if "gpqa" in normalized or "hle" in normalized:
+        return "science"
     if is_code_dataset(dataset):
         return "code"
     if is_greasoner_dataset(dataset):
@@ -128,11 +135,27 @@ def _detail_record(record: dict[str, Any]) -> dict[str, Any] | None:
 
 def _summarize_group(records: list[dict[str, Any]]) -> dict[str, Any]:
     scored = [record for record in records if record.get("score") is not None]
+    by_sample: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for index, record in enumerate(scored):
+        by_sample[str(record.get("sample_id") or f"record:{index}")].append(record)
+    sample_sizes = [len(sample_records) for sample_records in by_sample.values()]
     return {
         "sample_count": len(records),
         "scored_count": len(scored),
         "accuracy": _mean([1.0 if record.get("correct") else 0.0 for record in scored]),
         "avg_score": _mean([float(record["score"]) for record in scored]),
+        "unique_sample_count": len(by_sample),
+        "min_samples_per_prompt": min(sample_sizes, default=0),
+        "max_samples_per_prompt": max(sample_sizes, default=0),
+        "avg_at_k": _mean(
+            [
+                sum(float(record["score"]) for record in sample_records) / len(sample_records)
+                for sample_records in by_sample.values()
+            ]
+        ),
+        "observed_pass_at_k": _mean(
+            [float(any(record.get("correct") is True for record in sample_records)) for sample_records in by_sample.values()]
+        ),
         "avg_generated_tokens": _mean([float(record.get("generated_tokens", 0)) for record in records]),
         "avg_thinking_tokens": _mean([float(record.get("thinking_tokens", 0)) for record in records]),
         "avg_answer_tokens": _mean([float(record.get("answer_tokens", 0)) for record in records]),
@@ -176,20 +199,21 @@ def _format_number(value: Any) -> str:
 def _summary_table(rows: list[dict[str, Any]], mode: str) -> str:
     selected = [row for row in rows if row["mode"] == mode and row["dataset"] != "ALL"]
     lines = [
-        "| Dataset | Ability | Correct / N | Accuracy | Avg Gen Tokens | Avg Think Tokens |",
-        "|---|---|---:|---:|---:|---:|",
+        "| Dataset | Domain | Records | Scored | Unique prompts | K | Accuracy | Avg@K | Observed pass@K |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in selected:
-        correct = None if row["accuracy"] is None else int(round(float(row["accuracy"]) * int(row["scored_count"])))
         lines.append(
-            "| {dataset} | {ability} | {correct} / {n} | {acc} | {gen} | {think} |".format(
+            "| {dataset} | {ability} | {records} | {scored} | {unique} | {k} | {acc} | {avg_k} | {pass_k} |".format(
                 dataset=row["dataset"],
                 ability=row["ability"],
-                correct="NA" if correct is None else correct,
-                n=row["sample_count"],
+                records=row["sample_count"],
+                scored=row["scored_count"],
+                unique=row.get("unique_sample_count", 0),
+                k=row.get("min_samples_per_prompt", 0),
                 acc=_format_percent(row["accuracy"]),
-                gen=_format_number(row["avg_generated_tokens"]),
-                think=_format_number(row["avg_thinking_tokens"]),
+                avg_k=_format_percent(row.get("avg_at_k")),
+                pass_k=_format_percent(row.get("observed_pass_at_k")),
             )
         )
     return "\n".join(lines)
@@ -208,7 +232,7 @@ def write_report(payload: dict[str, Any], output_dir: Path, detail_records: list
         with (output_dir / "prompt_response_records.jsonl").open("w", encoding="utf-8") as handle:
             for record in detail_records:
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-    for domain in ("math", "code", "search"):
+    for domain in ("math", "code", "if", "science", "reasoning", "tool", "search"):
         domain_dir = output_dir / domain
         domain_dir.mkdir(parents=True, exist_ok=True)
         domain_records = [record for record in payload["records"] if record.get("ability") == domain]
@@ -236,6 +260,7 @@ def write_report(payload: dict[str, Any], output_dir: Path, detail_records: list
         f"- Record source: `{payload['record_source']}`",
         f"- Records: `{len(payload['records'])}` / `{payload['expected_total']}`",
         f"- Generated at: `{payload['generated_at']}`",
+        f"- Generation config: `{payload.get('run_config', {})}`",
         "",
         "## Notes",
         "",
@@ -254,9 +279,7 @@ def write_report(payload: dict[str, Any], output_dir: Path, detail_records: list
         "- `thinking_eval_results.json`: structured summary and records",
         "- `records.jsonl`: compact per-record metrics used for this report",
         "- `prompt_response_records.jsonl`: prompt and response details when completions are saved",
-        "- `math/summary.json`, `math/records.jsonl`: math-domain view",
-        "- `code/summary.json`, `code/records.jsonl`: code-domain view",
-        "- `search/summary.json`, `search/records.jsonl`: search-domain view",
+        "- `<domain>/summary.json`, `<domain>/records.jsonl`: per-domain views",
         "- `thinking_eval_samples.jsonl`: full raw evaluator output when the run has completed",
         "- `run.log`: copied remote log when available",
         "",
@@ -289,6 +312,8 @@ def main() -> None:
     records = [_compact_record(record) for record in raw_records]
     detail_records = [record for record in (_detail_record(record) for record in raw_records) if record is not None]
     expected_total = args.expected_total if args.expected_total is not None else len(records)
+    run_config_path = output_dir / "eval_run_config.json"
+    run_config = json.loads(run_config_path.read_text(encoding="utf-8")) if run_config_path.exists() else {}
     payload = {
         "run_id": run_id,
         "status": args.status,
@@ -300,6 +325,7 @@ def main() -> None:
         "notes": args.notes,
         "summary": summarize_records(records),
         "records": records,
+        "run_config": run_config,
     }
     write_report(payload, output_dir, detail_records)
 

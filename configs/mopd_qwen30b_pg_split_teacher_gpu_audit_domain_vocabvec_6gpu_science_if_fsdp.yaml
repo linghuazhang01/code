@@ -38,8 +38,8 @@ data:
   load_parquet_direct: true
   # Prepare these with scripts/prepare_m2rl_eval_data.sh before launching if absent.
   val_files:
-    - eval/domains/science/data/gpqa.parquet
-    - eval/domains/ifbench/data/IFBench_test.parquet
+    - data/eval_data/science/gpqa.parquet
+    - data/eval_data/ifbench/IFBench_test.parquet
   train_batch_size: 512
   max_prompt_length: 2048
   max_response_length: 10240
@@ -121,7 +121,7 @@ rollout_correction:
   bypass_mode: false
 
 extra_overrides:
-  - custom_reward_function.path=grpo/rewards/mixed.py
+  - custom_reward_function.path=mopd_verl/mixed_reward.py
   - custom_reward_function.name=compute_score
 
 worker_placement:
@@ -202,7 +202,7 @@ paper_eval:
   script_path: eval/scripts/run_paper_eval_suite.sh
   model_path: null
   output_dir: eval_outputs/paper_suite/qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_6gpu_science_if_fsdp
-  # Science/IF validation is handled by data.val_files and grpo/rewards/mixed.py.
+  # Science/IF validation is handled by data.val_files and mopd_verl/mixed_reward.py.
   datasets: []
   run_on_initial_validation: true
   evaluate_current_checkpoint: true

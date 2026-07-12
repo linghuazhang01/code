@@ -29,6 +29,7 @@ dist/
 !third_party/verl/**/*.whl
 
 # Experiment outputs
+/analysis-output/
 audit/
 mopd_audit/
 checkpoints/
@@ -65,6 +66,10 @@ G-OPD-Training-Data/
 /eval/domains.zip
 data/G-OPD-Training-Data/**/*.parquet
 data/G-OPD-Training-Data/.cache/
+/data/eval_data/**/*_manifest.json
+/data/eval_data/**/metadata.json
+/data/eval_data/**/download_summary.json
+/data/eval_data/**/_raw/
 deliverables/*.zip
 deliverables/*.zip.part-*
 data/agentic_benchmarks/sources/

@@ -4,33 +4,36 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/start_remote_mopd_training.sh <config> [--run-id RUN_ID] [--foreground] [--tail] [--dry-run] [-- <hydra overrides...>]
+  scripts/run_local_mopd_training.sh <config> [--run-id RUN_ID] [--foreground] [--tail] [--dry-run] [-- <hydra overrides...>]
 
 Examples:
-  scripts/start_remote_mopd_training.sh configs/mopd_formal_audit_all_2gpu.yaml
+  scripts/run_local_mopd_training.sh configs/mopd_formal_audit_all_2gpu.yaml
 
-  scripts/start_remote_mopd_training.sh configs/mopd_formal_audit_all_4gpu.yaml \
+  scripts/run_local_mopd_training.sh configs/mopd_formal_audit_all_4gpu.yaml \
     --run-id mopd_manual_test
 
-  scripts/start_remote_mopd_training.sh configs/mopd_formal_audit_off_2gpu.yaml \
+  scripts/run_local_mopd_training.sh configs/mopd_formal_audit_off_2gpu.yaml \
     --run-id mopd_bsz128 \
     -- data.train_batch_size=128 data.val_batch_size=128 trainer.val_before_train=false
 
 Notes:
-  - Run this script on the remote host from a synced OPD-code checkout.
-  - It does not SSH and does not sync files.
+  - Run this script from a local OPD-code checkout.
   - Training imports verl from this repo's third_party/verl directory.
   - By default it launches in a detached screen session.
+  - When audit is enabled, JSONL files go to <config audit.output_dir>/<RUN_ID>
+    unless mopd_audit.output_dir is explicitly passed after '--'.
 
 Environment:
-  REMOTE_ROOT=<parent of OPD-code>
+  LOCAL_ROOT=<parent of OPD-code>
+  CONDA_ROOT=$HOME/miniconda3
+  ENV_NAME=mopd-verl
   GPU_IDS=0,1                # comma- or space-separated visible physical GPUs
   GPU_ID=0                   # legacy alias used only when GPU_IDS is unset
   LOG_DIR=$CODE_DIR/logs
   STOP_STALE_RAY=1
   GPU_IDLE_MEMORY_LIMIT_MB=1000
-  MOPD_REMOTE_CONDA_ENV=/root/miniconda3/envs/mopd-verl
-  MOPD_REMOTE_CONDA_ROOT=/root/miniconda3
+  MOPD_LOCAL_CONDA_ENV=$CONDA_ROOT/envs/$ENV_NAME
+  MOPD_LOCAL_CONDA_ROOT=$CONDA_ROOT
   MOPD_STEP_PROGRESS=1
   MOPD_VLLM_GENERATE_PROGRESS=1
 USAGE
@@ -40,20 +43,38 @@ quote() {
   printf "%q" "$1"
 }
 
+has_hydra_override() {
+  local wanted_key="$1"
+  local arg key
+  for arg in "${EXTRA_ARGS[@]}"; do
+    [[ "${arg}" == *=* ]] || continue
+    key="${arg%%=*}"
+    while [[ "${key}" == +* ]]; do
+      key="${key#+}"
+    done
+    if [[ "${key}" == "${wanted_key}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-REMOTE_ROOT="${REMOTE_ROOT:-$(cd "${CODE_DIR}/.." && pwd)}"
+LOCAL_ROOT="${LOCAL_ROOT:-$(cd "${CODE_DIR}/.." && pwd)}"
+ENV_NAME="${ENV_NAME:-mopd-verl}"
+CONDA_ROOT="${CONDA_ROOT:-${HOME}/miniconda3}"
 GPU_IDS="${GPU_IDS:-${GPU_ID:-0,1}}"
 LOG_DIR="${LOG_DIR:-${CODE_DIR}/logs}"
 STOP_STALE_RAY="${STOP_STALE_RAY:-1}"
 GPU_IDLE_MEMORY_LIMIT_MB="${GPU_IDLE_MEMORY_LIMIT_MB:-1000}"
 VERL_RUNTIME_DIR="${VERL_RUNTIME_DIR:-${CODE_DIR}/third_party/verl}"
-MOPD_REMOTE_CONDA_ENV="${MOPD_REMOTE_CONDA_ENV:-/root/miniconda3/envs/mopd-verl}"
-MOPD_REMOTE_CONDA_ROOT="${MOPD_REMOTE_CONDA_ROOT:-/root/miniconda3}"
+MOPD_LOCAL_CONDA_ENV="${MOPD_LOCAL_CONDA_ENV:-${CONDA_ROOT}/envs/${ENV_NAME}}"
+MOPD_LOCAL_CONDA_ROOT="${MOPD_LOCAL_CONDA_ROOT:-${CONDA_ROOT}}"
 
-if [[ -d "${MOPD_REMOTE_CONDA_ENV}/bin" ]]; then
-  export PATH="${MOPD_REMOTE_CONDA_ENV}/bin:${MOPD_REMOTE_CONDA_ROOT}/bin:${PATH:-}"
+if [[ -d "${MOPD_LOCAL_CONDA_ENV}/bin" ]]; then
+  export PATH="${MOPD_LOCAL_CONDA_ENV}/bin:${MOPD_LOCAL_CONDA_ROOT}/bin:${PATH:-}"
 fi
 
 GPU_IDS="${GPU_IDS//$'\t'/,}"
@@ -319,7 +340,7 @@ if [[ "${REQUIRED_GPUS}" -gt "${VISIBLE_GPU_COUNT}" ]]; then
 Config requests ${REQUIRED_GPUS} visible GPU(s) across worker pools, but GPU_IDS exposes only ${VISIBLE_GPU_COUNT}: ${GPU_IDS}
 
 Set GPU_IDS to enough physical GPUs, for example:
-  GPU_IDS=0,1,2,3,4,5,6,7 bash scripts/start_remote_mopd_training.sh ${CONFIG_ARG}
+  GPU_IDS=0,1,2,3,4,5,6,7 bash scripts/run_local_mopd_training.sh ${CONFIG_ARG}
 
 Or pass a compatible config/override set after '--'.
 EOF
@@ -365,6 +386,32 @@ if [[ "${STOP_STALE_RAY}" == "1" ]]; then
   ray stop --force >/dev/null 2>&1 || true
 fi
 
+AUDIT_OUTPUT_DIR=""
+if ! has_hydra_override "mopd_audit.output_dir"; then
+  AUDIT_CONFIG_INFO="$(python - "${CONFIG_PATH}" <<'PY'
+from pathlib import Path
+import sys
+import yaml
+
+config = yaml.safe_load(Path(sys.argv[1]).read_text(encoding="utf-8")) or {}
+audit = config.get("audit") or {}
+enabled = bool(audit.get("enabled", False))
+output_dir = str(audit.get("output_dir") or "mopd_audit")
+print(f"{int(enabled)}\t{output_dir}")
+PY
+)"
+  AUDIT_ENABLED="${AUDIT_CONFIG_INFO%%$'\t'*}"
+  AUDIT_OUTPUT_BASE="${AUDIT_CONFIG_INFO#*$'\t'}"
+  if [[ "${AUDIT_ENABLED}" == "1" ]]; then
+    AUDIT_OUTPUT_BASE="${AUDIT_OUTPUT_BASE%/}"
+    if [[ -z "${AUDIT_OUTPUT_BASE}" ]]; then
+      AUDIT_OUTPUT_BASE="mopd_audit"
+    fi
+    AUDIT_OUTPUT_DIR="${AUDIT_OUTPUT_BASE}/${RUN_ID}"
+    EXTRA_ARGS=("+mopd_audit.output_dir=${AUDIT_OUTPUT_DIR}" "${EXTRA_ARGS[@]}")
+  fi
+fi
+
 echo "${RUN_ID}" > "${LOG_DIR}/opd_target_run_id"
 echo "${LOG_FILE}" > "${LOG_DIR}/opd_target_log"
 echo "${CONFIG_PATH}" > "${LOG_DIR}/opd_target_config"
@@ -388,8 +435,8 @@ cat > "${LAUNCH_FILE}" <<LAUNCH
 #!/usr/bin/env bash
 set -euo pipefail
 cd $(quote "${CODE_DIR}")
-if [[ -d $(quote "${MOPD_REMOTE_CONDA_ENV}")/bin ]]; then
-  export PATH=$(quote "${MOPD_REMOTE_CONDA_ENV}")/bin:$(quote "${MOPD_REMOTE_CONDA_ROOT}")/bin:\${PATH:-}
+if [[ -d $(quote "${MOPD_LOCAL_CONDA_ENV}")/bin ]]; then
+  export PATH=$(quote "${MOPD_LOCAL_CONDA_ENV}")/bin:$(quote "${MOPD_LOCAL_CONDA_ROOT}")/bin:\${PATH:-}
 fi
 export CUDA_VISIBLE_DEVICES=$(quote "${GPU_IDS}")
 export PYTHONUNBUFFERED=1
@@ -417,6 +464,7 @@ trap 'kill \${GPU_MONITOR_PID} 2>/dev/null || true' EXIT
   echo VERL_RUNTIME_DIR=$(quote "${VERL_RUNTIME_DIR}")
   echo CUDA_VISIBLE_DEVICES=$(quote "${GPU_IDS}")
   echo LOG_FILE=$(quote "${LOG_FILE}")
+  echo AUDIT_OUTPUT_DIR=$(quote "${AUDIT_OUTPUT_DIR:-manual_or_disabled}")
   echo START_TS=\$(date -Is)
   echo PYTHON_BIN=\$(command -v python)
   python --version
@@ -425,15 +473,19 @@ trap 'kill \${GPU_MONITOR_PID} 2>/dev/null || true' EXIT
 LAUNCH
 chmod +x "${LAUNCH_FILE}"
 
-echo "== Remote training launch =="
+echo "== Local training launch =="
 echo "CODE_DIR=${CODE_DIR}"
 echo "CONFIG=${CONFIG_PATH}"
 echo "VERL_RUNTIME_DIR=${VERL_RUNTIME_DIR}"
+echo "MOPD_LOCAL_CONDA_ENV=${MOPD_LOCAL_CONDA_ENV}"
 echo "GPU_IDS=${GPU_IDS}"
 echo "REQUIRED_GPUS=${REQUIRED_GPUS}"
 echo "RUN_ID=${RUN_ID}"
 echo "LOG_FILE=${LOG_FILE}"
 echo "LAUNCH_FILE=${LAUNCH_FILE}"
+if [[ -n "${AUDIT_OUTPUT_DIR}" ]]; then
+  echo "AUDIT_OUTPUT_DIR=${AUDIT_OUTPUT_DIR}"
+fi
 echo
 
 if [[ "${FOREGROUND}" == "1" ]]; then

@@ -14,8 +14,10 @@ Usage:
     --output-md audit/weight_diff_conflict/summary.md
 
 Environment:
-  MOPD_REMOTE_CONDA_ENV=/root/miniconda3/envs/mopd-verl
-  MOPD_REMOTE_CONDA_ROOT=/root/miniconda3
+  CONDA_ROOT=$HOME/miniconda3
+  ENV_NAME=mopd-verl
+  MOPD_LOCAL_CONDA_ENV=$CONDA_ROOT/envs/$ENV_NAME
+  MOPD_LOCAL_CONDA_ROOT=$CONDA_ROOT
   VERL_RUNTIME_DIR=<repo>/third_party/verl
 USAGE
 }
@@ -28,11 +30,13 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 VERL_RUNTIME_DIR="${VERL_RUNTIME_DIR:-${CODE_DIR}/third_party/verl}"
-MOPD_REMOTE_CONDA_ENV="${MOPD_REMOTE_CONDA_ENV:-/root/miniconda3/envs/mopd-verl}"
-MOPD_REMOTE_CONDA_ROOT="${MOPD_REMOTE_CONDA_ROOT:-/root/miniconda3}"
+ENV_NAME="${ENV_NAME:-mopd-verl}"
+CONDA_ROOT="${CONDA_ROOT:-${HOME}/miniconda3}"
+MOPD_LOCAL_CONDA_ENV="${MOPD_LOCAL_CONDA_ENV:-${CONDA_ROOT}/envs/${ENV_NAME}}"
+MOPD_LOCAL_CONDA_ROOT="${MOPD_LOCAL_CONDA_ROOT:-${CONDA_ROOT}}"
 
-if [[ -d "${MOPD_REMOTE_CONDA_ENV}/bin" ]]; then
-  export PATH="${MOPD_REMOTE_CONDA_ENV}/bin:${MOPD_REMOTE_CONDA_ROOT}/bin:${PATH:-}"
+if [[ -d "${MOPD_LOCAL_CONDA_ENV}/bin" ]]; then
+  export PATH="${MOPD_LOCAL_CONDA_ENV}/bin:${MOPD_LOCAL_CONDA_ROOT}/bin:${PATH:-}"
 fi
 
 export PYTHONPATH="${CODE_DIR}:${VERL_RUNTIME_DIR}:${PYTHONPATH:-}"

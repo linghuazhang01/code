@@ -1,21 +1,23 @@
-# Six-GPU profile for split Qwen3-30B GPU teacher with the narrow audit surface.
+# Eight-GPU profile with six student GPUs and two split teacher GPUs.
 #
 # Physical GPU layout:
-# - actor/rollout pool: 4 GPUs for Qwen3-4B student + vLLM
-# - ref/teacher pool: 2 GPUs for Qwen3-30B-A3B teacher
+# - actor/rollout pool: 6 GPUs for Qwen3-4B student + vLLM
+# - ref/teacher pool: 2 GPUs for domain-specific RL teachers
 #
 # Keep trainer.n_gpus_per_node equal to the actor/rollout pool size, because
-# verl uses trainer.* as the actor DP world size. Launch with all six GPUs, e.g.
-# GPU_IDS=0,1,2,3,4,5.
+# verl uses trainer.* as the actor DP world size. Launch with all eight GPUs:
+# GPU_IDS=0,1,2,3,4,5,6,7.
 #
 # Enabled audit families:
 # - four-domain full gradient audit
-# - token-gap vectors, including full-vocab token-id vectors
+# - token-gap and logp-abs vectors, including full-vocab token-id vectors
+# - entropy distribution and full-vocab entropy vectors
+# - top-k teacher-student cross-entropy full-vocab vectors
 #
 # Disabled audit families:
 # - token gradients
 # - sample gradients
-# - entropy and token-conflict diagnostics
+# - token-conflict diagnostics
 
 runtime:
   python_bin: python
@@ -43,16 +45,16 @@ data:
   domain_sampling_replacement: true
   load_parquet_direct: true
   val_files:
-    - eval/domains/math/data/AIME24/test.parquet
-    - eval/domains/math/data/AIME25/test.parquet
-    - eval/domains/math/data/HMMT25Feb/test.parquet
-    - eval/domains/math/data/HMMT25Nov/test.parquet
-    - eval/domains/code/data/HumanEvalPlus/test.parquet
-    - eval/domains/code/data/MBPPPlus/test.parquet
-    # - eval/domains/code/data/LiveCodeBench/test.parquet
+    - data/eval_data/math/AIME24/test.parquet
+    - data/eval_data/math/AIME25/test.parquet
+    - data/eval_data/math/HMMT25Feb/test.parquet
+    - data/eval_data/math/HMMT25Nov/test.parquet
+    - data/eval_data/code/HumanEvalPlus/test.parquet
+    - data/eval_data/code/MBPPPlus/test.parquet
+    # - data/eval_data/code/LiveCodeBench/test.parquet
     # Enable after running scripts/prepare_m2rl_eval_data.sh:
-    # - eval/domains/ifbench/data/IFBench_test.parquet
-    # - eval/domains/science/data/gpqa.parquet
+    # - data/eval_data/ifbench/IFBench_test.parquet
+    # - data/eval_data/science/gpqa.parquet
   train_batch_size: 504
   max_prompt_length: 2048
   max_response_length: 10240
@@ -136,13 +138,13 @@ rollout_correction:
   bypass_mode: false
 
 extra_overrides:
-  - custom_reward_function.path=grpo/rewards/mixed.py
+  - custom_reward_function.path=mopd_verl/mixed_reward.py
   - custom_reward_function.name=compute_score
 
 worker_placement:
   separate_ref_policy: true
   actor_rollout:
-    n_gpus_per_node: 4
+    n_gpus_per_node: 6
     nnodes: 1
   ref_policy:
     n_gpus_per_node: 2
@@ -196,10 +198,17 @@ audit:
   token_gap_vocab_vector_enabled: true
   token_gap_vocab_vector_freq_steps: 1
   token_gap_vocab_size: null
-  entropy_enabled: false
+  entropy_enabled: true
   entropy_freq_steps: 1
-  entropy_vocab_vector_enabled: false
+  entropy_vocab_vector_enabled: true
   entropy_vocab_vector_freq_steps: 1
+  topk_teacher_student_cross_entropy_vocab_enabled: true
+  topk_teacher_student_cross_entropy_vocab_freq_steps: 1
+  topk_teacher_student_cross_entropy_k: 32
+  topk_teacher_student_cross_entropy_include_tail: false
+  topk_teacher_student_cross_entropy_temperature: 1.0
+  logp_abs_vector_enabled: true
+  logp_abs_vector_freq_steps: 1
   token_conflict_enabled: false
   token_conflict_freq_steps: 1
   token_conflict_top_k: null
@@ -236,7 +245,7 @@ trainer:
   project_name: MOPD
   experiment_name: Qwen3-4B-from-Qwen3-30B-A3B-pg-split-teacher-gpu-audit-domain-vocabvec-6gpu-4domain
   logger: '["console","tensorboard","wandb"]'
-  n_gpus_per_node: 4
+  n_gpus_per_node: 6
   nnodes: 1
   save_freq: 5
   test_freq: -1
@@ -252,4 +261,4 @@ trainer:
 ray_kwargs:
   ray_init:
     include_dashboard: false
-    num_cpus: 24
+    num_cpus: 32

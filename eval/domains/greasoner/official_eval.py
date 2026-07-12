@@ -22,11 +22,11 @@ from eval.official_utils import (
 DATASET_CHOICES = ("mmlupro", "gpqa_d", "supergpqa", "theoremqa", "bbeh")
 CHOICE_LETTERS = tuple("ABCDEFGHIJ")
 LOCAL_DATA_FILES = {
-    "mmlupro": Path("eval/domains/greasoner/data/official/MMLU-Pro/test.parquet"),
-    "gpqa_d": Path("eval/domains/greasoner/data/official/GPQA-D/test.parquet"),
-    "supergpqa": Path("eval/domains/greasoner/data/official/SuperGPQA/test.parquet"),
-    "theoremqa": Path("eval/domains/greasoner/data/official/TheoremQA/test.parquet"),
-    "bbeh": Path("eval/domains/greasoner/data/official/BBEH/test.parquet"),
+    "mmlupro": Path("data/eval_data/greasoner/official/MMLU-Pro/test.parquet"),
+    "gpqa_d": Path("data/eval_data/greasoner/official/GPQA-D/test.parquet"),
+    "supergpqa": Path("data/eval_data/greasoner/official/SuperGPQA/test.parquet"),
+    "theoremqa": Path("data/eval_data/greasoner/official/TheoremQA/test.parquet"),
+    "bbeh": Path("data/eval_data/greasoner/official/BBEH/test.parquet"),
 }
 
 
@@ -360,7 +360,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", choices=DATASET_CHOICES, required=True)
     parser.add_argument("--model-path", required=True)
-    parser.add_argument("--output-dir", default="eval/results/official_greasoner")
+    parser.add_argument("--output-dir", default="data/eval_data/results/official_greasoner")
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--tensor-parallel-size", type=int, default=4)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.6)

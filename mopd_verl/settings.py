@@ -198,6 +198,13 @@ class AuditConfig:
     entropy_freq_steps: int = 1
     entropy_vocab_vector_enabled: bool = False
     entropy_vocab_vector_freq_steps: int = 1
+    topk_teacher_student_cross_entropy_vocab_enabled: bool = False
+    topk_teacher_student_cross_entropy_vocab_freq_steps: int = 1
+    topk_teacher_student_cross_entropy_k: int = 32
+    topk_teacher_student_cross_entropy_include_tail: bool = False
+    topk_teacher_student_cross_entropy_temperature: float = 1.0
+    logp_abs_vector_enabled: bool = False
+    logp_abs_vector_freq_steps: int = 1
     token_conflict_enabled: bool = True
     token_conflict_freq_steps: int = 1
     token_conflict_top_k: int | None = None

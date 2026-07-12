@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 TRAIN_OUTPUT_DIR="${GENERAL_REASONER_TRAIN_OUTPUT_DIR:-${CODE_DIR}/data/GeneralReasoner/WebInstructVerified}"
-EVAL_OUTPUT_DIR="${GENERAL_REASONER_EVAL_OUTPUT_DIR:-${CODE_DIR}/eval/domains/greasoner/data/WebInstructVerified}"
+EVAL_OUTPUT_DIR="${GENERAL_REASONER_EVAL_OUTPUT_DIR:-${CODE_DIR}/data/eval_data/greasoner/WebInstructVerified}"
 
 export PYTHONPATH="${CODE_DIR}:${CODE_DIR}/third_party/verl:${PYTHONPATH:-}"
 

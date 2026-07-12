@@ -1,4 +1,4 @@
-"""Convert and validate M2RL IFBench/Science GRPO data for the local verl launcher."""
+"""Convert and validate IFBench/Science data for MOPD validation."""
 
 from __future__ import annotations
 

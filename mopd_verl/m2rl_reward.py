@@ -1,4 +1,4 @@
-"""M2RL-style IFBench and GPQA reward functions for verl GRPO."""
+"""IFBench and GPQA reward functions for MOPD validation."""
 
 from __future__ import annotations
 
@@ -343,8 +343,10 @@ def compute_gpqa_reward(response: str, label: Any, metadata: Mapping[str, Any] |
     metadata = metadata or {}
     choices = _choices_from_metadata(metadata)
     raw_letters = metadata.get("valid_letters")
-    if raw_letters:
-        valid_letters = [str(letter).upper() for letter in raw_letters]
+    if raw_letters is not None and not isinstance(raw_letters, Mapping):
+        valid_letters = [str(letter).upper() for letter in list(raw_letters)]
+        if not valid_letters:
+            valid_letters = DEFAULT_VALID_LETTERS
     elif choices:
         valid_letters = list(string.ascii_uppercase[: len(choices)])
     else:

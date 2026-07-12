@@ -6,7 +6,7 @@ import json
 import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -18,22 +18,29 @@ from eval.domains.search import is_search_dataset
 from eval.domains.toolrl import is_toolrl_dataset
 
 DEFAULT_PAPER_EVAL_DATA_FILES = (
-    "eval/domains/math/data/AIME24/test.parquet",
-    "eval/domains/math/data/AIME25/test.parquet",
-    "eval/domains/math/data/HMMT25Feb/test.parquet",
-    "eval/domains/math/data/HMMT25Nov/test.parquet",
-    "eval/domains/code/data/HumanEvalPlus/test.parquet",
-    "eval/domains/code/data/MBPPPlus/test.parquet",
+    "data/eval_data/math/AIME24/test.parquet",
+    "data/eval_data/math/AIME25/test.parquet",
+    "data/eval_data/math/HMMT25Feb/test.parquet",
+    "data/eval_data/math/HMMT25Nov/test.parquet",
+    "data/eval_data/code/HumanEvalPlus/test.parquet",
+    "data/eval_data/code/MBPPPlus/test.parquet",
 )
-DEFAULT_GREASONER_DATA_FILES = ("eval/domains/greasoner/data/WebInstructVerified/test.parquet",)
+DEFAULT_GREASONER_DATA_FILES = ("data/eval_data/greasoner/WebInstructVerified/test.parquet",)
 DEFAULT_TOOLRL_DATA_FILES = (
-    "eval/domains/toolrl/data/BFCL/test.parquet",
-    "eval/domains/toolrl/data/API-Bank/test.parquet",
-    "eval/domains/toolrl/data/Bamboogle/test.parquet",
+    "data/eval_data/toolrl/BFCL/test.parquet",
+    "data/eval_data/toolrl/API-Bank/test.parquet",
+    "data/eval_data/toolrl/Bamboogle/test.parquet",
 )
 DEFAULT_SEARCH_DATA_FILES = ("data/SearchQA/test.parquet",)
+DEFAULT_IF_DATA_FILES = (
+    "data/eval_data/ifbench/IFEval.parquet",
+    "data/eval_data/ifbench/IFBench_test.parquet",
+)
+DEFAULT_SCIENCE_DATA_FILES = ("data/eval_data/science/gpqa.parquet",)
 DEFAULT_DATA_FILES = (
     DEFAULT_PAPER_EVAL_DATA_FILES
+    + DEFAULT_IF_DATA_FILES
+    + DEFAULT_SCIENCE_DATA_FILES
     + DEFAULT_GREASONER_DATA_FILES
     + DEFAULT_TOOLRL_DATA_FILES
     + DEFAULT_SEARCH_DATA_FILES
@@ -48,6 +55,7 @@ class EvalSample:
     ability: str
     messages: list[dict[str, str]]
     ground_truth: Any
+    extra_info: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -69,6 +77,8 @@ class EvalResult:
     latency_seconds: float
     generated_tokens_per_second: float
     completion_preview: str
+    rollout_index: int = 0
+    generation_seed: int | None = None
     max_new_tokens: int | None = None
     messages: list[dict[str, str]] | None = None
     prompt: str | None = None
@@ -113,7 +123,7 @@ def normalize_messages(value: Any) -> list[dict[str, str]]:
 
 def normalize_ability(raw_ability: str, dataset: str) -> str:
     ability = raw_ability.strip().lower()
-    if ability in {"math", "code", "search", "reasoning", "tool"}:
+    if ability in {"math", "code", "search", "reasoning", "tool", "if", "science"}:
         return ability
     if ability in {"searchqa", "search_qa", "qa"} or is_search_dataset(dataset):
         return "search"
@@ -158,6 +168,7 @@ def load_eval_samples(
                     ability=ability,
                     messages=normalize_messages(row["prompt"]),
                     ground_truth=raw_ground_truth if ability in {"search", "tool"} else str(raw_ground_truth),
+                    extra_info=extra_info,
                 )
             )
     return samples
@@ -195,6 +206,10 @@ def summarize_results(results: Iterable[EvalResult]) -> list[dict[str, Any]]:
     for key, items in {**groups, **aggregate_groups}.items():
         mode, dataset, ability = key
         scored = [item for item in items if item.score is not None]
+        by_sample: dict[str, list[EvalResult]] = defaultdict(list)
+        for item in scored:
+            by_sample[item.sample_id].append(item)
+        sample_sizes = [len(sample_items) for sample_items in by_sample.values()]
         summaries.append(
             {
                 "mode": mode,
@@ -204,6 +219,18 @@ def summarize_results(results: Iterable[EvalResult]) -> list[dict[str, Any]]:
                 "scored_count": len(scored),
                 "accuracy": _mean([float(item.correct) for item in scored if item.correct is not None]),
                 "avg_score": _mean([float(item.score) for item in scored if item.score is not None]),
+                "unique_sample_count": len(by_sample),
+                "min_samples_per_prompt": min(sample_sizes, default=0),
+                "max_samples_per_prompt": max(sample_sizes, default=0),
+                "avg_at_k": _mean(
+                    [
+                        float(sum(float(item.score) for item in sample_items) / len(sample_items))
+                        for sample_items in by_sample.values()
+                    ]
+                ),
+                "observed_pass_at_k": _mean(
+                    [float(any(item.correct is True for item in sample_items)) for sample_items in by_sample.values()]
+                ),
                 "avg_prompt_tokens": _mean([item.prompt_tokens for item in items]),
                 "avg_generated_tokens": _mean([item.generated_tokens for item in items]),
                 "avg_thinking_tokens": _mean([item.thinking_tokens for item in items]),

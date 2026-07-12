@@ -9,9 +9,10 @@ Usage:
 Downloads the OPD training parquet data and stages evaluation parquet data.
 
 Environment knobs:
-  DATASET_ID=Keven16/G-OPD-Training-Data
+  DATASET_ID=icemoon28/MOPD-Training-Data
+  DATASET_REVISION=main
   DATA_DIR=$CODE_DIR/data/G-OPD-Training-Data
-  EVAL_DOMAIN_DIR=$CODE_DIR/eval/domains
+  EVAL_DATA_DIR=$CODE_DIR/data/eval_data
   PYTHON_BIN=<auto-detected python or python3>
   GOPD_REPO_URL=http://github.com/RUCBM/G-OPD.git
   GOPD_REF=37371a4c31ad7947746200d234161769191f4748
@@ -33,9 +34,10 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-DATASET_ID="${DATASET_ID:-Keven16/G-OPD-Training-Data}"
+DATASET_ID="${DATASET_ID:-icemoon28/MOPD-Training-Data}"
+DATASET_REVISION="${DATASET_REVISION:-main}"
 DATA_DIR="${DATA_DIR:-${CODE_DIR}/data/G-OPD-Training-Data}"
-EVAL_DOMAIN_DIR="${EVAL_DOMAIN_DIR:-${CODE_DIR}/eval/domains}"
+EVAL_DATA_DIR="${EVAL_DATA_DIR:-${CODE_DIR}/data/eval_data}"
 PYTHON_BIN="${PYTHON_BIN:-}"
 GOPD_REPO_URL="${GOPD_REPO_URL:-http://github.com/RUCBM/G-OPD.git}"
 GOPD_REF="${GOPD_REF:-37371a4c31ad7947746200d234161769191f4748}"
@@ -91,16 +93,22 @@ PY
 
 ensure_huggingface_hub
 ensure_parquet_support
-"${PYTHON_BIN}" - "${DATASET_ID}" "${DATA_DIR}" <<'PY'
+"${PYTHON_BIN}" - "${DATASET_ID}" "${DATASET_REVISION}" "${DATA_DIR}" <<'PY'
 import sys
 from pathlib import Path
 
 from huggingface_hub import snapshot_download
 
 dataset_id = sys.argv[1]
-target_dir = Path(sys.argv[2])
+dataset_revision = sys.argv[2]
+target_dir = Path(sys.argv[3])
 target_dir.mkdir(parents=True, exist_ok=True)
-snapshot_download(repo_id=dataset_id, repo_type="dataset", local_dir=str(target_dir))
+snapshot_download(
+    repo_id=dataset_id,
+    repo_type="dataset",
+    revision=dataset_revision,
+    local_dir=str(target_dir),
+)
 PY
 
 pull_repo_lfs_fallback() {
@@ -214,7 +222,7 @@ prepare_eval_source() {
 
 prepare_eval_source
 
-EVAL_SOURCE_DIR="${EVAL_SOURCE_DIR}" EVAL_DOMAIN_DIR="${EVAL_DOMAIN_DIR}" "${PYTHON_BIN}" - <<'PY'
+EVAL_SOURCE_DIR="${EVAL_SOURCE_DIR}" EVAL_DATA_DIR="${EVAL_DATA_DIR}" "${PYTHON_BIN}" - <<'PY'
 import os
 from pathlib import Path
 
@@ -226,7 +234,7 @@ from eval.data_prep.paper_eval import (
 )
 
 source_root = Path(os.environ["EVAL_SOURCE_DIR"])
-output_root = Path(os.environ["EVAL_DOMAIN_DIR"])
+output_root = Path(os.environ["EVAL_DATA_DIR"])
 
 for _, (data_source, source_path, output_path) in PAPER_MATH_EVAL_SPECS.items():
     count = math_eval_jsonl_to_verl_parquet(
@@ -259,14 +267,14 @@ snapshot_download(
     allow_patterns=["test*.jsonl"],
 )
 PY
-  LCB_DIR="${LCB_DIR}" EVAL_DOMAIN_DIR="${EVAL_DOMAIN_DIR}" "${PYTHON_BIN}" - <<'PY'
+  LCB_DIR="${LCB_DIR}" EVAL_DATA_DIR="${EVAL_DATA_DIR}" "${PYTHON_BIN}" - <<'PY'
 import os
 from pathlib import Path
 
 from eval.data_prep.paper_eval import lcb_jsonl_to_verl_parquet
 
 source_root = Path(os.environ["LCB_DIR"])
-output_path = Path(os.environ["EVAL_DOMAIN_DIR"]) / "code/data/LiveCodeBench/test.parquet"
+output_path = Path(os.environ["EVAL_DATA_DIR"]) / "code/LiveCodeBench/test.parquet"
 source_paths = sorted(source_root.glob("test*.jsonl"))
 if not source_paths:
     raise SystemExit(f"No LiveCodeBench test shards found in {source_root}")
@@ -295,19 +303,19 @@ for relative_path in "${required_files[@]}"; do
 done
 
 eval_required_files=(
-  "math/data/AIME24/test.parquet"
-  "math/data/AIME25/test.parquet"
-  "math/data/HMMT25Feb/test.parquet"
-  "math/data/HMMT25Nov/test.parquet"
-  "code/data/HumanEvalPlus/test.parquet"
-  "code/data/MBPPPlus/test.parquet"
+  "math/AIME24/test.parquet"
+  "math/AIME25/test.parquet"
+  "math/HMMT25Feb/test.parquet"
+  "math/HMMT25Nov/test.parquet"
+  "code/HumanEvalPlus/test.parquet"
+  "code/MBPPPlus/test.parquet"
 )
 if [[ "${DOWNLOAD_LCB}" == "1" ]]; then
-  eval_required_files+=("code/data/LiveCodeBench/test.parquet")
+  eval_required_files+=("code/LiveCodeBench/test.parquet")
 fi
 for relative_path in "${eval_required_files[@]}"; do
-  if [[ ! -f "${EVAL_DOMAIN_DIR}/${relative_path}" ]]; then
-    echo "Missing required eval data file: ${EVAL_DOMAIN_DIR}/${relative_path}" >&2
+  if [[ ! -f "${EVAL_DATA_DIR}/${relative_path}" ]]; then
+    echo "Missing required eval data file: ${EVAL_DATA_DIR}/${relative_path}" >&2
     missing=1
   fi
 done
@@ -317,4 +325,4 @@ if [[ "${missing}" == "1" ]]; then
 fi
 
 echo "Training data ready: ${DATA_DIR}"
-echo "Evaluation data ready: ${EVAL_DOMAIN_DIR}"
+echo "Evaluation data ready: ${EVAL_DATA_DIR}"
