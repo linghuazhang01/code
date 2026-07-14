@@ -4,7 +4,8 @@ date: 2026-06-27
 experiment_line: gradient-audit
 round: 0
 purpose: training-parity-smoke
-status: active
+status: historical
+config_status: retired
 source_artifacts:
   - temp/remote_codex_training_parity_nosync_0p6b_b4_step1_20260627_013540/gradient_smoke_summary.md
   - temp/remote_codex_training_parity_nosync_0p6b_b4_step1_20260627_013540/codex_training_parity_nosync_0p6b_b4_step1_20260627_013540.log
@@ -15,6 +16,12 @@ linked_results: []
 ---
 
 # Gradient Audit / Round 0 / Training Parity Smoke / 2026-06-27
+
+> Historical record: the linked batch-size-8 config has been retired, and the
+> nested sample/token backward implementation discussed here is no longer an
+> active training path. Use the maintained profiles in `test_grad_configs/`
+> for current regression runs; keep the old path below only as experiment
+> provenance.
 
 ## Executive Summary
 

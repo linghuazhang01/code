@@ -169,8 +169,10 @@ scheduling, domain masking, or gradient storage must satisfy all checks below:
    `.grad` buffers unless the distributed wrapper's behavior is independently
    proven and covered by an order-invariance test.
 
-The four-domain 3-GPU regression profile is:
-
-```text
-configs/mopd_qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_3gpu_4domain_smoke.yaml
-```
+The historical four-domain 3-GPU profile used for this report has been
+retired. The maintained topology regression suite now lives in
+`test_grad_configs/`; use its five profiles for `NO_SHARD`, `FULL_SHARD`, and
+`HYBRID_SHARD` coverage. For the domain-order check above, run
+`configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math_code.yaml` twice with the same
+seed/data and reversed `math`/`code` mapping order, then compare the per-domain
+gradient vectors and closure metrics.

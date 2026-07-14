@@ -408,7 +408,7 @@ PY
       AUDIT_OUTPUT_BASE="mopd_audit"
     fi
     AUDIT_OUTPUT_DIR="${AUDIT_OUTPUT_BASE}/${RUN_ID}"
-    EXTRA_ARGS=("+mopd_audit.output_dir=${AUDIT_OUTPUT_DIR}" "${EXTRA_ARGS[@]}")
+    EXTRA_ARGS=("++mopd_audit.output_dir=${AUDIT_OUTPUT_DIR}" "${EXTRA_ARGS[@]}")
   fi
 fi
 

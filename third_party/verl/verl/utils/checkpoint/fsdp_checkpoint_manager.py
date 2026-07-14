@@ -16,7 +16,7 @@ import json
 import logging
 import os
 import warnings
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from typing import Optional
 
 import torch
@@ -24,33 +24,23 @@ import torch.distributed
 from accelerate import init_empty_weights
 from omegaconf import DictConfig
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from torch.distributed.fsdp import ShardedOptimStateDictConfig, ShardedStateDictConfig, StateDictType
 from transformers import GenerationConfig, PreTrainedTokenizer, ProcessorMixin
 from transformers.dynamic_module_utils import custom_object_save
 
-from verl.utils.device import is_cuda_available
 from verl.utils.fs import copy_to_local, is_non_local, local_mkdir_safe
 from verl.utils.fsdp_utils import fsdp_version, get_fsdp_full_state_dict, get_fsdp_state_ctx
 from verl.utils.logger import log_with_rank
 
 from .checkpoint_manager import BaseCheckpointManager
+from .fsdp_checkpoint_topology import (
+    checkpoint_state_dict_settings,
+    runtime_fsdp_config,
+    validate_checkpoint_topology,
+)
 
 # Setup logging
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "INFO"))
-
-
-@dataclass
-class FSDPConfig:
-    """Configuration for FSDP checkpointing.
-
-    Args:
-        FSDP_version (int): Version of FSDP being used.
-        world_size (int): Number of processes in the distributed training setup.
-    """
-
-    FSDP_version: int
-    world_size: int
 
 
 class FSDPCheckpointManager(BaseCheckpointManager):
@@ -119,18 +109,21 @@ class FSDPCheckpointManager(BaseCheckpointManager):
                 "optimizer must be provided when checkpoint_contents.load includes ['optimizer']"
             )
 
-        # every rank download its own checkpoint
-        state_dict_cfg = (
-            ShardedStateDictConfig(offload_to_cpu=True if is_cuda_available else False)
-            if self.should_load_model
-            else None
+        runtime_config = runtime_fsdp_config(self.model, self.world_size)
+        validate_checkpoint_topology(local_path, runtime_config)
+        state_dict_type, state_dict_cfg, optim_cfg = (
+            checkpoint_state_dict_settings(
+                self.model,
+                include_model=self.should_load_model,
+                include_optimizer=self.should_load_optimizer,
+            )
         )
-        optim_cfg = (
-            ShardedOptimStateDictConfig(offload_to_cpu=True if is_cuda_available else False)
-            if self.should_load_optimizer
-            else None
-        )
-        with get_fsdp_state_ctx(self.model, StateDictType.SHARDED_STATE_DICT, state_dict_cfg, optim_cfg):
+        with get_fsdp_state_ctx(
+            self.model,
+            state_dict_type,
+            state_dict_cfg,
+            optim_cfg,
+        ):
             if self.should_load_model:
                 remote_model_path = os.path.join(local_path, f"model_world_size_{self.world_size}_rank_{self.rank}.pt")
                 local_model_path = copy_to_local(remote_model_path)
@@ -224,12 +217,23 @@ class FSDPCheckpointManager(BaseCheckpointManager):
                 "optimizer must be provided when checkpoint_contents.save includes ['optimizer']"
             )
 
-        # every rank will save its own model and optim shard
-        state_dict_cfg = ShardedStateDictConfig(offload_to_cpu=True if is_cuda_available else False)
-        optim_cfg = ShardedOptimStateDictConfig(offload_to_cpu=True if is_cuda_available else False)
+        # Keep the existing one-file-per-rank layout. NO_SHARD explicitly uses
+        # CPU-offloaded full state to avoid PyTorch's implicit GPU full clone.
+        state_dict_type, state_dict_cfg, optim_cfg = (
+            checkpoint_state_dict_settings(
+                self.model,
+                include_model=self.should_save_model,
+                include_optimizer=self.should_save_optimizer,
+            )
+        )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            with get_fsdp_state_ctx(self.model, StateDictType.SHARDED_STATE_DICT, state_dict_cfg, optim_cfg):
+            with get_fsdp_state_ctx(
+                self.model,
+                state_dict_type,
+                state_dict_cfg,
+                optim_cfg,
+            ):
                 model_path = os.path.join(local_path, f"model_world_size_{self.world_size}_rank_{self.rank}.pt")
                 optim_path = os.path.join(local_path, f"optim_world_size_{self.world_size}_rank_{self.rank}.pt")
                 extra_path = os.path.join(local_path, f"extra_state_world_size_{self.world_size}_rank_{self.rank}.pt")
@@ -293,12 +297,9 @@ class FSDPCheckpointManager(BaseCheckpointManager):
 
             # Also save runtime FSDP config
             fsdp_config_path = os.path.join(local_path, "fsdp_config.json")
-            fsdp_config = FSDPConfig(
-                FSDP_version=fsdp_version(self.model),
-                world_size=self.world_size,
-            )
-            with open(fsdp_config_path, "w") as f:
-                json.dump(asdict(fsdp_config), f, indent=4)
+            fsdp_config = runtime_fsdp_config(self.model, self.world_size)
+            with open(fsdp_config_path, "w", encoding="utf-8") as handle:
+                json.dump(asdict(fsdp_config), handle, indent=4)
 
         # wait for everyone to dump to local
         torch.distributed.barrier()

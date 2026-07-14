@@ -47,7 +47,7 @@ Examples:
     --datasets aime24,humaneval_plus --modes non_thinking,thinking --score-code
 
   CUDA_VISIBLE_DEVICES=0,1,2,3 scripts/run_local_eval.sh \
-    --model-path Qwen/Qwen3-30B-A3B --backend vllm \
+    --model-path Qwen/Qwen3-30B-A3B-Instruct-2507 --backend vllm \
     --tensor-parallel-size 4 --datasets aime24,gpqa_diamond
 USAGE
 }

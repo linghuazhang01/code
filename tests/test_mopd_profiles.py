@@ -87,7 +87,7 @@ class MOPDProfileTests(unittest.TestCase):
             with self.subTest(audit_mode=spec[0], gpu_count=spec[1]):
                 self.assert_formal_profile(*spec)
 
-    def test_audit_all_profile_enables_all_audit_families(self) -> None:
+    def test_audit_all_profile_keeps_observation_metrics_and_domain_gradient(self) -> None:
         config_dir = Path(__file__).resolve().parents[1] / "configs"
 
         for gpu_count in (2, 4, 6, 8):
@@ -96,7 +96,7 @@ class MOPDProfileTests(unittest.TestCase):
                 self.assertTrue(config.audit.enabled)
                 self.assertTrue(config.audit.full_gradient_enabled)
                 self.assertEqual(config.actor.fsdp_size, 1)
-                self.assertTrue(config.audit.sample_gradient_enabled)
+                self.assertFalse(config.audit.sample_gradient_enabled)
                 self.assertTrue(config.audit.sample_gradient_norm_enabled)
                 self.assertTrue(config.audit.sample_gradient_cos_enabled)
                 self.assertTrue(config.audit.token_gap_enabled)
@@ -104,7 +104,7 @@ class MOPDProfileTests(unittest.TestCase):
                 self.assertTrue(config.audit.entropy_enabled)
                 self.assertTrue(config.audit.entropy_vocab_vector_enabled)
                 self.assertTrue(config.audit.token_conflict_enabled)
-                self.assertTrue(config.audit.token_gradient_enabled)
+                self.assertFalse(config.audit.token_gradient_enabled)
                 self.assertTrue(config.audit.token_gradient_gap_selection_enabled)
                 self.assertTrue(config.audit.token_gradient_gap_abs_selection_enabled)
                 self.assertTrue(config.audit.token_gradient_loss_abs_selection_enabled)
@@ -141,7 +141,7 @@ class MOPDProfileTests(unittest.TestCase):
         )
         self.assertIn("+mopd_audit.logp_abs_vector_enabled=true", rendered)
 
-    def test_loss_only_profile_uses_only_loss_token_gradient_selection(self) -> None:
+    def test_loss_only_profile_keeps_loss_selection_without_nested_gradient_replay(self) -> None:
         config_dir = Path(__file__).resolve().parents[1] / "configs"
 
         for gpu_count in (2, 4, 6, 8):
@@ -154,7 +154,7 @@ class MOPDProfileTests(unittest.TestCase):
                 self.assertTrue(config.audit.enabled)
                 self.assertTrue(config.audit.full_gradient_enabled)
                 self.assertEqual(config.actor.fsdp_size, 2 if fsdp2_sequence_replay_profile else 1)
-                self.assertEqual(config.audit.sample_gradient_enabled, not fsdp2_sequence_replay_profile)
+                self.assertFalse(config.audit.sample_gradient_enabled)
                 self.assertEqual(config.audit.sample_gradient_norm_enabled, not fsdp2_sequence_replay_profile)
                 self.assertEqual(config.audit.sample_gradient_cos_enabled, not fsdp2_sequence_replay_profile)
                 self.assertEqual(
@@ -166,7 +166,7 @@ class MOPDProfileTests(unittest.TestCase):
                 self.assertTrue(config.audit.entropy_enabled)
                 self.assertTrue(config.audit.entropy_vocab_vector_enabled)
                 self.assertTrue(config.audit.token_conflict_enabled)
-                self.assertTrue(config.audit.token_gradient_enabled)
+                self.assertFalse(config.audit.token_gradient_enabled)
                 self.assertFalse(config.audit.token_gradient_gap_selection_enabled)
                 self.assertFalse(config.audit.token_gradient_gap_abs_selection_enabled)
                 self.assertTrue(config.audit.token_gradient_loss_abs_selection_enabled)
@@ -205,11 +205,11 @@ class MOPDProfileTests(unittest.TestCase):
         self.assertEqual(config.trainer.default_local_dir, "checkpoints/formal_audit_all_smoke")
         self.assertTrue(config.audit.enabled)
         self.assertTrue(config.audit.full_gradient_enabled)
-        self.assertTrue(config.audit.sample_gradient_enabled)
+        self.assertFalse(config.audit.sample_gradient_enabled)
         self.assertTrue(config.audit.sample_gradient_cos_enabled)
         self.assertTrue(config.audit.token_gap_vocab_vector_enabled)
         self.assertTrue(config.audit.entropy_vocab_vector_enabled)
-        self.assertTrue(config.audit.token_gradient_enabled)
+        self.assertFalse(config.audit.token_gradient_enabled)
         self.assertTrue(config.audit.token_gradient_gap_selection_enabled)
         self.assertTrue(config.audit.token_gradient_gap_abs_selection_enabled)
         self.assertTrue(config.audit.token_gradient_loss_abs_selection_enabled)
@@ -250,11 +250,11 @@ class MOPDProfileTests(unittest.TestCase):
         self.assertEqual(config.trainer.default_local_dir, "checkpoints/formal_audit_loss_only_smoke")
         self.assertTrue(config.audit.enabled)
         self.assertTrue(config.audit.full_gradient_enabled)
-        self.assertTrue(config.audit.sample_gradient_enabled)
+        self.assertFalse(config.audit.sample_gradient_enabled)
         self.assertTrue(config.audit.sample_gradient_cos_enabled)
         self.assertTrue(config.audit.token_gap_vocab_vector_enabled)
         self.assertTrue(config.audit.entropy_vocab_vector_enabled)
-        self.assertTrue(config.audit.token_gradient_enabled)
+        self.assertFalse(config.audit.token_gradient_enabled)
         self.assertFalse(config.audit.token_gradient_gap_selection_enabled)
         self.assertFalse(config.audit.token_gradient_gap_abs_selection_enabled)
         self.assertTrue(config.audit.token_gradient_loss_abs_selection_enabled)

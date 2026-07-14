@@ -31,7 +31,6 @@ from verl.utils.config import validate_config
 from verl.utils.device import is_cuda_available
 from verl.utils.import_utils import load_extern_type
 
-
 GLOBAL_POOL_ID = "global_pool"
 ACTOR_ROLLOUT_POOL_ID = "actor_rollout_pool"
 REF_POLICY_POOL_ID = "ref_policy_pool"
@@ -40,67 +39,44 @@ REF_POLICY_POOL_ID = "ref_policy_pool"
 def _cfg_get(config, key: str, default=None):
     if config is None:
         return default
-    if hasattr(config, "get"):
-        return config.get(key, default)
+    getter = getattr(config, "get", None)
+    if callable(getter):
+        return getter(key, default)
     return getattr(config, key, default)
 
 
-def _cfg_bool(config, key: str, default: bool = False) -> bool:
-    value = _cfg_get(config, key, default)
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(value)
-
-
-def _worker_placement_config(config):
+def _worker_placement(config):
     return OmegaConf.select(config, "actor_rollout_ref.worker_placement") or {}
 
 
-def _separate_ref_policy_pool_enabled(config) -> bool:
-    return _cfg_bool(_worker_placement_config(config), "separate_ref_policy", False)
+def _separate_ref_policy(config) -> bool:
+    return bool(_cfg_get(_worker_placement(config), "separate_ref_policy", False))
 
 
-def _actor_rollout_pool_id(config) -> str:
-    return ACTOR_ROLLOUT_POOL_ID if _separate_ref_policy_pool_enabled(config) else GLOBAL_POOL_ID
+def _pool_processes(config, name: str) -> list[int]:
+    placement = _cfg_get(_worker_placement(config), name, {})
+    explicit = _cfg_get(placement, "process_on_nodes", None)
+    if explicit is not None:
+        values = [int(value) for value in explicit]
+    else:
+        n_gpus = int(
+            _cfg_get(placement, "n_gpus_per_node", config.trainer.n_gpus_per_node)
+        )
+        n_nodes = int(_cfg_get(placement, "nnodes", config.trainer.nnodes))
+        values = [n_gpus] * n_nodes
+    if not values or any(value <= 0 for value in values):
+        raise ValueError(
+            f"actor_rollout_ref.worker_placement.{name} must request positive GPUs."
+        )
+    return values
 
 
-def _ref_policy_pool_id(config) -> str:
-    return REF_POLICY_POOL_ID if _separate_ref_policy_pool_enabled(config) else _actor_rollout_pool_id(config)
+def _actor_pool_id(config) -> str:
+    return ACTOR_ROLLOUT_POOL_ID if _separate_ref_policy(config) else GLOBAL_POOL_ID
 
 
-def _int_list(value, key: str) -> list[int]:
-    resolved = OmegaConf.to_container(value, resolve=True) if OmegaConf.is_config(value) else value
-    if not isinstance(resolved, list | tuple) or len(resolved) == 0:
-        raise ValueError(f"actor_rollout_ref.worker_placement.{key} must be a non-empty list of positive integers")
-    output = [int(item) for item in resolved]
-    if any(item <= 0 for item in output):
-        raise ValueError(f"actor_rollout_ref.worker_placement.{key} must contain only positive integers")
-    return output
-
-
-def _pool_process_on_nodes(pool_config, *, default_n_gpus_per_node: int, default_nnodes: int, pool_name: str) -> list[int]:
-    process_on_nodes = _cfg_get(pool_config, "process_on_nodes", None)
-    if process_on_nodes is not None:
-        return _int_list(process_on_nodes, f"{pool_name}.process_on_nodes")
-
-    n_gpus_per_node = _cfg_get(pool_config, "n_gpus_per_node", None)
-    nnodes = _cfg_get(pool_config, "nnodes", None)
-    if n_gpus_per_node is None:
-        n_gpus_per_node = default_n_gpus_per_node
-    if nnodes is None:
-        nnodes = default_nnodes
-
-    n_gpus_per_node = int(n_gpus_per_node)
-    nnodes = int(nnodes)
-    if n_gpus_per_node <= 0:
-        raise ValueError(f"actor_rollout_ref.worker_placement.{pool_name}.n_gpus_per_node must be greater than 0")
-    if nnodes <= 0:
-        raise ValueError(f"actor_rollout_ref.worker_placement.{pool_name}.nnodes must be greater than 0")
-    return [n_gpus_per_node] * nnodes
-
-
-def _ref_policy_needed(config) -> bool:
-    return bool(config.algorithm.use_kl_in_reward or config.actor_rollout_ref.actor.use_kl_loss)
+def _ref_pool_id(config) -> str:
+    return REF_POLICY_POOL_ID if _separate_ref_policy(config) else _actor_pool_id(config)
 
 
 @hydra.main(config_path="config", config_name="ppo_trainer", version_base=None)
@@ -248,47 +224,32 @@ class TaskRunner:
         """Initialize resource pool manager."""
         from verl.trainer.ppo.ray_trainer import Role
 
-        worker_placement = _worker_placement_config(config)
-        actor_rollout_pool_config = _cfg_get(worker_placement, "actor_rollout", {})
-        ref_policy_pool_config = _cfg_get(worker_placement, "ref_policy", {})
-        actor_rollout_pool_id = _actor_rollout_pool_id(config)
-        actor_rollout_pool = _pool_process_on_nodes(
-            actor_rollout_pool_config,
-            default_n_gpus_per_node=config.trainer.n_gpus_per_node,
-            default_nnodes=config.trainer.nnodes,
-            pool_name="actor_rollout",
+        actor_pool_id = _actor_pool_id(config)
+        actor_pool = _pool_processes(config, "actor_rollout")
+        configured_actor_world_size = int(config.trainer.n_gpus_per_node) * int(
+            config.trainer.nnodes
         )
-        actor_rollout_world_size = sum(actor_rollout_pool)
-        trainer_world_size = int(config.trainer.n_gpus_per_node) * int(config.trainer.nnodes)
-        if actor_rollout_world_size != trainer_world_size:
+        if sum(actor_pool) != configured_actor_world_size:
             raise ValueError(
-                "actor_rollout_ref.worker_placement.actor_rollout must request the same total GPU count as "
-                "trainer.n_gpus_per_node * trainer.nnodes, because verl uses trainer.* as the actor DP world size. "
-                f"Got actor_rollout={actor_rollout_pool} ({actor_rollout_world_size}) and "
-                f"trainer world size={trainer_world_size}."
+                "worker_placement.actor_rollout must equal the trainer actor world size: "
+                f"got {actor_pool} and {configured_actor_world_size}."
             )
-
         resource_pool_spec = {
-            actor_rollout_pool_id: actor_rollout_pool,
+            actor_pool_id: actor_pool,
         }
-        if _separate_ref_policy_pool_enabled(config) and _ref_policy_needed(config):
-            ref_policy_pool = _pool_process_on_nodes(
-                ref_policy_pool_config,
-                default_n_gpus_per_node=config.trainer.n_gpus_per_node,
-                default_nnodes=config.trainer.nnodes,
-                pool_name="ref_policy",
+        if _separate_ref_policy(config) and (
+            config.algorithm.use_kl_in_reward
+            or config.actor_rollout_ref.actor.use_kl_loss
+        ):
+            ref_pool = _pool_processes(config, "ref_policy")
+            real_batch_size = int(config.data.train_batch_size) * int(
+                config.actor_rollout_ref.rollout.n
             )
-            real_train_batch_size = int(config.data.train_batch_size) * int(config.actor_rollout_ref.rollout.n)
-            ref_policy_world_size = sum(ref_policy_pool)
-            if real_train_batch_size % ref_policy_world_size != 0:
+            if real_batch_size % sum(ref_pool):
                 raise ValueError(
-                    "data.train_batch_size * actor_rollout_ref.rollout.n must be divisible by the ref policy "
-                    "worker world size. "
-                    f"Got real_train_batch_size={real_train_batch_size} and ref_policy={ref_policy_pool} "
-                    f"({ref_policy_world_size})."
+                    "The repeated train batch must be divisible by the ref worker world size."
                 )
-            resource_pool_spec[REF_POLICY_POOL_ID] = ref_policy_pool
-
+            resource_pool_spec[REF_POLICY_POOL_ID] = ref_pool
         # TODO Here you can use the new registration method to support dynamic registration of roles
         if config.reward_model.enable_resource_pool:
             if config.reward_model.n_gpus_per_node <= 0:
@@ -299,8 +260,8 @@ class TaskRunner:
             reward_pool = [config.reward_model.n_gpus_per_node] * config.reward_model.nnodes
             resource_pool_spec["reward_pool"] = reward_pool
 
-        self.mapping[Role.ActorRollout] = actor_rollout_pool_id
-        self.mapping[Role.Critic] = actor_rollout_pool_id
+        self.mapping[Role.ActorRollout] = actor_pool_id
+        self.mapping[Role.Critic] = actor_pool_id
         from verl.trainer.ppo.ray_trainer import ResourcePoolManager
 
         resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=self.mapping)
@@ -311,32 +272,26 @@ class TaskRunner:
         from verl.trainer.ppo.ray_trainer import Role
 
         if config.reward_model.enable:
-            worker_config = config.reward_model.get("worker", {})
-            external_worker_path = worker_config.get("path", None) if worker_config is not None else None
-            if external_worker_path is not None:
-                worker_name = worker_config.get("name", "RewardModelWorker")
-                RewardModelWorker = load_extern_type(external_worker_path, worker_name)
-            else:
-                use_legacy_worker_impl = config.trainer.get("use_legacy_worker_impl", "auto")
-                if use_legacy_worker_impl in ["auto", "enable"]:
-                    if config.reward_model.strategy in {"fsdp", "fsdp2"}:
-                        from verl.workers.fsdp_workers import RewardModelWorker
-                    elif config.reward_model.strategy == "megatron":
-                        from verl.workers.megatron_workers import RewardModelWorker
-                    else:
-                        raise NotImplementedError
-                elif use_legacy_worker_impl == "disable":
-                    from verl.workers.roles import RewardModelWorker
-
-                    print("Using new worker implementation")
+            use_legacy_worker_impl = config.trainer.get("use_legacy_worker_impl", "auto")
+            if use_legacy_worker_impl in ["auto", "enable"]:
+                if config.reward_model.strategy in {"fsdp", "fsdp2"}:
+                    from verl.workers.fsdp_workers import RewardModelWorker
+                elif config.reward_model.strategy == "megatron":
+                    from verl.workers.megatron_workers import RewardModelWorker
                 else:
-                    raise ValueError(f"Invalid use_legacy_worker_impl: {use_legacy_worker_impl}")
+                    raise NotImplementedError
+            elif use_legacy_worker_impl == "disable":
+                from verl.workers.roles import RewardModelWorker
+
+                print("Using new worker implementation")
+            else:
+                raise ValueError(f"Invalid use_legacy_worker_impl: {use_legacy_worker_impl}")
 
             self.role_worker_mapping[Role.RewardModel] = ray.remote(RewardModelWorker)
             if config.reward_model.enable_resource_pool:
                 self.mapping[Role.RewardModel] = "reward_pool"
             else:
-                self.mapping[Role.RewardModel] = _actor_rollout_pool_id(config)
+                self.mapping[Role.RewardModel] = _actor_pool_id(config)
 
     def add_ref_policy_worker(self, config, ref_policy_cls):
         """Add reference policy worker if KL loss or KL reward is used."""
@@ -344,7 +299,7 @@ class TaskRunner:
 
         if config.algorithm.use_kl_in_reward or config.actor_rollout_ref.actor.use_kl_loss:
             self.role_worker_mapping[Role.RefPolicy] = ray.remote(ref_policy_cls)
-            self.mapping[Role.RefPolicy] = _ref_policy_pool_id(config)
+            self.mapping[Role.RefPolicy] = _ref_pool_id(config)
 
     def run(self, config):
         """Execute the main PPO training workflow.
@@ -531,17 +486,7 @@ def create_rl_sampler(data_config, dataset):
     import torch
     from torch.utils.data import RandomSampler, SequentialSampler
 
-    # MOPD audit: domain sampler begin
-    if data_config.get("domain_train_files", None):
-        return None
-
-    from mopd_verl.domain_sampling import create_domain_weighted_sampler as create_mopd_domain_weighted_sampler
-
-    domain_sampler = create_mopd_domain_weighted_sampler(data_config, dataset)
-    if domain_sampler is not None:
-        sampler = domain_sampler
-    # MOPD audit: domain sampler end
-    elif data_config.sampler is not None and data_config.sampler.get("class_path", None) is not None:
+    if data_config.sampler is not None and data_config.sampler.get("class_path", None) is not None:
         curriculum_class = load_extern_type(
             data_config.sampler.class_path,
             data_config.sampler.class_name,

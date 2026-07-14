@@ -16,13 +16,6 @@ top_k: -1
 # Top-p sampling parameter. Default 1.0.
 top_p: 1
 
-# Enable dataset teacher-prefix roll-in. When enabled, the trainer reads
-# rollout.teacher_prefix_dataset_key from each sample, truncates it to
-# teacher_prefix_length tokens, then lets the student continue from prompt + prefix.
-teacher_prefix_sampling_enabled: False
-teacher_prefix_length: 1024
-teacher_prefix_dataset_key: prefix
-
 # typically the same as data max prompt length
 # same as data.max_prompt_length if it exists
 prompt_length: ${oc.select:data.max_prompt_length,512}
@@ -107,6 +100,15 @@ do_sample: True
 
 # number of responses (i.e. num sample times). > 1 for grpo
 n: 1
+
+# Whether rollout samples a teacher prefix before the student suffix
+teacher_prefix_sampling_enabled: false
+
+# Maximum number of teacher-generated prefix tokens
+teacher_prefix_length: 1024
+
+# Dataset column containing a precomputed teacher prefix
+teacher_prefix_dataset_key: prefix
 
 # The over_sample_rate parameter controls the early termination threshold for training rollouts,
 # where the system will abort remaining requests when (1 - over_sample_rate) * total_requests completions are reached.

@@ -121,10 +121,18 @@ CORE_SAMPLE_GRAD_COST = {
 }
 CORE_FULL_GRAD_CLOSURE = {
     "cosine",
+    "diff_norm",
+    "diff_norm_over_domain_vector_norm_sum",
+    "domain_norm_sum_over_total_norm",
+    "domain_sum_vector_norm",
+    "domain_vector_norm_sum",
+    "estimated_storage_roundoff_rel_l2",
     "max_abs",
     "norm_ratio",
+    "passed",
     "projection_share",
     "rel_l2",
+    "storage_roundoff_may_exceed_threshold",
 }
 CORE_GLOBAL_LOSS = {
     "sample_opd_loss_mean",
@@ -284,6 +292,7 @@ CORE_FULL_GRAD_TRAINING_PARITY = {
     "diff_norm",
     "max_abs",
     "norm_ratio",
+    "passed",
     "projection_share",
     "reference_norm",
     "rel_l2",
@@ -300,6 +309,15 @@ CORE_CONFLICT = {
     "shape_mismatch",
 }
 CORE_AUDIT = {
+    "domain_gradient_backward_replay_count",
+    "domain_gradient_coverage_fraction",
+    "domain_gradient_peak_cpu_vector_bytes",
+    "domain_gradient_peak_cpu_vector_bytes_actor_group_total",
+    "domain_gradient_peak_cpu_vector_bytes_per_rank",
+    "domain_gradient_post_audit_retained_cpu_vector_bytes",
+    "domain_gradient_post_audit_retained_cpu_vector_bytes_actor_group_total",
+    "domain_gradient_post_audit_retained_cpu_vector_bytes_per_rank",
+    "domain_gradient_source_step",
     "error",
     "full_gradient_configured_domain_count",
     "full_gradient_autograd_unavailable",
@@ -324,6 +342,7 @@ CORE_AUDIT = {
     "full_gradient_replicated_all_reduce",
     "full_gradient_replica_count",
     "full_gradient_true_backward_fallback",
+    "gradient_correctness_storage_fp32",
     "pre_update_audit_used",
     "sample_gradient_distributed_unsupported",
     "sample_gradient_cos_distributed_unsupported",

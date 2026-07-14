@@ -19,7 +19,6 @@ This trainer supports model-agonistic model initialization with huggingface
 """
 
 import json
-import logging
 import os
 import uuid
 from collections import defaultdict
@@ -31,26 +30,9 @@ from typing import Optional
 import numpy as np
 import ray
 import torch
-from omegaconf import OmegaConf, open_dict
-from torch.utils.data import Dataset, Sampler
-from torchdata.stateful_dataloader import StatefulDataLoader
-from tqdm import tqdm
-
-from verl import DataProto
-from mopd_verl.audit_proxy import extract_teacher_domains
-from mopd_verl.paper_eval import run_paper_eval_from_config
-from mopd_verl.teacher_prefix import (
-    build_dataset_teacher_prefix,
-    build_student_suffix_prompts,
-    merge_teacher_prefix_and_student_suffix,
-    teacher_prefix_dataset_key,
-    teacher_prefix_length,
-    teacher_prefix_rollin_metrics,
-    teacher_prefix_sampling_enabled,
-)
 from mopd_verl.topk_distill import (
     TOPK_SUPPORT_SOURCE_STUDENT,
-    TOPK_SUPPORT_SOURCE_TEACHER,
+    teacher_tensor_prefix,
     topk_distill_include_tail,
     topk_distill_k,
     topk_distill_support_source,
@@ -58,6 +40,12 @@ from mopd_verl.topk_distill import (
     uses_topk_distill_loss,
 )
 from mopd_verl.verl_audit import MOPDAuditLogger
+from omegaconf import OmegaConf, open_dict
+from torch.utils.data import Dataset, Sampler
+from torchdata.stateful_dataloader import StatefulDataLoader
+from tqdm import tqdm
+
+from verl import DataProto
 from verl.experimental.dataset.sampler import AbstractCurriculumSampler
 from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
 from verl.single_controller.ray import RayClassWithInitArgs, RayResourcePool, RayWorkerGroup
@@ -82,42 +70,49 @@ from verl.utils.seqlen_balancing import calculate_workload, get_seqlen_balanced_
 from verl.utils.torch_functional import masked_mean
 from verl.utils.tracking import ValidationGenerationsLogger
 
-LOGGER = logging.getLogger(__name__)
 
-
-def _teacher_paths_from_config(config) -> dict[str, str]:
+def _configured_teacher_domains(config) -> tuple[str, ...]:
     ref_model = config.actor_rollout_ref.ref.get("model", None)
     if ref_model is None:
-        return {}
-    teacher_paths = ref_model.get("teacher_paths", None)
-    if teacher_paths is None:
-        return {}
-    if OmegaConf.is_config(teacher_paths):
-        teacher_paths = OmegaConf.to_container(teacher_paths, resolve=True)
-    if not isinstance(teacher_paths, dict):
-        raise ValueError("Expected actor_rollout_ref.ref.model.teacher_paths to be a mapping.")
-    return {str(domain): str(path) for domain, path in teacher_paths.items() if path is not None}
+        return tuple()
+    raw_paths = ref_model.get("teacher_paths", None)
+    if raw_paths is None:
+        return tuple()
+    paths = (
+        OmegaConf.to_container(raw_paths, resolve=True)
+        if OmegaConf.is_config(raw_paths)
+        else dict(raw_paths)
+    )
+    primary_path = str(ref_model.get("path", config.actor_rollout_ref.model.path))
+    primary_path = os.path.normcase(os.path.normpath(os.path.expanduser(primary_path)))
+    unsupported = [
+        str(domain)
+        for domain, path in paths.items()
+        if os.path.normcase(os.path.normpath(os.path.expanduser(str(path))))
+        != primary_path
+    ]
+    if unsupported:
+        raise ValueError(
+            "The clean-verl rebuild supports domain aliases of one teacher model. "
+            "Distinct teacher paths need separate teacher workers; unsupported domains: "
+            f"{unsupported}."
+        )
+    return tuple(dict.fromkeys(teacher_tensor_prefix(domain) for domain in paths))
 
 
-def _env_flag(name: str, default: bool) -> bool:
-    raw_value = os.getenv(name)
-    if raw_value is None:
-        return default
-    return raw_value.strip().lower() not in {"0", "false", "no", "off"}
-
-
-def _progress_log(message: str) -> None:
-    if _env_flag("MOPD_STEP_PROGRESS", True):
-        print(f"[MOPD progress] {message}", flush=True)
-
-
-def _materialize_mopd_teacher_domains(batch: DataProto) -> None:
-    labels = extract_teacher_domains(batch.non_tensor_batch, len(batch))
-    if not labels or all(label == "unknown" for label in labels):
-        return
-    label_array = np.array(labels, dtype=object)
-    batch.non_tensor_batch["opd_teacher"] = label_array
-    batch.non_tensor_batch["domain"] = label_array.copy()
+def _alias_math_teacher_tensors(batch: DataProto, domains: tuple[str, ...]) -> None:
+    for domain in domains:
+        for suffix in (
+            "log_prob",
+            "topk_ids",
+            "topk_logprobs",
+            "student_topk_logprobs",
+            "entropy",
+        ):
+            source = f"math_teacher_{suffix}"
+            target = f"{domain}_teacher_{suffix}"
+            if source in batch.batch and target not in batch.batch:
+                batch.batch[target] = batch.batch[source]
 
 
 @dataclass
@@ -173,8 +168,7 @@ class ResourcePoolManager:
         )
         if total_available_gpus < total_required_gpus:
             raise ValueError(
-                f"Total available GPUs {total_available_gpus} is less than total desired GPUs {total_required_gpus}. "
-                f"Requested resource pools: {self.resource_pool_spec}"
+                f"Total available GPUs {total_available_gpus} is less than total desired GPUs {total_required_gpus}"
             )
 
 
@@ -201,7 +195,7 @@ def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, 
     # compute kl between ref_policy and current policy
     # When apply_kl_penalty, algorithm.use_kl_in_reward=True, so the reference model has been enabled.
     kld = core_algos.kl_penalty(
-        data.batch["old_log_probs"], data.batch["math_teacher_log_prob"], kl_penalty=kl_penalty
+        data.batch["old_log_probs"], data.batch["ref_log_prob"], kl_penalty=kl_penalty
     )  # (batch_size, response_length)
     kld = kld * response_mask
     beta = kl_ctrl.value
@@ -411,18 +405,13 @@ class RayPPOTrainer:
         self.ref_base_model_path = config.actor_rollout_ref.ref.get("model", None)
         if self.ref_base_model_path is not None:
             self.ref_base_model_path = self.ref_base_model_path.get("base_model_path", None)
-        self.ref_teacher_paths = _teacher_paths_from_config(config)
-        self.use_domain_teacher_paths = bool(self.ref_teacher_paths)
-        self.use_base_models = self.base_model_path is not None or self.ref_base_model_path is not None
+        self.use_base_models = self.base_model_path is not None and self.ref_base_model_path is not None
+        self.teacher_domains = _configured_teacher_domains(config)
         
         if self.use_base_models:
-            print(f"Base log-prob computation enabled:")
+            print("Corrected reward enabled with base models:")
             print(f"  Actor base model: {self.base_model_path}")
             print(f"  Ref base model: {self.ref_base_model_path}")
-        if self.use_domain_teacher_paths:
-            print("Domain teacher log-prob computation enabled:")
-            for domain, path in self.ref_teacher_paths.items():
-                print(f"  {domain}: {path}")
 
                 
         self.hybrid_engine = config.actor_rollout_ref.hybrid_engine
@@ -481,18 +470,19 @@ class RayPPOTrainer:
             )
         self.train_dataset, self.val_dataset = train_dataset, val_dataset
 
-        train_batch_size = self.config.data.get("gen_batch_size", self.config.data.train_batch_size)
-        train_batch_sampler = None
-        if train_sampler is None:
-            from mopd_verl.domain_sampling import create_domain_batch_sampler as create_mopd_domain_batch_sampler
+        from mopd_verl.domain_sampling import create_domain_batch_sampler
 
-            train_batch_sampler = create_mopd_domain_batch_sampler(
-                self.config.data,
-                self.train_dataset,
-                int(train_batch_size),
-            )
-            if train_batch_sampler is None:
-                train_sampler = create_rl_sampler(self.config.data, self.train_dataset)
+        train_batch_size = self.config.data.get(
+            "gen_batch_size",
+            self.config.data.train_batch_size,
+        )
+        train_batch_sampler = create_domain_batch_sampler(
+            self.config.data,
+            self.train_dataset,
+            int(train_batch_size),
+        )
+        if train_batch_sampler is None and train_sampler is None:
+            train_sampler = create_rl_sampler(self.config.data, self.train_dataset)
         if collate_fn is None:
             from verl.utils.dataset.rl_dataset import collate_fn as default_collate_fn
 
@@ -510,7 +500,7 @@ class RayPPOTrainer:
         else:
             self.train_dataloader = StatefulDataLoader(
                 dataset=self.train_dataset,
-                batch_size=train_batch_size,
+                batch_size=self.config.data.get("gen_batch_size", self.config.data.train_batch_size),
                 num_workers=num_workers,
                 drop_last=True,
                 collate_fn=collate_fn,
@@ -657,76 +647,6 @@ class RayPPOTrainer:
 
         return gen_batch
 
-    def _generate_sequences_with_teacher_prefix(self, prompts: DataProto) -> DataProto:
-        rollout_config = self.config.actor_rollout_ref.rollout
-        response_length = int(self.config.data.max_response_length)
-        prefix_length = teacher_prefix_length(rollout_config, response_length)
-        if prefix_length <= 0 or not teacher_prefix_sampling_enabled(rollout_config):
-            return self.actor_rollout_wg.generate_sequences(prompts)
-        if not bool(self.config.actor_rollout_ref.actor.policy_loss.get("teacher_prefix_enabled", False)):
-            raise ValueError(
-                "dataset teacher prefix requires "
-                "actor_rollout_ref.actor.policy_loss.teacher_prefix_enabled=true."
-            )
-        if self.async_rollout_mode:
-            raise ValueError("dataset teacher prefix is not supported with async rollout mode yet.")
-        rollout_corr_config = self.config.algorithm.get("rollout_correction", None)
-        if rollout_corr_config and rollout_corr_config.get("bypass_mode", False):
-            raise ValueError("dataset teacher prefix requires recomputed old_log_probs; disable bypass_mode.")
-
-        pad_token_id = self.tokenizer.pad_token_id
-        if pad_token_id is None:
-            pad_token_id = self.tokenizer.eos_token_id if self.tokenizer.eos_token_id is not None else 0
-
-        prefix_ids, prefix_mask = build_dataset_teacher_prefix(
-            prompts=prompts,
-            tokenizer=self.tokenizer,
-            prefix_key=teacher_prefix_dataset_key(rollout_config),
-            prefix_length=prefix_length,
-            pad_token_id=int(pad_token_id),
-        )
-        selected = prefix_mask.detach().cpu().bool().any(dim=-1).numpy()
-        if not bool(selected.any()):
-            output = self.actor_rollout_wg.generate_sequences(prompts)
-            output.meta_info["teacher_prefix_metrics"] = {
-                "teacher_prefix/sample_frac": 0.0,
-                "teacher_prefix/mean_len": 0.0,
-                "teacher_prefix/max_len": 0.0,
-                "teacher_prefix/suffix_mean_len": float(response_length),
-            }
-            return output
-
-        suffix_prompts = build_student_suffix_prompts(
-            prompts=prompts,
-            teacher_prefix_ids=prefix_ids,
-            teacher_prefix_mask=prefix_mask,
-            pad_token_id=int(pad_token_id),
-        )
-        min_prefix_len = int(prefix_mask.detach().sum(dim=-1).min().item())
-        suffix_prompts.meta_info["max_tokens"] = max(0, response_length - min_prefix_len)
-
-        suffix_output = None
-        if int(suffix_prompts.meta_info["max_tokens"]) > 0:
-            suffix_output = self.actor_rollout_wg.generate_sequences(suffix_prompts)
-
-        output = merge_teacher_prefix_and_student_suffix(
-            original_prompts=prompts,
-            teacher_prefix_ids=prefix_ids,
-            teacher_prefix_mask=prefix_mask,
-            student_suffix_output=suffix_output,
-            student_suffix_max_tokens=int(suffix_prompts.meta_info["max_tokens"]),
-            max_response_length=response_length,
-            pad_token_id=int(pad_token_id),
-        )
-        output.meta_info["timing"] = suffix_output.meta_info.get("timing", {}) if suffix_output is not None else {}
-        metrics = teacher_prefix_rollin_metrics(
-            teacher_prefix_mask=output.batch["teacher_prefix_mask"],
-            student_suffix_mask=output.batch["student_suffix_mask"],
-            selected=selected,
-        )
-        output.meta_info["teacher_prefix_metrics"] = metrics
-        return output
-
     def _validate(self):
         data_source_lst = []
         reward_extra_infos_dict: dict[str, list] = defaultdict(list)
@@ -738,6 +658,7 @@ class RayPPOTrainer:
         sample_scores = []
         sample_turns = []
         sample_uids = []
+
         for test_data in self.val_dataloader:
             test_batch = DataProto.from_single_dict(test_data)
 
@@ -1121,16 +1042,16 @@ class RayPPOTrainer:
         attention_mask = batch.batch["attention_mask"]
         batch_size = attention_mask.shape[0]
         global_seqlen_lst = batch.batch["attention_mask"].view(batch_size, -1).sum(-1)  # (train_batch_size,)
-        global_workload_lst = calculate_workload(global_seqlen_lst)
+        global_seqlen_lst = calculate_workload(global_seqlen_lst)
         world_size = self.actor_rollout_wg.world_size
         if keep_minibatch:
             # Decouple the DP balancing and mini-batching.
             minibatch_size = self.config.actor_rollout_ref.actor.get("ppo_mini_batch_size")
-            minibatch_num = len(global_workload_lst) // minibatch_size
+            minibatch_num = len(global_seqlen_lst) // minibatch_size
             global_partition_lst = [[] for _ in range(world_size)]
             for i in range(minibatch_num):
                 rearrange_minibatch_lst = get_seqlen_balanced_partitions(
-                    global_workload_lst[i * minibatch_size : (i + 1) * minibatch_size],
+                    global_seqlen_lst[i * minibatch_size : (i + 1) * minibatch_size],
                     k_partitions=world_size,
                     equal_size=True,
                 )
@@ -1138,11 +1059,11 @@ class RayPPOTrainer:
                     global_partition_lst[j].extend([x + minibatch_size * i for x in part])
         else:
             global_partition_lst = get_seqlen_balanced_partitions(
-                global_workload_lst, k_partitions=world_size, equal_size=True
+                global_seqlen_lst, k_partitions=world_size, equal_size=True
             )
         # Place smaller micro-batches at both ends to reduce the bubbles in pipeline parallel.
         for idx, partition in enumerate(global_partition_lst):
-            partition.sort(key=lambda x: (global_workload_lst[x], x))
+            partition.sort(key=lambda x: (global_seqlen_lst[x], x))
             ordered_partition = partition[::2] + partition[1::2][::-1]
             global_partition_lst[idx] = ordered_partition
         # reorder based on index. The data will be automatically equally partitioned by dispatch function
@@ -1150,13 +1071,6 @@ class RayPPOTrainer:
         batch.reorder(global_idx)
         global_balance_stats = log_seqlen_unbalance(
             seqlen_list=global_seqlen_lst, partitions=global_partition_lst, prefix=logging_prefix
-        )
-        global_balance_stats.update(
-            log_seqlen_unbalance(
-                seqlen_list=global_workload_lst,
-                partitions=global_partition_lst,
-                prefix=logging_prefix.replace("seqlen", "workload"),
-            )
         )
         metrics.update(global_balance_stats)
 
@@ -1187,25 +1101,14 @@ class RayPPOTrainer:
         # perform validation before training
         # currently, we only support validation using the reward_function.
         if self.val_reward_fn is not None and self.config.trainer.get("val_before_train", True):
-            _progress_log(f"initial_validation_start global_step={self.global_steps}")
             val_metrics = self._validate()
             assert val_metrics, f"{val_metrics=}"
-            paper_eval_default_model_path = self.config.actor_rollout_ref.model.path
-            _progress_log(f"initial_paper_eval_start global_step={self.global_steps}")
-            val_metrics.update(
-                run_paper_eval_from_config(
-                    self.config,
-                    step=self.global_steps,
-                    default_model_path=paper_eval_default_model_path,
-                )
-            )
-            _progress_log(
-                f"initial_validation_done global_step={self.global_steps} metrics={len(val_metrics)}"
-            )
             pprint(f"Initial validation metrics: {val_metrics}")
-            audit_val_metrics = self.mopd_audit_logger.log_validation_metrics(val_metrics, self.global_steps)
+            val_metrics.update(
+                self.mopd_audit_logger.log_validation_metrics(val_metrics, self.global_steps)
+            )
             logger.log(
-                data=self.mopd_audit_logger.filter_tensorboard_metrics({**val_metrics, **audit_val_metrics}),
+                data=self.mopd_audit_logger.filter_tensorboard_metrics(val_metrics),
                 step=self.global_steps,
             )
             if self.config.trainer.get("val_only", False):
@@ -1215,15 +1118,8 @@ class RayPPOTrainer:
             rollout_skip = RolloutSkip(self.config, self.actor_rollout_wg)
             rollout_skip.wrap_generate_sequences()
 
-        progress_enabled = _env_flag("MOPD_STEP_PROGRESS", True)
-        progress_bar = tqdm(
-            total=self.total_training_steps,
-            initial=self.global_steps,
-            desc="Training Progress",
-            dynamic_ncols=True,
-            mininterval=5,
-            disable=not progress_enabled,
-        )
+        # add tqdm
+        progress_bar = tqdm(total=self.total_training_steps, initial=self.global_steps, desc="Training Progress")
 
         # we start from step 1
         self.global_steps += 1
@@ -1260,50 +1156,22 @@ class RayPPOTrainer:
 
                 # pass global_steps to trace
                 gen_batch.meta_info["global_steps"] = self.global_steps
+                gen_batch.meta_info["do_sample"] = self.config.actor_rollout_ref.rollout.do_sample
                 gen_batch_output = gen_batch.repeat(
                     repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True
                 )
 
                 is_last_step = self.global_steps >= self.total_training_steps
-                if progress_enabled:
-                    progress_bar.set_description(
-                        f"Training step {self.global_steps}/{self.total_training_steps}"
-                    )
-                    progress_bar.set_postfix_str("starting")
-                _progress_log(
-                    f"step_start global_step={self.global_steps}/{self.total_training_steps} "
-                    f"epoch={epoch + 1}/{self.config.trainer.total_epochs}"
-                )
                 with marked_timer("step", timing_raw):
                     # generate a batch
                     with marked_timer("gen", timing_raw, color="red"):
-                        if progress_enabled:
-                            progress_bar.set_postfix_str("generating")
-                        _progress_log(
-                            f"generate_start global_step={self.global_steps}/{self.total_training_steps}"
-                        )
-                        if self.async_rollout_mode and teacher_prefix_sampling_enabled(
-                            self.config.actor_rollout_ref.rollout
-                        ):
-                            raise ValueError("dataset teacher prefix is not supported with async rollout mode yet.")
-                        if (
-                            not self.async_rollout_mode
-                            and teacher_prefix_sampling_enabled(self.config.actor_rollout_ref.rollout)
-                        ):
-                            gen_batch_output = self._generate_sequences_with_teacher_prefix(gen_batch_output)
-                        elif not self.async_rollout_mode:
+                        if not self.async_rollout_mode:
                             gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch_output)
                         else:
                             gen_batch_output = self.async_rollout_manager.generate_sequences(gen_batch_output)
 
                         timing_raw.update(gen_batch_output.meta_info["timing"])
                         gen_batch_output.meta_info.pop("timing", None)
-                        teacher_prefix_metrics = gen_batch_output.meta_info.pop("teacher_prefix_metrics", None)
-                        if teacher_prefix_metrics:
-                            metrics.update(teacher_prefix_metrics)
-                        _progress_log(
-                            f"generate_done global_step={self.global_steps}/{self.total_training_steps}"
-                        )
 
                     if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
                         if self.reward_fn is None:
@@ -1339,31 +1207,17 @@ class RayPPOTrainer:
 
                     if "response_mask" not in batch.batch.keys():
                         batch.batch["response_mask"] = compute_response_mask(batch)
-                    _materialize_mopd_teacher_domains(batch)
                     # Balance the number of valid tokens across DP ranks.
                     # NOTE: This usually changes the order of data in the `batch`,
                     # which won't affect the advantage calculation (since it's based on uid),
                     # but might affect the loss calculation (due to the change of mini-batching).
                     if self.config.trainer.balance_batch:
                         self._balance_batch(batch, metrics=metrics)
-                    metrics.update(
-                        self.mopd_audit_logger.balance_domain_gradient_batch(
-                            batch,
-                            step=self.global_steps,
-                            world_size=self.actor_rollout_wg.world_size,
-                        )
-                    )
 
                     # compute global_valid tokens
                     batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
                     policy_loss_config = self.config.actor_rollout_ref.actor.policy_loss
-                    topk_distill_loss_active = uses_topk_distill_loss(policy_loss_config)
-                    topk_cross_entropy_audit_active = (
-                        self.mopd_audit_logger.should_log_topk_teacher_student_cross_entropy_vocab(
-                            self.global_steps
-                        )
-                    )
-                    if topk_distill_loss_active:
+                    if uses_topk_distill_loss(policy_loss_config):
                         support_source = topk_distill_support_source(policy_loss_config)
                         batch.meta_info["topk_distill_support_source"] = support_source
                         if support_source == TOPK_SUPPORT_SOURCE_STUDENT:
@@ -1372,18 +1226,18 @@ class RayPPOTrainer:
                         else:
                             batch.meta_info["teacher_topk_k"] = topk_distill_k(policy_loss_config)
                             batch.meta_info.pop("student_topk_k", None)
-                    elif topk_cross_entropy_audit_active:
-                        support_source = TOPK_SUPPORT_SOURCE_TEACHER
-                        batch.meta_info["topk_distill_support_source"] = support_source
+                    elif self.mopd_audit_logger.should_log_topk_teacher_student_cross_entropy_vocab(
+                        self.global_steps
+                    ):
+                        batch.meta_info["topk_distill_support_source"] = "teacher"
                         batch.meta_info["teacher_topk_k"] = (
                             self.mopd_audit_logger.topk_teacher_student_cross_entropy_k
                         )
                         batch.meta_info.pop("student_topk_k", None)
                     else:
-                        support_source = TOPK_SUPPORT_SOURCE_TEACHER
+                        batch.meta_info["topk_distill_support_source"] = "teacher"
                         batch.meta_info.pop("teacher_topk_k", None)
                         batch.meta_info.pop("student_topk_k", None)
-                        batch.meta_info["topk_distill_support_source"] = support_source
                     batch.meta_info["mopd_compute_teacher_entropy"] = bool(
                         self.mopd_audit_logger.should_log_entropy(self.global_steps)
                     )
@@ -1407,10 +1261,6 @@ class RayPPOTrainer:
                     #   Note: π_old computed once per data batch, serves as stable reference during mini-batch updates
                     rollout_corr_config = self.config.algorithm.get("rollout_correction", None)
                     bypass_recomputing_logprobs = rollout_corr_config and rollout_corr_config.get("bypass_mode", False)
-                    if bypass_recomputing_logprobs and support_source == TOPK_SUPPORT_SOURCE_STUDENT:
-                        raise ValueError(
-                            "student top-k distillation requires recomputed old_log_probs; disable bypass_mode."
-                        )
                     if bypass_recomputing_logprobs:  # Use `rollout_log_probs`
                         from verl.trainer.ppo.rollout_corr_helper import apply_rollout_correction
 
@@ -1473,7 +1323,9 @@ class RayPPOTrainer:
 
                             # Ref solution distillation: use ref_solution from dataset as teacher context
                             elif self.use_ref_solution_distillation:
-                                from verl.trainer.ppo.ref_input_utils import prepare_ref_model_inputs_based_on_correct_solution
+                                from verl.trainer.ppo.ref_input_utils import (
+                                    prepare_ref_model_inputs_based_on_correct_solution,
+                                )
 
                                 batch = prepare_ref_model_inputs_based_on_correct_solution(
                                     batch=batch,
@@ -1511,91 +1363,86 @@ class RayPPOTrainer:
                                     ref_log_prob = self.actor_rollout_wg.compute_ref_log_prob(batch)
                                 batch = batch.union(ref_log_prob)
 
-                            if self.use_domain_teacher_paths:
-                                if not self.ref_in_actor:
-                                    domain_teacher_log_probs = self.ref_policy_wg.compute_domain_teacher_log_probs(batch)
-                                else:
-                                    domain_teacher_log_probs = self.actor_rollout_wg.compute_domain_teacher_log_probs(batch)
-                                batch = batch.union(domain_teacher_log_probs)
+                    if "ref_log_prob" in batch.batch:
+                        batch.batch["math_teacher_log_prob"] = batch.batch["ref_log_prob"]
+                    _alias_math_teacher_tensors(batch, self.teacher_domains)
+
+                    # The clean verl baseline already knows how to host a second
+                    # reference model as ref.model.base_model_path. Treat it as
+                    # the code teacher even when the actor has no base model.
+                    if self.ref_base_model_path is not None and not self.use_base_models:
+                        with marked_timer("code_teacher_log_prob", timing_raw, color="green"):
+                            if not self.ref_in_actor:
+                                code_teacher = self.ref_policy_wg.compute_base_ref_log_prob(batch)
+                            else:
+                                code_teacher = self.actor_rollout_wg.compute_base_ref_log_prob(batch)
+                            batch = batch.union(code_teacher)
+                            batch.batch["code_teacher_log_prob"] = batch.batch["base_ref_log_prob"]
 
                     # Compute base model log probs for corrected reward computation
                     # This computes: base_log_prob from actor's base model (using input_ids)
-                    # and code_teacher_log_prob from ref's base model (using ref_input_ids)
+                    # and base_ref_log_prob from ref's base model (using ref_input_ids)
                     if self.use_base_models:
                         with marked_timer("base_log_probs", timing_raw, color="green"):
-                            # First compute code_teacher_log_prob using ref's base model
+                            # First compute base_ref_log_prob using ref's base model
                             # This uses ref_input_ids which may be present in batch
-                            if self.ref_base_model_path is not None and not self.use_domain_teacher_paths:
-                                if not self.ref_in_actor:
-                                    base_ref_log_prob = self.ref_policy_wg.compute_base_ref_log_prob(batch)
-                                else:
-                                    base_ref_log_prob = self.actor_rollout_wg.compute_base_ref_log_prob(batch)
-                                batch = batch.union(base_ref_log_prob)
+                            if not self.ref_in_actor:
+                                base_ref_log_prob = self.ref_policy_wg.compute_base_ref_log_prob(batch)
+                            else:
+                                base_ref_log_prob = self.actor_rollout_wg.compute_base_ref_log_prob(batch)
+                            batch = batch.union(base_ref_log_prob)
+                            batch.batch["code_teacher_log_prob"] = batch.batch["base_ref_log_prob"]
                             
                             # Now compute base_log_prob using actor's base model with input_ids
                             # We need to temporarily remove ref_input_ids to ensure compute_log_prob uses input_ids
-                            if self.base_model_path is not None:
-                                ref_input_tensors = {}
-                                if "ref_input_ids" in batch.batch:
-                                    ref_input_tensors["ref_input_ids"] = batch.batch.pop("ref_input_ids")
-                                if "ref_attention_mask" in batch.batch:
-                                    ref_input_tensors["ref_attention_mask"] = batch.batch.pop("ref_attention_mask")
-                                if "ref_position_ids" in batch.batch:
-                                    ref_input_tensors["ref_position_ids"] = batch.batch.pop("ref_position_ids")
-                                
-                                # Compute base_log_prob using actor's base model with input_ids
-                                base_log_prob = self.actor_rollout_wg.compute_base_log_prob(batch)
-                                batch = batch.union(base_log_prob)
-                                
-                                # Restore ref_input_ids tensors back to batch
-                                for key, tensor in ref_input_tensors.items():
-                                    batch.batch[key] = tensor
-                            
-                            base_log_prob_shape = batch.batch["base_log_prob"].shape if "base_log_prob" in batch.batch else None
-                            code_teacher_log_prob_shape = (
-                                batch.batch["code_teacher_log_prob"].shape if "code_teacher_log_prob" in batch.batch else None
-                            )
-                            LOGGER.info(
-                                "Computed base log probs: base_log_prob shape=%s, code_teacher_log_prob shape=%s",
-                                base_log_prob_shape,
-                                code_teacher_log_prob_shape,
+                            ref_input_tensors = {}
+                            if "ref_input_ids" in batch.batch:
+                                ref_input_tensors["ref_input_ids"] = batch.batch.pop("ref_input_ids")
+                            if "ref_attention_mask" in batch.batch:
+                                ref_input_tensors["ref_attention_mask"] = batch.batch.pop("ref_attention_mask")
+                            if "ref_position_ids" in batch.batch:
+                                ref_input_tensors["ref_position_ids"] = batch.batch.pop("ref_position_ids")
+
+                            # Compute base_log_prob using actor's base model with input_ids
+                            base_log_prob = self.actor_rollout_wg.compute_base_log_prob(batch)
+                            batch = batch.union(base_log_prob)
+
+                            # Restore ref_input_ids tensors back to batch
+                            for key, tensor in ref_input_tensors.items():
+                                batch.batch[key] = tensor
+
+                            print(
+                                "Computed base log probs for corrected reward: "
+                                f"base_log_prob shape={batch.batch['base_log_prob'].shape}, "
+                                f"base_ref_log_prob shape={batch.batch['base_ref_log_prob'].shape}"
                             )
 
-                    topk_cross_entropy_logging_active = (
-                        topk_cross_entropy_audit_active
-                        or (
-                            self.mopd_audit_logger.should_log_entropy(self.global_steps)
-                            and topk_distill_loss_active
+                    topk_cross_entropy_active = (
+                        uses_topk_distill_loss(policy_loss_config)
+                        or self.mopd_audit_logger.should_log_topk_teacher_student_cross_entropy_vocab(
+                            self.global_steps
                         )
                     )
-                    if (
-                        self.mopd_audit_logger.enabled
-                        and topk_cross_entropy_logging_active
-                        and (
-                            "math_teacher_topk_ids" in batch.batch
-                            or (
-                                "student_topk_ids" in batch.batch
-                                and "math_teacher_student_topk_logprobs" in batch.batch
-                            )
-                        )
+                    if topk_cross_entropy_active and (
+                        "math_teacher_topk_ids" in batch.batch
+                        or "math_teacher_student_topk_logprobs" in batch.batch
                     ):
-                        with marked_timer("teacher_student_ce", timing_raw, color="purple"):
-                            if topk_distill_loss_active:
-                                batch.meta_info["topk_distill_include_tail"] = topk_distill_include_tail(
-                                    policy_loss_config
-                                )
-                                batch.meta_info["topk_distill_temperature"] = topk_distill_temperature(
-                                    policy_loss_config
-                                )
-                            else:
-                                batch.meta_info["topk_distill_include_tail"] = (
-                                    self.mopd_audit_logger.topk_teacher_student_cross_entropy_include_tail
-                                )
-                                batch.meta_info["topk_distill_temperature"] = (
-                                    self.mopd_audit_logger.topk_teacher_student_cross_entropy_temperature
-                                )
-                            teacher_student_ce = self.actor_rollout_wg.compute_teacher_student_cross_entropy(batch)
-                            batch = batch.union(teacher_student_ce)
+                        if uses_topk_distill_loss(policy_loss_config):
+                            batch.meta_info["topk_distill_include_tail"] = topk_distill_include_tail(
+                                policy_loss_config
+                            )
+                            batch.meta_info["topk_distill_temperature"] = topk_distill_temperature(
+                                policy_loss_config
+                            )
+                        else:
+                            batch.meta_info["topk_distill_include_tail"] = (
+                                self.mopd_audit_logger.topk_teacher_student_cross_entropy_include_tail
+                            )
+                            batch.meta_info["topk_distill_temperature"] = (
+                                self.mopd_audit_logger.topk_teacher_student_cross_entropy_temperature
+                            )
+                        teacher_student_ce = self.actor_rollout_wg.compute_teacher_student_cross_entropy(batch)
+                        batch = batch.union(teacher_student_ce)
                     
                     # compute values
                     if self.use_critic:
@@ -1653,19 +1500,18 @@ class RayPPOTrainer:
                         )
 
                     if self.mopd_audit_logger.enabled:
-                        audit_lr = self.config.actor_rollout_ref.actor.optim.lr
-                        audit_metrics = self.mopd_audit_logger.log_training_step(
-                            batch=batch,
-                            step=self.global_steps,
-                            lr=audit_lr,
+                        metrics.update(
+                            self.mopd_audit_logger.log_training_step(
+                                batch=batch,
+                                step=self.global_steps,
+                                lr=self.config.actor_rollout_ref.actor.optim.lr,
+                            )
                         )
-                        metrics.update(audit_metrics)
                         if self.mopd_audit_logger.should_compute_full_gradient(self.global_steps):
                             batch.meta_info.update(
                                 self.mopd_audit_logger.full_gradient_meta(
                                     "train",
                                     self.global_steps,
-                                    batch.meta_info.get("mopd_domain_gradient_partition", {}),
                                 )
                             )
 
@@ -1680,8 +1526,6 @@ class RayPPOTrainer:
                     if self.config.trainer.critic_warmup <= self.global_steps:
                         # update actor
                         with marked_timer("update_actor", timing_raw, color="red"):
-                            if progress_enabled:
-                                progress_bar.set_postfix_str("updating_actor")
                             batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
                             actor_output = self.actor_rollout_wg.update_actor(batch)
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
@@ -1699,41 +1543,16 @@ class RayPPOTrainer:
                     and (is_last_step or self.global_steps % self.config.trainer.test_freq == 0)
                 ):
                     with marked_timer("testing", timing_raw, color="green"):
-                        if progress_enabled:
-                            progress_bar.set_postfix_str("validating")
-                        _progress_log(
-                            f"validation_start global_step={self.global_steps}/{self.total_training_steps}"
-                        )
                         val_metrics: dict = self._validate()
                         if is_last_step:
                             last_val_metrics = val_metrics
-                    paper_eval_default_model_path = self.config.actor_rollout_ref.model.path
-                    paper_eval_cfg = self.config.get("paper_eval", {})
-                    if (
-                        paper_eval_cfg.get("enabled", False)
-                        and paper_eval_cfg.get("evaluate_current_checkpoint", True)
-                        and self.global_steps > 0
-                    ):
-                        paper_eval_checkpoint_root = self.config.trainer.default_local_dir
-                        if not os.path.isabs(paper_eval_checkpoint_root):
-                            paper_eval_checkpoint_root = os.path.join(os.getcwd(), paper_eval_checkpoint_root)
-                        self._save_checkpoint()
-                        paper_eval_default_model_path = os.path.join(
-                            paper_eval_checkpoint_root, f"global_step_{self.global_steps}", "actor"
-                        )
                     val_metrics.update(
-                        run_paper_eval_from_config(
-                            self.config,
-                            step=self.global_steps,
-                            default_model_path=paper_eval_default_model_path,
+                        self.mopd_audit_logger.log_validation_metrics(
+                            val_metrics,
+                            self.global_steps,
                         )
                     )
                     metrics.update(val_metrics)
-                    metrics.update(self.mopd_audit_logger.log_validation_metrics(val_metrics, self.global_steps))
-                    _progress_log(
-                        f"validation_done global_step={self.global_steps}/{self.total_training_steps} "
-                        f"metrics={len(val_metrics)}"
-                    )
 
                 # Check if the ESI (Elastic Server Instance)/training plan is close to expiration.
                 esi_close_to_expiration = should_save_ckpt_esi(
@@ -1753,15 +1572,7 @@ class RayPPOTrainer:
                     if esi_close_to_expiration:
                         print("Force saving checkpoint: ESI instance expiration approaching.")
                     with marked_timer("save_checkpoint", timing_raw, color="green"):
-                        if progress_enabled:
-                            progress_bar.set_postfix_str("saving_checkpoint")
-                        _progress_log(
-                            f"checkpoint_start global_step={self.global_steps}/{self.total_training_steps}"
-                        )
                         self._save_checkpoint()
-                        _progress_log(
-                            f"checkpoint_done global_step={self.global_steps}/{self.total_training_steps}"
-                        )
 
                 with marked_timer("stop_profile", timing_raw):
                     next_step_profile = (
@@ -1793,10 +1604,13 @@ class RayPPOTrainer:
                 # TODO: implement actual tflpo and theoretical tflpo
                 n_gpus = self.resource_pool_manager.get_n_gpus()
                 metrics.update(compute_throughout_metrics(batch=batch, timing_raw=timing_raw, n_gpus=n_gpus))
-                if self.mopd_audit_logger.enabled:
-                    metrics.update(
-                        self.mopd_audit_logger.log_training_cost(metrics=metrics, step=self.global_steps, n_gpus=n_gpus)
+                metrics.update(
+                    self.mopd_audit_logger.log_training_cost(
+                        metrics,
+                        step=self.global_steps,
+                        n_gpus=n_gpus,
                     )
+                )
                 # Note: mismatch metrics (KL, PPL, etc.) are collected at line 1179 after advantage computation
 
                 # this is experimental and may be changed/removed in the future in favor of a general-purpose one
@@ -1804,15 +1618,12 @@ class RayPPOTrainer:
                     self.train_dataloader.sampler.update(batch=batch)
 
                 # TODO: make a canonical logger that supports various backend
-                logger.log(data=self.mopd_audit_logger.filter_tensorboard_metrics(metrics), step=self.global_steps)
-
-                if progress_enabled:
-                    progress_bar.set_postfix_str(f"done {steps_duration:.1f}s")
-                progress_bar.update(1)
-                _progress_log(
-                    f"step_done global_step={self.global_steps}/{self.total_training_steps} "
-                    f"duration_s={steps_duration:.2f}"
+                logger.log(
+                    data=self.mopd_audit_logger.filter_tensorboard_metrics(metrics),
+                    step=self.global_steps,
                 )
+
+                progress_bar.update(1)
                 self.global_steps += 1
 
                 if (

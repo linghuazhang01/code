@@ -6,17 +6,22 @@ usage() {
 Usage:
   bash scripts/setup_training_env.sh
 
-Create or update the MOPD Conda environment exclusively from environment.yml,
+Create or update the MOPD Conda environment exclusively from ENV_FILE,
 verify the training runtime, and optionally download training assets.
 
 Common flow:
   bash scripts/setup_training_env.sh
   source logs/activate_training_env.sh
 
+Blackwell sm_120 flow:
+  ENV_NAME=mopd-verl-blackwell \
+  ENV_FILE="$(pwd)/environment.blackwell.yml" \
+    bash scripts/setup_training_env.sh
+
 Environment knobs:
   CONDA_ROOT=$HOME/miniconda3
   ENV_NAME=mopd-verl
-  ENV_FILE=$CODE_DIR/environment.yml
+  ENV_FILE="$(pwd)/environment.yml"
   INSTALL_MINICONDA=1
   UPDATE_ENV=1
   INSTALL_GIT_LFS=1
@@ -27,8 +32,9 @@ Environment knobs:
   DOWNLOAD_ASSETS=0
 
 Dependency versions and package sources must be declared only in ENV_FILE.
-This environment profile targets Linux x86_64 with CUDA 12-compatible NVIDIA
-drivers. Asset variables are forwarded to scripts/download_training_assets.sh
+The default profile targets Linux x86_64 with CUDA 12-compatible NVIDIA
+drivers. Use environment.blackwell.yml for CUDA 12.8 / PyTorch 2.8 Blackwell
+GPUs. Asset variables are forwarded to scripts/download_training_assets.sh
 when DOWNLOAD_ASSETS=1.
 USAGE
 }
@@ -43,6 +49,9 @@ CODE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 ENV_NAME="${ENV_NAME:-mopd-verl}"
 ENV_FILE="${ENV_FILE:-${CODE_DIR}/environment.yml}"
+if [[ "${ENV_FILE}" != /* ]]; then
+  ENV_FILE="$(cd "$(dirname "${ENV_FILE}")" && pwd)/$(basename "${ENV_FILE}")"
+fi
 INSTALL_MINICONDA="${INSTALL_MINICONDA:-1}"
 UPDATE_ENV="${UPDATE_ENV:-1}"
 INSTALL_GIT_LFS="${INSTALL_GIT_LFS:-1}"
@@ -85,7 +94,7 @@ ensure_supported_platform() {
   system="$(uname -s)"
   machine="$(uname -m)"
   if [[ "${system}" != "Linux" || "${machine}" != "x86_64" ]]; then
-    echo "environment.yml targets Linux x86_64; detected ${system} ${machine}." >&2
+    echo "${ENV_FILE} targets Linux x86_64; detected ${system} ${machine}." >&2
     return 2
   fi
 }
@@ -197,27 +206,75 @@ run_in_training_env() {
 }
 
 verify_environment() {
-  export CODE_DIR HF_HOME SMOKE_DATA_DIR
+  export CODE_DIR ENV_FILE HF_HOME SMOKE_DATA_DIR
+  run_in_training_env python -m pip check
   run_in_training_env env \
     PYTHONPATH="${CODE_DIR}:${CODE_DIR}/third_party/verl:${PYTHONPATH:-}" \
+    ENV_FILE="${ENV_FILE}" \
     HF_HOME="${HF_HOME}" \
     SMOKE_DATA_DIR="${SMOKE_DATA_DIR}" \
     python - <<'PY'
 import importlib
+import importlib.metadata
 import os
+import re
 import sys
+from pathlib import Path
+
+import yaml
 
 packages = [
     "torch",
     "vllm",
     "ray",
     "verl",
-    "flash_attn",
     "transformers",
     "pandas",
     "pyarrow",
     "yaml",
 ]
+environment_data = yaml.safe_load(Path(os.environ["ENV_FILE"]).read_text(encoding="utf-8"))
+pip_dependencies = []
+for dependency in environment_data.get("dependencies", []):
+    if isinstance(dependency, dict):
+        pip_dependencies.extend(dependency.get("pip", []))
+
+normalized_dependencies = [str(dependency).lower() for dependency in pip_dependencies]
+if any("flash_attn" in dependency or "flash-attn" in dependency for dependency in normalized_dependencies):
+    packages.append("flash_attn")
+else:
+    print("flash_attn skipped: not declared by the selected environment file")
+
+exact_pins = {}
+for dependency in pip_dependencies:
+    match = re.match(r"^([A-Za-z0-9_.-]+)(?:\[[^]]+\])?==([^;\s]+)$", str(dependency))
+    if match:
+        exact_pins[match.group(1).lower().replace("_", "-")] = match.group(2)
+
+for distribution in (
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "torchdata",
+    "vllm",
+    "xformers",
+    "transformers",
+    "tensordict",
+    "ray",
+    "accelerate",
+    "datasets",
+    "peft",
+    "liger-kernel",
+    "opentelemetry-exporter-prometheus",
+    "tensorboard",
+):
+    expected = exact_pins.get(distribution)
+    if expected is None:
+        continue
+    actual = importlib.metadata.version(distribution)
+    if actual != expected:
+        raise RuntimeError(f"{distribution} version mismatch: expected {expected}, got {actual}")
+    print(f"verified_pin {distribution}=={actual}")
 print("python", sys.version.split()[0], sys.executable)
 for package in packages:
     module = importlib.import_module(package)

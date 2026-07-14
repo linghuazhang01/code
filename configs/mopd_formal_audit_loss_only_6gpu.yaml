@@ -154,7 +154,7 @@ audit:
   token_conflict_enabled: true
   token_conflict_freq_steps: 1
   token_conflict_top_k: null
-  token_gradient_enabled: true
+  token_gradient_enabled: false
   token_gradient_freq_steps: 1
   token_gradient_gap_selection_enabled: false
   token_gradient_gap_abs_selection_enabled: false

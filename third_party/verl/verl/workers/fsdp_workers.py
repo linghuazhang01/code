@@ -20,7 +20,6 @@ import json
 import logging
 import os
 import warnings
-from contextlib import nullcontext
 from dataclasses import asdict
 from typing import Any, Optional
 
@@ -79,6 +78,13 @@ from verl.utils.fsdp_utils import (
     offload_fsdp_optimizer,
     replace_lora_wrapper,
 )
+from verl.utils.fsdp_mesh import (
+    create_device_mesh,
+    get_sharding_strategy as get_sharding_strategy,
+    maybe_reshard_fsdp1_root,
+    resolve_fsdp1_mesh_and_strategy,
+    validate_fsdp1_size_one_topology,
+)
 from verl.utils.import_utils import import_external_libs
 from verl.utils.memory_utils import aggressive_empty_cache
 from verl.utils.model import compute_position_id_with_mask, convert_weight_keys
@@ -95,118 +101,6 @@ logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 device_name = get_device_name()
-
-
-def _normalize_teacher_model_device(value: Any) -> str:
-    device = str(value or "cpu").lower()
-    if device == "cuda":
-        device = "gpu"
-    if device not in {"cpu", "gpu"}:
-        raise ValueError("Expected teacher_model_device to be one of: 'cpu', 'gpu', or 'cuda'.")
-    return device
-
-
-def _teacher_model_uses_cpu_offload(value: Any) -> bool:
-    return _normalize_teacher_model_device(value) == "cpu"
-
-
-def _same_model_path(left: Any, right: Any) -> bool:
-    if left is None or right is None:
-        return False
-    return os.path.normcase(os.path.normpath(str(left))) == os.path.normcase(os.path.normpath(str(right)))
-
-
-def _teacher_tensor_prefix(domain: Any) -> str:
-    text = str(domain or "math").strip().lower().replace("-", "_")
-    safe = "".join(char if (char.isalnum() or char == "_") else "_" for char in text)
-    safe = "_".join(part for part in safe.split("_") if part)
-    return safe or "math"
-
-
-def _teacher_paths_mapping(value: Any) -> dict[str, str]:
-    if value is None:
-        return {}
-    if isinstance(value, DictConfig):
-        value = OmegaConf.to_container(value, resolve=True)
-    if not isinstance(value, dict):
-        raise ValueError("Expected ref.model.teacher_paths to be a mapping of domain to model path.")
-    output = {}
-    for domain, path in value.items():
-        if path is None:
-            continue
-        output[_teacher_tensor_prefix(domain)] = str(path)
-    return output
-
-
-def _teacher_log_prob_tensor_key(domain: Any) -> str:
-    return f"{_teacher_tensor_prefix(domain)}_teacher_log_prob"
-
-
-def _teacher_topk_ids_tensor_key(domain: Any) -> str:
-    return f"{_teacher_tensor_prefix(domain)}_teacher_topk_ids"
-
-
-def _teacher_topk_logprobs_tensor_key(domain: Any) -> str:
-    return f"{_teacher_tensor_prefix(domain)}_teacher_topk_logprobs"
-
-
-def _teacher_student_topk_logprobs_tensor_key(domain: Any) -> str:
-    return f"{_teacher_tensor_prefix(domain)}_teacher_student_topk_logprobs"
-
-
-def _teacher_entropy_tensor_key(domain: Any) -> str:
-    return f"{_teacher_tensor_prefix(domain)}_teacher_entropy"
-
-
-def _retag_teacher_tensors(
-    tensors: dict[str, torch.Tensor],
-    *,
-    source_domain: str,
-    target_domain: str,
-) -> dict[str, torch.Tensor]:
-    source_prefix = _teacher_tensor_prefix(source_domain)
-    target_prefix = _teacher_tensor_prefix(target_domain)
-    if source_prefix == target_prefix:
-        return dict(tensors)
-    output = {}
-    for key, value in tensors.items():
-        if key.startswith(f"{source_prefix}_teacher"):
-            output[f"{target_prefix}{key[len(source_prefix):]}"] = value
-    return output
-
-
-def create_device_mesh(world_size, fsdp_size):
-    if fsdp_size < 0 or fsdp_size >= world_size:
-        device_mesh = init_device_mesh(device_name, mesh_shape=(world_size,), mesh_dim_names=["fsdp"])
-    else:
-        device_mesh = init_device_mesh(
-            device_name, mesh_shape=(world_size // fsdp_size, fsdp_size), mesh_dim_names=["ddp", "fsdp"]
-        )
-    return device_mesh
-
-
-def get_sharding_strategy(device_mesh):
-    from torch.distributed.fsdp import ShardingStrategy
-
-    if device_mesh.ndim == 1:
-        sharding_strategy = ShardingStrategy.FULL_SHARD
-    elif device_mesh.ndim == 2:
-        sharding_strategy = ShardingStrategy.HYBRID_SHARD
-    else:
-        raise NotImplementedError(f"Get device mesh ndim={device_mesh.ndim}, but only support 1 or 2")
-    return sharding_strategy
-
-
-def _reshard_fsdp_module(module):
-    """Reshard FSDP modules only when the active strategy actually shards."""
-    version = fsdp_version(module)
-    if version == 1:
-        handle = getattr(module, "_handle", None)
-        if handle is None or not bool(getattr(handle, "uses_sharded_strategy", True)):
-            return
-        handle.reshard(True)
-    elif version == 2:
-        module.reshard()
 
 
 def get_vl_model_vision_tower(vl_model_instance):
@@ -232,6 +126,11 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         Worker.__init__(self)
 
         self.config = config
+        self.role = role
+        assert self.role in ["actor", "rollout", "ref", "actor_rollout", "actor_rollout_ref"]
+        self._is_actor = self.role in ["actor", "actor_rollout", "actor_rollout_ref"]
+        self._is_rollout = self.role in ["rollout", "actor_rollout", "actor_rollout_ref"]
+        self._is_ref = self.role in ["ref", "actor_rollout_ref"]
         import torch.distributed
 
         if not torch.distributed.is_initialized():
@@ -248,7 +147,8 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         # build device mesh for FSDP
         world_size = torch.distributed.get_world_size()
         # TODO(sgm): support FSDP hybrid shard for larger model
-        self.device_mesh = create_device_mesh(world_size=world_size, fsdp_size=self.config.actor.fsdp_config.fsdp_size)
+        mesh_fsdp_config = self.config.ref.fsdp_config if self.role == "ref" else self.config.actor.fsdp_config
+        self.device_mesh = create_device_mesh(world_size=world_size, fsdp_size=mesh_fsdp_config.fsdp_size)
 
         # build device mesh for Ulysses Sequence Parallel
         self.ulysses_device_mesh = None
@@ -272,13 +172,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         self._lora_rank = self.config.model.get("lora_rank", 0)
         self._is_lora = self.config.model.get("lora_adapter_path") is not None or self._lora_rank > 0
 
-        self.role = role
-        assert self.role in ["actor", "rollout", "ref", "actor_rollout", "actor_rollout_ref"]
-
-        self._is_actor = self.role in ["actor", "actor_rollout", "actor_rollout_ref"]
-        self._is_rollout = self.role in ["rollout", "actor_rollout", "actor_rollout_ref"]
-        self._is_ref = self.role in ["ref", "actor_rollout_ref"]
-        self.use_orig_params = self.config.actor.fsdp_config.get("use_orig_params", False)
+        self.use_orig_params = mesh_fsdp_config.get("use_orig_params", False)
 
         # TODO(haibin.lin):
         # As of now the type of config is DictConfig, if we assign config.profiler with ProfilerConfig,
@@ -370,7 +264,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         use_liger=False,
         role="actor",
         enable_activation_offload=False,
-        ref_cpu_offload: bool = True,
+        ref_cpu_offload=True,
     ):
         from torch.distributed.fsdp import CPUOffload, MixedPrecision
         from transformers import (
@@ -434,8 +328,15 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             print(f"Model config after override: {actor_model_config}")
 
         # NOTE(fix me): tie_word_embedding causes meta_tensor init to hang
+        init_mesh = self.device_mesh
+        if self.config.actor.strategy == "fsdp":
+            init_mesh, _ = resolve_fsdp1_mesh_and_strategy(
+                self.device_mesh,
+                int(fsdp_config.fsdp_size),
+            )
         init_context = get_init_weight_context_manager(
-            use_meta_tensor=not actor_model_config.tie_word_embeddings, mesh=self.device_mesh
+            use_meta_tensor=not actor_model_config.tie_word_embeddings,
+            mesh=init_mesh,
         )
 
         with init_context(), warnings.catch_warnings():
@@ -575,15 +476,20 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         if self.rank == 0:
             print(f"wrap_policy: {auto_wrap_policy}")
 
-        fsdp_mesh = self.device_mesh
-        sharding_strategy = get_sharding_strategy(fsdp_mesh)
-
         # TODO: add transformer policy
-        # Reference/teacher policies use CPUOffload by default to save GPU memory.
+        # We force reference policy to use CPUOffload to save memory.
         # We force turn off CPUOffload for actor because it causes incorrect results when using grad accumulation
-        cpu_offload = None if role == "actor" or not ref_cpu_offload else CPUOffload(offload_params=True)
+        cpu_offload = (
+            None
+            if role == "actor" or not ref_cpu_offload
+            else CPUOffload(offload_params=True)
+        )
         fsdp_strategy = self.config.actor.strategy
         if fsdp_strategy == "fsdp":
+            fsdp_mesh, sharding_strategy = resolve_fsdp1_mesh_and_strategy(
+                self.device_mesh,
+                int(fsdp_config.fsdp_size),
+            )
             actor_module_fsdp = FSDP(
                 actor_module,
                 cpu_offload=cpu_offload,
@@ -593,11 +499,16 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 sharding_strategy=sharding_strategy,  # zero3
                 mixed_precision=mixed_precision,
                 sync_module_states=True,
-                device_mesh=self.device_mesh,
+                device_mesh=fsdp_mesh,
                 use_orig_params=self.use_orig_params,
                 forward_prefetch=fsdp_config.get("forward_prefetch", False),
             )
+            validate_fsdp1_size_one_topology(
+                actor_module_fsdp,
+                int(fsdp_config.fsdp_size),
+            )
         elif fsdp_strategy == "fsdp2":
+            fsdp_mesh = self.device_mesh
             assert CPUOffloadPolicy is not None, "PyTorch version >= 2.4 is required for using fully_shard API (FSDP2)"
             mp_policy = MixedPrecisionPolicy(
                 param_dtype=param_dtype, reduce_dtype=reduce_dtype, cast_forward_inputs=True
@@ -907,23 +818,22 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         if self._is_rollout:
             self._build_rollout(trust_remote_code=self.config.model.get("trust_remote_code", False))
 
-        self.domain_teacher_policies = {}
-        self.domain_teacher_modules = {}
-        self._domain_teacher_paths = {}
         if self._is_ref:
             ref_model_path = self.config.model.path
             ref_model = self.config.ref.get("model", None)
-            teacher_model_device = _normalize_teacher_model_device("cpu")
+            teacher_model_device = "cpu"
             if ref_model is not None:
                 ref_model_path = ref_model.get("path", self.config.model.path)
-                teacher_model_device = _normalize_teacher_model_device(
+                teacher_model_device = str(
                     ref_model.get("teacher_model_device", "cpu")
-                )
-            teacher_ref_cpu_offload = _teacher_model_uses_cpu_offload(teacher_model_device)
+                ).lower()
+            if teacher_model_device == "cuda":
+                teacher_model_device = "gpu"
+            if teacher_model_device not in {"cpu", "gpu"}:
+                raise ValueError("teacher_model_device must be 'cpu', 'gpu', or 'cuda'.")
 
             if self.rank == 0:
                 print("reference model:", ref_model_path)
-                print(f"reference teacher_model_device: {teacher_model_device}")
             local_path = copy_to_local(ref_model_path, use_shm=use_shm)
             self.ref_module_fsdp = self._build_model_optimizer(
                 model_path=local_path,
@@ -935,53 +845,13 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 trust_remote_code=self.config.model.get("trust_remote_code", False),
                 use_liger=self.config.model.get("use_liger", False),
                 role="ref",
-                ref_cpu_offload=teacher_ref_cpu_offload,
+                ref_cpu_offload=teacher_model_device == "cpu",
             )[0]
             OmegaConf.set_struct(self.config.ref, True)
             with open_dict(self.config.ref):
                 self.config.ref.use_remove_padding = use_remove_padding
                 self.config.ref.use_fused_kernels = use_fused_kernels
             self.ref_policy = DataParallelPPOActor(config=self.config.ref, actor_module=self.ref_module_fsdp)
-            self.domain_teacher_policies["math"] = self.ref_policy
-            self._domain_teacher_paths["math"] = str(ref_model_path)
-
-            teacher_paths = _teacher_paths_mapping(ref_model.get("teacher_paths", None) if ref_model else None)
-            if teacher_paths:
-                teacher_paths.setdefault("math", str(ref_model_path))
-                loaded_by_path = {os.path.normcase(os.path.normpath(str(ref_model_path))): self.ref_policy}
-                if self.rank == 0:
-                    print(f"Domain teacher paths: {teacher_paths}")
-                for domain, teacher_path in teacher_paths.items():
-                    normalized_path = os.path.normcase(os.path.normpath(str(teacher_path)))
-                    if normalized_path in loaded_by_path:
-                        self.domain_teacher_policies[domain] = loaded_by_path[normalized_path]
-                        self._domain_teacher_paths[domain] = str(teacher_path)
-                        continue
-                    if self.rank == 0:
-                        print(f"Domain teacher model for {domain}: {teacher_path}")
-                    local_teacher_path = copy_to_local(teacher_path, use_shm=use_shm)
-                    teacher_module_fsdp = self._build_model_optimizer(
-                        model_path=local_teacher_path,
-                        fsdp_config=omega_conf_to_dataclass(self.config.ref.fsdp_config),
-                        optim_config=None,
-                        override_model_config=override_model_config,
-                        use_remove_padding=use_remove_padding,
-                        use_fused_kernels=use_fused_kernels,
-                        trust_remote_code=self.config.model.get("trust_remote_code", False),
-                        use_liger=self.config.model.get("use_liger", False),
-                        role="ref",
-                        ref_cpu_offload=teacher_ref_cpu_offload,
-                    )[0]
-                    teacher_config = OmegaConf.create(OmegaConf.to_container(self.config.ref))
-                    OmegaConf.set_struct(teacher_config, True)
-                    with open_dict(teacher_config):
-                        teacher_config.use_remove_padding = use_remove_padding
-                        teacher_config.use_fused_kernels = use_fused_kernels
-                    teacher_policy = DataParallelPPOActor(config=teacher_config, actor_module=teacher_module_fsdp)
-                    self.domain_teacher_modules[domain] = teacher_module_fsdp
-                    self.domain_teacher_policies[domain] = teacher_policy
-                    self._domain_teacher_paths[domain] = str(teacher_path)
-                    loaded_by_path[normalized_path] = teacher_policy
 
         # Initialize base models for corrected reward computation
         # Actor's base model (for computing base_log_prob)
@@ -1014,51 +884,33 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             if self.rank == 0:
                 print(f"Actor base model initialized successfully from {base_model_path}")
 
-        # Ref's base model (for computing code_teacher_log_prob)
+        # Ref's base model (for computing base_ref_log_prob)
         self.base_ref_policy = None
         self._has_base_ref_model = False
         ref_model_config = self.config.ref.get("model", {})
         ref_base_model_path = ref_model_config.get("base_model_path", None) if ref_model_config else None
-        domain_teacher_paths = _teacher_paths_mapping(
-            ref_model_config.get("teacher_paths", None) if ref_model_config else None
-        )
-        teacher_model_device = _normalize_teacher_model_device(
-            ref_model_config.get("teacher_model_device", "cpu") if ref_model_config else "cpu"
-        )
-        teacher_ref_cpu_offload = _teacher_model_uses_cpu_offload(teacher_model_device)
-        if domain_teacher_paths and self._is_ref:
-            self.base_ref_policy = self.domain_teacher_policies.get("code")
-            self._has_base_ref_model = self.base_ref_policy is not None
-        elif ref_base_model_path is not None and self._is_ref:
+        if ref_base_model_path is not None and self._is_ref:
             if self.rank == 0:
                 print(f"Ref base model: {ref_base_model_path}")
-                print(f"Ref base model teacher_model_device: {teacher_model_device}")
-            if _same_model_path(ref_base_model_path, ref_model_path):
-                self.base_ref_module_fsdp = self.ref_module_fsdp
-                self.base_ref_policy = self.ref_policy
-                if self.rank == 0:
-                    print("Ref base model reuses reference model; skipped duplicate teacher load.")
-            else:
-                local_ref_base_path = copy_to_local(ref_base_model_path, use_shm=use_shm)
-                self.base_ref_module_fsdp = self._build_model_optimizer(
-                    model_path=local_ref_base_path,
-                    fsdp_config=omega_conf_to_dataclass(self.config.ref.fsdp_config),
-                    optim_config=None,
-                    override_model_config=override_model_config,
-                    use_remove_padding=use_remove_padding,
-                    use_fused_kernels=use_fused_kernels,
-                    trust_remote_code=self.config.model.get("trust_remote_code", False),
-                    use_liger=self.config.model.get("use_liger", False),
-                    role="ref",
-                    ref_cpu_offload=teacher_ref_cpu_offload,
-                )[0]
-                # Create a config for base ref policy
-                base_ref_config = OmegaConf.create(OmegaConf.to_container(self.config.ref))
-                OmegaConf.set_struct(base_ref_config, True)
-                with open_dict(base_ref_config):
-                    base_ref_config.use_remove_padding = use_remove_padding
-                    base_ref_config.use_fused_kernels = use_fused_kernels
-                self.base_ref_policy = DataParallelPPOActor(config=base_ref_config, actor_module=self.base_ref_module_fsdp)
+            local_ref_base_path = copy_to_local(ref_base_model_path, use_shm=use_shm)
+            self.base_ref_module_fsdp = self._build_model_optimizer(
+                model_path=local_ref_base_path,
+                fsdp_config=omega_conf_to_dataclass(self.config.ref.fsdp_config),
+                optim_config=None,
+                override_model_config=override_model_config,
+                use_remove_padding=use_remove_padding,
+                use_fused_kernels=use_fused_kernels,
+                trust_remote_code=self.config.model.get("trust_remote_code", False),
+                use_liger=self.config.model.get("use_liger", False),
+                role="ref",
+            )[0]
+            # Create a config for base ref policy
+            base_ref_config = OmegaConf.create(OmegaConf.to_container(self.config.ref))
+            OmegaConf.set_struct(base_ref_config, True)
+            with open_dict(base_ref_config):
+                base_ref_config.use_remove_padding = use_remove_padding
+                base_ref_config.use_fused_kernels = use_fused_kernels
+            self.base_ref_policy = DataParallelPPOActor(config=base_ref_config, actor_module=self.base_ref_module_fsdp)
             self._has_base_ref_model = True
             if self.rank == 0:
                 print(f"Ref base model initialized successfully from {ref_base_model_path}")
@@ -1085,17 +937,6 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 processing_class=self.processor if self.processor is not None else self.tokenizer,
                 checkpoint_config=checkpoint_contents,
             )
-
-
-
-
-
-
-
-
-
-
-
 
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
     @DistProfiler.annotate(color="red", role="actor_update")
@@ -1163,17 +1004,8 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             loop.run_until_complete(self.rollout_mode())
             log_gpu_memory_usage("After switch to rollout mode", logger=logger)
 
-        rollout_kwargs = {}
-        max_tokens = prompts.meta_info.get("max_tokens", None)
-        if max_tokens is not None:
-            max_tokens = int(max_tokens)
-            if self.config.rollout.name in {"vllm", "sglang"}:
-                rollout_kwargs["max_tokens"] = max_tokens
-            else:
-                prompts.meta_info["response_length"] = max_tokens
-
         with simple_timer("generate_sequences", timing_generate):
-            output = self.rollout.generate_sequences(prompts=prompts, **rollout_kwargs)
+            output = self.rollout.generate_sequences(prompts=prompts)
 
         if self._is_actor:
             loop.run_until_complete(self.trainer_mode())
@@ -1221,8 +1053,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         # perform recompute log_prob
         with self.ulysses_sharding_manager:
             with adapter_ctx:
-                student_topk_k = data.meta_info.get("student_topk_k", None)
-                student_topk_k = None if student_topk_k is None else int(student_topk_k)
+                student_topk_k = data.meta_info.get("student_topk_k")
                 if student_topk_k is None:
                     output, entropys = self.actor.compute_log_prob(data=data, calculate_entropy=True)
                     tensors = {"old_log_probs": output, "entropys": entropys}
@@ -1230,7 +1061,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                     output, entropys, topk_ids, topk_log_probs = self.actor.compute_log_prob(
                         data=data,
                         calculate_entropy=True,
-                        topk=student_topk_k,
+                        topk=int(student_topk_k),
                     )
                     tensors = {
                         "old_log_probs": output,
@@ -1238,69 +1069,23 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                         "student_topk_ids": topk_ids,
                         "student_topk_logprobs": topk_log_probs,
                     }
-            output = DataProto.from_dict(tensors=tensors, meta_info={"temperature": self.config.rollout.temperature})
+            output = DataProto.from_dict(
+                tensors=tensors,
+                meta_info={"temperature": self.config.rollout.temperature},
+            )
 
         output = output.to("cpu")
 
         # https://pytorch.org/docs/stable/notes/fsdp.html#fsdp-notes
         # unshard the root FSDP module
-        if self.world_size > 1 and fsdp_version(self.actor.actor_module) == 1:
-            _reshard_fsdp_module(self.actor.actor_module)
+        if fsdp_version(self.actor.actor_module) == 1:
+            maybe_reshard_fsdp1_root(self.actor.actor_module)
 
         if self._is_offload_param:
             offload_fsdp_model_to_cpu(self.actor_module_fsdp)
             log_gpu_memory_usage("After offload actor model during compute_log_prob", logger=logger)
 
         return output
-
-    def _prepare_ref_log_prob_meta(self, data: DataProto) -> None:
-        data.meta_info["micro_batch_size"] = self.config.ref.log_prob_micro_batch_size_per_gpu
-        data.meta_info["temperature"] = self.config.rollout.temperature
-        data.meta_info["max_token_len"] = self.config.ref.log_prob_max_token_len_per_gpu
-        data.meta_info["use_dynamic_bsz"] = self.config.ref.log_prob_use_dynamic_bsz
-
-    def _compute_teacher_policy_tensors(
-        self,
-        policy: Any,
-        data: DataProto,
-        *,
-        domain: str,
-        calculate_entropy: bool,
-    ) -> dict[str, torch.Tensor]:
-        teacher_topk_k = data.meta_info.get("teacher_topk_k", None)
-        teacher_topk_k = None if teacher_topk_k is None else int(teacher_topk_k)
-        support_source = str(data.meta_info.get("topk_distill_support_source", "teacher")).lower()
-        use_student_topk_support = support_source == "student" and "student_topk_ids" in data.batch
-        domain = _teacher_tensor_prefix(domain)
-        log_prob_key = _teacher_log_prob_tensor_key(domain)
-        with self.ulysses_sharding_manager:
-            if use_student_topk_support:
-                output, entropys, student_support_log_probs = policy.compute_log_prob(
-                    data=data,
-                    calculate_entropy=calculate_entropy,
-                    gather_topk_ids_key="student_topk_ids",
-                )
-                tensors = {
-                    log_prob_key: output,
-                    _teacher_student_topk_logprobs_tensor_key(domain): student_support_log_probs,
-                }
-            elif teacher_topk_k is None:
-                output, entropys = policy.compute_log_prob(data=data, calculate_entropy=calculate_entropy)
-                tensors = {log_prob_key: output}
-            else:
-                output, entropys, topk_ids, topk_log_probs = policy.compute_log_prob(
-                    data=data,
-                    calculate_entropy=calculate_entropy,
-                    topk=teacher_topk_k,
-                )
-                tensors = {
-                    log_prob_key: output,
-                    _teacher_topk_ids_tensor_key(domain): topk_ids,
-                    _teacher_topk_logprobs_tensor_key(domain): topk_log_probs,
-                }
-            if calculate_entropy and entropys is not None:
-                tensors[_teacher_entropy_tensor_key(domain)] = entropys
-        return tensors
 
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
     @DistProfiler.annotate(color="olive", role="ref_compute_log_prob")
@@ -1309,94 +1094,75 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             # if _is_lora, actor without lora applied is the ref
             data.meta_info["is_lora"] = True
             data = self.compute_log_prob(data)
-            # this old_log_probs is in fact math_teacher_log_prob
-            data = DataProto.from_dict(tensors={"math_teacher_log_prob": data.batch["old_log_probs"]})
+            # this old_log_probs is in fact ref_log_prob
+            data = DataProto.from_dict(tensors={"ref_log_prob": data.batch["old_log_probs"]})
             return data
         assert self._is_ref
         # else:
         # otherwise, the class have a standalone ref model
 
-        self._prepare_ref_log_prob_meta(data)
+        micro_batch_size = self.config.ref.log_prob_micro_batch_size_per_gpu
+        data.meta_info["micro_batch_size"] = micro_batch_size
+        data.meta_info["temperature"] = self.config.rollout.temperature
+        data.meta_info["max_token_len"] = self.config.ref.log_prob_max_token_len_per_gpu
+        data.meta_info["use_dynamic_bsz"] = self.config.ref.log_prob_use_dynamic_bsz
         calculate_entropy = bool(data.meta_info.get("mopd_compute_teacher_entropy", False))
-        data = data.to("cpu")  # data will to device with each micro batch on ref.compute_log_prob
-        tensors = self._compute_teacher_policy_tensors(
-            self.ref_policy,
-            data,
-            domain="math",
-            calculate_entropy=calculate_entropy,
-        )
-        output = DataProto.from_dict(tensors=tensors)
+        with self.ulysses_sharding_manager:
+            data = data.to("cpu")  # data will to device with each micro batch on ref.compute_log_prob
+            teacher_topk_k = data.meta_info.get("teacher_topk_k")
+            support_source = str(data.meta_info.get("topk_distill_support_source", "teacher"))
+            if support_source == "student" and "student_topk_ids" in data.batch:
+                output, entropys, support_log_probs = self.ref_policy.compute_log_prob(
+                    data=data,
+                    calculate_entropy=calculate_entropy,
+                    gather_topk_ids_key="student_topk_ids",
+                )
+                tensors = {
+                    "ref_log_prob": output,
+                    "math_teacher_log_prob": output,
+                    "math_teacher_student_topk_logprobs": support_log_probs,
+                }
+            elif teacher_topk_k is not None:
+                output, entropys, topk_ids, topk_log_probs = self.ref_policy.compute_log_prob(
+                    data=data,
+                    calculate_entropy=calculate_entropy,
+                    topk=int(teacher_topk_k),
+                )
+                tensors = {
+                    "ref_log_prob": output,
+                    "math_teacher_log_prob": output,
+                    "math_teacher_topk_ids": topk_ids,
+                    "math_teacher_topk_logprobs": topk_log_probs,
+                }
+            else:
+                output, entropys = self.ref_policy.compute_log_prob(
+                    data=data,
+                    calculate_entropy=calculate_entropy,
+                )
+                tensors = {"ref_log_prob": output, "math_teacher_log_prob": output}
+            if calculate_entropy and entropys is not None:
+                tensors["math_teacher_entropy"] = entropys
+            output = DataProto.from_dict(tensors=tensors)
 
         output = output.to("cpu")
 
         # https://pytorch.org/docs/stable/notes/fsdp.html#fsdp-notes
         # unshard the root FSDP module
         if self.world_size > 1:
-            _reshard_fsdp_module(self.ref_policy.actor_module)
+            if fsdp_version(self.ref_policy.actor_module) == 1:
+                maybe_reshard_fsdp1_root(self.ref_policy.actor_module)
+            elif fsdp_version(self.ref_policy.actor_module) == 2:
+                self.ref_policy.actor_module.reshard()
 
         return output
 
-    @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
-    @DistProfiler.annotate(color="olive", role="domain_teacher_compute_log_prob")
-    def compute_domain_teacher_log_probs(self, data: DataProto):
-        assert self._is_ref
-        if not self.domain_teacher_policies:
-            return DataProto.from_dict(tensors={})
-
-        self._prepare_ref_log_prob_meta(data)
-        calculate_entropy = bool(data.meta_info.get("mopd_compute_teacher_entropy", False))
-        data = data.to("cpu")
-        tensors = {}
-        computed_by_policy_id = {}
-        if "math_teacher_log_prob" in data.batch:
-            math_tensors = {
-                key: value
-                for key, value in data.batch.items()
-                if str(key).startswith("math_teacher")
-            }
-            computed_by_policy_id[id(self.ref_policy)] = ("math", math_tensors)
-        for domain, policy in self.domain_teacher_policies.items():
-            if domain == "math":
-                continue
-            cached = computed_by_policy_id.get(id(policy))
-            if cached is not None:
-                source_domain, cached_tensors = cached
-                tensors.update(
-                    _retag_teacher_tensors(
-                        cached_tensors,
-                        source_domain=source_domain,
-                        target_domain=domain,
-                    )
-                )
-                continue
-            domain_tensors = self._compute_teacher_policy_tensors(
-                    policy,
-                    data,
-                    domain=domain,
-                    calculate_entropy=calculate_entropy,
-                )
-            tensors.update(domain_tensors)
-            computed_by_policy_id[id(policy)] = (domain, domain_tensors)
-        output = DataProto.from_dict(tensors=tensors).to("cpu")
-
-        if self.world_size > 1:
-            seen_policy_ids = set()
-            for policy in self.domain_teacher_policies.values():
-                policy_id = id(policy)
-                if policy_id in seen_policy_ids:
-                    continue
-                seen_policy_ids.add(policy_id)
-                _reshard_fsdp_module(policy.actor_module)
-
-        return output
-    
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
     @DistProfiler.annotate(color="green", role="base_compute_log_prob")
     def compute_base_log_prob(self, data: DataProto):
         """Compute log probabilities using actor's base model.
-        
+
         This is used for corrected reward computation:
-        corrected_reward = old_log_prob - math_teacher_log_prob - (base_log_prob - code_teacher_log_prob)
+        corrected_reward = old_log_prob - ref_log_prob - (base_log_prob - base_ref_log_prob)
 
         Args:
             data: DataProto containing input_ids, attention_mask, position_ids, responses
@@ -1405,10 +1171,16 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             DataProto with base_log_prob tensor
         """
         if not self._has_base_model:
-            raise ValueError("Base model not initialized. Please set actor_rollout_ref.model.base_model_path in config.")
-        
-        self._prepare_ref_log_prob_meta(data)
-        
+            raise ValueError(
+                "Base model not initialized. Set actor_rollout_ref.model.base_model_path."
+            )
+
+        micro_batch_size = self.config.ref.log_prob_micro_batch_size_per_gpu
+        data.meta_info["micro_batch_size"] = micro_batch_size
+        data.meta_info["temperature"] = self.config.rollout.temperature
+        data.meta_info["max_token_len"] = self.config.ref.log_prob_max_token_len_per_gpu
+        data.meta_info["use_dynamic_bsz"] = self.config.ref.log_prob_use_dynamic_bsz
+
         with self.ulysses_sharding_manager:
             data = data.to("cpu")  # data will to device with each micro batch
             output, _ = self.base_policy.compute_log_prob(data=data, calculate_entropy=False)
@@ -1418,7 +1190,10 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         # unshard the root FSDP module
         if self.world_size > 1:
-            _reshard_fsdp_module(self.base_policy.actor_module)
+            if fsdp_version(self.base_policy.actor_module) == 1:
+                maybe_reshard_fsdp1_root(self.base_policy.actor_module)
+            elif fsdp_version(self.base_policy.actor_module) == 2:
+                self.base_policy.actor_module.reshard()
 
         return output
 
@@ -1426,39 +1201,74 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
     @DistProfiler.annotate(color="purple", role="base_ref_compute_log_prob")
     def compute_base_ref_log_prob(self, data: DataProto):
         """Compute log probabilities using ref's base model.
-        
+
         This is used for corrected reward computation:
-        corrected_reward = old_log_prob - math_teacher_log_prob - (base_log_prob - code_teacher_log_prob)
+        corrected_reward = old_log_prob - ref_log_prob - (base_log_prob - base_ref_log_prob)
 
         Args:
-            data: DataProto containing input_ids, attention_mask, position_ids, responses
+            data: DataProto containing ref_input_ids, ref_attention_mask, ref_position_ids, responses
+                  (uses ref model inputs if different tokenization is needed)
 
         Returns:
-            DataProto with code_teacher_log_prob tensor
+            DataProto with base_ref_log_prob tensor
         """
         if not self._has_base_ref_model:
-            raise ValueError("Base ref model not initialized. Please set actor_rollout_ref.ref.model.base_model_path in config.")
-        
+            raise ValueError(
+                "Base ref model not initialized. Set actor_rollout_ref.ref.model.base_model_path."
+            )
+
         micro_batch_size = self.config.ref.log_prob_micro_batch_size_per_gpu
         data.meta_info["micro_batch_size"] = micro_batch_size
         data.meta_info["temperature"] = self.config.rollout.temperature
         data.meta_info["max_token_len"] = self.config.ref.log_prob_max_token_len_per_gpu
         data.meta_info["use_dynamic_bsz"] = self.config.ref.log_prob_use_dynamic_bsz
         calculate_entropy = bool(data.meta_info.get("mopd_compute_teacher_entropy", False))
-        data = data.to("cpu")
-        tensors = self._compute_teacher_policy_tensors(
-            self.base_ref_policy,
-            data,
-            domain="code",
-            calculate_entropy=calculate_entropy,
-        )
-        output = DataProto.from_dict(tensors=tensors)
+
+        with self.ulysses_sharding_manager:
+            data = data.to("cpu")  # data will to device with each micro batch
+            teacher_topk_k = data.meta_info.get("teacher_topk_k")
+            support_source = str(data.meta_info.get("topk_distill_support_source", "teacher"))
+            if support_source == "student" and "student_topk_ids" in data.batch:
+                output, entropys, support_log_probs = self.base_ref_policy.compute_log_prob(
+                    data=data,
+                    calculate_entropy=calculate_entropy,
+                    gather_topk_ids_key="student_topk_ids",
+                )
+                tensors = {
+                    "base_ref_log_prob": output,
+                    "code_teacher_log_prob": output,
+                    "code_teacher_student_topk_logprobs": support_log_probs,
+                }
+            elif teacher_topk_k is not None:
+                output, entropys, topk_ids, topk_log_probs = self.base_ref_policy.compute_log_prob(
+                    data=data,
+                    calculate_entropy=calculate_entropy,
+                    topk=int(teacher_topk_k),
+                )
+                tensors = {
+                    "base_ref_log_prob": output,
+                    "code_teacher_log_prob": output,
+                    "code_teacher_topk_ids": topk_ids,
+                    "code_teacher_topk_logprobs": topk_log_probs,
+                }
+            else:
+                output, entropys = self.base_ref_policy.compute_log_prob(
+                    data=data,
+                    calculate_entropy=calculate_entropy,
+                )
+                tensors = {"base_ref_log_prob": output, "code_teacher_log_prob": output}
+            if calculate_entropy and entropys is not None:
+                tensors["code_teacher_entropy"] = entropys
+            output = DataProto.from_dict(tensors=tensors)
 
         output = output.to("cpu")
 
         # unshard the root FSDP module
         if self.world_size > 1:
-            _reshard_fsdp_module(self.base_ref_policy.actor_module)
+            if fsdp_version(self.base_ref_policy.actor_module) == 1:
+                maybe_reshard_fsdp1_root(self.base_ref_policy.actor_module)
+            elif fsdp_version(self.base_ref_policy.actor_module) == 2:
+                self.base_ref_policy.actor_module.reshard()
 
         return output
 
@@ -1483,51 +1293,36 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             batch_keys = {str(key) for key in data.batch.keys()}
             if support_source == "student" and "student_topk_ids" in data.batch:
                 suffix = "_teacher_student_topk_logprobs"
-                for logprobs_key in sorted(batch_keys):
-                    if not logprobs_key.endswith(suffix):
-                        continue
-                    domain_prefix = logprobs_key[: -len(suffix)]
-                    if not domain_prefix:
-                        continue
-                    output_key = f"{domain_prefix}_teacher_student_cross_entropy"
-                    tensors[output_key] = self.actor.compute_teacher_student_cross_entropy(
-                        data=data,
-                        teacher_topk_ids_key="student_topk_ids",
-                        teacher_topk_logprobs_key=logprobs_key,
-                        include_tail=include_tail,
-                        distill_temperature=distill_temperature,
-                    )
+                specifications = [
+                    ("student_topk_ids", key, key[: -len(suffix)])
+                    for key in sorted(batch_keys)
+                    if key.endswith(suffix)
+                ]
             else:
                 ids_suffix = "_teacher_topk_ids"
-                logprobs_suffix = "_teacher_topk_logprobs"
-                for ids_key in sorted(batch_keys):
-                    if not ids_key.endswith(ids_suffix):
-                        continue
-                    domain_prefix = ids_key[: -len(ids_suffix)]
-                    if not domain_prefix:
-                        continue
-                    logprobs_key = f"{domain_prefix}{logprobs_suffix}"
-                    if logprobs_key not in data.batch:
-                        continue
-                    output_key = f"{domain_prefix}_teacher_student_cross_entropy"
-                    tensors[output_key] = self.actor.compute_teacher_student_cross_entropy(
+                specifications = [
+                    (key, f"{key[: -len(ids_suffix)]}_teacher_topk_logprobs", key[: -len(ids_suffix)])
+                    for key in sorted(batch_keys)
+                    if key.endswith(ids_suffix)
+                ]
+            for ids_key, logprobs_key, domain_prefix in specifications:
+                if not domain_prefix or logprobs_key not in data.batch:
+                    continue
+                tensors[f"{domain_prefix}_teacher_student_cross_entropy"] = (
+                    self.actor.compute_teacher_student_cross_entropy(
                         data=data,
                         teacher_topk_ids_key=ids_key,
                         teacher_topk_logprobs_key=logprobs_key,
                         include_tail=include_tail,
                         distill_temperature=distill_temperature,
                     )
-            output = DataProto.from_dict(tensors=tensors)
+                )
+            output = DataProto.from_dict(tensors=tensors).to("cpu")
 
-        output = output.to("cpu")
-
-        if self.world_size > 1 and fsdp_version(self.actor.actor_module) == 1:
-            _reshard_fsdp_module(self.actor.actor_module)
-
+        if fsdp_version(self.actor.actor_module) == 1:
+            maybe_reshard_fsdp1_root(self.actor.actor_module)
         if self._is_offload_param:
             offload_fsdp_model_to_cpu(self.actor_module_fsdp)
-            log_gpu_memory_usage("After offload actor model during compute_teacher_student_cross_entropy", logger=logger)
-
         return output
 
     def has_base_models(self):
@@ -1773,8 +1568,15 @@ class CriticWorker(Worker, DistProfilerExtension):
         if getattr(critic_model_config, "model_type", None) == "kimi_vl":
             critic_model_config.text_config.topk_method = "greedy"
 
+        init_mesh = self.device_mesh
+        if config.strategy == "fsdp":
+            init_mesh, _ = resolve_fsdp1_mesh_and_strategy(
+                self.device_mesh,
+                int(self.config.model.fsdp_config.fsdp_size),
+            )
         init_context = get_init_weight_context_manager(
-            use_meta_tensor=not critic_model_config.tie_word_embeddings, mesh=self.device_mesh
+            use_meta_tensor=not critic_model_config.tie_word_embeddings,
+            mesh=init_mesh,
         )
 
         with init_context(), warnings.catch_warnings():
@@ -1861,9 +1663,6 @@ class CriticWorker(Worker, DistProfilerExtension):
 
         log_gpu_memory_usage("Before critic FSDP", logger=None)
 
-        fsdp_mesh = self.device_mesh
-        sharding_strategy = get_sharding_strategy(fsdp_mesh)
-
         self.use_orig_params = fsdp_config.get("use_orig_params", False)
         if self.config.model.get("freeze_vision_tower", False):
             vision_tower = get_vl_model_vision_tower(critic_module)
@@ -1878,6 +1677,10 @@ class CriticWorker(Worker, DistProfilerExtension):
 
         # Note: We force turn off CPUOffload for critic because it causes incorrect results when using grad accumulation
         if config.strategy == "fsdp":
+            fsdp_mesh, sharding_strategy = resolve_fsdp1_mesh_and_strategy(
+                self.device_mesh,
+                int(fsdp_config.fsdp_size),
+            )
             critic_module = FSDP(
                 critic_module,
                 param_init_fn=init_fn,
@@ -1888,10 +1691,15 @@ class CriticWorker(Worker, DistProfilerExtension):
                 mixed_precision=mixed_precision,
                 sync_module_states=True,
                 forward_prefetch=self.config.model.fsdp_config.forward_prefetch,
-                device_mesh=self.device_mesh,
+                device_mesh=fsdp_mesh,
                 cpu_offload=None,
             )
+            validate_fsdp1_size_one_topology(
+                critic_module,
+                int(fsdp_config.fsdp_size),
+            )
         elif config.strategy == "fsdp2":
+            fsdp_mesh = self.device_mesh
             assert CPUOffloadPolicy is not None, "PyTorch version >= 2.4 is required for using fully_shard API (FSDP2)"
             mp_policy = MixedPrecisionPolicy(
                 param_dtype=param_dtype, reduce_dtype=reduce_dtype, cast_forward_inputs=True
@@ -2162,8 +1970,15 @@ class RewardModelWorker(Worker, DistProfilerExtension):
         model_config.num_labels = 1
 
         # note that we have to create model in fp32. Otherwise, the optimizer is in bf16, which is incorrect
+        init_mesh = self.device_mesh
+        if config.strategy == "fsdp":
+            init_mesh, _ = resolve_fsdp1_mesh_and_strategy(
+                self.device_mesh,
+                int(self.config.model.fsdp_config.fsdp_size),
+            )
         init_context = get_init_weight_context_manager(
-            use_meta_tensor=not model_config.tie_word_embeddings, mesh=self.device_mesh
+            use_meta_tensor=not model_config.tie_word_embeddings,
+            mesh=init_mesh,
         )
 
         with init_context(), warnings.catch_warnings():
@@ -2187,10 +2002,11 @@ class RewardModelWorker(Worker, DistProfilerExtension):
 
         auto_wrap_policy = get_fsdp_wrap_policy(module=reward_module, config=self.config.model.fsdp_config)
 
-        fsdp_mesh = self.device_mesh
-        sharding_strategy = get_sharding_strategy(fsdp_mesh)
-
         if config.strategy == "fsdp":
+            fsdp_mesh, sharding_strategy = resolve_fsdp1_mesh_and_strategy(
+                self.device_mesh,
+                int(self.config.model.fsdp_config.fsdp_size),
+            )
             reward_module = FSDP(
                 reward_module,
                 param_init_fn=init_fn,
@@ -2201,9 +2017,14 @@ class RewardModelWorker(Worker, DistProfilerExtension):
                 sync_module_states=True,
                 cpu_offload=CPUOffload(offload_params=True),
                 forward_prefetch=self.config.model.fsdp_config.forward_prefetch,
-                device_mesh=self.device_mesh,
+                device_mesh=fsdp_mesh,
+            )
+            validate_fsdp1_size_one_topology(
+                reward_module,
+                int(self.config.model.fsdp_config.fsdp_size),
             )
         elif config.strategy == "fsdp2":
+            fsdp_mesh = self.device_mesh
             assert CPUOffloadPolicy is not None, "PyTorch version >= 2.4 is required for using fully_shard API (FSDP2)"
             cpu_offload = CPUOffloadPolicy(pin_memory=True)
             fsdp_kwargs = {
@@ -2421,8 +2242,8 @@ class RewardModelWorker(Worker, DistProfilerExtension):
 
         # https://pytorch.org/docs/stable/notes/fsdp.html#fsdp-notes
         # unshard the root FSDP module
-        if self.world_size > 1 and fsdp_version(self.reward_module) == 1:
-            _reshard_fsdp_module(self.reward_module)
+        if fsdp_version(self.reward_module) == 1:
+            maybe_reshard_fsdp1_root(self.reward_module)
 
         output = output.to("cpu")
         return output

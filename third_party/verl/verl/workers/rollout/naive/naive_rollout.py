@@ -59,6 +59,11 @@ class NaiveRollout(BaseRollout):
 
         batch_size = idx.size(0)
         prompt_length = idx.size(1)
+        do_sample = prompts.meta_info.get("do_sample", self.config.do_sample)
+        is_validate = prompts.meta_info.get("validate", False)
+        sampling_config = self.config.val_kwargs if is_validate else self.config
+        temperature = 1.0 if not do_sample else sampling_config.temperature
+        top_k = None if not do_sample else sampling_config.top_k
 
         self.module.eval()
 
@@ -74,15 +79,15 @@ class NaiveRollout(BaseRollout):
             output = self.module(input_ids=idx_cond, attention_mask=attention_mask, position_ids=position_ids)
             logits = output.logits
             # pluck the logits at the final step and scale by desired temperature
-            logits = logits[:, -1, :] / self.config.temperature  # (bs, vocab_size)
+            logits = logits[:, -1, :] / temperature  # (bs, vocab_size)
             # optionally crop the logits to only the top k options
-            if self.config.top_k is not None:
-                v, _ = torch.topk(logits, min(self.config.top_k, logits.size(-1)))
+            if top_k is not None and top_k > 0:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
                 logits[logits < v[:, [-1]]] = -float("Inf")
             # apply softmax to convert logits to (normalized) probabilities
             probs = F.softmax(logits, dim=-1)
             # sample from the distribution
-            if self.config.do_sample:
+            if do_sample:
                 idx_next = torch.multinomial(probs, num_samples=1)
             else:
                 idx_next = torch.argmax(probs, dim=-1, keepdim=True)

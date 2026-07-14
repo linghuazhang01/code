@@ -695,7 +695,7 @@ class SGLangRollout(BaseRollout):
         idx_list = [input_data["prompt_token_ids"] for input_data in sglang_inputs]
         image_list = [input_data.get("image_data", None) for input_data in sglang_inputs]
 
-        do_sample = prompts.meta_info.get("do_sample", True)
+        do_sample = prompts.meta_info.get("do_sample", self.config.do_sample)
         is_validate = prompts.meta_info.get("validate", False)
 
         # Create request-level sampling parameters
@@ -1113,7 +1113,7 @@ class SGLangRollout(BaseRollout):
         Thus we do not need to repeat the prompts here and set the sampling parameter n to 1.
         """
         # Async rollout with tools support
-        do_sample = prompts.meta_info.get("do_sample", True)
+        do_sample = prompts.meta_info.get("do_sample", self.config.do_sample)
         is_validate = prompts.meta_info.get("validate", False)
         tgt_device = prompts.batch["input_ids"].device
 

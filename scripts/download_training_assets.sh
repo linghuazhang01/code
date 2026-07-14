@@ -6,8 +6,8 @@ usage() {
 Usage:
   scripts/download_training_assets.sh
 
-Download and validate the data/model assets for the current Qwen30B
-four-domain MOPD training profiles.
+Download and validate the data/model assets for the current Qwen3-4B student
+and Qwen3-30B-A3B-Instruct-2507 teacher math/code/IF/science profiles.
 
 Default assets:
   data/G-OPD-Training-Data/DeepMath-103K/train_filtered_level6.parquet
@@ -15,7 +15,7 @@ Default assets:
   data/G-OPD-Training-Data/IF/train.parquet
   data/G-OPD-Training-Data/Science/train.parquet
   ../models/Qwen3-4B
-  ../models/Qwen3-30B-A3B
+  ../models/Qwen3-30B-A3B-Instruct-2507
 
 Environment knobs:
   DATA_DIR=$CODE_DIR/data/G-OPD-Training-Data
@@ -27,6 +27,7 @@ Environment knobs:
   MODEL_BACKEND=huggingface
   DOWNLOAD_DATA=1
   DOWNLOAD_MODELS=1
+  REQUIRE_MATH_CODE_TRAIN_DATA=1
   REQUIRE_4DOMAIN_TRAIN_DATA=1
   REQUIRE_MODELS=1
   DOWNLOAD_BASE_4B=$DOWNLOAD_MODELS
@@ -63,6 +64,7 @@ PYTHON_BIN="${PYTHON_BIN:-}"
 MODEL_BACKEND="${MODEL_BACKEND:-huggingface}"
 DOWNLOAD_DATA="${DOWNLOAD_DATA:-1}"
 DOWNLOAD_MODELS="${DOWNLOAD_MODELS:-1}"
+REQUIRE_MATH_CODE_TRAIN_DATA="${REQUIRE_MATH_CODE_TRAIN_DATA:-1}"
 REQUIRE_4DOMAIN_TRAIN_DATA="${REQUIRE_4DOMAIN_TRAIN_DATA:-1}"
 REQUIRE_MODELS="${REQUIRE_MODELS:-1}"
 DOWNLOAD_BASE_4B="${DOWNLOAD_BASE_4B:-${DOWNLOAD_MODELS}}"
@@ -84,8 +86,8 @@ IF_EVAL_OUTPUT="${IF_EVAL_OUTPUT:-${EVAL_DATA_DIR}/ifbench/IFBench_test.parquet}
 SCIENCE_EVAL_OUTPUT="${SCIENCE_EVAL_OUTPUT:-${EVAL_DATA_DIR}/science/gpqa.parquet}"
 BASE_4B_MODEL_ID="${BASE_4B_MODEL_ID:-Qwen/Qwen3-4B}"
 BASE_4B_DIR_NAME="${BASE_4B_DIR_NAME:-Qwen3-4B}"
-QWEN30B_MODEL_ID="${QWEN30B_MODEL_ID:-Qwen/Qwen3-30B-A3B}"
-QWEN30B_DIR_NAME="${QWEN30B_DIR_NAME:-Qwen3-30B-A3B}"
+QWEN30B_MODEL_ID="${QWEN30B_MODEL_ID:-Qwen/Qwen3-30B-A3B-Instruct-2507}"
+QWEN30B_DIR_NAME="${QWEN30B_DIR_NAME:-Qwen3-30B-A3B-Instruct-2507}"
 
 export PYTHONPATH="${CODE_DIR}:${CODE_DIR}/third_party/verl:${PYTHONPATH:-}"
 export PIP_ROOT_USER_ACTION="${PIP_ROOT_USER_ACTION:-ignore}"
@@ -108,9 +110,11 @@ import pyarrow
 PY
 }
 
-validate_four_domain_train_data() {
+validate_training_data() {
   ensure_parquet_support
-  DATA_DIR="${DATA_DIR}" "${PYTHON_BIN}" - <<'PY'
+  DATA_DIR="${DATA_DIR}" \
+  REQUIRE_4DOMAIN_TRAIN_DATA="${REQUIRE_4DOMAIN_TRAIN_DATA}" \
+    "${PYTHON_BIN}" - <<'PY'
 from pathlib import Path
 import os
 
@@ -120,9 +124,9 @@ data_dir = Path(os.environ["DATA_DIR"])
 required_files = [
     "DeepMath-103K/train_filtered_level6.parquet",
     "Eurus/code_train.parquet",
-    "IF/train.parquet",
-    "Science/train.parquet",
 ]
+if os.environ["REQUIRE_4DOMAIN_TRAIN_DATA"] == "1":
+    required_files.extend(["IF/train.parquet", "Science/train.parquet"])
 missing = []
 invalid = []
 for rel_path in required_files:
@@ -140,13 +144,13 @@ for rel_path in required_files:
     except Exception as exc:  # noqa: BLE001 - report all data readiness failures.
         invalid.append(f"{path} is not readable as parquet: {exc}")
         continue
-    print(f"four_domain_data {path} rows={parquet_file.metadata.num_rows}")
+    print(f"training_data {path} rows={parquet_file.metadata.num_rows}")
 
 if missing or invalid:
     for item in missing:
-        print(f"missing four-domain train data: {item}")
+        print(f"missing train data: {item}")
     for item in invalid:
-        print(f"invalid four-domain train data: {item}")
+        print(f"invalid train data: {item}")
     raise SystemExit(1)
 PY
 }
@@ -225,22 +229,20 @@ else
   echo "Training data download skipped: ${DATA_DIR}"
 fi
 
-if [[ "${REQUIRE_4DOMAIN_TRAIN_DATA}" == "1" ]]; then
-  validate_four_domain_train_data
+if [[ "${REQUIRE_MATH_CODE_TRAIN_DATA}" == "1" || "${REQUIRE_4DOMAIN_TRAIN_DATA}" == "1" ]]; then
+  validate_training_data
 fi
 
 prepare_or_check_m2rl_eval
 prepare_models
 
 cat <<EOF
-Qwen30B four-domain assets ready.
+Qwen3-30B-A3B-Instruct-2507 training assets ready.
   Data: ${DATA_DIR}
   Math train: ${DATA_DIR}/DeepMath-103K/train_filtered_level6.parquet
   Code train: ${DATA_DIR}/Eurus/code_train.parquet
   IF train: ${DATA_DIR}/IF/train.parquet
   Science train: ${DATA_DIR}/Science/train.parquet
   Student: ${MODEL_ROOT}/${BASE_4B_DIR_NAME}
-  Teacher math/code/if/science: ${MODEL_ROOT}/${QWEN30B_DIR_NAME}
-  IF eval: ${IF_EVAL_OUTPUT}
-  Science eval: ${SCIENCE_EVAL_OUTPUT}
+  Teacher math/code/IF/science: ${MODEL_ROOT}/${QWEN30B_DIR_NAME}
 EOF

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import math
 import os
@@ -86,13 +87,29 @@ def domain_for_data_file(config: Any, file_path: str) -> str | None:
     return lookup.get(str(file_path)) or lookup.get(_normalize_path_key(file_path))
 
 
-def annotate_hf_dataset_domain(dataframe: Any, domain: str) -> Any:
+def _domain_row_sample_ids(domain: str, source_file: str | os.PathLike[str] | None, row_count: int) -> list[str]:
+    source_name = "unknown" if source_file is None else os.fspath(source_file)
+    source_fingerprint = hashlib.sha256(source_name.encode("utf-8")).hexdigest()[:16]
+    return [f"{domain}:{source_fingerprint}:{row_index}" for row_index in range(row_count)]
+
+
+def annotate_hf_dataset_domain(
+    dataframe: Any,
+    domain: str,
+    source_file: str | os.PathLike[str] | None = None,
+) -> Any:
     row_count = len(dataframe)
     for column in ("domain", "opd_teacher", "source_domain"):
         values = [domain] * row_count
         if column in getattr(dataframe, "column_names", []):
             dataframe = dataframe.remove_columns([column])
         dataframe = dataframe.add_column(column, values)
+    if "sample_id" in getattr(dataframe, "column_names", []):
+        dataframe = dataframe.remove_columns(["sample_id"])
+    dataframe = dataframe.add_column(
+        "sample_id",
+        _domain_row_sample_ids(domain, source_file, row_count),
+    )
     return dataframe
 
 

@@ -22,15 +22,14 @@ pip install "nvidia-ml-py>=12.560.30" "fastapi[standard]>=0.115.0" "optree>=0.13
 
 echo "3. install FlashAttention and FlashInfer"
 # Install flash-attn-2.7.4.post1 (cxx11abi=False)
-FLASH_ATTN_WHEEL="flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp310-cp310-linux_x86_64.whl"
-if [ ! -f "${FLASH_ATTN_WHEEL}" ]; then
-    wget -nv "https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/${FLASH_ATTN_WHEEL}"
-fi
-pip install --no-cache-dir "${FLASH_ATTN_WHEEL}"
+wget -nv https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp310-cp310-linux_x86_64.whl && \
+    pip install --no-cache-dir flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp310-cp310-linux_x86_64.whl
 
-# FlashInfer is optional for the single-step smoke path. GitHub wheel
-# downloads are often slow on rented instances, so skip it by default.
-echo "Skipping FlashInfer wheel download; set SKIP_FLASHINFER=0 and rerun if production rollout requires it" 
+# Install flashinfer-0.2.2.post1+cu124 (cxx11abi=False)
+# vllm-0.8.3 does not support flashinfer>=0.2.3
+# see https://github.com/vllm-project/vllm/pull/15777
+wget -nv https://github.com/flashinfer-ai/flashinfer/releases/download/v0.2.2.post1/flashinfer_python-0.2.2.post1+cu124torch2.6-cp38-abi3-linux_x86_64.whl && \
+    pip install --no-cache-dir flashinfer_python-0.2.2.post1+cu124torch2.6-cp38-abi3-linux_x86_64.whl
 
 
 if [ $USE_MEGATRON -eq 1 ]; then

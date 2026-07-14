@@ -127,7 +127,7 @@ audit:
   full_gradient_storage_dtype: bfloat16
   sequence_masked_target_enabled: true
   sequence_masked_target_use_as_primary: true
-  sample_gradient_enabled: true
+  sample_gradient_enabled: false
   sample_gradient_freq_steps: 1
   sample_gradient_norm_enabled: true
   sample_gradient_cos_enabled: true
@@ -146,7 +146,7 @@ audit:
   token_conflict_enabled: true
   token_conflict_freq_steps: 1
   token_conflict_top_k: null
-  token_gradient_enabled: true
+  token_gradient_enabled: false
   token_gradient_freq_steps: 1
   token_gradient_gap_selection_enabled: false
   token_gradient_gap_abs_selection_enabled: false

@@ -52,36 +52,6 @@ actor_rollout_ref:
     # for huge model, layered summon can save memory (prevent OOM) but make it slower
     layered_summon: False
 
-  # Controls how actor/rollout and reference policy workers are assigned to Ray resource pools.
-  worker_placement:
-
-    # Whether reference/teacher policy workers use a separate resource pool from actor/rollout workers.
-    separate_ref_policy: false
-
-    # Actor/rollout worker pool placement.
-    actor_rollout:
-
-      # Explicit worker counts per node. Null means use n_gpus_per_node and nnodes below.
-      process_on_nodes: null
-
-      # Number of actor/rollout GPUs per node. Null means trainer.n_gpus_per_node.
-      n_gpus_per_node: null
-
-      # Number of actor/rollout nodes. Null means trainer.nnodes.
-      nnodes: null
-
-    # Reference/teacher worker pool placement. Used only when separate_ref_policy is true.
-    ref_policy:
-
-      # Explicit worker counts per node. Null means use n_gpus_per_node and nnodes below.
-      process_on_nodes: null
-
-      # Number of reference/teacher GPUs per node. Null means trainer.n_gpus_per_node.
-      n_gpus_per_node: null
-
-      # Number of reference/teacher nodes. Null means trainer.nnodes.
-      nnodes: null
-
 # custom reward function definition
 custom_reward_function:
 

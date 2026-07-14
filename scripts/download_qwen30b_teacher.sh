@@ -6,13 +6,13 @@ usage() {
 Usage:
   scripts/download_qwen30b_teacher.sh
 
-Downloads or verifies the Qwen3-30B-A3B teacher model used by the Qwen30B
-distillation smoke configs.
+Downloads or verifies the Qwen3-30B-A3B-Instruct-2507 teacher model used by
+the Qwen3-4B distillation configs.
 
 Defaults:
   MODEL_ROOT=<parent of OPD-code>/models
-  QWEN30B_MODEL_ID=Qwen/Qwen3-30B-A3B
-  QWEN30B_DIR_NAME=Qwen3-30B-A3B
+  QWEN30B_MODEL_ID=Qwen/Qwen3-30B-A3B-Instruct-2507
+  QWEN30B_DIR_NAME=Qwen3-30B-A3B-Instruct-2507
   DOWNLOAD_QWEN30B=1
   REQUIRE_QWEN30B=1
   MODEL_BACKEND=huggingface
@@ -57,8 +57,8 @@ PYTHON_BIN="${PYTHON_BIN:-}"
 HF_HOME="${HF_HOME:-${MODEL_ROOT}/.hf_home}"
 HF_XET_HIGH_PERFORMANCE="${HF_XET_HIGH_PERFORMANCE:-1}"
 HF_XET_CHUNK_CACHE_SIZE_BYTES="${HF_XET_CHUNK_CACHE_SIZE_BYTES:-0}"
-QWEN30B_MODEL_ID="${QWEN30B_MODEL_ID:-Qwen/Qwen3-30B-A3B}"
-QWEN30B_DIR_NAME="${QWEN30B_DIR_NAME:-Qwen3-30B-A3B}"
+QWEN30B_MODEL_ID="${QWEN30B_MODEL_ID:-Qwen/Qwen3-30B-A3B-Instruct-2507}"
+QWEN30B_DIR_NAME="${QWEN30B_DIR_NAME:-Qwen3-30B-A3B-Instruct-2507}"
 DOWNLOAD_QWEN30B="${DOWNLOAD_QWEN30B:-1}"
 REQUIRE_QWEN30B="${REQUIRE_QWEN30B:-1}"
 MIN_FREE_GB="${MIN_FREE_GB:-0}"
@@ -196,9 +196,9 @@ else
 fi
 
 if [[ "${REQUIRE_QWEN30B}" == "1" ]]; then
-  validate_model_dir "Qwen3-30B-A3B teacher" "${qwen30b_dir}"
+  validate_model_dir "Qwen3-30B-A3B-Instruct-2507 teacher" "${qwen30b_dir}"
 else
-  echo "Qwen3-30B-A3B teacher validation skipped: ${qwen30b_dir}"
+  echo "Qwen3-30B-A3B-Instruct-2507 teacher validation skipped: ${qwen30b_dir}"
 fi
 
 echo "Qwen30B teacher model ready: ${qwen30b_dir}"

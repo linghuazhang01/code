@@ -1,48 +1,42 @@
-# Six-GPU profile for split Qwen3-30B GPU teacher with the narrow audit surface.
+# Six-GPU single-domain code training profile for Qwen3-4B student
+# distillation from Qwen3-30B-A3B-Instruct-2507.
 #
 # Physical GPU layout:
-# - actor/rollout pool: 4 GPUs for Qwen3-4B student + vLLM
-# - ref/teacher pool: 2 GPUs for Qwen3-30B-A3B teacher
+# - actor/rollout pool: 4 GPUs for the Qwen3-4B student + vLLM
+# - ref/teacher pool: 2 GPUs for Qwen3-30B-A3B-Instruct-2507
 #
-# Keep trainer.n_gpus_per_node equal to the actor/rollout pool size, because
-# verl uses trainer.* as the actor DP world size. Launch with all six GPUs, e.g.
-# GPU_IDS=0,1,2,3,4,5.
+# Keep trainer.n_gpus_per_node equal to the four-GPU actor/rollout pool size.
+# Launch with GPU_IDS=0,1,2,3,4,5.
 #
 # Enabled audit families:
-# - science/IF full gradient audit
-# - token-gap vectors, including full-vocab token-id vectors
+# - single-domain full-gradient audit
+# - token-gap sequence/full-vocab vectors
 #
-# Disabled audit families:
-# - token gradients
-# - sample gradients
-# - entropy and token-conflict diagnostics
+# Sample gradients, token gradients, and token-conflict diagnostics remain disabled.
 
 runtime:
   python_bin: python
   verl_module: verl.trainer.main_ppo
   wandb_mode: online
-  wandb_entity: lz101-rice-university
+  wandb_entity: null
   env_file: .env.local
   used_model: no_api
 
 data:
   domain_train_files:
-    science:
-      - data/G-OPD-Training-Data/Science/train.parquet
-    if:
-      - data/G-OPD-Training-Data/IF/train.parquet
+    code:
+      - data/G-OPD-Training-Data/Eurus/code_train.parquet
   domain_sampling_weights:
-    science: 1
-    if: 1
+    code: 1
   domain_sampling_replacement: true
   load_parquet_direct: true
-  # Prepare these with scripts/prepare_m2rl_eval_data.sh before launching if absent.
   val_files:
-    - data/eval_data/science/gpqa.parquet
-    - data/eval_data/ifbench/IFBench_test.parquet
+    - data/eval_data/code/HumanEvalPlus/test.parquet
+    - data/eval_data/code/MBPPPlus/test.parquet
+    # - data/eval_data/code/LiveCodeBench/test.parquet
   train_batch_size: 512
   max_prompt_length: 2048
-  max_response_length: 10240
+  max_response_length: 16384
   val_batch_size: 1024
   filter_overlong_prompts: true
   truncation: error
@@ -55,12 +49,10 @@ data:
 model:
   student_path: ../models/Qwen3-4B
   student_base_path: null
-  primary_teacher_path: ../models/Qwen3-30B-A3B
-  secondary_teacher_path: null
-  if_teacher_path: ../models/Qwen3-30B-A3B
+  math_teacher_path: ../models/Qwen3-30B-A3B-Instruct-2507
+  code_teacher_path: ../models/Qwen3-30B-A3B-Instruct-2507
   domain_teacher_paths:
-    science: ../models/Qwen3-30B-A3B
-    if: ../models/Qwen3-30B-A3B
+    code: ../models/Qwen3-30B-A3B-Instruct-2507
   teacher_model_device: gpu
 
 actor:
@@ -90,7 +82,7 @@ actor:
   gradient_checkpointing: true
   param_offload: true
   optimizer_offload: true
-  fsdp_size: 1
+  fsdp_size: 2
   use_dynamic_bsz: false
 
 rollout:
@@ -104,8 +96,9 @@ rollout:
   enable_chunked_prefill: false
   n: 1
   max_num_batched_tokens: 32768
-  max_model_len: 12288
+  max_model_len: 18432
   max_num_seqs: 24
+  do_sample: true
   temperature: 1.0
   top_p: 1.0
   val_n: 1
@@ -135,10 +128,9 @@ worker_placement:
 
 audit:
   enabled: true
-  output_dir: audit/qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_6gpu_science_if_fsdp
+  output_dir: audit/qwen4b_30b_a3b_instruct_2507_code
   domains:
-    - science
-    - if
+    - code
   tensorboard_prefix: mopd
   tensorboard_layout: domain_category
   tensorboard_prune_mode: core
@@ -152,8 +144,9 @@ audit:
   tier2_window_size: 20
   calibration_bins: 10
   full_gradient_enabled: true
-  full_gradient_freq_steps: 2
-  full_grad_training_parity_freq_steps: -1
+  full_gradient_freq_steps: 4
+  full_grad_training_parity_freq_steps: 1
+  full_grad_training_parity_rel_l2_threshold: 2.0e-2
   full_gradient_train_max_samples_per_domain: null
   full_gradient_micro_batch_size_per_gpu: 1
   full_gradient_storage_dtype: bfloat16
@@ -163,7 +156,6 @@ audit:
   sequence_masked_target_use_as_primary: true
   sequence_replay_skip_non_target_domains: false
   sequence_masked_target_closure_rel_l2_threshold: 0.02
-  training_gradient_from_domain_sum_enabled: true
   full_gradient_offload_domain_gradients: true
   sample_gradient_enabled: false
   sample_gradient_freq_steps: 1
@@ -183,6 +175,13 @@ audit:
   entropy_freq_steps: 1
   entropy_vocab_vector_enabled: false
   entropy_vocab_vector_freq_steps: 1
+  topk_teacher_student_cross_entropy_vocab_enabled: false
+  topk_teacher_student_cross_entropy_vocab_freq_steps: 1
+  topk_teacher_student_cross_entropy_k: 32
+  topk_teacher_student_cross_entropy_include_tail: false
+  topk_teacher_student_cross_entropy_temperature: 1.0
+  logp_abs_vector_enabled: false
+  logp_abs_vector_freq_steps: 1
   token_conflict_enabled: false
   token_conflict_freq_steps: 1
   token_conflict_top_k: null
@@ -196,14 +195,18 @@ audit:
   token_gradient_strict_grad_restore: false
   token_gradient_backward_recompute_enabled: false
   token_gradient_backward_sync_enabled: false
+  gradient_fingerprint_enabled: false
+  gradient_fingerprint_freq_steps: 1
 
 paper_eval:
   enabled: false
   script_path: eval/scripts/run_paper_eval_suite.sh
   model_path: null
-  output_dir: eval_outputs/paper_suite/qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_6gpu_science_if_fsdp
-  # Science/IF validation is handled by data.val_files and mopd_verl/mixed_reward.py.
-  datasets: []
+  output_dir: eval_outputs/paper_suite/qwen4b_30b_a3b_instruct_2507_code
+  datasets:
+    - humaneval_plus
+    - mbpp_plus
+    - lcb
   run_on_initial_validation: true
   evaluate_current_checkpoint: true
   fail_on_error: false
@@ -211,7 +214,7 @@ paper_eval:
 
 trainer:
   project_name: MOPD
-  experiment_name: Qwen3-4B-from-Qwen3-30B-A3B-pg-split-teacher-gpu-audit-domain-vocabvec-6gpu-science-if-fsdp
+  experiment_name: qwen4b-from-30b-a3b-instruct-2507-code
   logger: '["console","tensorboard","wandb"]'
   n_gpus_per_node: 4
   nnodes: 1
@@ -219,7 +222,7 @@ trainer:
   test_freq: -1
   total_epochs: 3
   total_training_steps: 200
-  default_local_dir: checkpoints/MOPD/Qwen3-4B-from-Qwen3-30B-A3B-pg-split-teacher-gpu-audit-domain-vocabvec-6gpu-science-if-fsdp
+  default_local_dir: checkpoints/MOPD/qwen4b-from-30b-a3b-instruct-2507-code
   critic_warmup: 0
   val_before_train: false
   log_val_generations: 10
@@ -229,3 +232,4 @@ trainer:
 ray_kwargs:
   ray_init:
     include_dashboard: false
+    num_cpus: 24

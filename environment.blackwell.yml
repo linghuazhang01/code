@@ -1,0 +1,83 @@
+name: mopd-verl-blackwell
+
+channels:
+  - conda-forge
+
+dependencies:
+  - python=3.10
+  - pip
+  - setuptools
+  - wheel
+  - git
+  - git-lfs
+  - pip:
+      # Blackwell sm_120 runtime (Linux x86_64). PyTorch 2.8 CUDA 12.8
+      # wheels are required; CUDA 12.4 wheels do not contain sm_120 kernels.
+      - --extra-index-url https://download.pytorch.org/whl/cu128
+      - torch==2.8.0+cu128
+      - torchvision==0.23.0+cu128
+      - torchaudio==2.8.0+cu128
+      - torchdata==0.11.0
+      - tensordict==0.10.0
+      - vllm==0.11.0
+      - xformers==0.0.32.post1
+
+      # Do not install external FlashAttention for the first Blackwell
+      # correctness run. Use eager HF attention and disable remove-padding.
+      - transformers[hf_xet]==4.55.4
+      - tokenizers>=0.21.0,<0.22
+      - huggingface_hub>=0.30.0,<1.0
+      - hf_xet
+      - hf-transfer
+      - accelerate==1.10.1
+      - datasets==4.0.0
+      - peft==0.17.1
+      - numpy<2.0.0
+      - pandas
+      - pyarrow>=19.0.0
+      # vLLM 0.11 requires ray[cgraph]>=2.48. Pin the same Ray release used
+      # by its upstream test lock so the distributed runtime cannot drift.
+      - ray[default,cgraph]==2.48.0
+      - codetiming
+      - hydra-core
+      - pylatexenc
+      - qwen-vl-utils
+      - wandb
+      - dill
+      - pybind11
+      - liger-kernel==0.6.2
+      - mathruler
+      - packaging>=20.0
+      - fastapi[standard]>=0.115.0
+      - uvicorn
+      - pydantic>=2.9
+      - grpcio>=1.62.1
+      - optree>=0.13.0
+      - nvidia-ml-py>=12.560.30
+      - latex2sympy2_extended
+      - math_verify
+
+      # Project utilities, evaluation, and observability.
+      - pyyaml
+      - click
+      - tensorboard==2.20.0
+      - protobuf>=3.20.3,<5.0
+      # 0.47b0 pins opentelemetry-sdk~=1.26 and conflicts with Ray 2.48.
+      - opentelemetry-exporter-prometheus==0.56b0
+      - modelscope
+      - langdetect
+      - nltk
+      - immutabledict
+      - emoji
+      - syllapy
+      - unicodedata2
+      - opencv-python
+      - pytest
+      - ipykernel
+      - py-spy
+      - pyext
+      - pre-commit
+      - ruff
+
+      # Pin Git dependencies to immutable revisions.
+      - git+https://github.com/abukharin-nv/verifiable-instructions.git@f46a5ac87b1400a4f8973039844b6be9b56e3faf

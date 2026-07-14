@@ -7,13 +7,13 @@ Usage:
   scripts/run_mopd_eval.sh [config] [--dry-run] [--model-path PATH] [--run-id RUN_ID] [--paper-eval] [-- <hydra overrides...>]
 
 Examples:
-  scripts/run_mopd_eval.sh configs/mopd_qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_6gpu_math_code_fsdp.yaml --dry-run
+  scripts/run_mopd_eval.sh configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math_code.yaml --dry-run
 
-  scripts/run_mopd_eval.sh configs/mopd_qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_6gpu_math_code_fsdp.yaml \
+  scripts/run_mopd_eval.sh configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math_code.yaml \
     --model-path checkpoints/MOPD/run_id/global_step_200/actor \
     --run-id qwen30b_math_code_step200_eval
 
-  scripts/run_mopd_eval.sh configs/mopd_qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_6gpu_math_code_fsdp.yaml \
+  scripts/run_mopd_eval.sh configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math_code.yaml \
     --paper-eval --paper-datasets aime24,humaneval_plus
 
 Notes:

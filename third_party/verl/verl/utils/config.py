@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
 from dataclasses import is_dataclass
 from typing import Any, Optional
 
@@ -188,11 +189,18 @@ def validate_config(
             + " which will schedule the memory themselves."
         )
 
+    rollout_temperature = float(config.actor_rollout_ref.rollout.temperature)
+    if not math.isfinite(rollout_temperature) or rollout_temperature <= 0:
+        raise ValueError(
+            "actor_rollout_ref.rollout.temperature must be greater than 0 for "
+            "actor/ref log-prob computation; set rollout.do_sample=false for greedy generation."
+        )
+
     # check eval config
     if config.actor_rollout_ref.rollout.val_kwargs.do_sample:
-        assert config.actor_rollout_ref.rollout.temperature > 0, (
-            "validation gen temperature should be greater than 0 when enabling do_sample"
-        )
+        validation_temperature = float(config.actor_rollout_ref.rollout.val_kwargs.temperature)
+        if not math.isfinite(validation_temperature) or validation_temperature <= 0:
+            raise ValueError("validation temperature must be greater than 0 when enabling do_sample")
 
     # check LoRA rank in vLLM
     if config.actor_rollout_ref.model.get("lora_rank", 0) > 0 and config.actor_rollout_ref.rollout.name == "vllm":

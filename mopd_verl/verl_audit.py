@@ -602,32 +602,6 @@ def _scalar_float(value: Any) -> float | None:
     return finite_float(converted)
 
 
-def _equal_workload_partitions(
-    indices: list[int],
-    workloads: list[int],
-    partition_count: int,
-) -> list[list[int]]:
-    """Greedily balance workload while keeping equal sample counts."""
-
-    capacity = len(indices) // partition_count
-    partitions: list[list[int]] = [[] for _ in range(partition_count)]
-    partition_workloads = [0 for _ in range(partition_count)]
-    ordered_indices = sorted(indices, key=lambda idx: (-workloads[idx], idx))
-    for sample_idx in ordered_indices:
-        candidates = [rank for rank in range(partition_count) if len(partitions[rank]) < capacity]
-        target_rank = min(
-            candidates,
-            key=lambda rank: (partition_workloads[rank], len(partitions[rank]), rank),
-        )
-        partitions[target_rank].append(sample_idx)
-        partition_workloads[target_rank] += workloads[sample_idx]
-
-    for rank, partition in enumerate(partitions):
-        partition.sort(key=lambda idx: (workloads[idx], idx))
-        partitions[rank] = partition[::2] + partition[1::2][::-1]
-    return partitions
-
-
 def _ensure_meta_info(batch: Any) -> dict[str, Any]:
     meta_info = getattr(batch, "meta_info", None)
     if not isinstance(meta_info, dict):
@@ -673,6 +647,9 @@ class MOPDAuditLogger:
         self.full_grad_training_parity_freq_steps = int(
             1 if full_grad_training_parity_freq_steps is None else full_grad_training_parity_freq_steps
         )
+        self.full_grad_training_parity_rel_l2_threshold = float(
+            _cfg_get(audit_config, "full_grad_training_parity_rel_l2_threshold", 1e-5)
+        )
         self.full_gradient_train_max_samples_per_domain = _optional_positive_int(
             _cfg_get(audit_config, "full_gradient_train_max_samples_per_domain", None)
         )
@@ -696,9 +673,6 @@ class MOPDAuditLogger:
         )
         self.sequence_masked_target_closure_rel_l2_threshold = float(
             _cfg_get(audit_config, "sequence_masked_target_closure_rel_l2_threshold", 0.02)
-        )
-        self.training_gradient_from_domain_sum_enabled = bool(
-            _cfg_get(audit_config, "training_gradient_from_domain_sum_enabled", False)
         )
         self.sample_gradient_enabled = bool(_cfg_get(audit_config, "sample_gradient_enabled", False))
         self.sample_gradient_freq_steps = max(1, int(_cfg_get(audit_config, "sample_gradient_freq_steps", 1)))
@@ -938,14 +912,14 @@ class MOPDAuditLogger:
         freq_steps = int(self.full_grad_training_parity_freq_steps)
         return self.enabled and freq_steps >= 0 and step % max(1, freq_steps) == 0
 
-    def balance_domain_gradient_batch(
+    def inspect_domain_gradient_batch_layout(
         self,
         batch: Any,
         *,
         step: int,
         world_size: int,
     ) -> dict[str, float]:
-        """Align domain counts across contiguous actor-rank dispatch chunks."""
+        """Inspect domain layout without changing the production batch payload."""
 
         if not self.should_compute_domain_gradient(step):
             return {}
@@ -959,17 +933,19 @@ class MOPDAuditLogger:
             "domains": list(self.domains),
             "domain_order": list(self.domains),
             "micro_batch_size_per_gpu": int(self.full_gradient_micro_batch_size_per_gpu),
+            "inspection_only": True,
+            "production_batch_reordered": False,
+            "layout_source": "post_standard_trainer_balance",
         }
         meta_info[_DOMAIN_PARTITION_META_KEY] = partition_meta
         metrics = {
             "global/audit/full_gradient_domain_partition_aligned": 0.0,
             "global/audit/full_gradient_domain_partition_unsupported": 1.0,
+            "global/audit/full_gradient_domain_partition_inspection_only": 1.0,
+            "global/audit/full_gradient_domain_partition_batch_reordered": 0.0,
         }
-        if world_size <= 1:
-            partition_meta["aligned"] = True
-            partition_meta["unsupported_reason"] = ""
-            metrics["global/audit/full_gradient_domain_partition_aligned"] = 1.0
-            metrics["global/audit/full_gradient_domain_partition_unsupported"] = 0.0
+        if world_size <= 0:
+            partition_meta["unsupported_reason"] = "invalid_world_size"
             return metrics
         if not self.domains or "attention_mask" not in batch.batch:
             partition_meta["unsupported_reason"] = "requires_domains_and_attention_mask"
@@ -995,51 +971,72 @@ class MOPDAuditLogger:
             partition_meta["unsupported_reason"] = "domain_counts_not_divisible_by_rank_micro_batch"
             return metrics
 
-        lengths = attention_mask.detach().view(batch_size, -1).sum(dim=-1).to(device="cpu").long()
-        workloads = [24576 * int(length) + int(length) ** 2 for length in lengths.tolist()]
-        domain_partitions = {
-            domain: _equal_workload_partitions(indices, workloads, world_size)
-            for domain, indices in domain_indices.items()
-        }
-        rank_partitions = [
-            [
-                sample_idx
-                for domain in self.domains
-                for sample_idx in domain_partitions[domain][rank]
-            ]
+        expected_rank_size = batch_size // world_size
+        rank_label_chunks = [
+            labels[rank * expected_rank_size : (rank + 1) * expected_rank_size]
             for rank in range(world_size)
         ]
-        expected_rank_size = batch_size // world_size
-        if any(len(partition) != expected_rank_size for partition in rank_partitions):
-            partition_meta["unsupported_reason"] = "rank_partition_size_mismatch"
+        rank_domain_sample_counts = [
+            {domain: rank_labels.count(domain) for domain in self.domains}
+            for rank_labels in rank_label_chunks
+        ]
+        partition_meta.update(
+            {
+                "rank_sample_count": int(expected_rank_size),
+                "rank_domain_sample_counts": rank_domain_sample_counts,
+            }
+        )
+
+        first_rank_counts = rank_domain_sample_counts[0]
+        if any(counts != first_rank_counts for counts in rank_domain_sample_counts[1:]):
+            partition_meta["unsupported_reason"] = "rank_domain_counts_not_aligned"
             return metrics
 
-        import torch
-
-        global_idx = torch.tensor(
-            [sample_idx for partition in rank_partitions for sample_idx in partition],
-            dtype=torch.long,
-        )
-        batch.reorder(global_idx)
-        domain_block_sample_counts = {
-            domain: len(domain_partitions[domain][0]) for domain in self.domains
-        }
-        rank_domain_sample_counts = [
-            {domain: len(domain_partitions[domain][rank]) for domain in self.domains}
-            for rank in range(world_size)
+        expected_rank_labels = [
+            domain
+            for domain in self.domains
+            for _ in range(first_rank_counts[domain])
         ]
+        if any(rank_labels != expected_rank_labels for rank_labels in rank_label_chunks):
+            partition_meta["unsupported_reason"] = "rank_domain_blocks_not_aligned"
+            return metrics
+
+        has_mixed_micro_batch = any(
+            len(set(rank_labels[start : start + micro_batch_size])) != 1
+            for rank_labels in rank_label_chunks
+            for start in range(0, expected_rank_size, micro_batch_size)
+        )
+        if has_mixed_micro_batch:
+            partition_meta["unsupported_reason"] = "rank_micro_batches_contain_mixed_domains"
+            return metrics
+
         partition_meta.update(
             {
                 "aligned": True,
                 "unsupported_reason": "",
-                "rank_sample_count": int(expected_rank_size),
-                "domain_block_sample_counts": domain_block_sample_counts,
-                "rank_domain_sample_counts": rank_domain_sample_counts,
+                # Retained for tracker compatibility. These are observed per-rank
+                # counts; this inspector does not create or reorder domain blocks.
+                "domain_block_sample_counts": dict(first_rank_counts),
             }
         )
         metrics["global/audit/full_gradient_domain_partition_aligned"] = 1.0
         metrics["global/audit/full_gradient_domain_partition_unsupported"] = 0.0
         return metrics
+
+    def balance_domain_gradient_batch(
+        self,
+        batch: Any,
+        *,
+        step: int,
+        world_size: int,
+    ) -> dict[str, float]:
+        """Compatibility wrapper for trainers patched before read-only inspection."""
+
+        return self.inspect_domain_gradient_batch_layout(
+            batch,
+            step=step,
+            world_size=world_size,
+        )
 
     def full_gradient_meta(
         self,
@@ -1066,8 +1063,10 @@ class MOPDAuditLogger:
                 "sequence_masked_target_closure_rel_l2_threshold": (
                     self.sequence_masked_target_closure_rel_l2_threshold
                 ),
-                "training_gradient_from_domain_sum_enabled": self.training_gradient_from_domain_sum_enabled,
                 "full_grad_training_parity_freq_steps": self.full_grad_training_parity_freq_steps,
+                "full_grad_training_parity_rel_l2_threshold": (
+                    self.full_grad_training_parity_rel_l2_threshold
+                ),
                 "learning_rate": self._current_learning_rate_value(),
                 "sample_gradient_enabled": self.should_compute_sample_gradient(step) and mode == "train",
                 "sample_gradient_freq_steps": self.sample_gradient_freq_steps,

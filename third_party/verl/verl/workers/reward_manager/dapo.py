@@ -13,7 +13,6 @@
 # limitations under the License.
 
 from collections import defaultdict
-from typing import Any
 
 import torch
 
@@ -21,15 +20,6 @@ from verl import DataProto
 from verl.utils.reward_score import default_compute_score
 from verl.workers.reward_manager import register
 from verl.workers.reward_manager.abstract import AbstractRewardManager
-
-
-def _append_reward_extra_info(reward_extra_info: dict, row_index: int, row_info: dict[str, Any]) -> None:
-    for key in list(reward_extra_info.keys()):
-        reward_extra_info[key].append(row_info.get(key))
-    for key, value in row_info.items():
-        if key not in reward_extra_info:
-            reward_extra_info[key].extend([None] * row_index)
-            reward_extra_info[key].append(value)
 
 
 @register("dapo")
@@ -118,12 +108,12 @@ class DAPORewardManager(AbstractRewardManager):
             score: float
             if isinstance(result, dict):
                 score = result["score"]
-                row_reward_extra_info = dict(result)
+                # Store the information including original reward
+                for key, value in result.items():
+                    reward_extra_info[key].append(value)
             else:
                 score = result
-                row_reward_extra_info = {"score": score, "acc": score}
-
-            _append_reward_extra_info(reward_extra_info, i, row_reward_extra_info)
+                reward_extra_info["acc"].append(score)
 
             reward = score
 

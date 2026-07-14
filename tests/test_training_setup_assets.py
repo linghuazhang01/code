@@ -52,7 +52,7 @@ class TrainingSetupAssetScriptTests(unittest.TestCase):
         ):
             self.assertIn(expected, environment_source)
 
-    def test_asset_script_targets_qwen30b_four_domain_training(self) -> None:
+    def test_asset_script_targets_qwen30b_instruct_2507_four_domain_training(self) -> None:
         script_path = (
             Path(__file__).resolve().parents[1]
             / "scripts"
@@ -66,7 +66,9 @@ class TrainingSetupAssetScriptTests(unittest.TestCase):
             "IF/train.parquet",
             "Science/train.parquet",
             "Qwen/Qwen3-4B",
-            "Qwen/Qwen3-30B-A3B",
+            "Qwen/Qwen3-30B-A3B-Instruct-2507",
+            'REQUIRE_MATH_CODE_TRAIN_DATA="${REQUIRE_MATH_CODE_TRAIN_DATA:-1}"',
+            'REQUIRE_4DOMAIN_TRAIN_DATA="${REQUIRE_4DOMAIN_TRAIN_DATA:-1}"',
             "PYTHON_BIN",
             "download_mopd_data.sh",
             "download_mopd_models.sh",

@@ -337,8 +337,11 @@ class AgentLoopWorkerBase:
             logprobs=config.calculate_log_probs,
         )
 
-        # override sampling params for validation
-        if batch.meta_info.get("validate", False):
+        do_sample = batch.meta_info.get("do_sample", config.do_sample)
+        if not do_sample:
+            sampling_params["top_p"] = 1.0
+            sampling_params["temperature"] = 0.0
+        elif batch.meta_info.get("validate", False):
             sampling_params["top_p"] = config.val_kwargs.top_p
             sampling_params["temperature"] = config.val_kwargs.temperature
 

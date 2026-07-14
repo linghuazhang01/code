@@ -61,6 +61,12 @@ from verl.utils.fsdp_utils import (
     offload_fsdp_optimizer,
     replace_lora_wrapper,
 )
+from verl.utils.fsdp_mesh import (
+    create_device_mesh,
+    maybe_reshard_fsdp1_root,
+    resolve_fsdp1_mesh_and_strategy,
+    validate_fsdp1_size_one_topology,
+)
 from verl.utils.model import convert_weight_keys
 from verl.utils.py_functional import convert_to_regular_types
 from verl.utils.torch_functional import logprobs_from_logits
@@ -70,7 +76,6 @@ from verl.workers.sharding_manager.fsdp_ulysses import FSDPUlyssesShardingManage
 
 from ..base import BaseEngine, EngineRegistry
 from ..utils import postprocess_batch_func, prepare_micro_batches
-from .utils import create_device_mesh, get_sharding_strategy
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
@@ -194,8 +199,15 @@ class FSDPEngine(BaseEngine):
 
         torch_dtype = PrecisionType.to_dtype(torch_dtype)
 
+        init_mesh = self.device_mesh
+        if self.engine_config.strategy == "fsdp":
+            init_mesh, _ = resolve_fsdp1_mesh_and_strategy(
+                self.device_mesh,
+                int(self.engine_config.fsdp_size),
+            )
         init_context = get_init_weight_context_manager(
-            use_meta_tensor=not self.model_config.hf_config.tie_word_embeddings, mesh=self.device_mesh
+            use_meta_tensor=not self.model_config.hf_config.tie_word_embeddings,
+            mesh=init_mesh,
         )
 
         with init_context(), warnings.catch_warnings():
@@ -294,11 +306,12 @@ class FSDPEngine(BaseEngine):
             is_lora=self.model_config.lora_rank > 0,
         )
 
-        fsdp_mesh = self.device_mesh
-        sharding_strategy = get_sharding_strategy(fsdp_mesh)
-
         # Note: We force turn off CPUOffload because it causes incorrect results when using grad accumulation
         if self.engine_config.strategy == "fsdp":
+            fsdp_mesh, sharding_strategy = resolve_fsdp1_mesh_and_strategy(
+                self.device_mesh,
+                int(self.engine_config.fsdp_size),
+            )
             # cpu_offload:
             # - actor: None
             # - critic: None
@@ -320,12 +333,17 @@ class FSDPEngine(BaseEngine):
                 sharding_strategy=sharding_strategy,
                 mixed_precision=mixed_precision,
                 sync_module_states=True,
-                device_mesh=self.device_mesh,
+                device_mesh=fsdp_mesh,
                 forward_prefetch=self.engine_config.forward_prefetch,
                 use_orig_params=self.engine_config.use_orig_params,
                 cpu_offload=cpu_offload,
             )
+            validate_fsdp1_size_one_topology(
+                module,
+                int(self.engine_config.fsdp_size),
+            )
         elif self.engine_config.strategy == "fsdp2":
+            fsdp_mesh = self.device_mesh
             # - actor: offload_policy
             # - critic: offload_policy
             # - ref: CPUOffloadPolicy(pin_memory=True)
@@ -678,10 +696,10 @@ class EngineEvalModeCtx:
 
         # https://pytorch.org/docs/stable/notes/fsdp.html#fsdp-notes
         # unshard the root FSDP module
-        if self.engine.engine_config.fsdp_size > 1:
-            if fsdp_version(self.engine.module) == 1:
-                self.engine.module._handle.reshard(True)
-            elif fsdp_version(self.engine.module) == 2:
+        if fsdp_version(self.engine.module) == 1:
+            maybe_reshard_fsdp1_root(self.engine.module)
+        elif self.engine.engine_config.fsdp_size > 1:
+            if fsdp_version(self.engine.module) == 2:
                 self.engine.module.reshard()
 
         if self.engine._is_offload_param:

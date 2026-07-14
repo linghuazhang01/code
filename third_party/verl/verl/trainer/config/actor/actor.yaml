@@ -78,50 +78,46 @@ policy_loss:
   # If true, uses multi-teacher distillation path (requires opd_teacher field in data)
   multi_teacher_distill: false
 
-  # Distillation objective. Default keeps the original chosen-token reverse KL behavior.
-  # Options: chosen_token_reverse_kl / topk_renormalized_reverse_kl /
-  # topk_renormalized_forward_kl / topk_forward_kl_with_tail /
-  # topk_reverse_kl_with_tail / naive_renormalized_topk_kl
-  distill_mode: "chosen_token_reverse_kl"
+  # Loss builder used by the MOPD distillation objective
+  distill_loss_builder: auto
 
-  # Whether to use local-support top-k distillation.
+  # Distillation objective mode
+  distill_mode: chosen_token_reverse_kl
+
+  # Whether to enable sparse top-k teacher distillation
   topk_distill_enabled: false
 
-  # KL direction used when topk_distill_enabled=true and distill_mode is the
-  # default chosen_token_reverse_kl. Options: reverse / forward.
+  # KL direction for top-k distillation
   topk_distill_kl_direction: reverse
 
-  # Number of support tokens to distill per response position.
+  # Number of logits retained in sparse top-k distillation
   topk_distill_k: 8
 
-  # Which policy defines the top-k support. Options: teacher / student.
-  # teacher: use teacher top-k ids and gather student logprobs on them.
-  # student: use old actor/student top-k ids and gather teacher/current-student logprobs on them.
+  # Distribution used to choose the sparse support
   topk_distill_support_source: teacher
 
-  # Whether top-k KL includes a residual tail bucket for non-top-k vocabulary mass.
+  # Whether to aggregate omitted probability mass into a tail bucket
   topk_distill_tail_bucket: true
 
-  # Temperature applied to the selected bucket distribution.
+  # Teacher distribution temperature
   topk_distill_temperature: 1.0
 
-  # Weight for the top-k distillation loss added to the actor loss.
+  # Weight applied to the top-k distillation loss
   topk_distill_loss_weight: 1.0
 
-  # Chunk size for sparse top-k student logprob normalization.
+  # Chunk size used while computing sparse teacher log probabilities
   topk_distill_logprob_chunk_size: 16
 
-  # Student logprob path for teacher top-k ids: sparse or full_vocab.
+  # Teacher log-probability representation mode
   topk_distill_logprob_mode: sparse
 
-  # Whether batch-provided teacher_prefix_mask enables teacher-prefix loss routing.
+  # Whether the response contains a teacher-generated prefix
   teacher_prefix_enabled: false
 
-  # Which generated-token regions contribute loss under teacher-prefix routing.
-  # Options: prefix_and_suffix / suffix_only / prefix_only / all.
+  # Response region used for the main distillation loss
   teacher_prefix_loss_region: suffix_only
 
-  # Weight for forward KL on teacher-sampled prefix tokens.
+  # Forward-KL weight for the teacher prefix region
   teacher_prefix_forward_kl_weight: 1.0
 
 # Constant C in Dual-clip PPO; clips when advantage < 0 and ratio > C

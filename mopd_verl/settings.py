@@ -106,6 +106,7 @@ class RolloutConfig:
     max_model_len: int | None = None
     max_num_seqs: int = 1024
     num_gpu_blocks_override: int | None = None
+    do_sample: bool = True
     temperature: float = 1.0
     top_p: float = 1.0
     teacher_prefix_sampling_enabled: bool = False
@@ -169,6 +170,7 @@ class AuditConfig:
     full_gradient_enabled: bool = False
     full_gradient_freq_steps: int = 1
     full_grad_training_parity_freq_steps: int = 1
+    full_grad_training_parity_rel_l2_threshold: float = 1e-5
     full_gradient_train_max_samples_per_domain: int | None = None
     full_gradient_micro_batch_size_per_gpu: int = 1
     full_gradient_storage_dtype: str = "float32"
@@ -178,7 +180,6 @@ class AuditConfig:
     sequence_masked_target_use_as_primary: bool = False
     sequence_replay_skip_non_target_domains: bool = False
     sequence_masked_target_closure_rel_l2_threshold: float = 0.02
-    training_gradient_from_domain_sum_enabled: bool = False
     sample_gradient_enabled: bool = False
     sample_gradient_freq_steps: int = 1
     sample_gradient_norm_enabled: bool = True
@@ -509,6 +510,20 @@ def load_config(path: str | Path) -> MOPDConfig:
         secondary_teacher_path=(None if secondary_teacher_raw is None else str(secondary_teacher_raw)),
         teacher_model_device=teacher_model_device,
     )
+    audit = AuditConfig(**_expect_mapping(root.get("audit", {}), "audit"))
+    retired_gradient_modes = [
+        name
+        for name, enabled in (
+            ("audit.sample_gradient_enabled", audit.sample_gradient_enabled),
+            ("audit.token_gradient_enabled", audit.token_gradient_enabled),
+        )
+        if enabled
+    ]
+    if retired_gradient_modes:
+        raise ValueError(
+            "The clean domain-gradient rebuild retired nested sample/token backward "
+            f"replay. Disable: {', '.join(retired_gradient_modes)}."
+        )
 
     return MOPDConfig(
         data=data,
@@ -519,7 +534,7 @@ def load_config(path: str | Path) -> MOPDConfig:
             **_expect_mapping(root.get("rollout_correction", {}), "rollout_correction")
         ),
         worker_placement=_worker_placement(root.get("worker_placement", {})),
-        audit=AuditConfig(**_expect_mapping(root.get("audit", {}), "audit")),
+        audit=audit,
         paper_eval=PaperEvalConfig(
             enabled=bool(paper_eval_raw.get("enabled", PaperEvalConfig.enabled)),
             script_path=_optional_string(paper_eval_raw.get("script_path"), "paper_eval.script_path"),

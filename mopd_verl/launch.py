@@ -89,18 +89,19 @@ def _worker_placement_overrides(config: MOPDConfig) -> list[str]:
     placement = config.worker_placement
     pool_overrides = [
         *_worker_pool_overrides(
-            "actor_rollout_ref.worker_placement.actor_rollout",
+            "+actor_rollout_ref.worker_placement.actor_rollout",
             placement.actor_rollout,
         ),
         *_worker_pool_overrides(
-            "actor_rollout_ref.worker_placement.ref_policy",
+            "+actor_rollout_ref.worker_placement.ref_policy",
             placement.ref_policy,
         ),
     ]
     if not placement.separate_ref_policy and not pool_overrides:
         return []
     return [
-        f"actor_rollout_ref.worker_placement.separate_ref_policy={str(placement.separate_ref_policy).lower()}",
+        "+actor_rollout_ref.worker_placement.separate_ref_policy="
+        f"{str(placement.separate_ref_policy).lower()}",
         *pool_overrides,
     ]
 
@@ -129,6 +130,8 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"+mopd_audit.full_gradient_enabled={str(audit.full_gradient_enabled).lower()}",
         f"+mopd_audit.full_gradient_freq_steps={audit.full_gradient_freq_steps}",
         f"+mopd_audit.full_grad_training_parity_freq_steps={audit.full_grad_training_parity_freq_steps}",
+        "+mopd_audit.full_grad_training_parity_rel_l2_threshold="
+        f"{audit.full_grad_training_parity_rel_l2_threshold}",
         "+mopd_audit.full_gradient_train_max_samples_per_domain="
         f"{_hydra_scalar(audit.full_gradient_train_max_samples_per_domain)}",
         f"+mopd_audit.full_gradient_micro_batch_size_per_gpu={audit.full_gradient_micro_batch_size_per_gpu}",
@@ -143,8 +146,6 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"{str(audit.sequence_replay_skip_non_target_domains).lower()}",
         "+mopd_audit.sequence_masked_target_closure_rel_l2_threshold="
         f"{audit.sequence_masked_target_closure_rel_l2_threshold}",
-        "+mopd_audit.training_gradient_from_domain_sum_enabled="
-        f"{str(audit.training_gradient_from_domain_sum_enabled).lower()}",
         f"+mopd_audit.sample_gradient_enabled={str(audit.sample_gradient_enabled).lower()}",
         f"+mopd_audit.sample_gradient_freq_steps={audit.sample_gradient_freq_steps}",
         f"+mopd_audit.sample_gradient_norm_enabled={str(audit.sample_gradient_norm_enabled).lower()}",
@@ -296,7 +297,7 @@ def build_overrides(config: MOPDConfig) -> list[str]:
         f"actor_rollout_ref.actor.policy_loss.only_reverse_kl_advantages={_bool(actor.only_reverse_kl_advantages)}",
         f"actor_rollout_ref.actor.policy_loss.lambda_vals={actor.lambda_vals}",
         f"actor_rollout_ref.actor.policy_loss.multi_teacher_distill={str(actor.multi_teacher_distill).lower()}",
-        f"+actor_rollout_ref.actor.policy_loss.distill_loss_builder={actor.distill_loss_builder}",
+        f"actor_rollout_ref.actor.policy_loss.distill_loss_builder={actor.distill_loss_builder}",
         f"actor_rollout_ref.actor.policy_loss.distill_mode={actor.distill_mode}",
         f"actor_rollout_ref.actor.policy_loss.topk_distill_enabled={str(actor.topk_distill_enabled).lower()}",
         f"actor_rollout_ref.actor.policy_loss.topk_distill_kl_direction={actor.topk_distill_kl_direction}",
@@ -339,6 +340,7 @@ def build_overrides(config: MOPDConfig) -> list[str]:
         f"actor_rollout_ref.rollout.n={rollout.n}",
         f"actor_rollout_ref.rollout.max_num_batched_tokens={rollout.max_num_batched_tokens}",
         f"actor_rollout_ref.rollout.max_num_seqs={rollout.max_num_seqs}",
+        f"actor_rollout_ref.rollout.do_sample={_bool(rollout.do_sample)}",
         f"actor_rollout_ref.rollout.temperature={rollout.temperature}",
         f"actor_rollout_ref.rollout.top_p={rollout.top_p}",
         f"actor_rollout_ref.rollout.teacher_prefix_sampling_enabled={_bool(rollout.teacher_prefix_sampling_enabled)}",
@@ -470,6 +472,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.dry_run:
         sys.stdout.write(format_command(command) + "\n")
         return 0
+    try:
+        commit_id = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parents[1],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        commit_id = "unknown"
+    sys.stdout.write(f"Git commit: {commit_id}\n")
+    sys.stdout.flush()
     return run_command(command, config)
 
 

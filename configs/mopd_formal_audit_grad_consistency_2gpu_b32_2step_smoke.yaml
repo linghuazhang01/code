@@ -1,5 +1,5 @@
 # Reproducible 2-GPU, 2-step, batch-size-32 gradient audit smoke profile.
-# This is the larger-batch follow-up to mopd_formal_audit_grad_consistency_2gpu_smoke.yaml.
+# This is the larger-batch follow-up to the retired batch-size-8 smoke profile.
 #
 # Key intent:
 # - stress the current pre-update gradient audit path with train_batch_size=32;
@@ -134,7 +134,7 @@ audit:
   sequence_masked_target_enabled: true
   sequence_masked_target_use_as_primary: true
   full_gradient_offload_domain_gradients: true
-  sample_gradient_enabled: true
+  sample_gradient_enabled: false
   sample_gradient_freq_steps: 1
   sample_gradient_norm_enabled: true
   sample_gradient_cos_enabled: true
@@ -155,7 +155,7 @@ audit:
   token_conflict_enabled: true
   token_conflict_freq_steps: 1
   token_conflict_top_k: null
-  token_gradient_enabled: true
+  token_gradient_enabled: false
   token_gradient_freq_steps: 1
   token_gradient_gap_selection_enabled: false
   token_gradient_gap_abs_selection_enabled: false

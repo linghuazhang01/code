@@ -1,27 +1,25 @@
-# Three-GPU profile for reproducing the formal four-domain sequence-target
-# gradient audit under the split Qwen3-30B GPU teacher setup.
+# Paired reliability smoke for read-only full-gradient audit.
 #
-# Physical GPU layout:
-# - actor/rollout pool: 2 GPUs for Qwen3-4B student + vLLM
-# - ref/teacher pool: 1 GPU for Qwen3-30B-A3B teacher
+# Fixed across the suite:
+# - Qwen3-4B student and Qwen3-8B teacher
+# - deterministic data order and greedy rollout
+# - normal backward always drives optimizer.step()
+# - sequence-masked total/math/code replay is diagnostic only
 #
-# Keep trainer.n_gpus_per_node equal to the actor/rollout pool size, because
-# verl uses trainer.* as the actor DP world size. Launch with all three GPUs,
-# for example GPU_IDS=0,1,2.
-#
-# This config extends the validated 3-GPU math/code smoke to four domains:
-# - sequence-masked full-gradient targets are primary
-# - direct full-gradient recompute is disabled
-# - sample/token gradients are disabled
-# - batch/GPU sizing is reduced for local 3-GPU smoke runs
-#
-# The file-level training step count is intentionally reduced for smoke runs.
+# Variant:
+# - actor world size: 4
+# - fsdp_size: 2
+# - effective FSDP1 strategy: HYBRID_SHARD
+# - gradient replica count: 2
+# - total GPUs: 5 (4 actor/rollout + 1 teacher/ref)
+# - audit enabled: false
+# - audit frequency: every 2 steps when enabled
 
 runtime:
   python_bin: python
   verl_module: verl.trainer.main_ppo
-  wandb_mode: online
-  wandb_entity: lz101-rice-university
+  wandb_mode: disabled
+  wandb_entity: null
   env_file: .env.local
   used_model: no_api
 
@@ -31,51 +29,34 @@ data:
       - data/G-OPD-Training-Data/DeepMath-103K/train_filtered_level6.parquet
     code:
       - data/G-OPD-Training-Data/Eurus/code_train.parquet
-    if:
-      - data/G-OPD-Training-Data/IF/train.parquet
-    science:
-      - data/G-OPD-Training-Data/Science/train.parquet
   domain_sampling_weights:
     math: 1
     code: 1
-    if: 1
-    science: 1
   domain_sampling_replacement: true
   load_parquet_direct: true
   val_files:
     - data/eval_data/math/AIME24/test.parquet
-    - data/eval_data/math/AIME25/test.parquet
-    - data/eval_data/math/HMMT25Feb/test.parquet
-    - data/eval_data/math/HMMT25Nov/test.parquet
     - data/eval_data/code/HumanEvalPlus/test.parquet
-    - data/eval_data/code/MBPPPlus/test.parquet
-    - data/eval_data/ifbench/IFEval.parquet
-    - data/eval_data/ifbench/IFBench_test.parquet
-    - data/eval_data/science/gpqa.parquet
-    # - data/eval_data/code/LiveCodeBench/test.parquet
-  train_batch_size: 24
+  train_batch_size: 16
+  val_batch_size: 16
   max_prompt_length: 2048
-  max_response_length: 10240
-  val_batch_size: 24
+  max_response_length: 512
   filter_overlong_prompts: true
   truncation: error
-  shuffle: true
+  shuffle: false
   validation_shuffle: false
   seed: 42
   return_raw_chat: true
   enable_thinking: false
 
 model:
-  student_path: ../models/Qwen3-4B
+  student_path: /root/autodl-tmp/models/Qwen3-4B
   student_base_path: null
-  math_teacher_path: ../models/Qwen3-30B-A3B
-  code_teacher_path: ../models/Qwen3-30B-A3B
-  if_teacher_path: ../models/Qwen3-30B-A3B
+  math_teacher_path: /root/autodl-tmp/models/Qwen3-8B
+  code_teacher_path: /root/autodl-tmp/models/Qwen3-8B
   domain_teacher_paths:
-    math: ../models/Qwen3-30B-A3B
-    code: ../models/Qwen3-30B-A3B
-    if: ../models/Qwen3-30B-A3B
-    science: ../models/Qwen3-30B-A3B
+    math: /root/autodl-tmp/models/Qwen3-8B
+    code: /root/autodl-tmp/models/Qwen3-8B
   teacher_model_device: gpu
 
 actor:
@@ -95,18 +76,18 @@ actor:
   topk_distill_loss_weight: 0.0
   topk_distill_logprob_chunk_size: 16
   topk_distill_logprob_mode: sparse
-  ppo_mini_batch_size: 24
+  ppo_mini_batch_size: 16
   ppo_micro_batch_size_per_gpu: 1
+  use_dynamic_bsz: false
   use_kl_loss: true
   kl_loss_coef: 0
   kl_loss_type: low_var_kl
   entropy_coeff: 0
-  ppo_max_token_len_per_gpu: 32768
+  ppo_max_token_len_per_gpu: 4096
   gradient_checkpointing: true
   param_offload: true
   optimizer_offload: true
-  fsdp_size: 1
-  use_dynamic_bsz: false
+  fsdp_size: 2
 
 rollout:
   calculate_log_probs: true
@@ -114,13 +95,14 @@ rollout:
   tensor_model_parallel_size: 1
   name: vllm
   mode: sync
-  gpu_memory_utilization: 0.6
+  gpu_memory_utilization: 0.45
   enforce_eager: true
   enable_chunked_prefill: false
   n: 1
-  max_num_batched_tokens: 32768
-  max_model_len: 12288
-  max_num_seqs: 24
+  max_num_batched_tokens: 4096
+  max_model_len: 3072
+  max_num_seqs: 16
+  do_sample: false
   temperature: 1.0
   top_p: 1.0
   val_n: 1
@@ -138,27 +120,26 @@ rollout_correction:
 extra_overrides:
   - custom_reward_function.path=mopd_verl/mixed_reward.py
   - custom_reward_function.name=compute_score
+  - trainer.resume_mode=disable
 
 worker_placement:
   separate_ref_policy: true
   actor_rollout:
-    n_gpus_per_node: 2
+    n_gpus_per_node: 4
     nnodes: 1
   ref_policy:
     n_gpus_per_node: 1
     nnodes: 1
 
 audit:
-  enabled: true
-  output_dir: audit/qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_3gpu_4domain_smoke
+  enabled: false
+  output_dir: audit/mopd-grad-reliability-qwen4b-8b-aw4_fsdpsize2_audit_off-b16-4step-smoke
   domains:
     - math
     - code
-    - if
-    - science
   tensorboard_prefix: mopd
   tensorboard_layout: domain_category
-  tensorboard_prune_mode: core
+  tensorboard_prune_mode: none
   loss_variance_signal: opd_loss_token
   max_samples_per_domain: null
   high_variance_cv_threshold: 1.0
@@ -170,7 +151,8 @@ audit:
   calibration_bins: 10
   full_gradient_enabled: true
   full_gradient_freq_steps: 2
-  full_grad_training_parity_freq_steps: -1
+  full_grad_training_parity_freq_steps: 1
+  full_grad_training_parity_rel_l2_threshold: 2.0e-2
   full_gradient_train_max_samples_per_domain: null
   full_gradient_micro_batch_size_per_gpu: 1
   full_gradient_storage_dtype: bfloat16
@@ -180,7 +162,6 @@ audit:
   sequence_masked_target_use_as_primary: true
   sequence_replay_skip_non_target_domains: false
   sequence_masked_target_closure_rel_l2_threshold: 0.02
-  training_gradient_from_domain_sum_enabled: true
   full_gradient_offload_domain_gradients: true
   sample_gradient_enabled: false
   sample_gradient_freq_steps: 1
@@ -191,15 +172,17 @@ audit:
   sample_gradient_backward_sync_enabled: false
   sample_gradient_log_sample_level: false
   sample_gradient_log_sample_level_freq_steps: 1
-  token_gap_enabled: true
+  token_gap_enabled: false
   token_gap_freq_steps: 1
-  token_gap_vocab_vector_enabled: true
+  token_gap_vocab_vector_enabled: false
   token_gap_vocab_vector_freq_steps: 1
   token_gap_vocab_size: null
   entropy_enabled: false
   entropy_freq_steps: 1
   entropy_vocab_vector_enabled: false
   entropy_vocab_vector_freq_steps: 1
+  topk_teacher_student_cross_entropy_vocab_enabled: false
+  logp_abs_vector_enabled: false
   token_conflict_enabled: false
   token_conflict_freq_steps: 1
   token_conflict_top_k: null
@@ -213,43 +196,27 @@ audit:
   token_gradient_strict_grad_restore: false
   token_gradient_backward_recompute_enabled: false
   token_gradient_backward_sync_enabled: false
-
-paper_eval:
-  enabled: false
-  script_path: eval/scripts/run_paper_eval_suite.sh
-  model_path: null
-  output_dir: eval_outputs/paper_suite/qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_3gpu_4domain_smoke
-  datasets:
-    - aime24
-    - aime25
-    - hmmt25_feb
-    - hmmt25_nov
-    - humaneval_plus
-    - mbpp_plus
-    - lcb
-  run_on_initial_validation: true
-  evaluate_current_checkpoint: true
-  fail_on_error: false
-  timeout_seconds: 0
+  gradient_fingerprint_enabled: false
+  gradient_fingerprint_freq_steps: 1
 
 trainer:
   project_name: MOPD
-  experiment_name: Qwen3-4B-from-Qwen3-30B-A3B-pg-split-teacher-gpu-audit-domain-vocabvec-3gpu-4domain-smoke
-  logger: '["console","tensorboard","wandb"]'
-  n_gpus_per_node: 2
+  experiment_name: mopd-grad-reliability-qwen4b-8b-aw4_fsdpsize2_audit_off-b16-4step-smoke
+  logger: '["console","tensorboard"]'
+  n_gpus_per_node: 4
   nnodes: 1
-  save_freq: 5
+  save_freq: 4
   test_freq: -1
-  total_epochs: 3
+  total_epochs: 1
   total_training_steps: 4
-  default_local_dir: checkpoints/MOPD/Qwen3-4B-from-Qwen3-30B-A3B-pg-split-teacher-gpu-audit-domain-vocabvec-3gpu-4domain-smoke
+  default_local_dir: checkpoints/MOPD/mopd-grad-reliability-qwen4b-8b-aw4_fsdpsize2_audit_off-b16-4step-smoke
   critic_warmup: 0
   val_before_train: false
-  log_val_generations: 10
-  max_actor_ckpt_to_keep: 2
+  log_val_generations: 0
+  max_actor_ckpt_to_keep: 1
   max_critic_ckpt_to_keep: 1
 
 ray_kwargs:
   ray_init:
     include_dashboard: false
-    num_cpus: 24
+    num_cpus: 64

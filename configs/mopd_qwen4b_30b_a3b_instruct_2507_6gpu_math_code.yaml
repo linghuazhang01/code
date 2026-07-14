@@ -1,41 +1,53 @@
-# Eight-GPU single-domain Qwen3-30B policy-gradient profile for if.
+# Six-GPU math+code training profile for Qwen3-4B student distillation from
+# Qwen3-30B-A3B-Instruct-2507.
 #
 # Physical GPU layout:
-# - actor/rollout pool: 6 GPUs for the Qwen3-4B student + vLLM
-# - ref/teacher pool: 2 GPUs for the Qwen3-30B-A3B teacher
+# - actor/rollout pool: 4 GPUs for Qwen3-4B student + vLLM
+# - ref/teacher pool: 2 GPUs for Qwen3-30B-A3B-Instruct-2507
 #
-# Keep trainer.n_gpus_per_node equal to the six-GPU actor/rollout pool size.
-# Launch with GPU_IDS=0,1,2,3,4,5,6,7.
+# Keep trainer.n_gpus_per_node equal to the actor/rollout pool size, because
+# verl uses trainer.* as the actor DP world size. Launch with all six GPUs, e.g.
+# GPU_IDS=0,1,2,3,4,5.
 #
 # Enabled audit families:
-# - token-gap and logp-abs sequence/full-vocab vectors
-# - entropy distribution and full-vocab entropy vectors
+# - math/code full gradient audit
+# - token-gap vectors, including full-vocab token-id vectors
 #
-# Full/sample/token gradients, token-conflict diagnostics, and top-k
-# teacher-student cross-entropy vectors remain disabled.
+# Disabled audit families:
+# - token gradients
+# - sample gradients
+# - entropy and token-conflict diagnostics
 
 runtime:
   python_bin: python
   verl_module: verl.trainer.main_ppo
   wandb_mode: online
-  wandb_entity: lz101-rice-university
+  wandb_entity: null
   env_file: .env.local
   used_model: no_api
 
 data:
   domain_train_files:
-    if:
-      - data/G-OPD-Training-Data/IF/train.parquet
+    math:
+      - data/G-OPD-Training-Data/DeepMath-103K/train_filtered_level6.parquet
+    code:
+      - data/G-OPD-Training-Data/Eurus/code_train.parquet
   domain_sampling_weights:
-    if: 1
+    math: 1
+    code: 1
   domain_sampling_replacement: true
   load_parquet_direct: true
   val_files:
-    # Prepare with scripts/prepare_m2rl_eval_data.sh.
-    - data/eval_data/ifbench/IFBench_test.parquet
-  train_batch_size: 504
+    - data/eval_data/math/AIME24/test.parquet
+    - data/eval_data/math/AIME25/test.parquet
+    - data/eval_data/math/HMMT25Feb/test.parquet
+    - data/eval_data/math/HMMT25Nov/test.parquet
+    - data/eval_data/code/HumanEvalPlus/test.parquet
+    - data/eval_data/code/MBPPPlus/test.parquet
+    # - data/eval_data/code/LiveCodeBench/test.parquet
+  train_batch_size: 512
   max_prompt_length: 2048
-  max_response_length: 10240
+  max_response_length: 16384
   val_batch_size: 1024
   filter_overlong_prompts: true
   truncation: error
@@ -48,11 +60,11 @@ data:
 model:
   student_path: ../models/Qwen3-4B
   student_base_path: null
-  math_teacher_path: ../models/Qwen3-30B-A3B
-  code_teacher_path: ../models/Qwen3-30B-A3B
-  if_teacher_path: ../models/Qwen3-30B-A3B
+  math_teacher_path: ../models/Qwen3-30B-A3B-Instruct-2507
+  code_teacher_path: ../models/Qwen3-30B-A3B-Instruct-2507
   domain_teacher_paths:
-    if: ../models/Qwen3-30B-A3B
+    math: ../models/Qwen3-30B-A3B-Instruct-2507
+    code: ../models/Qwen3-30B-A3B-Instruct-2507
   teacher_model_device: gpu
 
 actor:
@@ -72,7 +84,7 @@ actor:
   topk_distill_loss_weight: 0.0
   topk_distill_logprob_chunk_size: 16
   topk_distill_logprob_mode: sparse
-  ppo_mini_batch_size: 504
+  ppo_mini_batch_size: 512
   ppo_micro_batch_size_per_gpu: 1
   use_kl_loss: true
   kl_loss_coef: 0
@@ -88,7 +100,7 @@ actor:
 rollout:
   calculate_log_probs: true
   log_prob_micro_batch_size_per_gpu: 1
-  tensor_model_parallel_size: 1
+  tensor_model_parallel_size: 2
   name: vllm
   mode: sync
   gpu_memory_utilization: 0.6
@@ -96,8 +108,9 @@ rollout:
   enable_chunked_prefill: false
   n: 1
   max_num_batched_tokens: 32768
-  max_model_len: 12288
+  max_model_len: 18432
   max_num_seqs: 24
+  do_sample: true
   temperature: 1.0
   top_p: 1.0
   val_n: 1
@@ -119,7 +132,7 @@ extra_overrides:
 worker_placement:
   separate_ref_policy: true
   actor_rollout:
-    n_gpus_per_node: 6
+    n_gpus_per_node: 4
     nnodes: 1
   ref_policy:
     n_gpus_per_node: 2
@@ -127,9 +140,10 @@ worker_placement:
 
 audit:
   enabled: true
-  output_dir: audit/qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_8gpu_6student_2teacher_if
+  output_dir: audit/qwen4b_30b_a3b_instruct_2507_math_code
   domains:
-    - if
+    - math
+    - code
   tensorboard_prefix: mopd
   tensorboard_layout: domain_category
   tensorboard_prune_mode: core
@@ -142,9 +156,10 @@ audit:
   log_validation_metrics_freq_steps: 1
   tier2_window_size: 20
   calibration_bins: 10
-  full_gradient_enabled: false
-  full_gradient_freq_steps: 1
-  full_grad_training_parity_freq_steps: -1
+  full_gradient_enabled: true
+  full_gradient_freq_steps: 4
+  full_grad_training_parity_freq_steps: 1
+  full_grad_training_parity_rel_l2_threshold: 2.0e-2
   full_gradient_train_max_samples_per_domain: null
   full_gradient_micro_batch_size_per_gpu: 1
   full_gradient_storage_dtype: bfloat16
@@ -154,7 +169,6 @@ audit:
   sequence_masked_target_use_as_primary: true
   sequence_replay_skip_non_target_domains: false
   sequence_masked_target_closure_rel_l2_threshold: 0.02
-  training_gradient_from_domain_sum_enabled: true
   full_gradient_offload_domain_gradients: true
   sample_gradient_enabled: false
   sample_gradient_freq_steps: 1
@@ -170,16 +184,16 @@ audit:
   token_gap_vocab_vector_enabled: true
   token_gap_vocab_vector_freq_steps: 1
   token_gap_vocab_size: null
-  entropy_enabled: true
+  entropy_enabled: false
   entropy_freq_steps: 1
-  entropy_vocab_vector_enabled: true
+  entropy_vocab_vector_enabled: false
   entropy_vocab_vector_freq_steps: 1
   topk_teacher_student_cross_entropy_vocab_enabled: false
   topk_teacher_student_cross_entropy_vocab_freq_steps: 1
   topk_teacher_student_cross_entropy_k: 32
   topk_teacher_student_cross_entropy_include_tail: false
   topk_teacher_student_cross_entropy_temperature: 1.0
-  logp_abs_vector_enabled: true
+  logp_abs_vector_enabled: false
   logp_abs_vector_freq_steps: 1
   token_conflict_enabled: false
   token_conflict_freq_steps: 1
@@ -194,14 +208,22 @@ audit:
   token_gradient_strict_grad_restore: false
   token_gradient_backward_recompute_enabled: false
   token_gradient_backward_sync_enabled: false
+  gradient_fingerprint_enabled: false
+  gradient_fingerprint_freq_steps: 1
 
 paper_eval:
   enabled: false
   script_path: eval/scripts/run_paper_eval_suite.sh
   model_path: null
-  output_dir: eval_outputs/paper_suite/qwen30b_pg_split_teacher_gpu_audit_domain_vocabvec_8gpu_6student_2teacher_if
-  # IFBench validation is provided through data.val_files above.
-  datasets: []
+  output_dir: eval_outputs/paper_suite/qwen4b_30b_a3b_instruct_2507_math_code
+  datasets:
+    - aime24
+    - aime25
+    - hmmt25_feb
+    - hmmt25_nov
+    - humaneval_plus
+    - mbpp_plus
+    - lcb
   run_on_initial_validation: true
   evaluate_current_checkpoint: true
   fail_on_error: false
@@ -209,15 +231,15 @@ paper_eval:
 
 trainer:
   project_name: MOPD
-  experiment_name: Qwen3-4B-from-Qwen3-30B-A3B-pg-8gpu-6student-2teacher-if
+  experiment_name: qwen4b-from-30b-a3b-instruct-2507-math-code
   logger: '["console","tensorboard","wandb"]'
-  n_gpus_per_node: 6
+  n_gpus_per_node: 4
   nnodes: 1
   save_freq: 5
   test_freq: -1
   total_epochs: 3
   total_training_steps: 200
-  default_local_dir: checkpoints/MOPD/Qwen3-4B-from-Qwen3-30B-A3B-pg-8gpu-6student-2teacher-if
+  default_local_dir: checkpoints/MOPD/qwen4b-from-30b-a3b-instruct-2507-math-code
   critic_warmup: 0
   val_before_train: false
   log_val_generations: 10
@@ -227,4 +249,4 @@ trainer:
 ray_kwargs:
   ray_init:
     include_dashboard: false
-    num_cpus: 32
+    num_cpus: 24

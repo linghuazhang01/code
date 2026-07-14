@@ -60,7 +60,7 @@ def default_compute_score(
         from . import math_dapo
 
         res = math_dapo.compute_score(solution_str, ground_truth)
-    elif "DeepMath" in data_source or any(dataset_name in data_source for dataset_name in ["Math-500", "MATH500", "AMC2023", "OlympiadBench", "Minerva", "TheoremQA", "AIME2024", "AIME2025", "HMMT25Feb", "HMMT25Nov", "HMMT", "MMLUPro"]):
+    elif "DeepMath" in data_source or any(dataset_name in data_source for dataset_name in ["Math-500", "MATH500", "AMC2023", "OlympiadBench", "Minerva", "TheoremQA", "AIME2024", "AIME2025", "MMLUPro"]):
         from . import math_verify
 
         res = math_verify.compute_score(solution_str, ground_truth)
@@ -76,10 +76,6 @@ def default_compute_score(
         from . import prime_math
 
         res = prime_math.compute_score(solution_str, ground_truth)
-    elif data_source in ["HumanEvalPlus", "MBPPPlus", "LiveCodeBench"]:
-        from mopd_verl import code_reward
-
-        res = code_reward.compute_score(data_source, solution_str, ground_truth)
     elif data_source in ["codecontests", "apps", "codeforces", "taco"]:
         # Use the passed sandbox_fusion_url if available
         if sandbox_fusion_url:
@@ -99,14 +95,18 @@ def default_compute_score(
         from . import geo3k
 
         res = geo3k.compute_score(solution_str, ground_truth)
-    elif str(data_source).startswith(("searchR1_", "searchqa", "SearchQA")):
+    elif data_source in [
+        "searchR1_nq",
+        "searchR1_triviaqa",
+        "searchR1_popqa",
+        "searchR1_hotpotqa",
+        "searchR1_2wikimultihopqa",
+        "searchR1_musique",
+        "searchR1_bamboogle",
+    ]:
         from . import search_r1_like_qa_em
 
         res = search_r1_like_qa_em.compute_score(solution_str, ground_truth)
-    elif data_source == "general-reasoner":
-        from mopd_verl import general_reasoner_reward
-
-        res = general_reasoner_reward.compute_score(data_source, solution_str, ground_truth, extra_info=extra_info)
 
     else:
         raise NotImplementedError(f"Reward function is not implemented for {data_source=}")

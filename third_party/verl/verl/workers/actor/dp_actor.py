@@ -18,9 +18,23 @@ Single Process Actor
 """
 
 import logging
+import math
 import os
 
 import torch
+from mopd_verl.domain_gradient import DomainGradientAudit
+from mopd_verl.full_gradient.actor_loss import build_actor_micro_batch_loss
+from mopd_verl.full_gradient.loss_support import (
+    aggregate_actor_micro_batch_metrics,
+)
+from mopd_verl.topk_distill import (
+    TOPK_LOGPROB_MODE_SPARSE,
+    topk_distill_logprob_chunk_size,
+    topk_distill_logprob_mode,
+    topk_distill_uses_renormalized_support,
+    topk_log_probs_from_logits,
+    topk_teacher_student_cross_entropy_matrix,
+)
 from torch import nn
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.tensor import DTensor
@@ -38,15 +52,6 @@ from verl.utils.torch_functional import logprobs_from_logits
 from verl.utils.ulysses import gather_outputs_and_unpad, ulysses_pad, ulysses_pad_and_slice_inputs
 from verl.workers.actor import BasePPOActor
 from verl.workers.config import ActorConfig
-from mopd_verl.full_gradient.actor_loss import build_actor_micro_batch_loss
-from mopd_verl.topk_distill import (
-    TOPK_LOGPROB_MODE_SPARSE,
-    topk_distill_logprob_chunk_size,
-    topk_distill_logprob_mode,
-    topk_distill_uses_renormalized_support,
-    topk_log_probs_from_logits,
-    topk_teacher_student_cross_entropy_matrix,
-)
 
 __all__ = ["DataParallelPPOActor"]
 
@@ -112,18 +117,24 @@ class DataParallelPPOActor(BasePPOActor):
         topk_logprob_chunk_size: int | None = None,
         topk_logprob_mode: str = "sparse",
         return_extra: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, ...]:
         """
         Returns:
             entropy: # (bs, response_len)
             log_probs: # (bs, response_len)
         """
+        temperature = float(temperature)
+        if not math.isfinite(temperature) or temperature <= 0:
+            raise ValueError(
+                "Actor/ref log-prob temperature must be finite and greater than 0; "
+                "use do_sample=false for greedy rollout generation."
+            )
         response_length = micro_batch["responses"].size(-1)
         needs_topk_extra = return_extra or topk is not None or gather_topk_ids is not None
         if needs_topk_extra and self.use_fused_kernels:
-            raise ValueError("Top-k distillation requires non-fused logits; set actor/ref use_fused_kernels=False.")
+            raise ValueError("Top-k distillation requires non-fused logits.")
         if needs_topk_extra and self.use_ulysses_sp:
-            raise ValueError("Top-k distillation is not supported with Ulysses sequence parallelism yet.")
+            raise ValueError("Top-k distillation is not supported with Ulysses sequence parallelism.")
         topk_ids = None
         topk_log_probs = None
         gathered_topk_log_probs = None
@@ -138,7 +149,7 @@ class DataParallelPPOActor(BasePPOActor):
             batch_size, seqlen = input_ids.shape
             attention_mask = micro_batch["attention_mask"]
             position_ids = micro_batch["position_ids"]
-            # reset input_ids, attention_mask, position_ids to ref model inputs if ref model input_ids is different from actor input_ids
+            # Reset inputs when the reference model uses a different tokenization.
             if "ref_input_ids" in micro_batch.keys():
                 input_ids = micro_batch["ref_input_ids"]
                 attention_mask = micro_batch["ref_attention_mask"]
@@ -228,13 +239,13 @@ class DataParallelPPOActor(BasePPOActor):
 
                     # if use_sp: ((total_nnz / sp) + pad) ; if not use_sp: (batch, seqlen)
                     if calculate_log_probs:
-                        logprob_inplace_backward = True if inplace_backward is None else bool(inplace_backward)
+                        use_inplace_backward = True if inplace_backward is None else bool(inplace_backward)
                         if calculate_entropy or needs_topk_extra:
-                            logprob_inplace_backward = False
+                            use_inplace_backward = False
                         log_probs = logprobs_from_logits(
                             logits=logits_rmpad,
                             labels=input_ids_rmpad_rolled,
-                            inplace_backward=logprob_inplace_backward,
+                            inplace_backward=use_inplace_backward,
                         )
                     else:
                         log_probs = logits_rmpad.new_zeros(input_ids_rmpad_rolled.shape)
@@ -262,15 +273,13 @@ class DataParallelPPOActor(BasePPOActor):
                                 rearrange(full_gather_ids, "b s k -> (b s) k"),
                                 indices,
                             )
-                        topk_ids_rmpad, topk_log_probs_rmpad, gathered_log_probs_rmpad = (
-                            topk_log_probs_from_logits(
-                                logits_rmpad,
-                                topk=topk,
-                                gather_topk_ids=gather_ids_rmpad,
-                                normalize_gathered=normalize_gathered_topk,
-                                chunk_size=topk_logprob_chunk_size or 16,
-                                logprob_mode=topk_logprob_mode,
-                            )
+                        topk_ids_rmpad, topk_log_probs_rmpad, gathered_log_probs_rmpad = topk_log_probs_from_logits(
+                            logits_rmpad,
+                            topk=topk,
+                            gather_topk_ids=gather_ids_rmpad,
+                            normalize_gathered=normalize_gathered_topk,
+                            chunk_size=topk_logprob_chunk_size or 16,
+                            logprob_mode=topk_logprob_mode,
                         )
 
                 # gather log_prob if sp > 1
@@ -325,7 +334,9 @@ class DataParallelPPOActor(BasePPOActor):
                         batch=batch_size,
                         seqlen=seqlen,
                     )
-                    gathered_topk_log_probs = full_gathered_topk_log_probs[:, -response_length - 1 : -1, :]
+                    gathered_topk_log_probs = full_gathered_topk_log_probs[
+                        :, -response_length - 1 : -1, :
+                    ]
 
                 # only return response part:
                 if calculate_entropy:
@@ -357,13 +368,13 @@ class DataParallelPPOActor(BasePPOActor):
                     logits.div_(temperature)
                     logits = logits[:, -response_length - 1 : -1, :]  # (bsz, response_length, vocab_size)
                     if calculate_log_probs:
-                        logprob_inplace_backward = True if inplace_backward is None else bool(inplace_backward)
+                        use_inplace_backward = True if inplace_backward is None else bool(inplace_backward)
                         if calculate_entropy or needs_topk_extra:
-                            logprob_inplace_backward = False
+                            use_inplace_backward = False
                         log_probs = logprobs_from_logits(
                             logits,
                             micro_batch["responses"],
-                            inplace_backward=logprob_inplace_backward,
+                            inplace_backward=use_inplace_backward,
                         )
                     else:
                         log_probs = logits.new_zeros(logits.shape[:-1])
@@ -372,6 +383,7 @@ class DataParallelPPOActor(BasePPOActor):
                             entropy = verl_F.entropy_from_logits(logits)  # (bsz, response_length)
                         else:
                             entropy = torch.utils.checkpoint.checkpoint(verl_F.entropy_from_logits, logits)
+
                     if needs_topk_extra:
                         topk_ids, topk_log_probs, gathered_topk_log_probs = topk_log_probs_from_logits(
                             logits,
@@ -444,7 +456,8 @@ class DataParallelPPOActor(BasePPOActor):
         temperature = data.meta_info["temperature"]  # temperature must be in the data.meta_info to avoid silent error
         use_dynamic_bsz = data.meta_info["use_dynamic_bsz"]
         has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
-        has_ref_input_ids = "ref_input_ids" in data.batch.keys() # handle when ref input_ids is different from actor input_ids
+        # Handle reference inputs produced with a different tokenizer.
+        has_ref_input_ids = "ref_input_ids" in data.batch.keys()
         select_keys = ["responses", "input_ids", "attention_mask", "position_ids"]
         if gather_topk_ids_key is not None:
             select_keys.append(gather_topk_ids_key)
@@ -594,11 +607,10 @@ class DataParallelPPOActor(BasePPOActor):
 
     @GPUMemoryLogger(role="dp actor", logger=logger)
     def update_policy(self, data: DataProto):
-        # make sure we are in training mode
+        """Run the production update, with an optional read-only audit sidecar."""
+
         self.actor_module.train()
-
-        temperature = data.meta_info["temperature"]  # temperature must be in the data.meta_info to avoid silent error
-
+        temperature = float(data.meta_info["temperature"])
         select_keys = [
             "responses",
             "response_mask",
@@ -610,34 +622,21 @@ class DataParallelPPOActor(BasePPOActor):
         ]
         batch_keys = set(data.batch.keys())
 
-        def append_existing_batch_key(key: str) -> None:
+        def append_batch_key(key: str) -> None:
             if key in batch_keys and key not in select_keys:
                 select_keys.append(key)
 
-        if self.config.use_kl_loss:
-            select_keys.append("math_teacher_log_prob")
-        # Include pre-computed IS weights if present in batch
-        # Weights are computed centrally in trainer and added to batch when algorithm.rollout_is=True
-        append_existing_batch_key("rollout_is_weights")
-        # Include rollout_log_probs for computing rollout_corr metrics in bypass mode
-        append_existing_batch_key("rollout_log_probs")
-        # Include base model log probs for corrected reward computation
-        # These are computed when actor_rollout_ref.model.base_model_path and
-        # actor_rollout_ref.ref.model.base_model_path are both specified
-        append_existing_batch_key("base_log_prob")
-        append_existing_batch_key("code_teacher_log_prob")
         for key in (
-            "math_teacher_topk_ids",
-            "math_teacher_topk_logprobs",
-            "code_teacher_topk_ids",
-            "code_teacher_topk_logprobs",
-            "student_topk_ids",
-            "math_teacher_student_topk_logprobs",
-            "code_teacher_student_topk_logprobs",
+            "ref_log_prob",
+            "base_log_prob",
+            "base_ref_log_prob",
+            "rollout_is_weights",
+            "rollout_log_probs",
             "teacher_prefix_mask",
             "student_suffix_mask",
+            "student_topk_ids",
         ):
-            append_existing_batch_key(key)
+            append_batch_key(key)
         for key in sorted(batch_keys):
             if key.endswith(
                 (
@@ -645,157 +644,92 @@ class DataParallelPPOActor(BasePPOActor):
                     "_teacher_topk_ids",
                     "_teacher_topk_logprobs",
                     "_teacher_student_topk_logprobs",
-                    "_teacher_entropy",
                 )
             ):
-                append_existing_batch_key(key)
-        # Include math_teacher_log_prob for only_reverse_kl_advantages mode
-        teacher_prefix_config_active = bool(self.config.policy_loss.get("teacher_prefix_enabled", False))
-        if (
-            (self.config.policy_loss.only_reverse_kl_advantages or teacher_prefix_config_active)
-            and "math_teacher_log_prob" in batch_keys
-        ):
-            append_existing_batch_key("math_teacher_log_prob")
-        if teacher_prefix_config_active:
-            for key in sorted(batch_keys):
-                if key.endswith("_teacher_log_prob"):
-                    append_existing_batch_key(key)
+                append_batch_key(key)
 
         non_tensor_keys = set(data.non_tensor_batch.keys())
-        has_multi_modal_inputs = "multi_modal_inputs" in non_tensor_keys
-        non_tensor_select_keys = ["multi_modal_inputs"] if has_multi_modal_inputs else []
-        # Include audit/domain metadata. Training consumes opd_teacher; the
-        # remaining keys are used by MOPD sample-level gradient logging.
-        for key in ("opd_teacher", "sample_id", "id", "domain", "source_domain", "ability", "data_source", "extra_info"):
-            if key in non_tensor_keys and key not in non_tensor_select_keys:
-                non_tensor_select_keys.append(key)
+        non_tensor_select_keys = [
+            key
+            for key in (
+                "multi_modal_inputs",
+                "opd_teacher",
+                "sample_id",
+                "id",
+                "domain",
+                "source_domain",
+                "ability",
+                "data_source",
+                "extra_info",
+            )
+            if key in non_tensor_keys
+        ]
 
         data = data.select(batch_keys=select_keys, non_tensor_batch_keys=non_tensor_select_keys)
 
-        # Split to make minibatch iterator for updating the actor
-        # See PPO paper for details. https://arxiv.org/abs/1707.06347
         mini_batches = data.split(self.config.ppo_mini_batch_size)
-
         on_policy = len(mini_batches) == 1 and self.config.ppo_epochs == 1
-
         metrics = {}
-        # MOPD audit: domain-gradient tracker begin
-        mopd_gradient_tracker = None
-        mopd_full_gradient_cfg = data.meta_info.get("mopd_full_gradient", {})
-        if not isinstance(mopd_full_gradient_cfg, dict):
-            mopd_full_gradient_cfg = {}
-        if isinstance(mopd_full_gradient_cfg, dict) and mopd_full_gradient_cfg.get("enabled", False):
-            from mopd_verl.full_gradient_worker import SequentialBackwardDomainGradientTracker
-
-            mopd_gradient_tracker = SequentialBackwardDomainGradientTracker(self, mopd_full_gradient_cfg)
-        # MOPD audit: domain-gradient tracker end
+        audit = DomainGradientAudit(self, data.meta_info.get("mopd_full_gradient", {}))
         for _ in range(self.config.ppo_epochs):
-            for batch_idx, mini_batch in enumerate(mini_batches):
-                mopd_static_micro_batch_size = None
-                if (
-                    mopd_gradient_tracker is not None
-                    and bool(mopd_full_gradient_cfg.get("domain_gradient_enabled", False))
-                ):
-                    mopd_static_micro_batch_size = max(
-                        1,
-                        int(
-                            mopd_full_gradient_cfg.get("micro_batch_size_per_gpu")
-                            or self.config.ppo_micro_batch_size_per_gpu
-                        ),
-                    )
-                if self.config.use_dynamic_bsz and mopd_static_micro_batch_size is not None:
-                    metrics["global/audit/full_gradient_forced_static_micro_batch"] = 1.0
-                    metrics["global/audit/full_gradient_static_micro_batch_size"] = float(
-                        mopd_static_micro_batch_size
-                    )
-                use_dynamic_micro_batch = self.config.use_dynamic_bsz and mopd_static_micro_batch_size is None
-                if use_dynamic_micro_batch:
+            for mini_batch in mini_batches:
+                if self.config.use_dynamic_bsz:
                     max_token_len = self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
-                    micro_batches, batch_idx_list = prepare_dynamic_batch(mini_batch, max_token_len=max_token_len)
+                    micro_batches, _ = prepare_dynamic_batch(mini_batch, max_token_len=max_token_len)
                 else:
-                    micro_batch_size = mopd_static_micro_batch_size or self.config.ppo_micro_batch_size_per_gpu
                     self.gradient_accumulation = (
-                        self.config.ppo_mini_batch_size // micro_batch_size
+                        self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size_per_gpu
                     )
-                    micro_batches = mini_batch.split(micro_batch_size)
-                    batch_idx_list = []
-                    start_idx = 0
-                    for micro_batch in micro_batches:
-                        end_idx = start_idx + len(micro_batch)
-                        batch_idx_list.append(list(range(start_idx, end_idx)))
-                        start_idx = end_idx
+                    micro_batches = mini_batch.split(self.config.ppo_micro_batch_size_per_gpu)
+
                 micro_batches = list(micro_batches)
-                if mopd_gradient_tracker is not None:
-                    tracked_micro_batches = mopd_gradient_tracker.prepare_micro_batches(
-                        micro_batches,
-                        batch_idx_list=batch_idx_list,
+                loss_scales = [
+                    (
+                        float(micro_batch.batch["response_mask"].shape[0])
+                        / float(self.config.ppo_mini_batch_size)
+                        if self.config.use_dynamic_bsz
+                        else 1.0 / float(self.gradient_accumulation)
                     )
-                else:
-                    tracked_micro_batches = [(None, micro_batch) for micro_batch in micro_batches]
+                    for micro_batch in micro_batches
+                ]
 
                 self.actor_optimizer.zero_grad()
-                # MOPD audit: domain-gradient tracker begin
-                if mopd_gradient_tracker is not None:
-                    append_to_dict(
-                        metrics,
-                        mopd_gradient_tracker.run_pre_update_audit(
-                            tracked_micro_batches,
-                            on_policy=on_policy,
-                            use_dynamic_micro_batch=use_dynamic_micro_batch,
-                            ppo_mini_batch_size=self.config.ppo_mini_batch_size,
-                            gradient_accumulation=self.gradient_accumulation,
-                        ),
+                append_to_dict(
+                    metrics,
+                    audit.run_before_training(
+                        micro_batches,
+                        loss_scales,
+                        on_policy=on_policy,
+                        temperature=temperature,
+                    ),
+                )
+                self.actor_optimizer.zero_grad()
+
+                micro_batch_metric_rows = []
+                for micro_batch, loss_scale in zip(micro_batches, loss_scales, strict=True):
+                    result = build_actor_micro_batch_loss(
+                        self,
+                        micro_batch,
+                        loss_scale_factor=loss_scale,
+                        on_policy=on_policy,
+                        include_metrics=True,
+                        temperature=temperature,
                     )
-                    self.actor_optimizer.zero_grad()
-                # MOPD audit: domain-gradient tracker end
+                    if self.scaler is not None:
+                        self.scaler.scale(result.loss).backward()
+                    else:
+                        result.loss.backward()
+                    micro_batch_metric_rows.append(result.metrics)
 
-                mopd_domain_sum_training_applied = False
-                if mopd_gradient_tracker is not None:
-                    (
-                        mopd_domain_sum_training_applied,
-                        mopd_domain_sum_training_metrics,
-                    ) = mopd_gradient_tracker.apply_domain_sum_gradient_for_training()
-                    append_to_dict(metrics, mopd_domain_sum_training_metrics)
+                contribution_metrics, observation_rows = (
+                    aggregate_actor_micro_batch_metrics(micro_batch_metric_rows)
+                )
+                append_to_dict(metrics, contribution_metrics)
+                for observation_metrics in observation_rows:
+                    append_to_dict(metrics, observation_metrics)
 
-                if mopd_domain_sum_training_applied:
-                    metrics["global/audit/training_gradient_from_domain_sum_skipped_backward"] = 1.0
-                else:
-                    for _mopd_domain, micro_batch in tracked_micro_batches:
-                        micro_batch = micro_batch.to(get_device_id())
-                        micro_batch_metrics = {}
-                        model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
-                        response_mask = model_inputs["response_mask"]
-
-                        if use_dynamic_micro_batch:
-                            loss_scale_factor = response_mask.shape[0] / self.config.ppo_mini_batch_size
-                        else:
-                            loss_scale_factor = 1 / self.gradient_accumulation
-
-                        loss_result = build_actor_micro_batch_loss(
-                            self,
-                            micro_batch,
-                            loss_scale_factor=float(loss_scale_factor),
-                            on_policy=on_policy,
-                            include_metrics=True,
-                            temperature=float(temperature),
-                        )
-                        loss = loss_result.loss
-                        micro_batch_metrics.update(loss_result.metrics)
-                        if self.scaler is not None:
-                            self.scaler.scale(loss).backward()
-                        else:
-                            loss.backward()
-
-                        append_to_dict(metrics, micro_batch_metrics)
-
-                if mopd_gradient_tracker is not None:
-                    append_to_dict(
-                        metrics,
-                        mopd_gradient_tracker.full_grad_training_parity_metrics(),
-                    )
-
+                append_to_dict(metrics, audit.compare_training_gradient())
                 grad_norm = self._optimizer_step()
-                mini_batch_metrics = {"actor/grad_norm": grad_norm.detach().item()}
-                append_to_dict(metrics, mini_batch_metrics)
+                append_to_dict(metrics, {"actor/grad_norm": grad_norm.detach().item()})
         self.actor_optimizer.zero_grad()
         return metrics

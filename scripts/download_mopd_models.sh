@@ -7,8 +7,9 @@ Usage:
   scripts/download_mopd_models.sh
 
 Downloads or verifies reusable MOPD model directories. The current Qwen30B
-four-domain asset flow calls this script for the Qwen3-4B student/base model
-and uses scripts/download_qwen30b_teacher.sh for the Qwen3-30B-A3B teacher.
+four-domain asset flow calls this script for the Qwen3-4B student/base model and
+uses scripts/download_qwen30b_teacher.sh for the Qwen3-30B-A3B-Instruct-2507
+teacher.
 
 Defaults:
   MODEL_ROOT=<parent of OPD-code>/models

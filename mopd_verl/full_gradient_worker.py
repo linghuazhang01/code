@@ -1,5 +1,7 @@
-"""Compatibility entry point for full-gradient audit tracking."""
+"""Compatibility entry point for domain-gradient audit."""
 
-from mopd_verl.full_gradient.tracker import SequentialBackwardDomainGradientTracker
+from mopd_verl.domain_gradient import DomainGradientAudit
 
-__all__ = ["SequentialBackwardDomainGradientTracker"]
+SequentialBackwardDomainGradientTracker = DomainGradientAudit
+
+__all__ = ["DomainGradientAudit", "SequentialBackwardDomainGradientTracker"]

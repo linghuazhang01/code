@@ -34,7 +34,7 @@ python3 -m verl.trainer.main_ppo \
         +data.apply_chat_template_kwargs.enable_thinking=False \
         actor_rollout_ref.model.path=Qwen/Qwen3-1.7B \
         +actor_rollout_ref.ref.model.path=Qwen/Qwen3-4B-Non-Thinking-RL-Math \
-        actor_rollout_ref.actor.optim.lr=1e-6 \
+        actor_rollout_ref.actor.optim.lr=1e-5 \
         actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=0.0 \
         actor_rollout_ref.model.use_remove_padding=True \
         actor_rollout_ref.actor.policy_loss.only_reverse_kl_advantages=True \

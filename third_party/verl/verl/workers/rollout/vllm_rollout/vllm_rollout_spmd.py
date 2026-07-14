@@ -92,14 +92,6 @@ from verl.workers.rollout.vllm_rollout.utils import (
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
-
-def _env_flag(name: str, default: bool) -> bool:
-    raw_value = os.getenv(name)
-    if raw_value is None:
-        return default
-    return raw_value.strip().lower() not in {"0", "false", "no", "off"}
-
-
 # TODO
 # 1. support pp in vllm
 # 2. passing tokenizer is not necessary? no encoding/decoding is happending here
@@ -357,7 +349,7 @@ class vLLMRollout(BaseRollout):
 
             input_data["prompt_token_ids"] = list(input_data["prompt_token_ids"])
 
-        do_sample = prompts.meta_info.get("do_sample", True)
+        do_sample = prompts.meta_info.get("do_sample", self.config.do_sample)
         is_validate = prompts.meta_info.get("validate", False)
         if not do_sample:
             kwargs = {
@@ -388,28 +380,12 @@ class vLLMRollout(BaseRollout):
 
         # users can customize different sampling_params at different run
         with self.update_sampling_params(**kwargs):
-            progress_enabled = _env_flag("MOPD_VLLM_GENERATE_PROGRESS", True)
-            if progress_enabled:
-                phase = "validation" if is_validate else "train"
-                global_step = prompts.meta_info.get("global_steps", "unknown")
-                print(
-                    f"[MOPD progress] vLLM generate start phase={phase} "
-                    f"global_step={global_step} batch_size={batch_size} "
-                    f"max_tokens={self.sampling_params.max_tokens}",
-                    flush=True,
-                )
             outputs = self.inference_engine.generate(
                 prompts=vllm_inputs,  # because we have already convert it to prompt token id
                 sampling_params=self.sampling_params,
                 lora_request=lora_requests,
-                use_tqdm=progress_enabled,
+                use_tqdm=False,
             )
-            if progress_enabled:
-                print(
-                    f"[MOPD progress] vLLM generate done phase={phase} "
-                    f"global_step={global_step} outputs={len(outputs)}",
-                    flush=True,
-                )
 
             # TODO(sgm): disable logprob when recompute_log_prob is enable
             # if n = 1: (bs, response_length) ; if n > 1: (bs * n, response_length)
