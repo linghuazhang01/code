@@ -195,6 +195,7 @@ class AuditConfig:
     token_gap_vocab_vector_enabled: bool = False
     token_gap_vocab_vector_freq_steps: int = 1
     token_gap_vocab_size: int | None = None
+    vocab_per_occurrence_mean_vector_enabled: bool = True
     entropy_enabled: bool = True
     entropy_freq_steps: int = 1
     entropy_vocab_vector_enabled: bool = False
@@ -204,6 +205,8 @@ class AuditConfig:
     topk_teacher_student_cross_entropy_k: int = 32
     topk_teacher_student_cross_entropy_include_tail: bool = False
     topk_teacher_student_cross_entropy_temperature: float = 1.0
+    logp_vector_enabled: bool = False
+    logp_vector_freq_steps: int = 1
     logp_abs_vector_enabled: bool = False
     logp_abs_vector_freq_steps: int = 1
     token_conflict_enabled: bool = True

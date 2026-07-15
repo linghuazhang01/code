@@ -113,16 +113,19 @@ class Qwen30BInstruct2507ProfileTests(unittest.TestCase):
 
                 self.assertTrue(config.audit.enabled)
                 self.assertTrue(config.audit.full_gradient_enabled)
-                self.assertEqual(config.audit.full_gradient_freq_steps, 4)
+                self.assertEqual(config.audit.full_gradient_freq_steps, 2)
                 self.assertEqual(config.audit.full_grad_training_parity_freq_steps, 1)
                 self.assertEqual(config.audit.full_grad_training_parity_rel_l2_threshold, 2e-2)
                 self.assertEqual(config.audit.full_gradient_storage_dtype, "bfloat16")
                 self.assertTrue(config.audit.token_gap_enabled)
                 self.assertTrue(config.audit.token_gap_vocab_vector_enabled)
+                self.assertTrue(config.audit.vocab_per_occurrence_mean_vector_enabled)
                 self.assertFalse(config.audit.entropy_enabled)
-                self.assertFalse(config.audit.entropy_vocab_vector_enabled)
+                self.assertTrue(config.audit.entropy_vocab_vector_enabled)
                 self.assertFalse(config.audit.topk_teacher_student_cross_entropy_vocab_enabled)
-                self.assertFalse(config.audit.logp_abs_vector_enabled)
+                self.assertTrue(config.audit.logp_vector_enabled)
+                self.assertEqual(config.audit.logp_vector_freq_steps, 1)
+                self.assertTrue(config.audit.logp_abs_vector_enabled)
                 self.assertFalse(config.audit.sample_gradient_enabled)
                 self.assertFalse(config.audit.token_gradient_enabled)
                 self.assertFalse(config.audit.token_conflict_enabled)
@@ -130,6 +133,11 @@ class Qwen30BInstruct2507ProfileTests(unittest.TestCase):
                 self.assertIn(TEACHER_PATH, rendered)
                 self.assertIn("data.max_response_length=16384", rendered)
                 self.assertIn("actor_rollout_ref.rollout.max_model_len=18432", rendered)
+                self.assertIn(
+                    "+mopd_audit.vocab_per_occurrence_mean_vector_enabled=true",
+                    rendered,
+                )
+                self.assertIn("+mopd_audit.logp_vector_enabled=true", rendered)
                 if expected_domains - {"math", "code"}:
                     self.assertIn("actor_rollout_ref.ref.model.teacher_paths", rendered)
                 self.assertIn("actor_rollout_ref.actor.fsdp_config.fsdp_size=2", rendered)

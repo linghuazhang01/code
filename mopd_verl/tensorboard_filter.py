@@ -20,6 +20,7 @@ DIRECT_AUDIT_CATEGORIES = {
     "full_grad_training_parity",
     "loss",
     "length",
+    "logp_vocab_cosine",
     "logp_abs_vocab_cosine",
     "optimization",
     "reward",
@@ -163,6 +164,11 @@ CORE_TOKEN_GAP_VOCAB_COSINE = {
 CORE_LOGP_ABS_VOCAB_COSINE = {
     "logp_abs_mean_cosine",
     "logp_abs_sum_cosine",
+    "token_count_cosine",
+}
+CORE_LOGP_VOCAB_COSINE = {
+    "logp_mean_cosine",
+    "logp_sum_cosine",
     "token_count_cosine",
 }
 CORE_ENTROPY_VOCAB_COSINE = {
@@ -492,6 +498,8 @@ def _keep_global(category: str, metric: str, parts: list[str]) -> bool:
         return metric in CORE_GLOBAL_LOSS
     if category == "token_gap_vocab_cosine":
         return metric in CORE_TOKEN_GAP_VOCAB_COSINE
+    if category == "logp_vocab_cosine":
+        return metric in CORE_LOGP_VOCAB_COSINE
     if category == "logp_abs_vocab_cosine":
         return metric in CORE_LOGP_ABS_VOCAB_COSINE
     if category == "entropy_vocab_cosine":

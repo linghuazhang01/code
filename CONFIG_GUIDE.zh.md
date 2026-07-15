@@ -108,9 +108,11 @@ audit:
   sample_gradient_cos_enabled: true
   token_gap_enabled: true
   token_gap_vocab_vector_enabled: true
+  vocab_per_occurrence_mean_vector_enabled: true
   entropy_enabled: true
   entropy_vocab_vector_enabled: true
   topk_teacher_student_cross_entropy_vocab_enabled: true
+  logp_vector_enabled: true
   logp_abs_vector_enabled: true
   token_conflict_enabled: true
   token_gradient_enabled: false
@@ -120,6 +122,13 @@ audit:
   token_gradient_top_k: 100
   token_gradient_top_p: 0.10
 ```
+
+`logp_vector_enabled` 显式输出 signed gap
+`teacher_logp - old_student_logp`，`logp_abs_vector_enabled` 输出其绝对值。
+`vocab_per_occurrence_mean_vector_enabled` 控制所有 vocab signal 的
+`*_mean_vector_vocab`：对每个 token id 使用 `sum / occurrence_count`，未出现
+token 的维度保持 0。该统计是当前 step、当前 domain 内的 conditional mean，
+不是 `count / total_count` 的 token-frequency probability。
 
 它还设置：
 
@@ -152,9 +161,11 @@ audit:
   sample_gradient_cos_enabled: true
   token_gap_enabled: true
   token_gap_vocab_vector_enabled: true
+  vocab_per_occurrence_mean_vector_enabled: true
   entropy_enabled: true
   entropy_vocab_vector_enabled: true
   topk_teacher_student_cross_entropy_vocab_enabled: true
+  logp_vector_enabled: true
   logp_abs_vector_enabled: true
   token_conflict_enabled: true
   token_gradient_enabled: false
@@ -194,8 +205,10 @@ audit:
   sample_gradient_cos_enabled: true
   token_gap_vocab_vector_enabled: true
   token_gap_vocab_size: null
+  vocab_per_occurrence_mean_vector_enabled: true
   entropy_vocab_vector_enabled: true
   topk_teacher_student_cross_entropy_vocab_enabled: true
+  logp_vector_enabled: true
   logp_abs_vector_enabled: true
   token_gradient_enabled: false
   token_gradient_gap_selection_enabled: true

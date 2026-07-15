@@ -11,12 +11,13 @@
 #
 # Enabled audit families:
 # - math/code full gradient audit
-# - token-gap vectors, including full-vocab token-id vectors
+# - token-gap/logp vectors, including full-vocab token-id vectors
+# - student-entropy full-vocab vectors
 #
 # Disabled audit families:
 # - token gradients
 # - sample gradients
-# - entropy and token-conflict diagnostics
+# - entropy distribution/scalars and token-conflict diagnostics
 
 runtime:
   python_bin: python
@@ -157,7 +158,7 @@ audit:
   tier2_window_size: 20
   calibration_bins: 10
   full_gradient_enabled: true
-  full_gradient_freq_steps: 4
+  full_gradient_freq_steps: 2
   full_grad_training_parity_freq_steps: 1
   full_grad_training_parity_rel_l2_threshold: 2.0e-2
   full_gradient_train_max_samples_per_domain: null
@@ -184,16 +185,19 @@ audit:
   token_gap_vocab_vector_enabled: true
   token_gap_vocab_vector_freq_steps: 1
   token_gap_vocab_size: null
+  vocab_per_occurrence_mean_vector_enabled: true
   entropy_enabled: false
   entropy_freq_steps: 1
-  entropy_vocab_vector_enabled: false
+  entropy_vocab_vector_enabled: true
   entropy_vocab_vector_freq_steps: 1
   topk_teacher_student_cross_entropy_vocab_enabled: false
   topk_teacher_student_cross_entropy_vocab_freq_steps: 1
   topk_teacher_student_cross_entropy_k: 32
   topk_teacher_student_cross_entropy_include_tail: false
   topk_teacher_student_cross_entropy_temperature: 1.0
-  logp_abs_vector_enabled: false
+  logp_vector_enabled: true
+  logp_vector_freq_steps: 1
+  logp_abs_vector_enabled: true
   logp_abs_vector_freq_steps: 1
   token_conflict_enabled: false
   token_conflict_freq_steps: 1

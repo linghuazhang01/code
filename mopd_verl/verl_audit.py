@@ -152,6 +152,19 @@ def _tensor_to_int_list(tensor: Any) -> list[int]:
     return [int(x) for x in tensor.detach().long().cpu().tolist()]
 
 
+def _project_jsonl_rows(
+    rows: list[dict[str, Any]],
+    *,
+    required_field: str,
+    fields: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    return [
+        {field: row[field] for field in fields if field in row}
+        for row in rows
+        if required_field in row
+    ]
+
+
 def _select_domain_tensor(
     *,
     tensor_batch: Any,
@@ -307,8 +320,12 @@ def _token_gap_vocab_tensors(
     }
 
 
-def _token_gap_vocab_json_fields(vectors: dict[str, Any]) -> dict[str, Any]:
-    return {
+def _token_gap_vocab_json_fields(
+    vectors: dict[str, Any],
+    *,
+    include_mean_vectors: bool = True,
+) -> dict[str, Any]:
+    fields = {
         "vocab_size": int(vectors["vocab_size"]),
         "observed_token_count": int(vectors["observed_token_count"]),
         "dropped_token_count": int(vectors["dropped_token_count"]),
@@ -317,13 +334,48 @@ def _token_gap_vocab_json_fields(vectors: dict[str, Any]) -> dict[str, Any]:
         "token_count_vector_vocab": _tensor_to_int_list(vectors["token_count_vector_vocab"]),
         "gap_signed_sum_vector_vocab": _tensor_to_float_list(vectors["gap_signed_sum_vector_vocab"]),
         "gap_abs_sum_vector_vocab": _tensor_to_float_list(vectors["gap_abs_sum_vector_vocab"]),
-        "gap_signed_mean_vector_vocab": _tensor_to_float_list(vectors["gap_signed_mean_vector_vocab"]),
-        "gap_abs_mean_vector_vocab": _tensor_to_float_list(vectors["gap_abs_mean_vector_vocab"]),
     }
+    if include_mean_vectors:
+        fields.update(
+            {
+                "gap_signed_mean_vector_vocab": _tensor_to_float_list(
+                    vectors["gap_signed_mean_vector_vocab"]
+                ),
+                "gap_abs_mean_vector_vocab": _tensor_to_float_list(
+                    vectors["gap_abs_mean_vector_vocab"]
+                ),
+            }
+        )
+    return fields
 
 
-def _logp_abs_vocab_json_fields(vectors: dict[str, Any]) -> dict[str, Any]:
-    return {
+def _logp_vocab_json_fields(
+    vectors: dict[str, Any],
+    *,
+    include_mean_vectors: bool = True,
+) -> dict[str, Any]:
+    fields = {
+        "vocab_size": int(vectors["vocab_size"]),
+        "observed_token_count": int(vectors["observed_token_count"]),
+        "dropped_token_count": int(vectors["dropped_token_count"]),
+        "nonzero_token_id_count": int(vectors["nonzero_token_id_count"]),
+        "nonzero_token_ids": _tensor_to_int_list(vectors["nonzero_token_ids"]),
+        "token_count_vector_vocab": _tensor_to_int_list(vectors["token_count_vector_vocab"]),
+        "logp_sum_vector_vocab": _tensor_to_float_list(vectors["gap_signed_sum_vector_vocab"]),
+    }
+    if include_mean_vectors:
+        fields["logp_mean_vector_vocab"] = _tensor_to_float_list(
+            vectors["gap_signed_mean_vector_vocab"]
+        )
+    return fields
+
+
+def _logp_abs_vocab_json_fields(
+    vectors: dict[str, Any],
+    *,
+    include_mean_vectors: bool = True,
+) -> dict[str, Any]:
+    fields = {
         "vocab_size": int(vectors["vocab_size"]),
         "observed_token_count": int(vectors["observed_token_count"]),
         "dropped_token_count": int(vectors["dropped_token_count"]),
@@ -331,8 +383,12 @@ def _logp_abs_vocab_json_fields(vectors: dict[str, Any]) -> dict[str, Any]:
         "nonzero_token_ids": _tensor_to_int_list(vectors["nonzero_token_ids"]),
         "token_count_vector_vocab": _tensor_to_int_list(vectors["token_count_vector_vocab"]),
         "logp_abs_sum_vector_vocab": _tensor_to_float_list(vectors["gap_abs_sum_vector_vocab"]),
-        "logp_abs_mean_vector_vocab": _tensor_to_float_list(vectors["gap_abs_mean_vector_vocab"]),
     }
+    if include_mean_vectors:
+        fields["logp_abs_mean_vector_vocab"] = _tensor_to_float_list(
+            vectors["gap_abs_mean_vector_vocab"]
+        )
+    return fields
 
 
 def _entropy_vocab_tensors(
@@ -384,7 +440,11 @@ def _entropy_vocab_tensors(
     return output
 
 
-def _entropy_vocab_json_fields(vectors: dict[str, Any]) -> dict[str, Any]:
+def _entropy_vocab_json_fields(
+    vectors: dict[str, Any],
+    *,
+    include_mean_vectors: bool = True,
+) -> dict[str, Any]:
     fields = {
         "vocab_size": int(vectors["vocab_size"]),
         "observed_token_count": int(vectors["observed_token_count"]),
@@ -398,7 +458,7 @@ def _entropy_vocab_json_fields(vectors: dict[str, Any]) -> dict[str, Any]:
         mean_key = f"{name}_mean_vector_vocab"
         if sum_key in vectors:
             fields[sum_key] = _tensor_to_float_list(vectors[sum_key])
-        if mean_key in vectors:
+        if include_mean_vectors and mean_key in vectors:
             fields[mean_key] = _tensor_to_float_list(vectors[mean_key])
     return fields
 
@@ -708,6 +768,9 @@ class MOPDAuditLogger:
             int(_cfg_get(audit_config, "token_gap_vocab_vector_freq_steps", 1)),
         )
         self.token_gap_vocab_size = _optional_positive_int(_cfg_get(audit_config, "token_gap_vocab_size", None))
+        self.vocab_per_occurrence_mean_vector_enabled = bool(
+            _cfg_get(audit_config, "vocab_per_occurrence_mean_vector_enabled", True)
+        )
         self.token_gap_vocab_size_source = "config" if self.token_gap_vocab_size is not None else "unavailable"
         if self.token_gap_vocab_size is None:
             self.token_gap_vocab_size = _infer_model_config_vocab_size(config)
@@ -743,6 +806,13 @@ class MOPDAuditLogger:
         self.topk_teacher_student_cross_entropy_temperature = max(
             1e-6,
             float(_cfg_get(audit_config, "topk_teacher_student_cross_entropy_temperature", 1.0)),
+        )
+        self.logp_vector_enabled = bool(
+            _cfg_get(audit_config, "logp_vector_enabled", False)
+        )
+        self.logp_vector_freq_steps = max(
+            1,
+            int(_cfg_get(audit_config, "logp_vector_freq_steps", 1)),
         )
         self.logp_abs_vector_enabled = bool(
             _cfg_get(audit_config, "logp_abs_vector_enabled", False)
@@ -863,6 +933,13 @@ class MOPDAuditLogger:
         return self._freq_active(
             self.topk_teacher_student_cross_entropy_vocab_enabled,
             self.topk_teacher_student_cross_entropy_vocab_freq_steps,
+            step,
+        )
+
+    def should_log_logp_vector(self, step: int) -> bool:
+        return self._freq_active(
+            self.logp_vector_enabled,
+            self.logp_vector_freq_steps,
             step,
         )
 
@@ -1151,31 +1228,109 @@ class MOPDAuditLogger:
         if token_conflict_rows:
             self._write_jsonl("token_conflict_attribution.jsonl", token_conflict_rows)
         if token_gap_rows:
-            self._write_jsonl("token_gap_vectors.jsonl", token_gap_rows)
+            occurrence_meta_fields = ("step", "domain", "learning_rate", "token_count")
+            self._write_jsonl(
+                "token_gap_vectors.jsonl",
+                _project_jsonl_rows(
+                    token_gap_rows,
+                    required_field="gap_signed_vector_domain",
+                    fields=occurrence_meta_fields
+                    + (
+                        "gap_signed_vector_domain",
+                        "gap_abs_vector_domain",
+                        "gap_vector_domain",
+                    ),
+                ),
+            )
+            self._write_jsonl(
+                "logp_vectors.jsonl",
+                _project_jsonl_rows(
+                    token_gap_rows,
+                    required_field="logp_vector_domain",
+                    fields=occurrence_meta_fields + ("logp_vector_domain",),
+                ),
+            )
+            self._write_jsonl(
+                "logp_abs_vectors.jsonl",
+                _project_jsonl_rows(
+                    token_gap_rows,
+                    required_field="logp_abs_vector_domain",
+                    fields=occurrence_meta_fields + ("logp_abs_vector_domain",),
+                ),
+            )
         if token_gap_vocab_rows:
-            gap_vocab_rows = [
-                row for row in token_gap_vocab_rows if "gap_signed_sum_vector_vocab" in row
-            ]
-            self._write_jsonl("token_gap_vocab_vectors.jsonl", gap_vocab_rows)
-            logp_abs_vocab_rows = [
-                row for row in token_gap_vocab_rows if "logp_abs_sum_vector_vocab" in row
-            ]
-            self._write_jsonl("logp_abs_vocab_vectors.jsonl", logp_abs_vocab_rows)
-        if token_gap_rows:
-            logp_abs_rows = [row for row in token_gap_rows if "logp_abs_vector_domain" in row]
-            self._write_jsonl("logp_abs_vectors.jsonl", logp_abs_rows)
+            vocab_meta_fields = (
+                "step",
+                "domain",
+                "learning_rate",
+                "vocab_size_source",
+                "vocab_size",
+                "observed_token_count",
+                "dropped_token_count",
+                "nonzero_token_id_count",
+                "nonzero_token_ids",
+                "token_count_vector_vocab",
+            )
+            self._write_jsonl(
+                "token_gap_vocab_vectors.jsonl",
+                _project_jsonl_rows(
+                    token_gap_vocab_rows,
+                    required_field="gap_signed_sum_vector_vocab",
+                    fields=vocab_meta_fields
+                    + (
+                        "gap_signed_sum_vector_vocab",
+                        "gap_abs_sum_vector_vocab",
+                        "gap_signed_mean_vector_vocab",
+                        "gap_abs_mean_vector_vocab",
+                    ),
+                ),
+            )
+            self._write_jsonl(
+                "logp_vocab_vectors.jsonl",
+                _project_jsonl_rows(
+                    token_gap_vocab_rows,
+                    required_field="logp_sum_vector_vocab",
+                    fields=vocab_meta_fields
+                    + ("logp_sum_vector_vocab", "logp_mean_vector_vocab"),
+                ),
+            )
+            self._write_jsonl(
+                "logp_abs_vocab_vectors.jsonl",
+                _project_jsonl_rows(
+                    token_gap_vocab_rows,
+                    required_field="logp_abs_sum_vector_vocab",
+                    fields=vocab_meta_fields
+                    + ("logp_abs_sum_vector_vocab", "logp_abs_mean_vector_vocab"),
+                ),
+            )
         if entropy_distribution_rows:
             self._write_jsonl("entropy_distribution_vectors.jsonl", entropy_distribution_rows)
         if entropy_vocab_rows:
             self._write_jsonl("entropy_vocab_vectors.jsonl", entropy_vocab_rows)
-            topk_cross_entropy_vocab_rows = [
-                row
-                for row in entropy_vocab_rows
-                if "teacher_student_cross_entropy_sum_vector_vocab" in row
-            ]
             self._write_jsonl(
                 "topk_teacher_student_cross_entropy_vocab_vectors.jsonl",
-                topk_cross_entropy_vocab_rows,
+                _project_jsonl_rows(
+                    entropy_vocab_rows,
+                    required_field="teacher_student_cross_entropy_sum_vector_vocab",
+                    fields=(
+                        "step",
+                        "domain",
+                        "learning_rate",
+                        "vocab_size_source",
+                        "vocab_size",
+                        "observed_token_count",
+                        "dropped_token_count",
+                        "nonzero_token_id_count",
+                        "nonzero_token_ids",
+                        "token_count_vector_vocab",
+                        "teacher_student_cross_entropy_sum_vector_vocab",
+                        "teacher_student_cross_entropy_mean_vector_vocab",
+                        "topk_support_source",
+                        "topk_k",
+                        "topk_include_tail",
+                        "topk_temperature",
+                    ),
+                ),
             )
         return metrics
 
@@ -1306,16 +1461,20 @@ class MOPDAuditLogger:
         entropy_vocab_rows: list[dict[str, Any]] = []
         entropy_vocab_vectors_by_domain: dict[str, dict[str, Any]] = {}
         token_gap_active = self.should_log_token_gap(step)
+        logp_active = self.should_log_logp_vector(step)
         logp_abs_active = self.should_log_logp_abs_vector(step)
-        logp_vector_active = token_gap_active or logp_abs_active
+        logp_vector_active = token_gap_active or logp_active or logp_abs_active
         token_gap_vocab_active = token_gap_active and self.should_log_token_gap_vocab_vector(step)
-        token_gap_vocab_compute_active = token_gap_vocab_active or logp_abs_active
+        token_gap_vocab_compute_active = token_gap_vocab_active or logp_active or logp_abs_active
         topk_cross_entropy_vocab_active = (
             self.should_log_topk_teacher_student_cross_entropy_vocab(step)
         )
-        entropy_active = self.should_log_entropy(step) or topk_cross_entropy_vocab_active
-        entropy_vocab_vector_active = (
-            self.should_log_entropy(step) and self.should_log_entropy_vocab_vector(step)
+        entropy_distribution_active = self.should_log_entropy(step)
+        entropy_vocab_vector_active = self.should_log_entropy_vocab_vector(step)
+        entropy_compute_active = (
+            entropy_distribution_active
+            or entropy_vocab_vector_active
+            or topk_cross_entropy_vocab_active
         )
         entropy_vocab_active = entropy_vocab_vector_active or topk_cross_entropy_vocab_active
         token_conflict_active = self.should_log_token_conflict(step)
@@ -1412,6 +1571,10 @@ class MOPDAuditLogger:
                                 "gap_vector_domain": _tensor_to_float_list(domain_gap_vector),
                             }
                         )
+                    if logp_active:
+                        token_gap_row["logp_vector_domain"] = _tensor_to_float_list(
+                            domain_gap_vector
+                        )
                     if logp_abs_active:
                         token_gap_row["logp_abs_vector_domain"] = _tensor_to_float_list(
                             domain_gap_abs_vector
@@ -1433,7 +1596,7 @@ class MOPDAuditLogger:
                     )
                     if vocab_vectors is not None:
                         token_gap_vocab_vectors_by_domain[domain] = vocab_vectors
-                        if token_gap_vocab_active or logp_abs_active:
+                        if token_gap_vocab_active or logp_active or logp_abs_active:
                             vocab_row: dict[str, Any] = {
                                 "step": step,
                                 "domain": domain,
@@ -1441,15 +1604,38 @@ class MOPDAuditLogger:
                                 "vocab_size_source": token_gap_vocab_size_source,
                             }
                             if token_gap_vocab_active:
-                                vocab_row.update(_token_gap_vocab_json_fields(vocab_vectors))
+                                vocab_row.update(
+                                    _token_gap_vocab_json_fields(
+                                        vocab_vectors,
+                                        include_mean_vectors=(
+                                            self.vocab_per_occurrence_mean_vector_enabled
+                                        ),
+                                    )
+                                )
+                            if logp_active:
+                                vocab_row.update(
+                                    _logp_vocab_json_fields(
+                                        vocab_vectors,
+                                        include_mean_vectors=(
+                                            self.vocab_per_occurrence_mean_vector_enabled
+                                        ),
+                                    )
+                                )
                             if logp_abs_active:
-                                vocab_row.update(_logp_abs_vocab_json_fields(vocab_vectors))
+                                vocab_row.update(
+                                    _logp_abs_vocab_json_fields(
+                                        vocab_vectors,
+                                        include_mean_vectors=(
+                                            self.vocab_per_occurrence_mean_vector_enabled
+                                        ),
+                                    )
+                                )
                             token_gap_vocab_rows.append(vocab_row)
             entropy_metrics: dict[str, float | None] = {}
             teacher_entropy_stats: dict[str, float | None] = {}
             student_entropy_stats: dict[str, float | None] = {}
             cross_entropy_stats: dict[str, float | None] = {}
-            if entropy_active:
+            if entropy_compute_active:
                 teacher_entropy_vector = None
                 student_entropy_vector = None
                 cross_entropy_vector = None
@@ -1462,40 +1648,51 @@ class MOPDAuditLogger:
                         student_entropy_vector = student_entropy[indices][domain_valid_mask]
                     if teacher_student_cross_entropy is not None:
                         cross_entropy_vector = teacher_student_cross_entropy[indices][domain_valid_mask]
-                teacher_entropy_stats = _token_distribution_stats(teacher_entropy_vector, "teacher_entropy")
-                student_entropy_stats = _token_distribution_stats(student_entropy_vector, "student_entropy")
-                cross_entropy_stats = _token_distribution_stats(
-                    cross_entropy_vector,
-                    "teacher_student_cross_entropy",
-                )
-                teacher_entropy_sum = teacher_entropy_stats["teacher_entropy_sum"]
-                student_entropy_sum = student_entropy_stats["student_entropy_sum"]
-                cross_entropy_sum = cross_entropy_stats["teacher_student_cross_entropy_sum"]
-                entropy_metrics = {
-                    "sum_teacher_entropy": teacher_entropy_sum,
-                    "sum_student_entropy": student_entropy_sum,
-                    "sum_teacher_student_cross_entropy": cross_entropy_sum,
-                    "entropy_distribution_available": float(
-                        teacher_entropy_sum is not None or student_entropy_sum is not None
-                    ),
-                    "cross_entropy_available": float(cross_entropy_sum is not None),
-                }
-                entropy_row: dict[str, Any] = {
-                    "step": step,
-                    "domain": domain,
-                    "learning_rate": learning_rate,
-                    "token_count": int(domain_token_count),
-                }
-                if teacher_entropy_vector is not None and int(teacher_entropy_vector.numel()) > 0:
-                    entropy_row["teacher_entropy_vector_domain"] = _tensor_to_float_list(teacher_entropy_vector)
-                if student_entropy_vector is not None and int(student_entropy_vector.numel()) > 0:
-                    entropy_row["student_entropy_vector_domain"] = _tensor_to_float_list(student_entropy_vector)
-                if cross_entropy_vector is not None and int(cross_entropy_vector.numel()) > 0:
-                    entropy_row["teacher_student_cross_entropy_vector_domain"] = _tensor_to_float_list(
-                        cross_entropy_vector
+                if entropy_distribution_active:
+                    teacher_entropy_stats = _token_distribution_stats(
+                        teacher_entropy_vector,
+                        "teacher_entropy",
                     )
-                if len(entropy_row) > 4:
-                    entropy_distribution_rows.append(entropy_row)
+                    student_entropy_stats = _token_distribution_stats(
+                        student_entropy_vector,
+                        "student_entropy",
+                    )
+                    cross_entropy_stats = _token_distribution_stats(
+                        cross_entropy_vector,
+                        "teacher_student_cross_entropy",
+                    )
+                    teacher_entropy_sum = teacher_entropy_stats["teacher_entropy_sum"]
+                    student_entropy_sum = student_entropy_stats["student_entropy_sum"]
+                    cross_entropy_sum = cross_entropy_stats["teacher_student_cross_entropy_sum"]
+                    entropy_metrics = {
+                        "sum_teacher_entropy": teacher_entropy_sum,
+                        "sum_student_entropy": student_entropy_sum,
+                        "sum_teacher_student_cross_entropy": cross_entropy_sum,
+                        "entropy_distribution_available": float(
+                            teacher_entropy_sum is not None or student_entropy_sum is not None
+                        ),
+                        "cross_entropy_available": float(cross_entropy_sum is not None),
+                    }
+                    entropy_row: dict[str, Any] = {
+                        "step": step,
+                        "domain": domain,
+                        "learning_rate": learning_rate,
+                        "token_count": int(domain_token_count),
+                    }
+                    if teacher_entropy_vector is not None and int(teacher_entropy_vector.numel()) > 0:
+                        entropy_row["teacher_entropy_vector_domain"] = _tensor_to_float_list(
+                            teacher_entropy_vector
+                        )
+                    if student_entropy_vector is not None and int(student_entropy_vector.numel()) > 0:
+                        entropy_row["student_entropy_vector_domain"] = _tensor_to_float_list(
+                            student_entropy_vector
+                        )
+                    if cross_entropy_vector is not None and int(cross_entropy_vector.numel()) > 0:
+                        entropy_row["teacher_student_cross_entropy_vector_domain"] = _tensor_to_float_list(
+                            cross_entropy_vector
+                        )
+                    if len(entropy_row) > 4:
+                        entropy_distribution_rows.append(entropy_row)
                 if (
                     entropy_vocab_active
                     and token_ids is not None
@@ -1528,7 +1725,12 @@ class MOPDAuditLogger:
                             "domain": domain,
                             "learning_rate": learning_rate,
                             "vocab_size_source": token_gap_vocab_size_source,
-                            **_entropy_vocab_json_fields(vocab_vectors),
+                            **_entropy_vocab_json_fields(
+                                vocab_vectors,
+                                include_mean_vectors=(
+                                    self.vocab_per_occurrence_mean_vector_enabled
+                                ),
+                            ),
                         }
                         if "teacher_student_cross_entropy_sum_vector_vocab" in entropy_vocab_row:
                             entropy_vocab_row.update(
@@ -1749,6 +1951,50 @@ class MOPDAuditLogger:
                         }
                     )
 
+        token_gap_vector_specs = [
+            ("token_count_cosine", "token_count_vector_vocab"),
+            ("gap_signed_sum_cosine", "gap_signed_sum_vector_vocab"),
+            ("gap_abs_sum_cosine", "gap_abs_sum_vector_vocab"),
+        ]
+        logp_vector_specs = [
+            ("token_count_cosine", "token_count_vector_vocab"),
+            ("logp_sum_cosine", "gap_signed_sum_vector_vocab"),
+        ]
+        logp_abs_vector_specs = [
+            ("token_count_cosine", "token_count_vector_vocab"),
+            ("logp_abs_sum_cosine", "gap_abs_sum_vector_vocab"),
+        ]
+        entropy_vector_specs = [
+            ("token_count_cosine", "token_count_vector_vocab"),
+            ("student_entropy_sum_cosine", "student_entropy_sum_vector_vocab"),
+            (
+                "teacher_student_cross_entropy_sum_cosine",
+                "teacher_student_cross_entropy_sum_vector_vocab",
+            ),
+        ]
+        if self.vocab_per_occurrence_mean_vector_enabled:
+            token_gap_vector_specs.extend(
+                [
+                    ("gap_signed_mean_cosine", "gap_signed_mean_vector_vocab"),
+                    ("gap_abs_mean_cosine", "gap_abs_mean_vector_vocab"),
+                ]
+            )
+            logp_vector_specs.append(
+                ("logp_mean_cosine", "gap_signed_mean_vector_vocab")
+            )
+            logp_abs_vector_specs.append(
+                ("logp_abs_mean_cosine", "gap_abs_mean_vector_vocab")
+            )
+            entropy_vector_specs.extend(
+                [
+                    ("student_entropy_mean_cosine", "student_entropy_mean_vector_vocab"),
+                    (
+                        "teacher_student_cross_entropy_mean_cosine",
+                        "teacher_student_cross_entropy_mean_vector_vocab",
+                    ),
+                ]
+            )
+
         cosine_groups: list[
             tuple[bool, str, dict[str, dict[str, Any]], tuple[tuple[str, str], ...]]
         ] = [
@@ -1756,41 +2002,25 @@ class MOPDAuditLogger:
                 token_gap_vocab_active,
                 "token_gap_vocab_cosine",
                 token_gap_vocab_vectors_by_domain,
-                (
-                    ("token_count_cosine", "token_count_vector_vocab"),
-                    ("gap_signed_sum_cosine", "gap_signed_sum_vector_vocab"),
-                    ("gap_abs_sum_cosine", "gap_abs_sum_vector_vocab"),
-                    ("gap_signed_mean_cosine", "gap_signed_mean_vector_vocab"),
-                    ("gap_abs_mean_cosine", "gap_abs_mean_vector_vocab"),
-                ),
+                tuple(token_gap_vector_specs),
+            ),
+            (
+                logp_active,
+                "logp_vocab_cosine",
+                token_gap_vocab_vectors_by_domain,
+                tuple(logp_vector_specs),
             ),
             (
                 logp_abs_active,
                 "logp_abs_vocab_cosine",
                 token_gap_vocab_vectors_by_domain,
-                (
-                    ("token_count_cosine", "token_count_vector_vocab"),
-                    ("logp_abs_sum_cosine", "gap_abs_sum_vector_vocab"),
-                    ("logp_abs_mean_cosine", "gap_abs_mean_vector_vocab"),
-                ),
+                tuple(logp_abs_vector_specs),
             ),
             (
                 entropy_vocab_active,
                 "entropy_vocab_cosine",
                 entropy_vocab_vectors_by_domain,
-                (
-                    ("token_count_cosine", "token_count_vector_vocab"),
-                    ("student_entropy_sum_cosine", "student_entropy_sum_vector_vocab"),
-                    ("student_entropy_mean_cosine", "student_entropy_mean_vector_vocab"),
-                    (
-                        "teacher_student_cross_entropy_sum_cosine",
-                        "teacher_student_cross_entropy_sum_vector_vocab",
-                    ),
-                    (
-                        "teacher_student_cross_entropy_mean_cosine",
-                        "teacher_student_cross_entropy_mean_vector_vocab",
-                    ),
-                ),
+                tuple(entropy_vector_specs),
             ),
         ]
         for active, category, vectors_by_domain, vector_specs in cosine_groups:

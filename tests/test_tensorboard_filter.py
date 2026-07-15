@@ -25,3 +25,13 @@ def test_core_filter_keeps_domain_gradient_reliability_metrics() -> None:
     }
 
     assert filter_tensorboard_metrics(metrics, "core") == metrics
+
+
+def test_core_filter_keeps_signed_logp_vocab_cosines() -> None:
+    metrics = {
+        "global/logp_vocab_cosine/math_vs_code/token_count_cosine": 0.9,
+        "global/logp_vocab_cosine/math_vs_code/logp_sum_cosine": -0.2,
+        "global/logp_vocab_cosine/math_vs_code/logp_mean_cosine": -0.1,
+    }
+
+    assert filter_tensorboard_metrics(metrics, "core") == metrics
