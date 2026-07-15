@@ -108,11 +108,16 @@ else:
 `logp_abs_vector_enabled=true` 则写入对应 abs 文件与字段。这里的 logp vector
 表示 teacher/student chosen-token log-prob gap，并不是 raw teacher log-prob。
 
-`vocab_per_occurrence_mean_vector_enabled` 统一控制所有
-`*_mean_vector_vocab`。其第 `v` 维为该 step/domain 内
-`sum(signal[token_id=v]) / occurrence_count[v]`，count 为 0 时保持 0；关闭后仍
-保留 sum 与 count vector。该口径是 per-occurrence conditional mean，不是
-`count / total_count` 的 token-frequency probability density。
+`vocab_per_occurrence_mean_vector_enabled` 是 legacy global 开关，并直接控制
+token-gap mean vector。logp、logp_abs、entropy 可以分别用
+`logp_vocab_per_occurrence_mean_vector_enabled`、
+`logp_abs_vocab_per_occurrence_mean_vector_enabled`、
+`entropy_vocab_per_occurrence_mean_vector_enabled` 覆盖；值为 `null` 或缺省时回退
+global，显式 `true/false` 时独立生效。entropy override 同时控制 student entropy
+与 teacher-student cross-entropy mean vector。每个 mean vector 的第 `v` 维为该
+step/domain 内 `sum(signal[token_id=v]) / occurrence_count[v]`，count 为 0 时保持
+0；关闭后仍保留 sum 与 count vector。该口径是 per-occurrence conditional mean，
+不是 `count / total_count` 的 token-frequency probability density。
 
 同时会输出 domain-pair scalar：
 
@@ -138,7 +143,7 @@ else:
 - `teacher_student_cross_entropy_mean_vector_vocab`: 每个 token id 的 `H(p_teacher, p_student)` 均值，count 为 0 的维度为 0。
 - `token_count_vector_vocab` / `nonzero_token_ids`: 与 `token_gap_vocab_vectors.jsonl` 相同，记录 token occurrence count 和非零 token id。
 
-同时会对实际生成的 `token_count_vector_vocab`、student entropy 和 teacher-student cross entropy 的 sum/mean vector 输出 `global/entropy_vocab_cosine/<domain_i>_vs_<domain_j>/*_cosine`，用于比较两个 domain 的 token 分布及 entropy / CE mass 是否集中在同一批 token id 上。若开启 `logp_vector_enabled` 或 `logp_abs_vector_enabled`，还会分别输出 `global/logp_vocab_cosine/...` 与 `global/logp_abs_vocab_cosine/...`。所有 cosine 只在对应 vector 开关及 frequency 生效时计算；任一 vector 为零向量时不写该项。关闭 `vocab_per_occurrence_mean_vector_enabled` 时不写 mean cosine。
+同时会对实际生成的 `token_count_vector_vocab`、student entropy 和 teacher-student cross entropy 的 sum/mean vector 输出 `global/entropy_vocab_cosine/<domain_i>_vs_<domain_j>/*_cosine`，用于比较两个 domain 的 token 分布及 entropy / CE mass 是否集中在同一批 token id 上。若开启 `logp_vector_enabled` 或 `logp_abs_vector_enabled`，还会分别输出 `global/logp_vocab_cosine/...` 与 `global/logp_abs_vocab_cosine/...`。所有 cosine 只在对应 vector 开关及 frequency 生效时计算；任一 vector 为零向量时不写该项。每个 family 的 mean cosine 遵循对应的 resolved occurrence-mean 开关。
 
 ## Advantage Metrics
 

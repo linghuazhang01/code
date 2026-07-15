@@ -120,6 +120,9 @@ class Qwen30BInstruct2507ProfileTests(unittest.TestCase):
                 self.assertTrue(config.audit.token_gap_enabled)
                 self.assertTrue(config.audit.token_gap_vocab_vector_enabled)
                 self.assertTrue(config.audit.vocab_per_occurrence_mean_vector_enabled)
+                self.assertTrue(config.audit.logp_vocab_per_occurrence_mean_vector_enabled)
+                self.assertTrue(config.audit.logp_abs_vocab_per_occurrence_mean_vector_enabled)
+                self.assertTrue(config.audit.entropy_vocab_per_occurrence_mean_vector_enabled)
                 self.assertFalse(config.audit.entropy_enabled)
                 self.assertTrue(config.audit.entropy_vocab_vector_enabled)
                 self.assertFalse(config.audit.topk_teacher_student_cross_entropy_vocab_enabled)
@@ -135,6 +138,18 @@ class Qwen30BInstruct2507ProfileTests(unittest.TestCase):
                 self.assertIn("actor_rollout_ref.rollout.max_model_len=18432", rendered)
                 self.assertIn(
                     "+mopd_audit.vocab_per_occurrence_mean_vector_enabled=true",
+                    rendered,
+                )
+                self.assertIn(
+                    "+mopd_audit.logp_vocab_per_occurrence_mean_vector_enabled=true",
+                    rendered,
+                )
+                self.assertIn(
+                    "+mopd_audit.logp_abs_vocab_per_occurrence_mean_vector_enabled=true",
+                    rendered,
+                )
+                self.assertIn(
+                    "+mopd_audit.entropy_vocab_per_occurrence_mean_vector_enabled=true",
                     rendered,
                 )
                 self.assertIn("+mopd_audit.logp_vector_enabled=true", rendered)

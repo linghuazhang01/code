@@ -87,6 +87,24 @@ def _optional_positive_int(value: Any) -> int | None:
     return max(1, int(value))
 
 
+def _optional_bool_with_fallback(value: Any, fallback: bool) -> bool:
+    if value is None:
+        return fallback
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"", "none", "null"}:
+            return fallback
+        if normalized in {"true", "yes", "1"}:
+            return True
+        if normalized in {"false", "no", "0"}:
+            return False
+    if isinstance(value, (int, float)) and value in {0, 1}:
+        return bool(value)
+    raise ValueError(f"Expected an optional boolean value, got {value!r}.")
+
+
 def _mask_mean(matrix: Any, mask: Any) -> Any:
     import torch
 
@@ -770,6 +788,18 @@ class MOPDAuditLogger:
         self.token_gap_vocab_size = _optional_positive_int(_cfg_get(audit_config, "token_gap_vocab_size", None))
         self.vocab_per_occurrence_mean_vector_enabled = bool(
             _cfg_get(audit_config, "vocab_per_occurrence_mean_vector_enabled", True)
+        )
+        self.logp_vocab_per_occurrence_mean_vector_enabled = _optional_bool_with_fallback(
+            _cfg_get(audit_config, "logp_vocab_per_occurrence_mean_vector_enabled", None),
+            self.vocab_per_occurrence_mean_vector_enabled,
+        )
+        self.logp_abs_vocab_per_occurrence_mean_vector_enabled = _optional_bool_with_fallback(
+            _cfg_get(audit_config, "logp_abs_vocab_per_occurrence_mean_vector_enabled", None),
+            self.vocab_per_occurrence_mean_vector_enabled,
+        )
+        self.entropy_vocab_per_occurrence_mean_vector_enabled = _optional_bool_with_fallback(
+            _cfg_get(audit_config, "entropy_vocab_per_occurrence_mean_vector_enabled", None),
+            self.vocab_per_occurrence_mean_vector_enabled,
         )
         self.token_gap_vocab_size_source = "config" if self.token_gap_vocab_size is not None else "unavailable"
         if self.token_gap_vocab_size is None:
@@ -1617,7 +1647,7 @@ class MOPDAuditLogger:
                                     _logp_vocab_json_fields(
                                         vocab_vectors,
                                         include_mean_vectors=(
-                                            self.vocab_per_occurrence_mean_vector_enabled
+                                            self.logp_vocab_per_occurrence_mean_vector_enabled
                                         ),
                                     )
                                 )
@@ -1626,7 +1656,7 @@ class MOPDAuditLogger:
                                     _logp_abs_vocab_json_fields(
                                         vocab_vectors,
                                         include_mean_vectors=(
-                                            self.vocab_per_occurrence_mean_vector_enabled
+                                            self.logp_abs_vocab_per_occurrence_mean_vector_enabled
                                         ),
                                     )
                                 )
@@ -1728,7 +1758,7 @@ class MOPDAuditLogger:
                             **_entropy_vocab_json_fields(
                                 vocab_vectors,
                                 include_mean_vectors=(
-                                    self.vocab_per_occurrence_mean_vector_enabled
+                                    self.entropy_vocab_per_occurrence_mean_vector_enabled
                                 ),
                             ),
                         }
@@ -1979,12 +2009,15 @@ class MOPDAuditLogger:
                     ("gap_abs_mean_cosine", "gap_abs_mean_vector_vocab"),
                 ]
             )
+        if self.logp_vocab_per_occurrence_mean_vector_enabled:
             logp_vector_specs.append(
                 ("logp_mean_cosine", "gap_signed_mean_vector_vocab")
             )
+        if self.logp_abs_vocab_per_occurrence_mean_vector_enabled:
             logp_abs_vector_specs.append(
                 ("logp_abs_mean_cosine", "gap_abs_mean_vector_vocab")
             )
+        if self.entropy_vocab_per_occurrence_mean_vector_enabled:
             entropy_vector_specs.extend(
                 [
                     ("student_entropy_mean_cosine", "student_entropy_mean_vector_vocab"),

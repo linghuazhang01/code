@@ -196,6 +196,9 @@ class AuditConfig:
     token_gap_vocab_vector_freq_steps: int = 1
     token_gap_vocab_size: int | None = None
     vocab_per_occurrence_mean_vector_enabled: bool = True
+    logp_vocab_per_occurrence_mean_vector_enabled: bool | None = None
+    logp_abs_vocab_per_occurrence_mean_vector_enabled: bool | None = None
+    entropy_vocab_per_occurrence_mean_vector_enabled: bool | None = None
     entropy_enabled: bool = True
     entropy_freq_steps: int = 1
     entropy_vocab_vector_enabled: bool = False

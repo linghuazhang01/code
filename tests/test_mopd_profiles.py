@@ -175,6 +175,9 @@ class MOPDProfileTests(unittest.TestCase):
         self.assertTrue(config.audit.logp_vector_enabled)
         self.assertTrue(config.audit.logp_abs_vector_enabled)
         self.assertTrue(config.audit.vocab_per_occurrence_mean_vector_enabled)
+        self.assertTrue(config.audit.logp_vocab_per_occurrence_mean_vector_enabled)
+        self.assertTrue(config.audit.logp_abs_vocab_per_occurrence_mean_vector_enabled)
+        self.assertTrue(config.audit.entropy_vocab_per_occurrence_mean_vector_enabled)
         self.assertIn("+mopd_audit.logp_vector_enabled=true", rendered)
 
     def test_loss_only_profile_keeps_loss_selection_without_nested_gradient_replay(self) -> None:

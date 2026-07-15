@@ -209,7 +209,7 @@ class AuditVocabCosineTests(unittest.TestCase):
         self.assertFalse(any(key.endswith("/gap_signed_mean_cosine") for key in metrics))
         self.assertFalse(any(key.endswith("/student_entropy_mean_cosine") for key in metrics))
 
-    def test_topk_only_emits_cross_entropy_domain_cosine(self) -> None:
+    def test_topk_only_respects_entropy_occurrence_override(self) -> None:
         try:
             import torch
         except ModuleNotFoundError as exc:  # pragma: no cover - local lightweight env
@@ -250,6 +250,7 @@ class AuditVocabCosineTests(unittest.TestCase):
                         "token_conflict_enabled": False,
                         "entropy_enabled": False,
                         "entropy_vocab_vector_enabled": False,
+                        "entropy_vocab_per_occurrence_mean_vector_enabled": False,
                         "topk_teacher_student_cross_entropy_vocab_enabled": True,
                         "topk_teacher_student_cross_entropy_vocab_freq_steps": 2,
                         "token_gap_vocab_size": 4,
@@ -271,7 +272,7 @@ class AuditVocabCosineTests(unittest.TestCase):
             "teacher_student_cross_entropy_sum_cosine",
             metrics,
         )
-        self.assertIn(
+        self.assertNotIn(
             "global/entropy_vocab_cosine/math_vs_code/"
             "teacher_student_cross_entropy_mean_cosine",
             metrics,

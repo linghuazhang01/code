@@ -109,6 +109,9 @@ audit:
   token_gap_enabled: true
   token_gap_vocab_vector_enabled: true
   vocab_per_occurrence_mean_vector_enabled: true
+  logp_vocab_per_occurrence_mean_vector_enabled: null
+  logp_abs_vocab_per_occurrence_mean_vector_enabled: null
+  entropy_vocab_per_occurrence_mean_vector_enabled: null
   entropy_enabled: true
   entropy_vocab_vector_enabled: true
   topk_teacher_student_cross_entropy_vocab_enabled: true
@@ -125,10 +128,16 @@ audit:
 
 `logp_vector_enabled` 显式输出 signed gap
 `teacher_logp - old_student_logp`，`logp_abs_vector_enabled` 输出其绝对值。
-`vocab_per_occurrence_mean_vector_enabled` 控制所有 vocab signal 的
-`*_mean_vector_vocab`：对每个 token id 使用 `sum / occurrence_count`，未出现
-token 的维度保持 0。该统计是当前 step、当前 domain 内的 conditional mean，
-不是 `count / total_count` 的 token-frequency probability。
+`vocab_per_occurrence_mean_vector_enabled` 是 legacy global 开关，并继续直接控制
+token-gap family。`logp_vocab_per_occurrence_mean_vector_enabled`、
+`logp_abs_vocab_per_occurrence_mean_vector_enabled` 和
+`entropy_vocab_per_occurrence_mean_vector_enabled` 可以分别覆盖 logp、logp_abs 与
+entropy family；值为 `null` 或省略时回退 global，显式 `true/false` 时独立生效。
+entropy override 同时控制 student entropy 与 teacher-student cross-entropy 的 mean
+vector。所有 `*_mean_vector_vocab` 都对每个 token id 使用
+`sum / occurrence_count`，未出现 token 的维度保持 0。该统计是当前 step、当前
+domain 内的 conditional mean，不是 `count / total_count` 的 token-frequency
+probability。
 
 它还设置：
 

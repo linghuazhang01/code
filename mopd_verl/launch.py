@@ -166,6 +166,12 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"+mopd_audit.token_gap_vocab_size={_hydra_scalar(audit.token_gap_vocab_size)}",
         "+mopd_audit.vocab_per_occurrence_mean_vector_enabled="
         f"{str(audit.vocab_per_occurrence_mean_vector_enabled).lower()}",
+        "+mopd_audit.logp_vocab_per_occurrence_mean_vector_enabled="
+        f"{_hydra_scalar(audit.logp_vocab_per_occurrence_mean_vector_enabled).lower()}",
+        "+mopd_audit.logp_abs_vocab_per_occurrence_mean_vector_enabled="
+        f"{_hydra_scalar(audit.logp_abs_vocab_per_occurrence_mean_vector_enabled).lower()}",
+        "+mopd_audit.entropy_vocab_per_occurrence_mean_vector_enabled="
+        f"{_hydra_scalar(audit.entropy_vocab_per_occurrence_mean_vector_enabled).lower()}",
         f"+mopd_audit.entropy_enabled={str(audit.entropy_enabled).lower()}",
         f"+mopd_audit.entropy_freq_steps={audit.entropy_freq_steps}",
         f"+mopd_audit.entropy_vocab_vector_enabled={str(audit.entropy_vocab_vector_enabled).lower()}",

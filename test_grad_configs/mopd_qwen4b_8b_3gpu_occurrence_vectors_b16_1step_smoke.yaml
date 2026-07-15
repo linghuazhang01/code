@@ -1,28 +1,17 @@
-# Eight-GPU math+code training profile for Qwen3-4B student distillation from
-# domain-specialized Qwen3-4B post-training teachers.
+# Three-GPU smoke test for per-family occurrence-normalized vocab vectors.
+# The filename is retained for compatibility; the executable contract is 2 steps.
 #
-# Physical GPU layout:
-# - actor/rollout pool: 6 GPUs for Qwen3-4B student + vLLM
-# - ref/teacher pool: 2 GPUs for Qwen3-4B math/code post-training teachers
+# Physical placement:
+# - 2 GPUs for actor/rollout (FSDP size 2)
+# - 1 GPU for the shared Qwen3-8B teacher
 #
-# Keep trainer.n_gpus_per_node equal to the actor/rollout pool size, because
-# verl uses trainer.* as the actor DP world size. Launch with all eight GPUs, e.g.
-# GPU_IDS=0,1,2,3,4,5,6,7.
-#
-# Enabled audit families:
-# - math/code full gradient audit
-# - token-gap/logp vectors, including full-vocab token-id vectors
-# - student-entropy full-vocab vectors
-#
-# Disabled audit families:
-# - token gradients
-# - sample gradients
-# - entropy distribution/scalars and token-conflict diagnostics
+# The legacy global mean-vector switch is intentionally disabled. The logp,
+# logp_abs, and entropy overrides are enabled independently to test precedence.
 
 runtime:
   python_bin: python
   verl_module: verl.trainer.main_ppo
-  wandb_mode: online
+  wandb_mode: disabled
   wandb_entity: null
   env_file: .env.local
   used_model: no_api
@@ -40,32 +29,27 @@ data:
   load_parquet_direct: true
   val_files:
     - data/eval_data/math/AIME24/test.parquet
-    - data/eval_data/math/AIME25/test.parquet
-    - data/eval_data/math/HMMT25Feb/test.parquet
-    - data/eval_data/math/HMMT25Nov/test.parquet
     - data/eval_data/code/HumanEvalPlus/test.parquet
-    - data/eval_data/code/MBPPPlus/test.parquet
-    # - data/eval_data/code/LiveCodeBench/test.parquet
-  train_batch_size: 768
+  train_batch_size: 16
+  val_batch_size: 16
   max_prompt_length: 2048
-  max_response_length: 16384
-  val_batch_size: 1024
+  max_response_length: 512
   filter_overlong_prompts: true
   truncation: error
-  shuffle: true
+  shuffle: false
   validation_shuffle: false
   seed: 42
   return_raw_chat: true
   enable_thinking: false
 
 model:
-  student_path: ../models/Qwen3-4B
+  student_path: /root/autodl-tmp/models/Qwen3-4B
   student_base_path: null
-  math_teacher_path: ../models/Qwen3-4B-Non-Thinking-RL-Math-Step500
-  code_teacher_path: ../models/Qwen3-4B-Non-Thinking-RL-Code-Step300
+  math_teacher_path: /root/autodl-tmp/models/Qwen3-8B
+  code_teacher_path: /root/autodl-tmp/models/Qwen3-8B
   domain_teacher_paths:
-    math: ../models/Qwen3-4B-Non-Thinking-RL-Math-Step500
-    code: ../models/Qwen3-4B-Non-Thinking-RL-Code-Step300
+    math: /root/autodl-tmp/models/Qwen3-8B
+    code: /root/autodl-tmp/models/Qwen3-8B
   teacher_model_device: gpu
 
 actor:
@@ -85,33 +69,33 @@ actor:
   topk_distill_loss_weight: 0.0
   topk_distill_logprob_chunk_size: 16
   topk_distill_logprob_mode: sparse
-  ppo_mini_batch_size: 768
+  ppo_mini_batch_size: 16
   ppo_micro_batch_size_per_gpu: 1
+  use_dynamic_bsz: false
   use_kl_loss: true
   kl_loss_coef: 0
   kl_loss_type: low_var_kl
   entropy_coeff: 0
-  ppo_max_token_len_per_gpu: 32768
+  ppo_max_token_len_per_gpu: 4096
   gradient_checkpointing: true
   param_offload: true
   optimizer_offload: true
   fsdp_size: 2
-  use_dynamic_bsz: false
 
 rollout:
   calculate_log_probs: true
   log_prob_micro_batch_size_per_gpu: 1
-  tensor_model_parallel_size: 2
+  tensor_model_parallel_size: 1
   name: vllm
   mode: sync
-  gpu_memory_utilization: 0.6
+  gpu_memory_utilization: 0.45
   enforce_eager: true
   enable_chunked_prefill: false
   n: 1
-  max_num_batched_tokens: 32768
-  max_model_len: 18432
-  max_num_seqs: 24
-  do_sample: true
+  max_num_batched_tokens: 4096
+  max_model_len: 3072
+  max_num_seqs: 16
+  do_sample: false
   temperature: 1.0
   top_p: 1.0
   val_n: 1
@@ -127,21 +111,23 @@ rollout_correction:
   bypass_mode: false
 
 extra_overrides:
+  - actor_rollout_ref.model.use_remove_padding=False
   - custom_reward_function.path=mopd_verl/mixed_reward.py
   - custom_reward_function.name=compute_score
+  - trainer.resume_mode=disable
 
 worker_placement:
   separate_ref_policy: true
   actor_rollout:
-    n_gpus_per_node: 6
+    n_gpus_per_node: 2
     nnodes: 1
   ref_policy:
-    n_gpus_per_node: 2
+    n_gpus_per_node: 1
     nnodes: 1
 
 audit:
   enabled: true
-  output_dir: audit/qwen4b_rl_teacher_math_code
+  output_dir: audit/mopd-qwen4b-8b-3gpu-occurrence-vectors-b16-1step-smoke
   domains:
     - math
     - code
@@ -158,7 +144,7 @@ audit:
   tier2_window_size: 20
   calibration_bins: 10
   full_gradient_enabled: true
-  full_gradient_freq_steps: 2
+  full_gradient_freq_steps: 1
   full_grad_training_parity_freq_steps: 1
   full_grad_training_parity_rel_l2_threshold: 2.0e-2
   full_gradient_train_max_samples_per_domain: null
@@ -185,7 +171,7 @@ audit:
   token_gap_vocab_vector_enabled: true
   token_gap_vocab_vector_freq_steps: 1
   token_gap_vocab_size: null
-  vocab_per_occurrence_mean_vector_enabled: true
+  vocab_per_occurrence_mean_vector_enabled: false
   logp_vocab_per_occurrence_mean_vector_enabled: true
   logp_abs_vocab_per_occurrence_mean_vector_enabled: true
   entropy_vocab_per_occurrence_mean_vector_enabled: true
@@ -218,42 +204,24 @@ audit:
   gradient_fingerprint_enabled: false
   gradient_fingerprint_freq_steps: 1
 
-paper_eval:
-  enabled: false
-  script_path: eval/scripts/run_paper_eval_suite.sh
-  model_path: null
-  output_dir: eval_outputs/paper_suite/qwen4b_rl_teacher_math_code
-  datasets:
-    - aime24
-    - aime25
-    - hmmt25_feb
-    - hmmt25_nov
-    - humaneval_plus
-    - mbpp_plus
-    - lcb
-  run_on_initial_validation: true
-  evaluate_current_checkpoint: true
-  fail_on_error: false
-  timeout_seconds: 0
-
 trainer:
   project_name: MOPD
-  experiment_name: qwen4b-from-rl-teachers-math-code
-  logger: '["console","tensorboard","wandb"]'
-  n_gpus_per_node: 6
+  experiment_name: mopd-qwen4b-8b-3gpu-occurrence-vectors-b16-1step-smoke
+  logger: '["console","tensorboard"]'
+  n_gpus_per_node: 2
   nnodes: 1
-  save_freq: 5
+  save_freq: -1
   test_freq: -1
-  total_epochs: 3
-  total_training_steps: 200
-  default_local_dir: checkpoints/MOPD/qwen4b-from-rl-teachers-math-code
+  total_epochs: 1
+  total_training_steps: 2
+  default_local_dir: checkpoints/MOPD/mopd-qwen4b-8b-3gpu-occurrence-vectors-b16-1step-smoke
   critic_warmup: 0
   val_before_train: false
-  log_val_generations: 10
-  max_actor_ckpt_to_keep: 2
+  log_val_generations: 0
+  max_actor_ckpt_to_keep: 1
   max_critic_ckpt_to_keep: 1
 
 ray_kwargs:
   ray_init:
     include_dashboard: false
-    num_cpus: 24
+    num_cpus: 32

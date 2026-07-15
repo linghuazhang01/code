@@ -173,6 +173,9 @@ audit:
   token_gap_vocab_vector_freq_steps: 1
   token_gap_vocab_size: null
   vocab_per_occurrence_mean_vector_enabled: true
+  logp_vocab_per_occurrence_mean_vector_enabled: true
+  logp_abs_vocab_per_occurrence_mean_vector_enabled: true
+  entropy_vocab_per_occurrence_mean_vector_enabled: true
   entropy_enabled: false
   entropy_freq_steps: 1
   entropy_vocab_vector_enabled: true
