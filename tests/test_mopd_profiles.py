@@ -141,6 +141,42 @@ class MOPDProfileTests(unittest.TestCase):
         )
         self.assertIn("+mopd_audit.logp_abs_vector_enabled=true", rendered)
 
+    def test_eight_gpu_post_training_teacher_profile_contract(self) -> None:
+        config_path = (
+            Path(__file__).resolve().parents[1]
+            / "configs"
+            / "mopd_qwen4b_rl_teacher_8gpu_math_code.yaml"
+        )
+        config = load_config(config_path)
+        rendered = format_command(build_command(config))
+
+        self.assertEqual(
+            config.model.math_teacher_path,
+            "../models/Qwen3-4B-Non-Thinking-RL-Math-Step500",
+        )
+        self.assertEqual(
+            config.model.code_teacher_path,
+            "../models/Qwen3-4B-Non-Thinking-RL-Code-Step300",
+        )
+        self.assertEqual(
+            config.model.domain_teacher_paths,
+            {
+                "math": "../models/Qwen3-4B-Non-Thinking-RL-Math-Step500",
+                "code": "../models/Qwen3-4B-Non-Thinking-RL-Code-Step300",
+            },
+        )
+        self.assertEqual(config.data.train_batch_size, 768)
+        self.assertEqual(config.actor.ppo_mini_batch_size, 768)
+        self.assertEqual(config.trainer.n_gpus_per_node, 6)
+        self.assertEqual(config.worker_placement.actor_rollout.n_gpus_per_node, 6)
+        self.assertEqual(config.worker_placement.ref_policy.n_gpus_per_node, 2)
+        self.assertEqual(config.audit.full_gradient_freq_steps, 2)
+        self.assertTrue(config.audit.entropy_vocab_vector_enabled)
+        self.assertTrue(config.audit.logp_vector_enabled)
+        self.assertTrue(config.audit.logp_abs_vector_enabled)
+        self.assertTrue(config.audit.vocab_per_occurrence_mean_vector_enabled)
+        self.assertIn("+mopd_audit.logp_vector_enabled=true", rendered)
+
     def test_loss_only_profile_keeps_loss_selection_without_nested_gradient_replay(self) -> None:
         config_dir = Path(__file__).resolve().parents[1] / "configs"
 
