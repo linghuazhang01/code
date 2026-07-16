@@ -22,8 +22,10 @@ dependencies:
       - vllm==0.11.0
       - xformers==0.0.32.post1
 
-      # Do not install external FlashAttention for the first Blackwell
-      # correctness run. Use eager HF attention and disable remove-padding.
+      # Official Python 3.10 wheel matching PyTorch 2.8, CUDA 12, and the
+      # CXX11 ABI used by this Blackwell environment. This release includes
+      # forward/backward kernels for sm_120.
+      - https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3.post1/flash_attn-2.8.3.post1+cu12torch2.8cxx11abiTRUE-cp310-cp310-linux_x86_64.whl
       - transformers[hf_xet]==4.55.4
       - tokenizers>=0.21.0,<0.22
       - huggingface_hub>=0.30.0,<1.0

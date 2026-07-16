@@ -47,8 +47,10 @@ source logs/activate_training_env.sh
 ```
 
 该环境固定使用 `torch==2.8.0+cu128`、`vllm==0.11.0`、
-`transformers==4.55.4` 和 `tensordict==0.10.0`，并有意不安装 external
-FlashAttention。第一次 correctness run 保持 eager HF attention，并关闭
+`transformers==4.55.4`、`tensordict==0.10.0`，以及适配 Python 3.10、
+PyTorch 2.8、CUDA 12 和 CXX11 ABI TRUE 的官方
+`flash-attn==2.8.3.post1` wheel。该组合可在 `sm_120` 上使用默认
+`flash_attention_2` backend。第一次 correctness run 可继续关闭
 remove-padding：
 
 ```bash

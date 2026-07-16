@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 
 class TrainingSetupAssetScriptTests(unittest.TestCase):
     def test_setup_training_env_syncs_the_single_environment_file(self) -> None:
@@ -51,6 +53,34 @@ class TrainingSetupAssetScriptTests(unittest.TestCase):
             "git+https://github.com/abukharin-nv/verifiable-instructions.git@f46a5ac87b1400a4f8973039844b6be9b56e3faf",
         ):
             self.assertIn(expected, environment_source)
+
+    def test_blackwell_environment_pins_sm120_flash_attention_wheel(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        environment_data = yaml.safe_load(
+            (root / "environment.blackwell.yml").read_text(encoding="utf-8")
+        )
+        dependencies = environment_data["dependencies"]
+        pip_dependencies = next(
+            dependency["pip"]
+            for dependency in dependencies
+            if isinstance(dependency, dict) and "pip" in dependency
+        )
+        flash_attention_dependencies = [
+            dependency
+            for dependency in pip_dependencies
+            if "flash_attn" in dependency or "flash-attn" in dependency
+        ]
+
+        self.assertIn("python=3.10", dependencies)
+        self.assertIn("torch==2.8.0+cu128", pip_dependencies)
+        self.assertEqual(
+            flash_attention_dependencies,
+            [
+                "https://github.com/Dao-AILab/flash-attention/releases/download/"
+                "v2.8.3.post1/flash_attn-2.8.3.post1+cu12torch2.8"
+                "cxx11abiTRUE-cp310-cp310-linux_x86_64.whl"
+            ],
+        )
 
     def test_asset_script_targets_qwen30b_instruct_2507_four_domain_training(self) -> None:
         script_path = (

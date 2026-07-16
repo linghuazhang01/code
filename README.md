@@ -50,9 +50,11 @@ source logs/activate_training_env.sh
 ```
 
 The Blackwell profile pins `torch==2.8.0+cu128`, `vllm==0.11.0`,
-`transformers==4.55.4`, and `tensordict==0.10.0`. It intentionally omits
-external FlashAttention. For the first correctness run, keep the existing
-eager HF attention override and disable remove-padding:
+`transformers==4.55.4`, `tensordict==0.10.0`, and the official
+`flash-attn==2.8.3.post1` wheel built for Python 3.10, PyTorch 2.8, CUDA 12,
+and CXX11 ABI TRUE. This combination supports the default
+`flash_attention_2` backend on `sm_120`. For a conservative first correctness
+run, keep remove-padding disabled:
 
 ```bash
 ENV_NAME=mopd-verl-blackwell \
