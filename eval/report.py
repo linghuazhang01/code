@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from eval.domains.code import is_code_dataset
-from eval.domains.greasoner import is_greasoner_dataset
+from eval.domains.science import is_science_dataset
 from eval.domains.search import is_search_dataset
 from eval.domains.toolrl import is_toolrl_dataset
 
@@ -48,12 +48,10 @@ def _ability(dataset: str) -> str:
     normalized = dataset.lower()
     if "ifeval" in normalized or "ifbench" in normalized:
         return "if"
-    if "gpqa" in normalized or "hle" in normalized:
+    if "gpqa" in normalized or "hle" in normalized or is_science_dataset(dataset):
         return "science"
     if is_code_dataset(dataset):
         return "code"
-    if is_greasoner_dataset(dataset):
-        return "reasoning"
     if is_toolrl_dataset(dataset):
         return "tool"
     if is_search_dataset(dataset):

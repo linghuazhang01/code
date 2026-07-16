@@ -13,7 +13,7 @@ from typing import Any
 import pandas as pd
 
 from eval.domains.code import is_code_dataset
-from eval.domains.greasoner import is_greasoner_dataset
+from eval.domains.science import is_science_dataset
 from eval.domains.search import is_search_dataset
 from eval.domains.toolrl import is_toolrl_dataset
 
@@ -25,7 +25,6 @@ DEFAULT_PAPER_EVAL_DATA_FILES = (
     "data/eval_data/code/HumanEvalPlus/test.parquet",
     "data/eval_data/code/MBPPPlus/test.parquet",
 )
-DEFAULT_GREASONER_DATA_FILES = ("data/eval_data/greasoner/WebInstructVerified/test.parquet",)
 DEFAULT_TOOLRL_DATA_FILES = (
     "data/eval_data/toolrl/BFCL/test.parquet",
     "data/eval_data/toolrl/API-Bank/test.parquet",
@@ -33,15 +32,14 @@ DEFAULT_TOOLRL_DATA_FILES = (
 )
 DEFAULT_SEARCH_DATA_FILES = ("data/SearchQA/test.parquet",)
 DEFAULT_IF_DATA_FILES = (
-    "data/eval_data/ifbench/IFEval.parquet",
-    "data/eval_data/ifbench/IFBench_test.parquet",
+    "data/eval_data/if/IFEval/test.parquet",
+    "data/eval_data/if/IFBench/test.parquet",
 )
-DEFAULT_SCIENCE_DATA_FILES = ("data/eval_data/science/gpqa.parquet",)
+DEFAULT_SCIENCE_DATA_FILES = ("data/eval_data/science/GPQA/test.parquet",)
 DEFAULT_DATA_FILES = (
     DEFAULT_PAPER_EVAL_DATA_FILES
     + DEFAULT_IF_DATA_FILES
     + DEFAULT_SCIENCE_DATA_FILES
-    + DEFAULT_GREASONER_DATA_FILES
     + DEFAULT_TOOLRL_DATA_FILES
     + DEFAULT_SEARCH_DATA_FILES
 )
@@ -129,8 +127,8 @@ def normalize_ability(raw_ability: str, dataset: str) -> str:
         return "search"
     if ability in {"toolrl", "tool_call", "tool-use", "tool_use"} or is_toolrl_dataset(dataset):
         return "tool"
-    if ability in {"greasoner", "general_reasoner"} or is_greasoner_dataset(dataset):
-        return "reasoning"
+    if is_science_dataset(dataset):
+        return "science"
     if is_code_dataset(dataset):
         return "code"
     return ability or "unknown"

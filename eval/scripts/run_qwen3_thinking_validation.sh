@@ -35,8 +35,6 @@ SCORE_CODE="${SCORE_CODE:-1}"
 SAVE_COMPLETIONS="${SAVE_COMPLETIONS:-1}"
 INCLUDE_SEARCH="${INCLUDE_SEARCH:-1}"
 SEARCH_DATA_FILES="${SEARCH_DATA_FILES:-${CODE_DIR}/data/SearchQA/test.parquet}"
-INCLUDE_GREASONER="${INCLUDE_GREASONER:-1}"
-GREASONER_DATA_FILES="${GREASONER_DATA_FILES:-${CODE_DIR}/data/eval_data/greasoner/WebInstructVerified/test.parquet}"
 INCLUDE_TOOLRL="${INCLUDE_TOOLRL:-1}"
 TOOLRL_DATA_FILES="${TOOLRL_DATA_FILES:-${CODE_DIR}/data/eval_data/toolrl/BFCL/test.parquet ${CODE_DIR}/data/eval_data/toolrl/API-Bank/test.parquet ${CODE_DIR}/data/eval_data/toolrl/Bamboogle/test.parquet}"
 
@@ -52,15 +50,6 @@ DATA_FILES=(
   "${CODE_DIR}/data/eval_data/code/HumanEvalPlus/test.parquet"
   "${CODE_DIR}/data/eval_data/code/MBPPPlus/test.parquet"
 )
-if [[ "${INCLUDE_GREASONER}" == "1" ]]; then
-  for greasoner_data_file in ${GREASONER_DATA_FILES}; do
-    if [[ -f "${greasoner_data_file}" ]]; then
-      DATA_FILES+=("${greasoner_data_file}")
-    else
-      echo "[thinking-eval] warning: missing GReasoner eval data, skipping: ${greasoner_data_file}" >&2
-    fi
-  done
-fi
 if [[ "${INCLUDE_TOOLRL}" == "1" ]]; then
   for toolrl_data_file in ${TOOLRL_DATA_FILES}; do
     if [[ -f "${toolrl_data_file}" ]]; then

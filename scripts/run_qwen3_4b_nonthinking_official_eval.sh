@@ -25,12 +25,12 @@ if [[ -z "${JUDGE_MODEL:-}" && -n "${model:-}" ]]; then
 fi
 
 MODEL_PATH="${MODEL_PATH:-Qwen/Qwen3-4B}"
-RUN_ID="${RUN_ID:-qwen3_4b_nonthinking_greasoner_$(date +%Y%m%d_%H%M%S)}"
+RUN_ID="${RUN_ID:-qwen3_4b_nonthinking_science_$(date +%Y%m%d_%H%M%S)}"
 OUTPUT_DIR="${OUTPUT_DIR:-${CODE_DIR}/data/eval_data/results/${RUN_ID}}"
 LOG_FILE="${LOG_FILE:-${OUTPUT_DIR}/run.log}"
 
-DOMAINS="${DOMAINS:-greasoner}"
-DATASETS="${DATASETS:-mmlupro gpqa_d supergpqa theoremqa bbeh}"
+DOMAINS="${DOMAINS:-science}"
+DATASETS="${DATASETS:-mmlupro supergpqa}"
 MAX_SAMPLES="${MAX_SAMPLES:-}"
 MAX_TOKENS="${MAX_TOKENS:-8192}"
 TEMPERATURE="${TEMPERATURE:-0}"
@@ -44,19 +44,6 @@ API_BANK_LEVELS="${API_BANK_LEVELS:-1 2 3}"
 JUDGE_BASE_URL="${JUDGE_BASE_URL:-${OPENAI_BASE_URL:-}}"
 JUDGE_API_KEY="${JUDGE_API_KEY:-${OPENAI_API_KEY:-}}"
 JUDGE_MODEL="${JUDGE_MODEL:-gpt-4o}"
-
-if [[ " ${DATASETS} " == *" theoremqa "* ]]; then
-  if [[ -z "${JUDGE_API_KEY}" || -z "${JUDGE_BASE_URL}" || -z "${JUDGE_MODEL}" ]]; then
-    cat >&2 <<'MSG'
-[qwen3-4b-nonthinking-eval] theoremqa requires judge API settings.
-Set them in api.sh or env:
-  OPENAI_API_KEY / OPENAI_BASE_URL / JUDGE_MODEL
-or:
-  dashscope_ak / dashscope_baseurl / model
-MSG
-    exit 2
-  fi
-fi
 
 ARGS=(
   --domains ${DOMAINS}

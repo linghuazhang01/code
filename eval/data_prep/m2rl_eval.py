@@ -15,7 +15,7 @@ from datasets import Image, load_dataset
 
 
 DEFAULT_OUTPUT_ROOT = Path("data/eval_data")
-DEFAULT_GPQA_CSV = Path("data/eval_data/greasoner/official/_raw/GPQA-D/gpqa_diamond.csv")
+DEFAULT_GPQA_CSV = Path("data/eval_data/science/GPQA/_sources/gpqa_diamond.csv")
 GPQA_PROMPT = (
     "Answer the following multiple choice question. The last line of your response should be "
     "of the following format: 'Answer: $LETTER' (without quotes) where LETTER is one of ABCD. "
@@ -186,10 +186,10 @@ def prepare(output_root: Path, gpqa_csv: Path, seed: int) -> dict[str, Any]:
     hle_rows, hle_total = _hle_rows()
 
     outputs = {
-        "ifbench": output_root / "ifbench" / "IFBench_test.parquet",
-        "ifeval": output_root / "ifbench" / "IFEval.parquet",
-        "gpqa_diamond": output_root / "science" / "gpqa.parquet",
-        "hle_text_only": output_root / "science" / "HLE_text_only_inference.parquet",
+        "ifbench": output_root / "if" / "IFBench" / "test.parquet",
+        "ifeval": output_root / "if" / "IFEval" / "test.parquet",
+        "gpqa_diamond": output_root / "science" / "GPQA" / "test.parquet",
+        "hle_text_only": output_root / "science" / "HLE" / "test.parquet",
     }
     row_groups = {
         "ifbench": ifbench_rows,
@@ -224,7 +224,7 @@ def prepare(output_root: Path, gpqa_csv: Path, seed: int) -> dict[str, Any]:
         "limitations": [
             "HLE is restricted to text-only rows because the OPD Qwen3-4B evaluation path is text-only.",
             "HLE output is inference-only: current verl rewards do not implement the official exact-match/judge protocol.",
-            "Do not add HLE_text_only_inference.parquet to verl val_files or compare it with M2RL full-HLE scores.",
+            "Do not add science/HLE/test.parquet to verl val_files or compare it with M2RL full-HLE scores.",
         ],
     }
     manifest_path = output_root / "m2rl_eval_manifest.json"

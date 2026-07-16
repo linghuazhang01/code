@@ -23,17 +23,17 @@
   "limitations": [
     "HLE is restricted to text-only rows because the OPD Qwen3-4B evaluation path is text-only.",
     "HLE output is inference-only: current verl rewards do not implement the official exact-match/judge protocol.",
-    "Do not add HLE_text_only_inference.parquet to verl val_files or compare it with M2RL full-HLE scores."
+    "Do not add science/HLE/test.parquet to verl val_files or compare it with M2RL full-HLE scores."
   ],
   "outputs": {
-    "gpqa_diamond": "data/eval_data/science/gpqa.parquet",
-    "hle_text_only": "data/eval_data/science/HLE_text_only_inference.parquet",
-    "ifbench": "data/eval_data/ifbench/IFBench_test.parquet",
-    "ifeval": "data/eval_data/ifbench/IFEval.parquet"
+    "gpqa_diamond": "data/eval_data/science/GPQA/test.parquet",
+    "hle_text_only": "data/eval_data/science/HLE/test.parquet",
+    "ifbench": "data/eval_data/if/IFBench/test.parquet",
+    "ifeval": "data/eval_data/if/IFEval/test.parquet"
   },
   "protocol": "M2RL paper benchmark families: IF={IFEval, IFBench}; Science={HLE, GPQA-Diamond}",
   "sources": {
-    "gpqa_diamond": "data/eval_data/greasoner/official/_raw/GPQA-D/gpqa_diamond.csv",
+    "gpqa_diamond": "data/eval_data/science/GPQA/_sources/gpqa_diamond.csv",
     "hle": "cais/hle:test",
     "ifbench": "allenai/IFBench_test:train",
     "ifeval": "google/IFEval:train"

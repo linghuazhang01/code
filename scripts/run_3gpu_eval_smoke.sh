@@ -31,11 +31,11 @@ GROUP_0=(
 GROUP_1=(
   data/eval_data/code/HumanEvalPlus/test.parquet
   data/eval_data/code/MBPPPlus/test.parquet
-  data/eval_data/science/gpqa.parquet
+  data/eval_data/science/GPQA/test.parquet
 )
 GROUP_2=(
-  data/eval_data/ifbench/IFEval.parquet
-  data/eval_data/ifbench/IFBench_test.parquet
+  data/eval_data/if/IFEval/test.parquet
+  data/eval_data/if/IFBench/test.parquet
 )
 
 mkdir -p "${OUTPUT_DIR}"

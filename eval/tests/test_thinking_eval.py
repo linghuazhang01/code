@@ -10,7 +10,6 @@ import pandas as pd
 
 from eval.common import (
     DEFAULT_DATA_FILES,
-    DEFAULT_GREASONER_DATA_FILES,
     DEFAULT_IF_DATA_FILES,
     DEFAULT_SCIENCE_DATA_FILES,
     DEFAULT_SEARCH_DATA_FILES,
@@ -36,12 +35,11 @@ class ThinkingEvalTest(unittest.TestCase):
     def test_default_data_files_include_small_code_validation(self) -> None:
         self.assertIn("data/eval_data/code/HumanEvalPlus/test.parquet", DEFAULT_DATA_FILES)
         self.assertIn("data/eval_data/code/MBPPPlus/test.parquet", DEFAULT_DATA_FILES)
-        self.assertIn("data/eval_data/greasoner/WebInstructVerified/test.parquet", DEFAULT_GREASONER_DATA_FILES)
         self.assertIn("data/eval_data/toolrl/BFCL/test.parquet", DEFAULT_TOOLRL_DATA_FILES)
         self.assertIn("data/SearchQA/test.parquet", DEFAULT_SEARCH_DATA_FILES)
         self.assertIn("data/SearchQA/test.parquet", DEFAULT_DATA_FILES)
-        self.assertIn("data/eval_data/ifbench/IFEval.parquet", DEFAULT_IF_DATA_FILES)
-        self.assertIn("data/eval_data/science/gpqa.parquet", DEFAULT_SCIENCE_DATA_FILES)
+        self.assertIn("data/eval_data/if/IFEval/test.parquet", DEFAULT_IF_DATA_FILES)
+        self.assertIn("data/eval_data/science/GPQA/test.parquet", DEFAULT_SCIENCE_DATA_FILES)
 
     def test_extracts_nested_boxed_answer(self) -> None:
         self.assertEqual(extract_boxed_answer(r"Thus \boxed{\frac{1}{2}}."), r"\frac{1}{2}")
@@ -213,11 +211,11 @@ def has_close_elements(numbers: List[float], threshold: float) -> bool:
         self.assertEqual(samples[0].ground_truth, {"target": ["Paris"]})
         self.assertEqual(normalize_ability("qa", "searchR1_nq"), "search")
 
-    def test_normalizes_greasoner_and_toolrl_domains(self) -> None:
-        self.assertEqual(normalize_ability("reasoning", "general-reasoner"), "reasoning")
-        self.assertEqual(normalize_ability("", "general-reasoner"), "reasoning")
+    def test_normalizes_science_and_toolrl_domains(self) -> None:
+        self.assertEqual(normalize_ability("", "MMLU-Pro"), "science")
+        self.assertEqual(normalize_ability("", "SuperGPQA"), "science")
         self.assertEqual(normalize_ability("", "BFCL"), "tool")
-        self.assertEqual(_ability("general-reasoner"), "reasoning")
+        self.assertEqual(_ability("MMLU-Pro"), "science")
         self.assertEqual(_ability("BFCL"), "tool")
 
     def test_toolrl_jsonl_to_verl_parquet_writes_external_eval_rows(self) -> None:

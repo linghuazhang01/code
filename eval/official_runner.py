@@ -9,8 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from eval.domains.greasoner.official_eval import DATASET_CHOICES as GREASONER_DATASETS
-from eval.domains.greasoner.official_eval import run_dataset as run_greasoner_dataset
+from eval.domains.science.official_eval import DATASET_CHOICES as SCIENCE_DATASETS
+from eval.domains.science.official_eval import run_dataset as run_science_dataset
 from eval.domains.toolrl.api_bank import LEVELS as API_BANK_LEVELS
 from eval.domains.toolrl.api_bank import run_api_bank
 from eval.domains.toolrl.bamboogle import run_bamboogle
@@ -19,7 +19,7 @@ from eval.official_utils import OfficialEvalResult, ensure_output_dir, write_jso
 
 TOOLRL_DATASETS = ("api_bank", "bfcl", "bamboogle")
 DOMAIN_TO_DATASETS = {
-    "greasoner": GREASONER_DATASETS,
+    "science": SCIENCE_DATASETS,
     "toolrl": TOOLRL_DATASETS,
 }
 
@@ -69,9 +69,9 @@ def run_selected(args: argparse.Namespace) -> list[OfficialEvalResult]:
 
     for dataset in datasets:
         dataset_output = output_root / dataset
-        if dataset in GREASONER_DATASETS:
+        if dataset in SCIENCE_DATASETS:
             results.append(
-                run_greasoner_dataset(
+                run_science_dataset(
                     dataset_key=dataset,
                     model_path=args.model_path,
                     output_dir=output_root,
@@ -83,9 +83,6 @@ def run_selected(args: argparse.Namespace) -> list[OfficialEvalResult]:
                     temperature=args.temperature if args.temperature is not None else 0.0,
                     top_p=args.top_p,
                     enable_thinking=enable_thinking,
-                    judge_api_key=_env_or_arg(args.judge_api_key, "OPENAI_API_KEY"),
-                    judge_base_url=_env_or_arg(args.judge_base_url, "OPENAI_BASE_URL"),
-                    judge_model=args.judge_model,
                 )
             )
         elif dataset == "api_bank":
@@ -152,7 +149,7 @@ def run_selected(args: argparse.Namespace) -> list[OfficialEvalResult]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--domains", nargs="+", default=["greasoner", "toolrl"], choices=tuple(DOMAIN_TO_DATASETS))
+    parser.add_argument("--domains", nargs="+", default=["science", "toolrl"], choices=tuple(DOMAIN_TO_DATASETS))
     parser.add_argument("--datasets", nargs="+", default=["all"])
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--output-dir", default=_default_output_dir())

@@ -49,7 +49,7 @@ data:
     - data/eval_data/code/HumanEvalPlus/test.parquet
     - data/eval_data/code/MBPPPlus/test.parquet
     # Prepare with scripts/prepare_m2rl_eval_data.sh.
-    - data/eval_data/science/gpqa.parquet
+    - data/eval_data/science/GPQA/test.parquet
     # - data/eval_data/code/LiveCodeBench/test.parquet
   # 504 = 4 actor GPUs x 3 domains x 42 samples.
   train_batch_size: 504

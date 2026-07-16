@@ -133,9 +133,9 @@ for name in "${DATASET_NAMES[@]}"; do
     humaneval_plus) relative_path="data/eval_data/code/HumanEvalPlus/test.parquet" ;;
     mbpp_plus) relative_path="data/eval_data/code/MBPPPlus/test.parquet" ;;
     livecodebench) relative_path="data/eval_data/code/LiveCodeBench/test.parquet" ;;
-    ifeval) relative_path="data/eval_data/ifbench/IFEval.parquet" ;;
-    ifbench) relative_path="data/eval_data/ifbench/IFBench_test.parquet" ;;
-    gpqa_diamond) relative_path="data/eval_data/science/gpqa.parquet" ;;
+    ifeval) relative_path="data/eval_data/if/IFEval/test.parquet" ;;
+    ifbench) relative_path="data/eval_data/if/IFBench/test.parquet" ;;
+    gpqa_diamond) relative_path="data/eval_data/science/GPQA/test.parquet" ;;
     *)
       echo "Unknown dataset '${name}'." >&2
       echo "Valid names: aime24 aime25 hmmt25feb hmmt25nov humaneval_plus mbpp_plus livecodebench ifeval ifbench gpqa_diamond" >&2

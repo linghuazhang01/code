@@ -73,8 +73,6 @@ data/agentic_benchmarks/cache/
 data/agentic_benchmarks/processed/
 !data/agentic_benchmarks/
 !data/agentic_benchmarks/README.md
-eval/domains/greasoner/data/official/
-
 # OS/editor
 .DS_Store
 .idea/

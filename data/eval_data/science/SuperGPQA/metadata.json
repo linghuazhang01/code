@@ -1,0 +1,21 @@
+{
+  "dataset": "SuperGPQA",
+  "key": "supergpqa",
+  "source": "m-a-p/SuperGPQA",
+  "loader_name": "m-a-p/SuperGPQA",
+  "split": "train",
+  "rows": 26529,
+  "columns": [
+    "uuid",
+    "question",
+    "options",
+    "answer",
+    "answer_letter",
+    "discipline",
+    "field",
+    "subfield",
+    "difficulty",
+    "is_calculation"
+  ],
+  "output_file": "data/eval_data/science/SuperGPQA/test.parquet"
+}

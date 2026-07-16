@@ -28,9 +28,8 @@ Data-preparation utilities under `eval/scripts/` may still be run separately.
 |---|---|---|---|
 | Math | `domains/math/` | `../data/eval_data/math/{AIME24,AIME25,HMMT25Feb,HMMT25Nov}/test.parquet` | Ready |
 | Code | `domains/code/` | `../data/eval_data/code/{HumanEvalPlus,MBPPPlus,LiveCodeBench}/test.parquet` | HumanEvalPlus/MBPPPlus ready; generate LiveCodeBench with `prepare_paper_eval_data.sh` |
-| IF | `domains/ifbench/` | `../data/eval_data/ifbench/IFBench_test.parquet` | verl validation path; generate with `scripts/prepare_m2rl_eval_data.sh` |
-| Science | `domains/science/` | `../data/eval_data/science/gpqa.parquet` | verl validation path; generate with `scripts/prepare_m2rl_eval_data.sh` |
-| GReasoner | `domains/greasoner/` | `../data/eval_data/greasoner/official/{MMLU-Pro,GPQA-D,SuperGPQA,TheoremQA,BBEH}/test.parquet` | Data/internal evaluators exist; official datasets are not yet exposed by `run_local_eval.sh` |
+| IF | `mopd_verl/m2rl_reward.py` | `../data/eval_data/if/{IFBench,IFEval}/test.parquet` | Generate the full bundle with `python -m eval.data_prep.m2rl_eval`; the shell helper prepares IFBench only |
+| Science | `domains/science/` | `../data/eval_data/science/{GPQA,HLE,MMLU-Pro,SuperGPQA}/test.parquet` | Generate GPQA/HLE with `python -m eval.data_prep.m2rl_eval`; MMLU-Pro/SuperGPQA include official evaluators |
 | ToolRL | `domains/toolrl/` | `../data/eval_data/toolrl/{BFCL,API-Bank,Bamboogle}/test.parquet` | Data/internal evaluators exist; ToolRL datasets are not yet exposed by `run_local_eval.sh` |
 
 SearchQA support remains in `domains/search/` because the thinking evaluator can
@@ -62,21 +61,16 @@ Eval files are written to `data/eval_training_data/<domain>/test.parquet`, and
 remainders to `data/training_data_split/<domain>/train.parquet`. Future training
 configs must use the remainders for the eval data to be leakage-free.
 
-General-Reasoner paper eval data:
+Official MMLU-Pro and SuperGPQA data:
 
 ```bash
-python -m eval.domains.greasoner.download_official_data --force
+python -m eval.domains.science.download_official_data --force
 ```
 
-This prepares `MMLU-Pro`, `GPQA-D`, `SuperGPQA`, `TheoremQA`, and `BBEH`.
-
-General-Reasoner/WebInstruct training or verl validation subset:
+Rebuild their reproducible paper subsets with:
 
 ```bash
-python -m eval.domains.greasoner.prepare_data \
-  --from-hf \
-  --output-dir data/eval_data/greasoner/WebInstructVerified \
-  --max-samples 100
+python -m eval.domains.science.prepare_subsets
 ```
 
 ToolRL local JSONL staging:
@@ -88,7 +82,15 @@ python -m eval.domains.toolrl.prepare_data \
   --output data/eval_data/toolrl/BFCL/test.parquet
 ```
 
-Prepare M2RL IF/science validation data:
+Prepare the complete M2RL paper-evaluation bundle (IFBench, IFEval, GPQA, and
+HLE) at the canonical dataset paths:
+
+```bash
+python -m eval.data_prep.m2rl_eval
+```
+
+To prepare only the training-validation pair (IFBench and GPQA) from explicit
+local sources:
 
 ```bash
 IF_VAL_SOURCE=/path/to/raw_if_val.parquet \
@@ -96,7 +98,7 @@ SCIENCE_VAL_SOURCE=/path/to/raw_science_val.parquet \
   scripts/prepare_m2rl_eval_data.sh
 ```
 
-or from the Nemotron RL JSONL blend:
+or prepare the same IFBench/GPQA pair from the Nemotron RL JSONL blend:
 
 ```bash
 NEMOTRON_RL_SOURCE=/path/to/instruction_following.jsonl \
@@ -156,8 +158,8 @@ Outputs are written to `data/eval_data/results/<RUN_ID>/`:
 
 ## Scoring
 
-- Math and GReasoner use boxed-answer style scoring through the project reward
-  router when available.
+- Math uses boxed-answer style scoring through the project reward router when
+  available. MMLU-Pro and SuperGPQA use the science official evaluator.
 - Code uses `mopd_verl/code_reward.py` through the vendored verl reward router.
 - IF/science validation uses the same verl reward path as training:
   `mopd_verl/mixed_reward.py` routes `m2rl_ifbench` to IFBench/verifiable-instructions

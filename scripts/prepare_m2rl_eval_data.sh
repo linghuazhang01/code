@@ -9,8 +9,8 @@ Usage:
 Prepare M2RL evaluation parquet files for OPD validation.
 
 Output defaults:
-  data/eval_data/ifbench/IFBench_test.parquet
-  data/eval_data/science/gpqa.parquet
+  data/eval_data/if/IFBench/test.parquet
+  data/eval_data/science/GPQA/test.parquet
 
 Source variables:
   IF_VAL_SOURCE=/path/to/raw_if_val.parquet
@@ -19,8 +19,8 @@ Source variables:
 
 Optional variables:
   PYTHON_BIN=python
-  IF_EVAL_OUTPUT=data/eval_data/ifbench/IFBench_test.parquet
-  SCIENCE_EVAL_OUTPUT=data/eval_data/science/gpqa.parquet
+  IF_EVAL_OUTPUT=data/eval_data/if/IFBench/test.parquet
+  SCIENCE_EVAL_OUTPUT=data/eval_data/science/GPQA/test.parquet
   M2RL_EVAL_MAX_SAMPLES=128
   IF_VAL_MAX_SAMPLES=128
   SCIENCE_VAL_MAX_SAMPLES=128
@@ -40,8 +40,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
-IF_EVAL_OUTPUT="${IF_EVAL_OUTPUT:-${CODE_DIR}/data/eval_data/ifbench/IFBench_test.parquet}"
-SCIENCE_EVAL_OUTPUT="${SCIENCE_EVAL_OUTPUT:-${CODE_DIR}/data/eval_data/science/gpqa.parquet}"
+IF_EVAL_OUTPUT="${IF_EVAL_OUTPUT:-${CODE_DIR}/data/eval_data/if/IFBench/test.parquet}"
+SCIENCE_EVAL_OUTPUT="${SCIENCE_EVAL_OUTPUT:-${CODE_DIR}/data/eval_data/science/GPQA/test.parquet}"
 NEMOTRON_RL_SOURCE="${NEMOTRON_RL_SOURCE:-}"
 IF_VAL_SOURCE="${IF_VAL_SOURCE:-}"
 SCIENCE_VAL_SOURCE="${SCIENCE_VAL_SOURCE:-}"

@@ -48,10 +48,10 @@ PROFILE_VAL_FILES = {
         "data/eval_data/code/MBPPPlus/test.parquet",
     ],
     "mopd_qwen4b_30b_a3b_instruct_2507_6gpu_if.yaml": [
-        "data/eval_data/ifbench/IFBench_test.parquet"
+        "data/eval_data/if/IFBench/test.parquet"
     ],
     "mopd_qwen4b_30b_a3b_instruct_2507_6gpu_science.yaml": [
-        "data/eval_data/science/gpqa.parquet"
+        "data/eval_data/science/GPQA/test.parquet"
     ],
     "mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math_code.yaml": [
         "data/eval_data/math/AIME24/test.parquet",
@@ -68,7 +68,7 @@ PROFILE_VAL_FILES = {
         "data/eval_data/math/HMMT25Nov/test.parquet",
         "data/eval_data/code/HumanEvalPlus/test.parquet",
         "data/eval_data/code/MBPPPlus/test.parquet",
-        "data/eval_data/science/gpqa.parquet",
+        "data/eval_data/science/GPQA/test.parquet",
     ],
 }
 

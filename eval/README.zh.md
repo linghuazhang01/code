@@ -28,9 +28,8 @@ scripts/run_local_eval.sh --model-path /path/to/model [options]
 |---|---|---|---|
 | Math | `domains/math/` | `../data/eval_data/math/{AIME24,AIME25,HMMT25Feb,HMMT25Nov}/test.parquet` | 已就绪 |
 | Code | `domains/code/` | `../data/eval_data/code/{HumanEvalPlus,MBPPPlus,LiveCodeBench}/test.parquet` | HumanEvalPlus/MBPPPlus 已就绪；LiveCodeBench 用 `prepare_paper_eval_data.sh` 生成 |
-| IF | `domains/ifbench/` | `../data/eval_data/ifbench/IFBench_test.parquet` | verl validation 路径；用 `scripts/prepare_m2rl_eval_data.sh` 生成 |
-| Science | `domains/science/` | `../data/eval_data/science/gpqa.parquet` | verl validation 路径；用 `scripts/prepare_m2rl_eval_data.sh` 生成 |
-| GReasoner | `domains/greasoner/` | `../data/eval_data/greasoner/official/{MMLU-Pro,GPQA-D,SuperGPQA,TheoremQA,BBEH}/test.parquet` | 数据与内部 evaluator 已存在；official datasets 尚未接入 `run_local_eval.sh` |
+| IF | `mopd_verl/m2rl_reward.py` | `../data/eval_data/if/{IFBench,IFEval}/test.parquet` | 完整数据用 `python -m eval.data_prep.m2rl_eval` 生成；shell helper 只准备 IFBench |
+| Science | `domains/science/` | `../data/eval_data/science/{GPQA,HLE,MMLU-Pro,SuperGPQA}/test.parquet` | GPQA/HLE 用 `python -m eval.data_prep.m2rl_eval` 生成；MMLU-Pro/SuperGPQA 提供 official evaluator |
 | ToolRL | `domains/toolrl/` | `../data/eval_data/toolrl/{BFCL,API-Bank,Bamboogle}/test.parquet` | 数据与内部 evaluator 已存在；ToolRL datasets 尚未接入 `run_local_eval.sh` |
 
 SearchQA 仍保留在 `domains/search/`，因为 thinking evaluator 可以继续包含
@@ -45,27 +44,16 @@ domain 之一。
 eval/scripts/prepare_paper_eval_data.sh
 ```
 
-下载 General-Reasoner 论文评测数据：
+下载 MMLU-Pro 与 SuperGPQA official 数据：
 
 ```bash
-python -m eval.domains.greasoner.download_official_data --force
+python -m eval.domains.science.download_official_data --force
 ```
 
-这会准备：
-
-- `MMLU-Pro`
-- `GPQA-D`
-- `SuperGPQA`
-- `TheoremQA`
-- `BBEH`
-
-准备 General-Reasoner / WebInstructVerified 训练或 verl validation subset：
+重建对应的可复现 paper subset：
 
 ```bash
-python -m eval.domains.greasoner.prepare_data \
-  --from-hf \
-  --output-dir data/eval_data/greasoner/WebInstructVerified \
-  --max-samples 100
+python -m eval.domains.science.prepare_subsets
 ```
 
 将本地 ToolRL JSONL 暂存为 verl eval parquet：
@@ -77,7 +65,14 @@ python -m eval.domains.toolrl.prepare_data \
   --output data/eval_data/toolrl/BFCL/test.parquet
 ```
 
-准备 M2RL IF / Science validation parquet：
+在 canonical dataset path 下准备完整 M2RL paper evaluation bundle
+（IFBench、IFEval、GPQA、HLE）：
+
+```bash
+python -m eval.data_prep.m2rl_eval
+```
+
+如果只需从本地数据源准备 training validation pair（IFBench、GPQA）：
 
 ```bash
 IF_VAL_SOURCE=/path/to/raw_if_val.parquet \
@@ -85,7 +80,7 @@ SCIENCE_VAL_SOURCE=/path/to/raw_science_val.parquet \
   scripts/prepare_m2rl_eval_data.sh
 ```
 
-也可以从 Nemotron RL JSONL 中过滤一个 validation subset：
+也可以从 Nemotron RL JSONL 中准备同一组 IFBench/GPQA validation subset：
 
 ```bash
 NEMOTRON_RL_SOURCE=/path/to/instruction_following.jsonl \
@@ -198,8 +193,8 @@ data/eval_data/results/<RUN_ID>/
 
 ## Scoring
 
-- Math 和 GReasoner 使用 boxed-answer 风格 scoring；如果项目 reward router
-  可用，则走原项目 reward。
+- Math 使用 boxed-answer 风格 scoring；MMLU-Pro 与 SuperGPQA 使用 Science
+  official evaluator。
 - Code 通过 vendored verl reward router 调用 `mopd_verl/code_reward.py`。
 - IF / Science validation 与训练共用同一条 verl reward 路径：
   `mopd_verl/mixed_reward.py` 将 `m2rl_ifbench` 路由到 IFBench /

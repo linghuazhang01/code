@@ -33,7 +33,7 @@ data:
   load_parquet_direct: true
   val_files:
     # Prepare with scripts/prepare_m2rl_eval_data.sh.
-    - data/eval_data/science/gpqa.parquet
+    - data/eval_data/science/GPQA/test.parquet
   train_batch_size: 512
   max_prompt_length: 2048
   max_response_length: 16384
