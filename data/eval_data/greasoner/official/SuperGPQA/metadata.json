@@ -17,5 +17,5 @@
     "difficulty",
     "is_calculation"
   ],
-  "output_file": "eval/domains/greasoner/data/official/SuperGPQA/test.parquet"
+  "output_file": "data/eval_data/greasoner/official/SuperGPQA/test.parquet"
 }

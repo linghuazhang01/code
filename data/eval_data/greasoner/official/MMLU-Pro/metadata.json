@@ -15,5 +15,5 @@
     "category",
     "src"
   ],
-  "output_file": "eval/domains/greasoner/data/official/MMLU-Pro/test.parquet"
+  "output_file": "data/eval_data/greasoner/official/MMLU-Pro/test.parquet"
 }

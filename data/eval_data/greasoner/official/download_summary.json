@@ -1,5 +1,5 @@
 {
-  "output_dir": "eval/domains/greasoner/data/official",
+  "output_dir": "data/eval_data/greasoner/official",
   "datasets": [
     {
       "key": "mmlupro",
@@ -63,7 +63,7 @@
         "category",
         "src"
       ],
-      "output_file": "eval/domains/greasoner/data/official/MMLU-Pro/test.parquet"
+      "output_file": "data/eval_data/greasoner/official/MMLU-Pro/test.parquet"
     },
     {
       "status": "downloaded",
@@ -153,7 +153,7 @@
         "Expert Validator Disagreement Category",
         "Canary String"
       ],
-      "output_file": "eval/domains/greasoner/data/official/GPQA-D/test.parquet"
+      "output_file": "data/eval_data/greasoner/official/GPQA-D/test.parquet"
     },
     {
       "status": "downloaded",
@@ -175,7 +175,7 @@
         "difficulty",
         "is_calculation"
       ],
-      "output_file": "eval/domains/greasoner/data/official/SuperGPQA/test.parquet"
+      "output_file": "data/eval_data/greasoner/official/SuperGPQA/test.parquet"
     },
     {
       "status": "downloaded",
@@ -191,7 +191,7 @@
         "Answer_type",
         "Picture"
       ],
-      "output_file": "eval/domains/greasoner/data/official/TheoremQA/test.parquet"
+      "output_file": "data/eval_data/greasoner/official/TheoremQA/test.parquet"
     },
     {
       "status": "downloaded",
@@ -206,7 +206,7 @@
         "answer",
         "task"
       ],
-      "output_file": "eval/domains/greasoner/data/official/BBEH/test.parquet"
+      "output_file": "data/eval_data/greasoner/official/BBEH/test.parquet"
     }
   ]
 }

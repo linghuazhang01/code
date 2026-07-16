@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import unittest
 
+from mopd_verl.domain_sampling import allocate_domain_batch_counts
 from mopd_verl.launch import build_command, format_command
 from mopd_verl.settings import load_config
 
@@ -27,6 +28,11 @@ PROFILE_TRAIN_FILES = {
     "mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math_code.yaml": {
         "math": ["data/G-OPD-Training-Data/DeepMath-103K/train_filtered_level6.parquet"],
         "code": ["data/G-OPD-Training-Data/Eurus/code_train.parquet"],
+    },
+    "mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math_code_science.yaml": {
+        "math": ["data/G-OPD-Training-Data/DeepMath-103K/train_filtered_level6.parquet"],
+        "code": ["data/G-OPD-Training-Data/Eurus/code_train.parquet"],
+        "science": ["data/G-OPD-Training-Data/Science/train.parquet"],
     },
 }
 PROFILE_VAL_FILES = {
@@ -54,6 +60,15 @@ PROFILE_VAL_FILES = {
         "data/eval_data/code/HumanEvalPlus/test.parquet",
         "data/eval_data/code/MBPPPlus/test.parquet",
     ],
+    "mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math_code_science.yaml": [
+        "data/eval_data/math/AIME24/test.parquet",
+        "data/eval_data/math/AIME25/test.parquet",
+        "data/eval_data/math/HMMT25Feb/test.parquet",
+        "data/eval_data/math/HMMT25Nov/test.parquet",
+        "data/eval_data/code/HumanEvalPlus/test.parquet",
+        "data/eval_data/code/MBPPPlus/test.parquet",
+        "data/eval_data/science/gpqa.parquet",
+    ],
 }
 
 
@@ -69,10 +84,19 @@ class Qwen30BInstruct2507ProfileTests(unittest.TestCase):
                 config = load_config(CONFIG_DIR / filename)
                 rendered = format_command(build_command(config))
                 expected_domains = set(expected_train_files)
+                expected_batch_size = 504 if len(expected_domains) == 3 else 512
 
                 self.assertEqual(config.data.domain_train_files, expected_train_files)
                 self.assertEqual(config.data.val_files, PROFILE_VAL_FILES[filename])
                 self.assertEqual(set(config.data.domain_sampling_weights), expected_domains)
+                expected_domain_count = expected_batch_size // len(expected_domains)
+                self.assertEqual(
+                    allocate_domain_batch_counts(
+                        expected_batch_size,
+                        config.data.domain_sampling_weights,
+                    ),
+                    {domain: expected_domain_count for domain in config.data.domain_sampling_weights},
+                )
                 self.assertEqual(set(config.audit.domains), expected_domains)
                 self.assertEqual(config.model.student_path, STUDENT_PATH)
                 self.assertEqual(config.model.primary_teacher_path, TEACHER_PATH)
@@ -83,9 +107,9 @@ class Qwen30BInstruct2507ProfileTests(unittest.TestCase):
                 for domain in expected_domains:
                     self.assertEqual(config.model.domain_teacher_paths[domain], TEACHER_PATH)
 
-                self.assertEqual(config.data.train_batch_size, 512)
+                self.assertEqual(config.data.train_batch_size, expected_batch_size)
                 self.assertEqual(config.data.max_response_length, 16384)
-                self.assertEqual(config.actor.ppo_mini_batch_size, 512)
+                self.assertEqual(config.actor.ppo_mini_batch_size, expected_batch_size)
                 self.assertEqual(config.actor.ppo_micro_batch_size_per_gpu, 1)
                 self.assertFalse(config.data.enable_thinking)
                 self.assertEqual(config.actor.fsdp_size, 2)
@@ -110,6 +134,10 @@ class Qwen30BInstruct2507ProfileTests(unittest.TestCase):
                 self.assertEqual(config.trainer.n_gpus_per_node, actor_gpus)
                 self.assertEqual((actor_gpus or 0) + (teacher_gpus or 0), 6)
                 self.assertEqual((actor_gpus or 0) // (config.actor.fsdp_size or 1), 2)
+                self.assertEqual(
+                    config.data.train_batch_size % (actor_gpus * len(expected_domains)),
+                    0,
+                )
 
                 self.assertTrue(config.audit.enabled)
                 self.assertTrue(config.audit.full_gradient_enabled)
