@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 
 from mopd_verl.domain_sampling import allocate_domain_batch_counts
@@ -104,6 +105,7 @@ class Qwen30BInstruct2507ProfileTests(unittest.TestCase):
                 self.assertEqual(config.model.code_teacher_path, TEACHER_PATH)
                 self.assertIsNone(config.model.secondary_teacher_path)
                 self.assertEqual(config.model.teacher_model_device, "gpu")
+                self.assertEqual(config.model.attn_implementation, "flash_attention_2")
                 for domain in expected_domains:
                     self.assertEqual(config.model.domain_teacher_paths[domain], TEACHER_PATH)
 
@@ -165,6 +167,16 @@ class Qwen30BInstruct2507ProfileTests(unittest.TestCase):
                 self.assertIn("data.max_response_length=16384", rendered)
                 self.assertIn("actor_rollout_ref.rollout.max_model_len=18432", rendered)
                 self.assertIn(
+                    "+actor_rollout_ref.model.override_config."
+                    "attn_implementation=flash_attention_2",
+                    rendered,
+                )
+                self.assertIn("actor_rollout_ref.rollout.enforce_eager=True", rendered)
+                self.assertNotIn(
+                    "+actor_rollout_ref.model.override_config.attn_implementation=eager",
+                    rendered,
+                )
+                self.assertIn(
                     "+mopd_audit.vocab_per_occurrence_mean_vector_enabled=true",
                     rendered,
                 )
@@ -202,6 +214,29 @@ class Qwen30BInstruct2507ProfileTests(unittest.TestCase):
         self.assertEqual(len(output_dirs), len(PROFILE_TRAIN_FILES))
         self.assertEqual(len(paper_eval_output_dirs), len(PROFILE_TRAIN_FILES))
         self.assertEqual(len(checkpoint_dirs), len(PROFILE_TRAIN_FILES))
+
+    def test_attention_implementation_can_be_overridden(self) -> None:
+        source_path = (
+            CONFIG_DIR / "mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math_code_science.yaml"
+        )
+        source_text = source_path.read_text(encoding="utf-8")
+        default_setting = "  attn_implementation: flash_attention_2\n"
+        self.assertEqual(source_text.count(default_setting), 1)
+        with TemporaryDirectory() as temp_dir:
+            override_path = Path(temp_dir) / source_path.name
+            override_path.write_text(
+                source_text.replace(default_setting, "  attn_implementation: sdpa\n"),
+                encoding="utf-8",
+            )
+            config = load_config(override_path)
+
+        rendered = format_command(build_command(config))
+
+        self.assertEqual(config.model.attn_implementation, "sdpa")
+        self.assertIn(
+            "+actor_rollout_ref.model.override_config.attn_implementation=sdpa",
+            rendered,
+        )
 
 
 if __name__ == "__main__":

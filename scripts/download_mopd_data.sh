@@ -19,6 +19,8 @@ Environment knobs:
   EVAL_SOURCE_DIR=$DATA_DIR/.eval-source/G-OPD
   DOWNLOAD_LCB=0
   LCB_DIR=$DATA_DIR/.eval-source/LiveCodeBench
+  LCB_REVISION=48d36ed304dca42cf8ab20e941262ccd096518a3
+  LCB_SHA256=bb4c364f71921c4495a6ad15abe1a927350b720009f4933e2e71f8af0f6fd1f5
   REQUIRE_4DOMAIN_TRAIN_DATA=1
   PULL_REPO_LFS_FALLBACK=1
   GIT_LFS_TIMEOUT_SECONDS=300
@@ -44,6 +46,8 @@ GOPD_REF="${GOPD_REF:-37371a4c31ad7947746200d234161769191f4748}"
 EVAL_SOURCE_DIR="${EVAL_SOURCE_DIR:-${DATA_DIR}/.eval-source/G-OPD}"
 DOWNLOAD_LCB="${DOWNLOAD_LCB:-0}"
 LCB_DIR="${LCB_DIR:-${DATA_DIR}/.eval-source/LiveCodeBench}"
+LCB_REVISION="${LCB_REVISION:-48d36ed304dca42cf8ab20e941262ccd096518a3}"
+LCB_SHA256="${LCB_SHA256:-bb4c364f71921c4495a6ad15abe1a927350b720009f4933e2e71f8af0f6fd1f5}"
 REQUIRE_4DOMAIN_TRAIN_DATA="${REQUIRE_4DOMAIN_TRAIN_DATA:-1}"
 PULL_REPO_LFS_FALLBACK="${PULL_REPO_LFS_FALLBACK:-1}"
 GIT_LFS_TIMEOUT_SECONDS="${GIT_LFS_TIMEOUT_SECONDS:-300}"
@@ -255,7 +259,7 @@ PY
 
 if [[ "${DOWNLOAD_LCB}" == "1" ]]; then
   mkdir -p "${LCB_DIR}"
-  "${PYTHON_BIN}" - "${LCB_DIR}" <<'PY'
+  "${PYTHON_BIN}" - "${LCB_DIR}" "${LCB_REVISION}" <<'PY'
 import sys
 
 from huggingface_hub import snapshot_download
@@ -264,10 +268,13 @@ snapshot_download(
     repo_id="livecodebench/code_generation_lite",
     repo_type="dataset",
     local_dir=sys.argv[1],
-    allow_patterns=["test*.jsonl"],
+    revision=sys.argv[2],
+    allow_patterns=["test6.jsonl"],
 )
 PY
-  LCB_DIR="${LCB_DIR}" EVAL_DATA_DIR="${EVAL_DATA_DIR}" "${PYTHON_BIN}" - <<'PY'
+  LCB_DIR="${LCB_DIR}" LCB_REVISION="${LCB_REVISION}" LCB_SHA256="${LCB_SHA256}" EVAL_DATA_DIR="${EVAL_DATA_DIR}" "${PYTHON_BIN}" - <<'PY'
+import hashlib
+import json
 import os
 from pathlib import Path
 
@@ -275,10 +282,30 @@ from eval.data_prep.paper_eval import lcb_jsonl_to_verl_parquet
 
 source_root = Path(os.environ["LCB_DIR"])
 output_path = Path(os.environ["EVAL_DATA_DIR"]) / "code/LiveCodeBench/test.parquet"
-source_paths = sorted(source_root.glob("test*.jsonl"))
-if not source_paths:
-    raise SystemExit(f"No LiveCodeBench test shards found in {source_root}")
+source_paths = [source_root / "test6.jsonl"]
+if not source_paths[0].is_file():
+    raise SystemExit(f"No LiveCodeBench v6 shard found in {source_root}")
+digest = hashlib.sha256()
+with source_paths[0].open("rb") as handle:
+    while chunk := handle.read(8 * 1024 * 1024):
+        digest.update(chunk)
+source_sha256 = digest.hexdigest()
+if source_sha256 != os.environ["LCB_SHA256"]:
+    raise SystemExit(f"LiveCodeBench v6 SHA-256 mismatch: {source_sha256}")
 count = lcb_jsonl_to_verl_parquet(source_paths, output_path)
+manifest = {
+    "dataset": "livecodebench/code_generation_lite",
+    "evaluation_tests": "public+private",
+    "release_version": "v6",
+    "revision": os.environ["LCB_REVISION"],
+    "rows": count,
+    "source_file": source_paths[0].name,
+    "source_sha256": source_sha256,
+}
+(output_path.parent / "manifest.json").write_text(
+    json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
 print(f"LiveCodeBench: {count} rows -> {output_path}")
 PY
 fi

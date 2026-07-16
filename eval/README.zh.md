@@ -27,7 +27,7 @@ scripts/run_local_eval.sh --model-path /path/to/model [options]
 | Domain | 代码位置 | 评测数据 | 状态 |
 |---|---|---|---|
 | Math | `domains/math/` | `../data/eval_data/math/{AIME24,AIME25,HMMT25Feb,HMMT25Nov}/test.parquet` | 已就绪 |
-| Code | `domains/code/` | `../data/eval_data/code/{HumanEvalPlus,MBPPPlus,LiveCodeBench}/test.parquet` | 已就绪 |
+| Code | `domains/code/` | `../data/eval_data/code/{HumanEvalPlus,MBPPPlus,LiveCodeBench}/test.parquet` | HumanEvalPlus/MBPPPlus 已就绪；LiveCodeBench 用 `prepare_paper_eval_data.sh` 生成 |
 | IF | `domains/ifbench/` | `../data/eval_data/ifbench/IFBench_test.parquet` | verl validation 路径；用 `scripts/prepare_m2rl_eval_data.sh` 生成 |
 | Science | `domains/science/` | `../data/eval_data/science/gpqa.parquet` | verl validation 路径；用 `scripts/prepare_m2rl_eval_data.sh` 生成 |
 | GReasoner | `domains/greasoner/` | `../data/eval_data/greasoner/official/{MMLU-Pro,GPQA-D,SuperGPQA,TheoremQA,BBEH}/test.parquet` | 数据与内部 evaluator 已存在；official datasets 尚未接入 `run_local_eval.sh` |
@@ -106,7 +106,31 @@ Code prompt 由 `domains/code/prompting.py` 统一构建：
 
 - `HumanEvalPlus` / `MBPPPlus`: 使用原 EvalPlus Qwen/chat instruction，在题目后追加
   markdown Python code block 要求和 paper 里的 "think first" 句子。
-- `LiveCodeBench`: 默认使用 paper 代码中的 `Qwen3NonThinking` prompt 内容。
+- `LiveCodeBench`: 使用 G-OPD 对齐的增量 `v6`（仅 `test6.jsonl`，175 题），
+  默认使用 paper 代码中的 `Qwen3NonThinking` prompt 内容。它不是累计 1,055 题的
+  `release_v6`。生成的 parquet 包含完整 private tests，因此由 Git 忽略；
+  `manifest.json` 仅记录固定 revision 与 source checksum。
+
+G-OPD 的 official LiveCodeBench protocol 是每题 4 samples、`temperature=1.0`、
+`top_p=1.0`、`max_tokens=16384`，并执行 public + private tests。请使用
+`eval/scripts/run_paper_eval_suite.sh` 复现；`run_local_eval.sh` 更适合统一接口下的
+smoke/debug evaluation。
+
+## 从训练数据生成 Holdout Eval
+
+默认从 Math、Code、IF、Science 各抽取约 1,000 条，并按 whitespace-normalized、
+casefolded prompt 分组，避免同题跨入 train/eval：
+
+```bash
+python scripts/split_domain_eval_training_data.py --write-remainders
+```
+
+- Eval: `data/eval_training_data/<domain>/test.parquet`
+- Train remainder: `data/training_data_split/<domain>/train.parquet`
+- Audit manifest: `data/eval_training_data/manifest.json`
+
+脚本不修改原始 parquet。正式把这些数据作为 holdout 时，训练 config 必须改用
+`data/training_data_split/` 下的 remainder；若仍训练完整原文件，eval 会发生泄漏。
 
 注意：`runner.py` 仍然会根据 eval mode 控制 tokenizer 的 `enable_thinking`：
 

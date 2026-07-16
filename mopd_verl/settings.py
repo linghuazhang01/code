@@ -54,6 +54,7 @@ class ModelConfig:
     primary_teacher_path: str
     secondary_teacher_path: str | None
     teacher_model_device: str = "cpu"
+    attn_implementation: str = "flash_attention_2"
 
 
 @dataclass(frozen=True)
@@ -476,6 +477,13 @@ def load_config(path: str | Path) -> MOPDConfig:
         teacher_model_device = "gpu"
     if teacher_model_device not in {"cpu", "gpu"}:
         raise ValueError("Expected model.teacher_model_device to be one of: 'cpu', 'gpu', or 'cuda'.")
+    attn_implementation_raw = model_raw.get(
+        "attn_implementation",
+        ModelConfig.attn_implementation,
+    )
+    if not isinstance(attn_implementation_raw, str) or not attn_implementation_raw.strip():
+        raise ValueError("Expected model.attn_implementation to be a non-empty string.")
+    attn_implementation = attn_implementation_raw.strip()
     math_teacher_path = str(model_raw.get("math_teacher_path", primary_teacher_raw))
     code_teacher_path = str(code_teacher_raw)
     if_teacher_raw = model_raw.get("if_teacher_path")
@@ -515,6 +523,7 @@ def load_config(path: str | Path) -> MOPDConfig:
         primary_teacher_path=str(primary_teacher_raw),
         secondary_teacher_path=(None if secondary_teacher_raw is None else str(secondary_teacher_raw)),
         teacher_model_device=teacher_model_device,
+        attn_implementation=attn_implementation,
     )
     audit = AuditConfig(**_expect_mapping(root.get("audit", {}), "audit"))
     retired_gradient_modes = [

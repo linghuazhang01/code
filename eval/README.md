@@ -27,7 +27,7 @@ Data-preparation utilities under `eval/scripts/` may still be run separately.
 | Domain | Code | Eval data | Status |
 |---|---|---|---|
 | Math | `domains/math/` | `../data/eval_data/math/{AIME24,AIME25,HMMT25Feb,HMMT25Nov}/test.parquet` | Ready |
-| Code | `domains/code/` | `../data/eval_data/code/{HumanEvalPlus,MBPPPlus,LiveCodeBench}/test.parquet` | Ready |
+| Code | `domains/code/` | `../data/eval_data/code/{HumanEvalPlus,MBPPPlus,LiveCodeBench}/test.parquet` | HumanEvalPlus/MBPPPlus ready; generate LiveCodeBench with `prepare_paper_eval_data.sh` |
 | IF | `domains/ifbench/` | `../data/eval_data/ifbench/IFBench_test.parquet` | verl validation path; generate with `scripts/prepare_m2rl_eval_data.sh` |
 | Science | `domains/science/` | `../data/eval_data/science/gpqa.parquet` | verl validation path; generate with `scripts/prepare_m2rl_eval_data.sh` |
 | GReasoner | `domains/greasoner/` | `../data/eval_data/greasoner/official/{MMLU-Pro,GPQA-D,SuperGPQA,TheoremQA,BBEH}/test.parquet` | Data/internal evaluators exist; official datasets are not yet exposed by `run_local_eval.sh` |
@@ -44,6 +44,23 @@ Math/code paper-eval data from a G-OPD checkout:
 ```bash
 eval/scripts/prepare_paper_eval_data.sh
 ```
+
+This pins LiveCodeBench `v6` (`test6.jsonl`, 175 incremental problems), not the
+1,055-problem cumulative `release_v6`. For G-OPD's official public+private test
+protocol, use `eval/scripts/run_paper_eval_suite.sh`. The generated LiveCodeBench
+parquet is intentionally ignored by Git because it contains the full private
+test payload; `manifest.json` records its pinned revision and source checksum.
+
+Create deterministic four-domain training holdouts and matching train
+remainders without modifying the original parquet files:
+
+```bash
+python scripts/split_domain_eval_training_data.py --write-remainders
+```
+
+Eval files are written to `data/eval_training_data/<domain>/test.parquet`, and
+remainders to `data/training_data_split/<domain>/train.parquet`. Future training
+configs must use the remainders for the eval data to be leakage-free.
 
 General-Reasoner paper eval data:
 

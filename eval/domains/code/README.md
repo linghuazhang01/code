@@ -9,8 +9,10 @@ Code evaluation data lives here, separate from MOPD code training data.
 - `data/LiveCodeBench/test.parquet`
 
 `HumanEvalPlus` and `MBPPPlus` are the compact paper-eval code validation
-sets. `LiveCodeBench` is available for full paper-eval, but some single-GPU
-configs leave it disabled because it is heavier.
+sets. `LiveCodeBench` is the G-OPD-aligned incremental `v6` set: 175 problems
+from `test6.jsonl`, rather than cumulative `release_v6` with 1,055 problems.
+Some single-GPU configs leave it disabled because public+private test execution
+is substantially heavier.
 
 ## Code
 
@@ -31,3 +33,7 @@ sentence before applying the model chat template at generation time.
 default. The runner still controls `enable_thinking` for OPD thinking vs.
 non-thinking comparisons, but the user-facing problem instruction is no longer
 the simplified generic code prompt.
+
+G-OPD samples four completions per problem with temperature 1.0, top-p 1.0,
+16,384 max tokens, and requires all public+private tests to pass. Use
+`eval/scripts/run_paper_eval_suite.sh` for that official protocol.

@@ -1,0 +1,9 @@
+{
+  "dataset": "livecodebench/code_generation_lite",
+  "evaluation_tests": "public+private",
+  "release_version": "v6",
+  "revision": "48d36ed304dca42cf8ab20e941262ccd096518a3",
+  "rows": 175,
+  "source_file": "test6.jsonl",
+  "source_sha256": "bb4c364f71921c4495a6ad15abe1a927350b720009f4933e2e71f8af0f6fd1f5"
+}

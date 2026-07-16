@@ -18,8 +18,9 @@ Default benchmark set:
   Science: GPQA-Diamond
 
 HLE is intentionally excluded because the official judge is not implemented.
-LiveCodeBench is opt-in because the local 1,055-row file is not pinned to the
-M2RL paper's separate v5/v6 releases.
+LiveCodeBench-v6 is available as the G-OPD-aligned 175-problem incremental set.
+It remains opt-in here; use eval/scripts/run_paper_eval_suite.sh for official
+public+private test execution with four samples per problem.
 
 Environment overrides:
   MODEL_PATH          Model directory or Hugging Face model id.
