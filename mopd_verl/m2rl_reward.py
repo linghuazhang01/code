@@ -401,14 +401,26 @@ def compute_score(
     extra_info: dict[str, Any] | None = None,
     **_: Any,
 ) -> dict[str, float]:
-    """Return a verl-compatible reward dict with ``score`` as the primary scalar."""
+    """Return a verl-compatible reward dict with ``score`` as the primary scalar.
+
+    Always returns a consistent set of keys (``score``, ``m2rl_gpqa``, ``m2rl_ifbench``)
+    so that per-item results can be safely aggregated into a batch ``non_tensor_batch``
+    without triggering shape-mismatch assertions in ``DataProto.check_consistency``.
+    Non-applicable domain keys are set to 0.0.
+    """
 
     metadata = _normalize_metadata(extra_info)
     rm_type = _rm_type(data_source, metadata)
+    gpqa_reward = 0.0
+    ifbench_reward = 0.0
     if rm_type == "ifbench":
-        reward = compute_ifbench_reward(str(solution_str or ""), metadata)
-        return {"score": float(reward), "m2rl_ifbench": float(reward)}
-    if rm_type == "gpqa":
-        reward = compute_gpqa_reward(str(solution_str or ""), ground_truth, metadata)
-        return {"score": float(reward), "m2rl_gpqa": float(reward)}
-    raise NotImplementedError(f"Unsupported M2RL reward type: {rm_type!r}")
+        ifbench_reward = compute_ifbench_reward(str(solution_str or ""), metadata)
+    elif rm_type == "gpqa":
+        gpqa_reward = compute_gpqa_reward(str(solution_str or ""), ground_truth, metadata)
+    else:
+        raise NotImplementedError(f"Unsupported M2RL reward type: {rm_type!r}")
+    return {
+        "score": float(gpqa_reward or ifbench_reward),
+        "m2rl_gpqa": float(gpqa_reward),
+        "m2rl_ifbench": float(ifbench_reward),
+    }

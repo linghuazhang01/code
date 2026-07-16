@@ -46,16 +46,31 @@ def _compute_default_score(
     ground_truth: Any,
     extra_info: dict[str, Any] | str | None,
     **kwargs: Any,
-) -> Any:
+) -> dict[str, float]:
     from verl.utils.reward_score import default_compute_score
 
-    return default_compute_score(
+    result = default_compute_score(
         data_source=data_source,
         solution_str=solution_str,
         ground_truth=ground_truth,
         extra_info=extra_info,
         **kwargs,
     )
+    # Return a dict with a consistent set of keys so that every item in a
+    # mixed batch contributes the same entries to reward_extra_info.
+    # The NaiveRewardManager aggregates per-item results into a
+    # defaultdict(list) and later merges it into batch.non_tensor_batch.
+    # If different items return different keys, the lengths won't match
+    # and DataProto.check_consistency() will raise an AssertionError.
+    if isinstance(result, dict):
+        score = float(result.get("score", next(iter(result.values()))))
+    else:
+        score = float(result)
+    return {
+        "score": score,
+        "m2rl_gpqa": 0.0,
+        "m2rl_ifbench": 0.0,
+    }
 
 
 def compute_score(
