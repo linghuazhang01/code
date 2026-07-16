@@ -165,6 +165,26 @@ class RLHFDataset(Dataset):
                     source_file=original_file,
                 )
             dataframes.append(dataframe)
+        # Cast all datasets to consistent feature types before concatenating.
+        # Different parquet files may encode the same column as Value('string') vs
+        # Value('large_string'), which causes concatenate_datasets to raise.
+        # Only cast Value('large_*') columns to their non-large counterpart since
+        # ds.cast() can't handle struct/List mismatches across datasets.
+        if len(dataframes) > 1:
+            # Detect columns that need casting: any dataset has a large_ type
+            # while another has the non-large equivalent.
+            large_cols = {}
+            for ds in dataframes:
+                for key, feat in ds.features.items():
+                    if isinstance(feat, datasets.Value) and feat.dtype.startswith("large_"):
+                        non_large = datasets.Value(feat.dtype[len("large_"):])
+                        large_cols[key] = non_large
+            if large_cols:
+                for i, ds in enumerate(dataframes):
+                    for col, target_feat in large_cols.items():
+                        if col in ds.features and ds.features[col] != target_feat:
+                            ds = ds.cast_column(col, target_feat)
+                    dataframes[i] = ds
         self.dataframe: datasets.Dataset = datasets.concatenate_datasets(dataframes)
 
         total = len(self.dataframe)
