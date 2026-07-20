@@ -1,7 +1,9 @@
 # Training remainders
 
-These ignored parquet files are the complements of the 1,000-example domain
-holdouts in `data/eval_training_data/`:
+These ignored parquet files are the original complements of the earlier
+1,000-example domain holdouts. They remain unchanged when
+`data/eval_training_data/` is refreshed with the 10,000-example
+training-data performance-ceiling sample:
 
 | Domain | Train remainder rows |
 |---|---:|
@@ -10,6 +12,8 @@ holdouts in `data/eval_training_data/`:
 | IF | 15,575 |
 | Science | 18,670 |
 
-They preserve each source parquet's Arrow schema. See
-`data/eval_training_data/manifest.json` for source/output SHA-256 values and
-the exact deterministic split metadata.
+They preserve each source parquet's Arrow schema. The current
+`data/eval_training_data/manifest.json` audits only the 10,000-example eval
+sample and does not redefine these training files. The `training_ceiling`
+local-eval dataset intentionally evaluates against the original training
+distribution and does not consume these remainders.

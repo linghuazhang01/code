@@ -27,6 +27,7 @@ from mopd_verl.topk_distill import (
 class ActorMicroBatchLossResult:
     loss: torch.Tensor
     metrics: dict[str, Any]
+    teacher_student_cross_entropy: torch.Tensor | None = None
 
 
 ACTOR_LOSS_CONTRIBUTION_METRICS: Final[frozenset[str]] = frozenset(

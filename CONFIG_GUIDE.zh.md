@@ -20,11 +20,19 @@
 | `configs/mopd_formal_audit_off_8gpu.yaml` | 8 卡无 audit 训练 | TP=4，8 卡 batch |
 | `configs/mopd_formal_audit_all_smoke.yaml` | 指标 smoke 测试 | 2 卡 one-step，domain gradient 与 full-vocab observation vectors |
 | `configs/mopd_formal_audit_loss_only_smoke.yaml` | 兼容 smoke 测试 | 2 卡 one-step，保留旧 loss-only 输出命名 |
-| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math.yaml` | 6 卡单域训练 | 4 actor + 2 teacher，math-only，真正的 HYBRID_SHARD |
-| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_code.yaml` | 6 卡单域训练 | 4 actor + 2 teacher，code-only，真正的 HYBRID_SHARD |
-| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_if.yaml` | 6 卡单域训练 | 4 actor + 2 teacher，IF-only，IFBench validation |
-| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_science.yaml` | 6 卡单域训练 | 4 actor + 2 teacher，science-only，GPQA validation |
-| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math_code.yaml` | 6 卡双域训练 | 4 actor + 2 teacher，math/code 等权采样 |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math.yaml` | 原始 6 卡单域训练 | 4 actor + 2 teacher，math-only，保持原配置 |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_code.yaml` | 原始 6 卡单域训练 | 4 actor + 2 teacher，code-only，保持原配置 |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_if.yaml` | 原始 6 卡单域训练 | 4 actor + 2 teacher，IF-only，保持原配置 |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_science.yaml` | 原始 6 卡单域训练 | 4 actor + 2 teacher，science-only，保持原配置 |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math_code.yaml` | 原始 6 卡双域训练 | 4 actor + 2 teacher，math/code 等权采样，保持原配置 |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math_code_science.yaml` | 原始 6 卡三域训练 | 4 actor + 2 teacher，math/code/science 等权采样，保持原配置 |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math.yaml` | 8 卡单域训练 | 6 actor + 2 teacher，actor `fsdp_size=1`，batch 504，math-only |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_code.yaml` | 8 卡单域训练 | 6 actor + 2 teacher，actor `fsdp_size=1`，batch 504，code-only |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_if.yaml` | 8 卡单域训练 | 6 actor + 2 teacher，actor `fsdp_size=1`，batch 504，IF-only，IFBench validation |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_science.yaml` | 8 卡单域训练 | 6 actor + 2 teacher，actor `fsdp_size=1`，batch 504，science-only，GPQA validation |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code.yaml` | 8 卡双域训练 | 6 actor + 2 teacher，actor `fsdp_size=1`，batch 504，math/code 等权采样 |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code_science.yaml` | 8 卡三域训练 | 6 actor + 2 teacher，actor `fsdp_size=1`，batch 504，math/code/science 等权采样 |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code_science_topk32.yaml` | 8 卡 Top-32 三域训练 | 6 actor + 2 teacher，actor `fsdp_size=1`，batch 504，Top-32 reverse-KL distillation |
 
 五个 FSDP/domain-gradient 回归配置统一位于 `test_grad_configs/`，不再在
 `configs/` 下保留副本。
@@ -38,8 +46,8 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | 2 | `_2gpu` | 2 | 2 | 256 | 256 | 8 |
 | 4 | `_4gpu` | 4 | 4 | 512 | 512 | 16 |
-| 6 | `_6gpu` | 6 | 2 | 768 | 768 | 24 |
-| 8 | `_8gpu` | 8（标准 profile）/ 6（OPD split profile） | 4（标准 profile）/ 2（OPD split profile） | 1024（标准 profile）/ 768（OPD split profile） | 1024（标准 profile）/ 768（OPD split profile） | 32 |
+| 6 | `_6gpu` | 6（标准 profile）/ 4（Qwen30B split） | 2 | 768（标准）/ 512（Qwen30B 单/双域）/ 504（Qwen30B 三域） | 768（标准）/ 512（Qwen30B 单/双域）/ 504（Qwen30B 三域） | 24 |
+| 8 | `_8gpu` | 8（标准 profile）/ 6（OPD split profile） | 4（标准 profile）/ 2（OPD split profile） | 1024（标准 profile）/ 768（formal OPD split）/ 504（Qwen30B split） | 1024（标准 profile）/ 768（formal OPD split）/ 504（Qwen30B split） | 32（标准）/ 24（split） |
 
 指标 smoke profile 使用独立设置：`trainer.n_gpus_per_node=2`、`rollout.tensor_model_parallel_size=2`、`data.train_batch_size=32`、`actor.ppo_mini_batch_size=32`、`trainer.total_training_steps=1`；response 长度保持正式配置的 `data.max_response_length=16384`。
 

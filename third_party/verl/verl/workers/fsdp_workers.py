@@ -952,7 +952,10 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
             # perform training
             with Timer(name="update_policy", logger=None) as timer:
-                metrics = self.actor.update_policy(data=data)
+                metrics, auxiliary_outputs = self.actor.update_policy(
+                    data=data,
+                    return_auxiliary_outputs=True,
+                )
             delta_time = timer.last
             global_num_tokens = data.meta_info["global_token_num"]
             estimated_flops, promised_flops = self.flops_counter.estimate_flops(global_num_tokens, delta_time)
@@ -968,7 +971,10 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             self.actor_lr_scheduler.step()
 
             # TODO: here, we should return all metrics
-            output = DataProto(meta_info={"metrics": metrics})
+            output = DataProto.from_dict(
+                tensors=auxiliary_outputs,
+                meta_info={"metrics": metrics},
+            )
 
             output = output.to("cpu")
 

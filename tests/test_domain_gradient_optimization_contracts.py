@@ -30,6 +30,19 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
         device_module = ModuleType("verl.utils.device")
         device_module.get_device_id = lambda: torch.device("cpu")
         device_module.get_torch_device = lambda: torch.cpu
+        trainer_module = ModuleType("verl.trainer")
+        trainer_module.__path__ = []
+        ppo_module = ModuleType("verl.trainer.ppo")
+        ppo_module.__path__ = []
+        core_algos_module = ModuleType("verl.trainer.ppo.core_algos")
+        core_algos_module.agg_loss = (
+            lambda loss_mat, loss_mask, loss_agg_mode: (
+                loss_mat * loss_mask
+            ).sum()
+            / loss_mask.sum().clamp(min=1.0)
+        )
+        core_algos_module.get_policy_loss_fn = lambda _mode: None
+        core_algos_module.kl_penalty = lambda **_kwargs: None
         dtensor_module = ModuleType("torch.distributed.tensor")
 
         class DummyDTensor:
@@ -52,6 +65,9 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
                 sys.modules,
                 {
                     "verl": verl_module,
+                    "verl.trainer": trainer_module,
+                    "verl.trainer.ppo": ppo_module,
+                    "verl.trainer.ppo.core_algos": core_algos_module,
                     "verl.utils": utils_module,
                     "verl.utils.device": device_module,
                     "torch.distributed.tensor": dtensor_module,
@@ -62,6 +78,123 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
             for name in isolated_names:
                 sys.modules.pop(name, None)
             sys.modules.update(saved_modules)
+
+    def test_training_forward_reuses_detached_topk_cross_entropy(self) -> None:
+        torch = self._torch()
+        with self._stubbed_verl(torch):
+            from mopd_verl.full_gradient.actor_loss import (
+                build_actor_micro_batch_loss,
+            )
+            from mopd_verl.topk_distill import (
+                topk_teacher_student_cross_entropy_matrix,
+            )
+
+            student_logits = torch.tensor(
+                [
+                    [[2.0, 1.0, 0.0], [0.0, 1.0, 2.0]],
+                    [[1.5, 0.5, -0.5], [-0.5, 0.5, 1.5]],
+                    [[1.0, 0.0, -1.0], [-1.0, 0.0, 1.0]],
+                ],
+                requires_grad=True,
+            )
+            student_log_probs = torch.log_softmax(student_logits, dim=-1)
+            teacher_log_probs = {
+                "math": torch.log_softmax(torch.full_like(student_logits, 0.0), dim=-1),
+                "code": torch.log_softmax(torch.full_like(student_logits, 1.0), dim=-1),
+                "science": torch.log_softmax(torch.full_like(student_logits, 2.0), dim=-1),
+            }
+            for index, domain in enumerate(("math", "code", "science")):
+                teacher_log_probs[domain][index] = torch.log_softmax(
+                    torch.tensor(
+                        [[3.0, 1.0, 0.0], [0.0, 1.0, 3.0]],
+                        dtype=torch.float32,
+                    )
+                    + index,
+                    dim=-1,
+                )
+
+            class MicroBatch:
+                def __init__(self) -> None:
+                    self.batch = {
+                        "response_mask": torch.ones(3, 2),
+                        "math_teacher_topk_ids": torch.zeros(3, 2, 3, dtype=torch.long),
+                        "math_teacher_topk_logprobs": teacher_log_probs["math"],
+                        "code_teacher_topk_ids": torch.zeros(3, 2, 3, dtype=torch.long),
+                        "code_teacher_topk_logprobs": teacher_log_probs["code"],
+                        "science_teacher_topk_ids": torch.zeros(3, 2, 3, dtype=torch.long),
+                        "science_teacher_topk_logprobs": teacher_log_probs["science"],
+                    }
+                    self.non_tensor_batch = {
+                        "opd_teacher": ["math", "code", "science"]
+                    }
+                    self.meta_info = {"temperature": 1.0}
+
+                def to(self, _device: object) -> "MicroBatch":
+                    return self
+
+            class Actor:
+                config = {
+                    "entropy_coeff": 0.0,
+                    "kl_loss_coef": 0.0,
+                    "loss_agg_mode": "token-mean",
+                    "policy_loss": {
+                        "distill_loss_builder": "topk_kl",
+                        "distill_mode": "topk_renormalized_reverse_kl",
+                        "multi_teacher_distill": True,
+                        "topk_distill_support_source": "teacher",
+                        "topk_distill_temperature": 1.0,
+                    },
+                    "use_kl_loss": False,
+                }
+
+                def _forward_micro_batch(
+                    self,
+                    _model_inputs: dict[str, object],
+                    **_kwargs: object,
+                ) -> tuple[object, ...]:
+                    return (
+                        None,
+                        torch.zeros(3, 2),
+                        None,
+                        None,
+                        student_log_probs,
+                    )
+
+            result = build_actor_micro_batch_loss(
+                Actor(),
+                MicroBatch(),
+                loss_scale_factor=1.0,
+                on_policy=True,
+                return_teacher_student_cross_entropy=True,
+            )
+            baseline = build_actor_micro_batch_loss(
+                Actor(),
+                MicroBatch(),
+                loss_scale_factor=1.0,
+                on_policy=True,
+            )
+            selected_teacher = torch.stack(
+                [teacher_log_probs[domain][index] for index, domain in enumerate(("math", "code", "science"))]
+            )
+            expected = topk_teacher_student_cross_entropy_matrix(
+                student_topk_log_probs=student_log_probs.detach(),
+                teacher_topk_log_probs=selected_teacher,
+                include_tail=False,
+                temperature=1.0,
+            )
+
+            self.assertIsNotNone(result.teacher_student_cross_entropy)
+            torch.testing.assert_close(
+                result.teacher_student_cross_entropy,
+                expected,
+            )
+            self.assertFalse(result.teacher_student_cross_entropy.requires_grad)
+            self.assertIsNone(result.teacher_student_cross_entropy.grad_fn)
+            self.assertEqual(result.teacher_student_cross_entropy.shape, (3, 2))
+            self.assertIsNone(baseline.teacher_student_cross_entropy)
+            torch.testing.assert_close(result.loss, baseline.loss)
+            result.loss.backward()
+            self.assertIsNotNone(student_logits.grad)
 
     def test_micro_batch_contributions_sum_but_observations_remain_rows(self) -> None:
         self._torch()

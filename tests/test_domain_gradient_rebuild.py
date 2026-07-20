@@ -156,6 +156,54 @@ class DomainGradientSourceTests(unittest.TestCase):
         self.assertIn("_configured_teacher_domains(config)", trainer_source)
         self.assertIn("_alias_math_teacher_tensors(batch, self.teacher_domains)", trainer_source)
 
+    def test_topk_cross_entropy_reuses_the_production_forward(self) -> None:
+        trainer_source = (
+            ROOT / "third_party/verl/verl/trainer/ppo/ray_trainer.py"
+        ).read_text(encoding="utf-8")
+        actor_source = (
+            ROOT / "third_party/verl/verl/workers/actor/dp_actor.py"
+        ).read_text(encoding="utf-8")
+        worker_source = (
+            ROOT / "third_party/verl/verl/workers/fsdp_workers.py"
+        ).read_text(encoding="utf-8")
+
+        fallback_index = trainer_source.index(
+            "if not reuse_training_topk_cross_entropy:"
+        )
+        standalone_index = trainer_source.index(
+            "self.actor_rollout_wg.compute_teacher_student_cross_entropy("
+        )
+        audit_meta_index = trainer_source.index(
+            "self.mopd_audit_logger.full_gradient_meta("
+        )
+        update_index = trainer_source.index(
+            "actor_output = self.actor_rollout_wg.update_actor(batch)"
+        )
+        reused_ce_index = trainer_source.index(
+            'cross_entropy_key = "teacher_student_cross_entropy"'
+        )
+        training_log_index = trainer_source.index(
+            "self.mopd_audit_logger.log_training_step("
+        )
+
+        self.assertLess(fallback_index, standalone_index)
+        self.assertLess(audit_meta_index, update_index)
+        self.assertLess(update_index, reused_ce_index)
+        self.assertLess(reused_ce_index, training_log_index)
+        self.assertIn(
+            'actor_config.strategy in {"fsdp", "fsdp2"}',
+            trainer_source,
+        )
+        self.assertIn(
+            "return_teacher_student_cross_entropy=(",
+            actor_source,
+        )
+        self.assertIn(
+            "mini_batch_cross_entropy = restore_dynamic_batch(",
+            actor_source,
+        )
+        self.assertIn("return_auxiliary_outputs=True", worker_source)
+
     def test_patch_script_cannot_inject_retired_tracker_api(self) -> None:
         source = (ROOT / "scripts/apply_gopd_audit_patch.py").read_text(
             encoding="utf-8"

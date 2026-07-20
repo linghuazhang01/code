@@ -30,6 +30,7 @@ scripts/run_local_eval.sh --model-path /path/to/model [options]
 | Code | `domains/code/` | `../data/eval_data/code/{HumanEvalPlus,MBPPPlus,LiveCodeBench}/test.parquet` | HumanEvalPlus/MBPPPlus 已就绪；LiveCodeBench 用 `prepare_paper_eval_data.sh` 生成 |
 | IF | `mopd_verl/m2rl_reward.py` | `../data/eval_data/if/{IFBench,IFEval}/test.parquet` | 完整数据用 `python -m eval.data_prep.m2rl_eval` 生成；shell helper 只准备 IFBench |
 | Science | `domains/science/` | `../data/eval_data/science/{GPQA,HLE,MMLU-Pro,SuperGPQA}/test.parquet` | GPQA/HLE 用 `python -m eval.data_prep.m2rl_eval` 生成；MMLU-Pro/SuperGPQA 提供 official evaluator |
+| Training ceiling | 复用现有 domain scorer | `../data/eval_training_data/{math,code,if,science}/test.parquet` | 每个 domain 10,000 条、与训练源重叠，只用于 training-performance 诊断 |
 | ToolRL | `domains/toolrl/` | `../data/eval_data/toolrl/{BFCL,API-Bank,Bamboogle}/test.parquet` | 数据与内部 evaluator 已存在；ToolRL datasets 尚未接入 `run_local_eval.sh` |
 
 SearchQA 仍保留在 `domains/search/`，因为 thinking evaluator 可以继续包含
@@ -111,21 +112,24 @@ G-OPD 的 official LiveCodeBench protocol 是每题 4 samples、`temperature=1.0
 `eval/scripts/run_paper_eval_suite.sh` 复现；`run_local_eval.sh` 更适合统一接口下的
 smoke/debug evaluation。
 
-## 从训练数据生成 Holdout Eval
+## 从训练数据生成 Performance-Ceiling Eval
 
-默认从 Math、Code、IF、Science 各抽取约 1,000 条，并按 whitespace-normalized、
-casefolded prompt 分组，避免同题跨入 train/eval：
+从 Math、Code、IF、Science 各确定性抽取 10,000 条，并按
+whitespace-normalized、casefolded prompt 分组，使重复 prompt 在抽样时保持在一起：
 
 ```bash
-python scripts/split_domain_eval_training_data.py --write-remainders
+python scripts/split_domain_eval_training_data.py \
+  --eval-size 10000 \
+  --seed 42 \
+  --overwrite
 ```
 
 - Eval: `data/eval_training_data/<domain>/test.parquet`
-- Train remainder: `data/training_data_split/<domain>/train.parquet`
 - Audit manifest: `data/eval_training_data/manifest.json`
 
-脚本不修改原始 parquet。正式把这些数据作为 holdout 时，训练 config 必须改用
-`data/training_data_split/` 下的 remainder；若仍训练完整原文件，eval 会发生泄漏。
+这些样本故意与原始 training files 重叠，用于估计 training-data performance
+ceiling，而不是 leakage-free generalization benchmark。当前 workflow 不修改原始
+parquet，也不消费或刷新 `data/training_data_split/` 下的旧 remainder。
 
 注意：`runner.py` 仍然会根据 eval mode 控制 tokenizer 的 `enable_thinking`：
 
@@ -163,7 +167,30 @@ scripts/run_local_eval.sh \
 
 支持的 dataset key：`aime24`、`aime25`、`hmmt25feb`、`hmmt25nov`、
 `humaneval_plus`、`mbpp_plus`、`livecodebench`、`ifeval`、`ifbench`、
-`gpqa_diamond`。
+`gpqa_diamond`。Training-performance key 包括聚合四个 domain 的
+`training_ceiling`，以及单域 `training_math`、`training_code`、
+`training_if`、`training_science`。
+
+例如，对四个 domain 各运行最多 100 条 training ceiling eval：
+
+```bash
+scripts/run_local_eval.sh \
+  --model-path /path/to/model \
+  --datasets training_ceiling \
+  --max-samples 100
+```
+
+`training_ceiling` 不是 official benchmark，结果必须标记为 training-data
+performance。Code 默认只生成 completion；只有在隔离环境中显式传入
+`--score-code`，且完整 vendored verl reward 依赖可用时，才执行代码评分。
+Training Code 数据不会回退到 Math scorer。
+
+IF scoring 需要 `scripts/setup_training_env.sh` 安装的
+`verifiable_instructions`，或通过以下命令准备本地 official evaluator：
+
+```bash
+scripts/prepare_ifbench_runtime.sh
+```
 
 例如，使用两张 GPU 和 vLLM 对比 thinking / non-thinking：
 

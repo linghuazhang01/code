@@ -13,47 +13,47 @@ ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = ROOT / "configs"
 STUDENT_PATH = "../models/Qwen3-4B"
 TEACHER_PATH = "../models/Qwen3-30B-A3B-Instruct-2507"
-PROFILE_TRAIN_FILES = {
-    "mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math.yaml": {
+MATH_CODE_SCIENCE_TOPK32_PROFILE = (
+    "mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code_science_topk32.yaml"
+)
+PROFILE_PREFIX = "mopd_qwen4b_30b_a3b_instruct_2507"
+BASE_PROFILE_TRAIN_FILES = {
+    "math": {
         "math": ["data/G-OPD-Training-Data/DeepMath-103K/train_filtered_level6.parquet"]
     },
-    "mopd_qwen4b_30b_a3b_instruct_2507_6gpu_code.yaml": {
+    "code": {
         "code": ["data/G-OPD-Training-Data/Eurus/code_train.parquet"]
     },
-    "mopd_qwen4b_30b_a3b_instruct_2507_6gpu_if.yaml": {
+    "if": {
         "if": ["data/G-OPD-Training-Data/IF/train.parquet"]
     },
-    "mopd_qwen4b_30b_a3b_instruct_2507_6gpu_science.yaml": {
+    "science": {
         "science": ["data/G-OPD-Training-Data/Science/train.parquet"]
     },
-    "mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math_code.yaml": {
+    "math_code": {
         "math": ["data/G-OPD-Training-Data/DeepMath-103K/train_filtered_level6.parquet"],
         "code": ["data/G-OPD-Training-Data/Eurus/code_train.parquet"],
     },
-    "mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math_code_science.yaml": {
+    "math_code_science": {
         "math": ["data/G-OPD-Training-Data/DeepMath-103K/train_filtered_level6.parquet"],
         "code": ["data/G-OPD-Training-Data/Eurus/code_train.parquet"],
         "science": ["data/G-OPD-Training-Data/Science/train.parquet"],
     },
 }
-PROFILE_VAL_FILES = {
-    "mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math.yaml": [
+BASE_PROFILE_VAL_FILES = {
+    "math": [
         "data/eval_data/math/AIME24/test.parquet",
         "data/eval_data/math/AIME25/test.parquet",
         "data/eval_data/math/HMMT25Feb/test.parquet",
         "data/eval_data/math/HMMT25Nov/test.parquet",
     ],
-    "mopd_qwen4b_30b_a3b_instruct_2507_6gpu_code.yaml": [
+    "code": [
         "data/eval_data/code/HumanEvalPlus/test.parquet",
         "data/eval_data/code/MBPPPlus/test.parquet",
     ],
-    "mopd_qwen4b_30b_a3b_instruct_2507_6gpu_if.yaml": [
-        "data/eval_data/if/IFBench/test.parquet"
-    ],
-    "mopd_qwen4b_30b_a3b_instruct_2507_6gpu_science.yaml": [
-        "data/eval_data/science/GPQA/test.parquet"
-    ],
-    "mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math_code.yaml": [
+    "if": ["data/eval_data/if/IFBench/test.parquet"],
+    "science": ["data/eval_data/science/GPQA/test.parquet"],
+    "math_code": [
         "data/eval_data/math/AIME24/test.parquet",
         "data/eval_data/math/AIME25/test.parquet",
         "data/eval_data/math/HMMT25Feb/test.parquet",
@@ -61,7 +61,7 @@ PROFILE_VAL_FILES = {
         "data/eval_data/code/HumanEvalPlus/test.parquet",
         "data/eval_data/code/MBPPPlus/test.parquet",
     ],
-    "mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math_code_science.yaml": [
+    "math_code_science": [
         "data/eval_data/math/AIME24/test.parquet",
         "data/eval_data/math/AIME25/test.parquet",
         "data/eval_data/math/HMMT25Feb/test.parquet",
@@ -69,6 +69,34 @@ PROFILE_VAL_FILES = {
         "data/eval_data/code/HumanEvalPlus/test.parquet",
         "data/eval_data/code/MBPPPlus/test.parquet",
         "data/eval_data/science/GPQA/test.parquet",
+    ],
+}
+SIX_GPU_BASE_PROFILES = {
+    f"{PROFILE_PREFIX}_6gpu_{profile_name}.yaml"
+    for profile_name in BASE_PROFILE_TRAIN_FILES
+}
+EIGHT_GPU_BASE_PROFILES = {
+    f"{PROFILE_PREFIX}_8gpu_{profile_name}.yaml"
+    for profile_name in BASE_PROFILE_TRAIN_FILES
+}
+PROFILE_TRAIN_FILES = {
+    **{
+        f"{PROFILE_PREFIX}_{gpu_count}gpu_{profile_name}.yaml": train_files
+        for gpu_count in (6, 8)
+        for profile_name, train_files in BASE_PROFILE_TRAIN_FILES.items()
+    },
+    MATH_CODE_SCIENCE_TOPK32_PROFILE: BASE_PROFILE_TRAIN_FILES[
+        "math_code_science"
+    ],
+}
+PROFILE_VAL_FILES = {
+    **{
+        f"{PROFILE_PREFIX}_{gpu_count}gpu_{profile_name}.yaml": val_files
+        for gpu_count in (6, 8)
+        for profile_name, val_files in BASE_PROFILE_VAL_FILES.items()
+    },
+    MATH_CODE_SCIENCE_TOPK32_PROFILE: BASE_PROFILE_VAL_FILES[
+        "math_code_science"
     ],
 }
 
@@ -85,7 +113,18 @@ class Qwen30BInstruct2507ProfileTests(unittest.TestCase):
                 config = load_config(CONFIG_DIR / filename)
                 rendered = format_command(build_command(config))
                 expected_domains = set(expected_train_files)
-                expected_batch_size = 504 if len(expected_domains) == 3 else 512
+                is_eight_gpu_base = filename in EIGHT_GPU_BASE_PROFILES
+                expected_batch_size = (
+                    504
+                    if is_eight_gpu_base or len(expected_domains) == 3
+                    else 512
+                )
+                is_eight_gpu = "_8gpu_" in filename
+                expected_actor_gpus = 6 if is_eight_gpu else 4
+                expected_fsdp_size = 1 if is_eight_gpu else 2
+                expected_full_gradient_freq = (
+                    4 if filename == MATH_CODE_SCIENCE_TOPK32_PROFILE else 2
+                )
 
                 self.assertEqual(config.data.domain_train_files, expected_train_files)
                 self.assertEqual(config.data.val_files, PROFILE_VAL_FILES[filename])
@@ -114,7 +153,7 @@ class Qwen30BInstruct2507ProfileTests(unittest.TestCase):
                 self.assertEqual(config.actor.ppo_mini_batch_size, expected_batch_size)
                 self.assertEqual(config.actor.ppo_micro_batch_size_per_gpu, 1)
                 self.assertFalse(config.data.enable_thinking)
-                self.assertEqual(config.actor.fsdp_size, 2)
+                self.assertEqual(config.actor.fsdp_size, expected_fsdp_size)
                 self.assertTrue(config.actor.param_offload)
                 self.assertTrue(config.actor.optimizer_offload)
                 self.assertEqual(config.rollout.tensor_model_parallel_size, 2)
@@ -131,19 +170,47 @@ class Qwen30BInstruct2507ProfileTests(unittest.TestCase):
                 actor_gpus = config.worker_placement.actor_rollout.n_gpus_per_node
                 teacher_gpus = config.worker_placement.ref_policy.n_gpus_per_node
                 self.assertTrue(config.worker_placement.separate_ref_policy)
-                self.assertEqual(actor_gpus, 4)
+                self.assertEqual(actor_gpus, expected_actor_gpus)
                 self.assertEqual(teacher_gpus, 2)
                 self.assertEqual(config.trainer.n_gpus_per_node, actor_gpus)
-                self.assertEqual((actor_gpus or 0) + (teacher_gpus or 0), 6)
-                self.assertEqual((actor_gpus or 0) // (config.actor.fsdp_size or 1), 2)
+                self.assertEqual(
+                    (actor_gpus or 0) + (teacher_gpus or 0),
+                    expected_actor_gpus + 2,
+                )
+                self.assertEqual(
+                    (actor_gpus or 0) // (config.actor.fsdp_size or 1),
+                    expected_actor_gpus // expected_fsdp_size,
+                )
                 self.assertEqual(
                     config.data.train_batch_size % (actor_gpus * len(expected_domains)),
                     0,
                 )
 
+                if filename == MATH_CODE_SCIENCE_TOPK32_PROFILE:
+                    self.assertEqual(config.actor.distill_loss_builder, "topk_kl")
+                    self.assertEqual(
+                        config.actor.distill_mode,
+                        "topk_renormalized_reverse_kl",
+                    )
+                    self.assertTrue(config.actor.topk_distill_enabled)
+                    self.assertEqual(config.actor.topk_distill_k, 32)
+                    self.assertEqual(
+                        config.actor.topk_distill_support_source,
+                        "teacher",
+                    )
+                    self.assertEqual(config.actor.topk_distill_kl_direction, "reverse")
+                    self.assertFalse(config.actor.topk_distill_tail_bucket)
+                    self.assertEqual(config.actor.topk_distill_temperature, 1.0)
+                    self.assertEqual(config.actor.topk_distill_loss_weight, 1.0)
+                    self.assertEqual(config.actor.topk_distill_logprob_chunk_size, 16)
+                    self.assertEqual(config.actor.topk_distill_logprob_mode, "sparse")
+
                 self.assertTrue(config.audit.enabled)
                 self.assertTrue(config.audit.full_gradient_enabled)
-                self.assertEqual(config.audit.full_gradient_freq_steps, 2)
+                self.assertEqual(
+                    config.audit.full_gradient_freq_steps,
+                    expected_full_gradient_freq,
+                )
                 self.assertEqual(config.audit.full_grad_training_parity_freq_steps, 1)
                 self.assertEqual(config.audit.full_grad_training_parity_rel_l2_threshold, 2e-2)
                 self.assertEqual(config.audit.full_gradient_storage_dtype, "bfloat16")
@@ -155,7 +222,26 @@ class Qwen30BInstruct2507ProfileTests(unittest.TestCase):
                 self.assertTrue(config.audit.entropy_vocab_per_occurrence_mean_vector_enabled)
                 self.assertFalse(config.audit.entropy_enabled)
                 self.assertTrue(config.audit.entropy_vocab_vector_enabled)
-                self.assertFalse(config.audit.topk_teacher_student_cross_entropy_vocab_enabled)
+                self.assertEqual(
+                    config.audit.topk_teacher_student_cross_entropy_vocab_enabled,
+                    filename == MATH_CODE_SCIENCE_TOPK32_PROFILE,
+                )
+                if filename == MATH_CODE_SCIENCE_TOPK32_PROFILE:
+                    self.assertEqual(
+                        config.audit.topk_teacher_student_cross_entropy_vocab_freq_steps,
+                        1,
+                    )
+                    self.assertEqual(
+                        config.audit.topk_teacher_student_cross_entropy_k,
+                        32,
+                    )
+                    self.assertFalse(
+                        config.audit.topk_teacher_student_cross_entropy_include_tail,
+                    )
+                    self.assertEqual(
+                        config.audit.topk_teacher_student_cross_entropy_temperature,
+                        1.0,
+                    )
                 self.assertTrue(config.audit.logp_vector_enabled)
                 self.assertEqual(config.audit.logp_vector_freq_steps, 1)
                 self.assertTrue(config.audit.logp_abs_vector_enabled)
@@ -195,9 +281,14 @@ class Qwen30BInstruct2507ProfileTests(unittest.TestCase):
                 self.assertIn("+mopd_audit.logp_vector_enabled=true", rendered)
                 if expected_domains - {"math", "code"}:
                     self.assertIn("actor_rollout_ref.ref.model.teacher_paths", rendered)
-                self.assertIn("actor_rollout_ref.actor.fsdp_config.fsdp_size=2", rendered)
                 self.assertIn(
-                    "+actor_rollout_ref.worker_placement.actor_rollout.n_gpus_per_node=4",
+                    "actor_rollout_ref.actor.fsdp_config.fsdp_size="
+                    f"{expected_fsdp_size}",
+                    rendered,
+                )
+                self.assertIn(
+                    "+actor_rollout_ref.worker_placement.actor_rollout.n_gpus_per_node="
+                    f"{expected_actor_gpus}",
                     rendered,
                 )
                 self.assertIn(

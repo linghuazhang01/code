@@ -16,6 +16,10 @@ Options:
   --datasets NAMES        Comma-separated datasets (default: aime24,aime25,
                           hmmt25feb,hmmt25nov,humaneval_plus,mbpp_plus).
                           Also supports ifeval, ifbench, and gpqa_diamond.
+                          Use training_ceiling for the overlapping four-domain
+                          training-performance ceiling sample, or select
+                          training_math, training_code, training_if, and
+                          training_science individually.
   --modes NAMES           Comma-separated modes: non_thinking,thinking
                           (default: non_thinking).
   --max-samples N         Maximum examples per dataset (default: all).
@@ -34,7 +38,7 @@ Options:
   --run-id ID             Run identifier used in the report.
   --python PATH           Python executable (default: $PYTHON or python3).
   --score-code            Execute generated code for Code scoring; use only in
-                          an isolated environment.
+                          an isolated environment with the full verl rewards.
   --save-completions      Save full model completions in JSONL output.
   --dry-run               Validate inputs and print the command only.
   -h, --help              Show this help.
@@ -49,6 +53,9 @@ Examples:
   CUDA_VISIBLE_DEVICES=0,1,2,3 scripts/run_local_eval.sh \
     --model-path Qwen/Qwen3-30B-A3B-Instruct-2507 --backend vllm \
     --tensor-parallel-size 4 --datasets aime24,gpqa_diamond
+
+  scripts/run_local_eval.sh --model-path /path/to/model \
+    --datasets training_ceiling --max-samples 100
 USAGE
 }
 
@@ -72,6 +79,8 @@ PYTHON_BIN="${PYTHON:-python3}"
 SCORE_CODE=0
 SAVE_COMPLETIONS=0
 DRY_RUN=0
+NEEDS_TRAINING_CODE_SCORER=0
+NEEDS_IF_SCORER=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -125,30 +134,53 @@ IFS=',' read -r -a DATASET_NAMES <<< "${DATASETS}"
 DATA_FILES=()
 for name in "${DATASET_NAMES[@]}"; do
   name="${name//[[:space:]]/}"
+  relative_paths=()
   case "${name}" in
-    aime24) relative_path="data/eval_data/math/AIME24/test.parquet" ;;
-    aime25) relative_path="data/eval_data/math/AIME25/test.parquet" ;;
-    hmmt25feb) relative_path="data/eval_data/math/HMMT25Feb/test.parquet" ;;
-    hmmt25nov) relative_path="data/eval_data/math/HMMT25Nov/test.parquet" ;;
-    humaneval_plus) relative_path="data/eval_data/code/HumanEvalPlus/test.parquet" ;;
-    mbpp_plus) relative_path="data/eval_data/code/MBPPPlus/test.parquet" ;;
-    livecodebench) relative_path="data/eval_data/code/LiveCodeBench/test.parquet" ;;
-    ifeval) relative_path="data/eval_data/if/IFEval/test.parquet" ;;
-    ifbench) relative_path="data/eval_data/if/IFBench/test.parquet" ;;
-    gpqa_diamond) relative_path="data/eval_data/science/GPQA/test.parquet" ;;
+    aime24) relative_paths=("data/eval_data/math/AIME24/test.parquet") ;;
+    aime25) relative_paths=("data/eval_data/math/AIME25/test.parquet") ;;
+    hmmt25feb) relative_paths=("data/eval_data/math/HMMT25Feb/test.parquet") ;;
+    hmmt25nov) relative_paths=("data/eval_data/math/HMMT25Nov/test.parquet") ;;
+    humaneval_plus) relative_paths=("data/eval_data/code/HumanEvalPlus/test.parquet") ;;
+    mbpp_plus) relative_paths=("data/eval_data/code/MBPPPlus/test.parquet") ;;
+    livecodebench) relative_paths=("data/eval_data/code/LiveCodeBench/test.parquet") ;;
+    ifeval) relative_paths=("data/eval_data/if/IFEval/test.parquet") ;;
+    ifbench) relative_paths=("data/eval_data/if/IFBench/test.parquet") ;;
+    gpqa_diamond) relative_paths=("data/eval_data/science/GPQA/test.parquet") ;;
+    training_ceiling)
+      relative_paths=(
+        "data/eval_training_data/math/test.parquet"
+        "data/eval_training_data/code/test.parquet"
+        "data/eval_training_data/if/test.parquet"
+        "data/eval_training_data/science/test.parquet"
+      )
+      ;;
+    training_math) relative_paths=("data/eval_training_data/math/test.parquet") ;;
+    training_code) relative_paths=("data/eval_training_data/code/test.parquet") ;;
+    training_if) relative_paths=("data/eval_training_data/if/test.parquet") ;;
+    training_science) relative_paths=("data/eval_training_data/science/test.parquet") ;;
     *)
       echo "Unknown dataset '${name}'." >&2
-      echo "Valid names: aime24 aime25 hmmt25feb hmmt25nov humaneval_plus mbpp_plus livecodebench ifeval ifbench gpqa_diamond" >&2
+      echo "Valid names: aime24 aime25 hmmt25feb hmmt25nov humaneval_plus mbpp_plus livecodebench ifeval ifbench gpqa_diamond training_ceiling training_math training_code training_if training_science" >&2
       exit 2
       ;;
   esac
-  data_file="${CODE_DIR}/${relative_path}"
-  [[ -f "${data_file}" ]] || {
-    echo "Missing eval data: ${data_file}" >&2
-    echo "Run eval/scripts/prepare_paper_eval_data.sh first." >&2
-    exit 2
-  }
-  DATA_FILES+=("${data_file}")
+  for relative_path in "${relative_paths[@]}"; do
+    [[ "${relative_path}" != data/eval_training_data/code/* ]] || NEEDS_TRAINING_CODE_SCORER=1
+    if [[ "${relative_path}" == data/eval_training_data/if/* || "${relative_path}" == data/eval_data/if/* ]]; then
+      NEEDS_IF_SCORER=1
+    fi
+    data_file="${CODE_DIR}/${relative_path}"
+    [[ -f "${data_file}" ]] || {
+      echo "Missing eval data: ${data_file}" >&2
+      if [[ "${relative_path}" == data/eval_training_data/* ]]; then
+        echo "Run: python scripts/split_domain_eval_training_data.py --eval-size 10000 --seed 42 --overwrite" >&2
+      else
+        echo "Run eval/scripts/prepare_paper_eval_data.sh first." >&2
+      fi
+      exit 2
+    }
+    DATA_FILES+=("${data_file}")
+  done
 done
 
 IFS=',' read -r -a MODE_NAMES <<< "${MODES}"
@@ -221,6 +253,21 @@ REQUIRED_MODULES='import pandas, pyarrow, torch, transformers'
   echo "Missing dependencies for eval backend '${BACKEND}'." >&2
   exit 2
 }
+if [[ "${SCORE_CODE}" == "1" && "${NEEDS_TRAINING_CODE_SCORER}" == "1" ]]; then
+  "${PYTHON_BIN}" -c 'from verl.utils.reward_score import default_compute_score' || {
+    echo "Training-code scoring requires the complete vendored verl reward environment; simple Math fallback is disabled." >&2
+    exit 2
+  }
+fi
+if [[ "${NEEDS_IF_SCORER}" == "1" ]]; then
+  export IFBENCH_REPO="${IFBENCH_REPO:-${CODE_DIR}/../temp/IFBench}"
+  if ! "${PYTHON_BIN}" -c 'import verifiable_instructions.instructions_registry' >/dev/null 2>&1 \
+    && [[ ! -f "${IFBENCH_REPO}/evaluation_lib.py" ]]; then
+    echo "IF scoring requires verifiable_instructions or allenai/IFBench." >&2
+    echo "Activate the environment from scripts/setup_training_env.sh, or run: IFBENCH_REPO=${IFBENCH_REPO} scripts/prepare_ifbench_runtime.sh" >&2
+    exit 2
+  fi
+fi
 
 mkdir -p "${OUTPUT_DIR}"
 cd "${CODE_DIR}"

@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -116,6 +117,19 @@ def has_close_elements(numbers: List[float], threshold: float) -> bool:
 
         self.assertEqual(score, 1.0)
         self.assertTrue(metadata[0]["passed"])
+
+    @patch("eval.domains.scoring._load_default_compute_score", return_value=None)
+    def test_training_code_never_uses_simple_math_fallback(self, _mock_scorer) -> None:
+        sample = EvalSample(
+            sample_id="training-code-0",
+            dataset="taco",
+            ability="code",
+            messages=[{"role": "user", "content": "Write a program."}],
+            ground_truth='{"inputs": ["1\\n"], "outputs": ["1\\n"]}',
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "simple Math fallback is invalid"):
+            score_completion(sample, "```python\nprint(1)\n```", score_code=True)
 
     def test_hle_is_not_silently_scored_with_gpqa(self) -> None:
         sample = EvalSample(

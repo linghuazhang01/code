@@ -30,6 +30,7 @@ Data-preparation utilities under `eval/scripts/` may still be run separately.
 | Code | `domains/code/` | `../data/eval_data/code/{HumanEvalPlus,MBPPPlus,LiveCodeBench}/test.parquet` | HumanEvalPlus/MBPPPlus ready; generate LiveCodeBench with `prepare_paper_eval_data.sh` |
 | IF | `mopd_verl/m2rl_reward.py` | `../data/eval_data/if/{IFBench,IFEval}/test.parquet` | Generate the full bundle with `python -m eval.data_prep.m2rl_eval`; the shell helper prepares IFBench only |
 | Science | `domains/science/` | `../data/eval_data/science/{GPQA,HLE,MMLU-Pro,SuperGPQA}/test.parquet` | Generate GPQA/HLE with `python -m eval.data_prep.m2rl_eval`; MMLU-Pro/SuperGPQA include official evaluators |
+| Training ceiling | Existing domain scorers | `../data/eval_training_data/{math,code,if,science}/test.parquet` | 10,000 overlapping training samples per domain; use only for training-performance diagnostics |
 | ToolRL | `domains/toolrl/` | `../data/eval_data/toolrl/{BFCL,API-Bank,Bamboogle}/test.parquet` | Data/internal evaluators exist; ToolRL datasets are not yet exposed by `run_local_eval.sh` |
 
 SearchQA support remains in `domains/search/` because the thinking evaluator can
@@ -50,16 +51,23 @@ protocol, use `eval/scripts/run_paper_eval_suite.sh`. The generated LiveCodeBenc
 parquet is intentionally ignored by Git because it contains the full private
 test payload; `manifest.json` records its pinned revision and source checksum.
 
-Create deterministic four-domain training holdouts and matching train
-remainders without modifying the original parquet files:
+Create deterministic four-domain training-performance ceiling samples without
+modifying the original parquet files:
 
 ```bash
-python scripts/split_domain_eval_training_data.py --write-remainders
+python scripts/split_domain_eval_training_data.py \
+  --eval-size 10000 \
+  --seed 42 \
+  --overwrite
 ```
 
-Eval files are written to `data/eval_training_data/<domain>/test.parquet`, and
-remainders to `data/training_data_split/<domain>/train.parquet`. Future training
-configs must use the remainders for the eval data to be leakage-free.
+The four outputs are written to
+`data/eval_training_data/<domain>/test.parquet`; their hashes and selected
+prompt groups are recorded in `data/eval_training_data/manifest.json`. These
+samples intentionally overlap the original training files and estimate
+training-data performance rather than leakage-free generalization. Existing
+files under `data/training_data_split/` are not consumed or refreshed by this
+workflow.
 
 Official MMLU-Pro and SuperGPQA data:
 
@@ -134,7 +142,31 @@ Important options:
 
 Supported dataset keys are `aime24`, `aime25`, `hmmt25feb`, `hmmt25nov`,
 `humaneval_plus`, `mbpp_plus`, `livecodebench`, `ifeval`, `ifbench`, and
-`gpqa_diamond`.
+`gpqa_diamond`. The training-performance keys are `training_ceiling` for all
+four domains, plus `training_math`, `training_code`, `training_if`, and
+`training_science` for individual domains.
+
+For example, run a bounded four-domain training ceiling evaluation with:
+
+```bash
+scripts/run_local_eval.sh \
+  --model-path /path/to/model \
+  --datasets training_ceiling \
+  --max-samples 100
+```
+
+`training_ceiling` is not an official benchmark. Results must be labeled as
+training-data performance, and Code scoring remains disabled unless
+`--score-code` is explicitly enabled in an isolated environment with the full
+vendored verl reward dependencies. The launcher never falls back to a Math
+scorer for training Code data.
+
+IF scoring requires either `verifiable_instructions`, which is installed by
+`scripts/setup_training_env.sh`, or a local official evaluator prepared with:
+
+```bash
+scripts/prepare_ifbench_runtime.sh
+```
 
 For example, compare thinking and non-thinking with vLLM:
 

@@ -1423,10 +1423,12 @@ class RayPPOTrainer:
                             self.global_steps
                         )
                     )
-                    if topk_cross_entropy_active and (
+                    has_topk_cross_entropy_support = (
                         "math_teacher_topk_ids" in batch.batch
                         or "math_teacher_student_topk_logprobs" in batch.batch
-                    ):
+                    )
+                    reuse_training_topk_cross_entropy = False
+                    if topk_cross_entropy_active and has_topk_cross_entropy_support:
                         if uses_topk_distill_loss(policy_loss_config):
                             batch.meta_info["topk_distill_include_tail"] = topk_distill_include_tail(
                                 policy_loss_config
@@ -1441,8 +1443,29 @@ class RayPPOTrainer:
                             batch.meta_info["topk_distill_temperature"] = (
                                 self.mopd_audit_logger.topk_teacher_student_cross_entropy_temperature
                             )
-                        teacher_student_ce = self.actor_rollout_wg.compute_teacher_student_cross_entropy(batch)
-                        batch = batch.union(teacher_student_ce)
+                        actor_config = self.config.actor_rollout_ref.actor
+                        global_ppo_mini_batch_size = int(
+                            actor_config.ppo_mini_batch_size
+                        ) * int(self.config.actor_rollout_ref.rollout.n)
+                        # Later mini-batches would observe already-updated weights,
+                        # so only a single optimizer mini-batch is reusable.
+                        reuse_training_topk_cross_entropy = (
+                            uses_topk_distill_loss(policy_loss_config)
+                            and actor_config.strategy in {"fsdp", "fsdp2"}
+                            and self.config.trainer.critic_warmup <= self.global_steps
+                            and int(actor_config.get("ppo_epochs", 1)) == 1
+                            and global_ppo_mini_batch_size >= len(batch)
+                        )
+                        if not reuse_training_topk_cross_entropy:
+                            teacher_student_ce = (
+                                self.actor_rollout_wg.compute_teacher_student_cross_entropy(
+                                    batch
+                                )
+                            )
+                            batch = batch.union(teacher_student_ce)
+                    batch.meta_info["mopd_return_teacher_student_cross_entropy"] = (
+                        reuse_training_topk_cross_entropy
+                    )
                     
                     # compute values
                     if self.use_critic:
@@ -1499,21 +1522,18 @@ class RayPPOTrainer:
                             config=self.config.algorithm,
                         )
 
-                    if self.mopd_audit_logger.enabled:
-                        metrics.update(
-                            self.mopd_audit_logger.log_training_step(
-                                batch=batch,
-                                step=self.global_steps,
-                                lr=self.config.actor_rollout_ref.actor.optim.lr,
+                    if (
+                        self.mopd_audit_logger.enabled
+                        and self.mopd_audit_logger.should_compute_full_gradient(
+                            self.global_steps
+                        )
+                    ):
+                        batch.meta_info.update(
+                            self.mopd_audit_logger.full_gradient_meta(
+                                "train",
+                                self.global_steps,
                             )
                         )
-                        if self.mopd_audit_logger.should_compute_full_gradient(self.global_steps):
-                            batch.meta_info.update(
-                                self.mopd_audit_logger.full_gradient_meta(
-                                    "train",
-                                    self.global_steps,
-                                )
-                            )
 
                     # update critic
                     if self.use_critic:
@@ -1530,6 +1550,25 @@ class RayPPOTrainer:
                             actor_output = self.actor_rollout_wg.update_actor(batch)
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)
+                        if reuse_training_topk_cross_entropy:
+                            cross_entropy_key = "teacher_student_cross_entropy"
+                            if actor_output.batch is None or cross_entropy_key not in actor_output.batch:
+                                raise RuntimeError(
+                                    "Actor update did not return the requested training-forward "
+                                    "teacher-student cross entropy."
+                                )
+                            batch.batch[cross_entropy_key] = actor_output.batch[
+                                cross_entropy_key
+                            ]
+
+                    if self.mopd_audit_logger.enabled:
+                        metrics.update(
+                            self.mopd_audit_logger.log_training_step(
+                                batch=batch,
+                                step=self.global_steps,
+                                lr=self.config.actor_rollout_ref.actor.optim.lr,
+                            )
+                        )
 
                     # Log rollout generations if enabled
                     rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)

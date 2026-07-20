@@ -31,6 +31,8 @@ def score_with_project_reward(
     completion: str,
     ground_truth: Any,
     extra_info: dict[str, Any] | None = None,
+    *,
+    allow_simple_math_fallback: bool = True,
 ) -> tuple[float, list[dict[str, Any]] | None]:
     rm_type = str((extra_info or {}).get("rm_type") or "").lower()
     if rm_type in {"ifbench", "gpqa"}:
@@ -45,6 +47,12 @@ def score_with_project_reward(
         return float(score), metadata
     compute_score = _load_default_compute_score()
     if compute_score is None:
+        if not allow_simple_math_fallback:
+            raise RuntimeError(
+                "The project reward scorer is unavailable, and the simple Math "
+                f"fallback is invalid for data_source={data_source!r}. Run inside "
+                "the complete mopd-verl environment."
+            )
         score, _ = simple_score_math_answer(completion, ground_truth)
         return score, [{"scorer": "simple_math_fallback"}]
 
@@ -94,5 +102,6 @@ def score_completion(
         completion_for_scoring,
         sample.ground_truth,
         sample.extra_info,
+        allow_simple_math_fallback=sample.ability in {"math", "reasoning"},
     )
     return score, prediction, metadata

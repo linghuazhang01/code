@@ -188,11 +188,19 @@ REQUIRE_M2RL_EVAL_DATA=1 \
 | `configs/mopd_formal_audit_grad_consistency_2gpu_b16_1step_smoke.yaml` | 2 卡 batch size 16、1 step 的 gradient consistency smoke。 |
 | `configs/mopd_formal_audit_grad_consistency_2gpu_b32_2step_smoke.yaml` | 2 卡 batch size 32、2 step 的 gradient consistency smoke。 |
 | `configs/mopd_formal_audit_grad_consistency_2gpu_b64_3step_smoke.yaml` | 2 卡 batch size 64、3 step 的 gradient consistency smoke。 |
-| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math.yaml` | Math-only：4 张 actor/rollout GPU + 2 张 teacher/ref GPU。 |
-| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_code.yaml` | Code-only，使用相同 topology 与 audit surface。 |
-| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_if.yaml` | IF-only，并使用 IFBench validation。 |
-| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_science.yaml` | Science-only，并使用 GPQA validation。 |
-| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math_code.yaml` | Math+code 等权训练，使用相同 topology 与 audit surface。 |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math.yaml` | 原始 Math-only：4 张 actor/rollout GPU + 2 张 teacher/ref GPU。 |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_code.yaml` | 原始 Code-only，使用相同的 6 卡 topology。 |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_if.yaml` | 原始 IF-only，并使用 IFBench validation。 |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_science.yaml` | 原始 Science-only，并使用 GPQA validation。 |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math_code.yaml` | 原始 Math+code 等权训练。 |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math_code_science.yaml` | 原始 Math+code+science 等权训练。 |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math.yaml` | Math-only：6 张 actor/rollout GPU + 2 张 teacher/ref GPU，batch 504。 |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_code.yaml` | Code-only，使用相同 topology、batch 与 audit surface。 |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_if.yaml` | IF-only，并使用 IFBench validation。 |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_science.yaml` | Science-only，并使用 GPQA validation。 |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code.yaml` | Math+code 等权训练，使用相同 topology 与 audit surface。 |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code_science.yaml` | Math+code+science 等权训练，使用相同 topology 与 batch 504。 |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code_science_topk32.yaml` | Top-32 Math+code+science distillation，使用相同 8-GPU topology、`fsdp_size=1` 与 batch 504。 |
 
 正式 2/4/6/8 卡配置共同使用：
 
@@ -233,20 +241,33 @@ gradient consistency smoke profile 使用 `../models/Qwen3-0.6B` 降低闭合验
 
 ### Qwen3-30B-A3B-Instruct-2507 Teacher Profiles
 
-五套正式配置只改变 domain 数据和 evaluation set，其余保持一致：
+原有六套 6-GPU 配置保持不变，共同设置为：
 
 - student：`../models/Qwen3-4B`
 - teacher：`../models/Qwen3-30B-A3B-Instruct-2507`
 - 6 张可见 GPU：4 actor/rollout + 2 teacher/ref
 - actor `fsdp_size=2`，即两个 replica、每个 replica 两个 shard
-- rollout TP=2，train/mini batch 512，micro batch 1
+- rollout TP=2、micro batch 1
+- 单域/双域 train/mini batch 512，三域 train/mini batch 504
 - 统一 chosen-token policy-gradient objective
-- 每四步统计一次 domain gradient，BF16 CPU vector，并检查 training parity；
+- 每两步统计一次 domain gradient，BF16 CPU vector，并检查 training parity；
   开启 token-gap vector，关闭嵌套 sample/token backward
+
+新增六套 8-GPU base 配置沿用相同 domains、数据、objective 与 audit surface，
+但统一使用：
+
+- 8 张可见 GPU：6 actor/rollout + 2 teacher/ref
+- actor `fsdp_size=1`，使用同步的完整 actor model replicas
+- rollout TP=2，所有 domain 组合的 train/mini batch 均为 504
+- 独立的 8-GPU experiment、audit、checkpoint 与 paper-eval 输出路径
+
+独立 Top-32 profile 使用相同的 `fsdp_size=1` topology 与 batch 504，
+并保留自身的 distillation objective 和 audit cadence。
 
 Math 使用 `DeepMath-103K/train_filtered_level6.parquet`，code 使用
 `Eurus/code_train.parquet`，IF 使用 `IF/train.parquet`，science 使用
-`Science/train.parquet`，mixed profile 按 math/code 1:1 采样。五套配置均使用
+`Science/train.parquet`，mixed profiles 分别按 math/code 或
+math/code/science 等权采样。两套 base 配置均使用
 `data.load_parquet_direct=true` 与 `mopd_verl/mixed_reward.py`。
 
 配置默认使用 `logger: '["console","tensorboard","wandb"]'`、

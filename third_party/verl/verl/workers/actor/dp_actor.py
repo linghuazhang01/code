@@ -606,11 +606,22 @@ class DataParallelPPOActor(BasePPOActor):
         return cross_entropy
 
     @GPUMemoryLogger(role="dp actor", logger=logger)
-    def update_policy(self, data: DataProto):
+    def update_policy(
+        self,
+        data: DataProto,
+        *,
+        return_auxiliary_outputs: bool = False,
+    ):
         """Run the production update, with an optional read-only audit sidecar."""
 
         self.actor_module.train()
         temperature = float(data.meta_info["temperature"])
+        return_teacher_student_cross_entropy = bool(
+            data.meta_info.get(
+                "mopd_return_teacher_student_cross_entropy",
+                False,
+            )
+        )
         select_keys = [
             "responses",
             "response_mask",
@@ -669,14 +680,21 @@ class DataParallelPPOActor(BasePPOActor):
 
         mini_batches = data.split(self.config.ppo_mini_batch_size)
         on_policy = len(mini_batches) == 1 and self.config.ppo_epochs == 1
+        if return_teacher_student_cross_entropy and not on_policy:
+            raise ValueError(
+                "Reusing training-forward teacher-student cross entropy requires "
+                "one PPO epoch and one optimizer mini-batch."
+            )
         metrics = {}
+        teacher_student_cross_entropy_batches = []
         audit = DomainGradientAudit(self, data.meta_info.get("mopd_full_gradient", {}))
         for _ in range(self.config.ppo_epochs):
             for mini_batch in mini_batches:
                 if self.config.use_dynamic_bsz:
                     max_token_len = self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
-                    micro_batches, _ = prepare_dynamic_batch(mini_batch, max_token_len=max_token_len)
+                    micro_batches, batch_idx_list = prepare_dynamic_batch(mini_batch, max_token_len=max_token_len)
                 else:
+                    batch_idx_list = None
                     self.gradient_accumulation = (
                         self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size_per_gpu
                     )
@@ -706,6 +724,7 @@ class DataParallelPPOActor(BasePPOActor):
                 self.actor_optimizer.zero_grad()
 
                 micro_batch_metric_rows = []
+                micro_batch_cross_entropy = []
                 for micro_batch, loss_scale in zip(micro_batches, loss_scales, strict=True):
                     result = build_actor_micro_batch_loss(
                         self,
@@ -713,6 +732,9 @@ class DataParallelPPOActor(BasePPOActor):
                         loss_scale_factor=loss_scale,
                         on_policy=on_policy,
                         include_metrics=True,
+                        return_teacher_student_cross_entropy=(
+                            return_teacher_student_cross_entropy
+                        ),
                         temperature=temperature,
                     )
                     if self.scaler is not None:
@@ -720,6 +742,24 @@ class DataParallelPPOActor(BasePPOActor):
                     else:
                         result.loss.backward()
                     micro_batch_metric_rows.append(result.metrics)
+                    if result.teacher_student_cross_entropy is not None:
+                        micro_batch_cross_entropy.append(
+                            result.teacher_student_cross_entropy
+                        )
+
+                if return_teacher_student_cross_entropy:
+                    mini_batch_cross_entropy = torch.cat(
+                        micro_batch_cross_entropy,
+                        dim=0,
+                    )
+                    if batch_idx_list is not None:
+                        mini_batch_cross_entropy = restore_dynamic_batch(
+                            mini_batch_cross_entropy,
+                            batch_idx_list,
+                        )
+                    teacher_student_cross_entropy_batches.append(
+                        mini_batch_cross_entropy
+                    )
 
                 contribution_metrics, observation_rows = (
                     aggregate_actor_micro_batch_metrics(micro_batch_metric_rows)
@@ -732,4 +772,12 @@ class DataParallelPPOActor(BasePPOActor):
                 grad_norm = self._optimizer_step()
                 append_to_dict(metrics, {"actor/grad_norm": grad_norm.detach().item()})
         self.actor_optimizer.zero_grad()
+        if return_auxiliary_outputs:
+            auxiliary_outputs = {}
+            if teacher_student_cross_entropy_batches:
+                auxiliary_outputs["teacher_student_cross_entropy"] = torch.cat(
+                    teacher_student_cross_entropy_batches,
+                    dim=0,
+                )
+            return metrics, auxiliary_outputs
         return metrics

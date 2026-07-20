@@ -35,6 +35,7 @@ from mopd_verl.topk_distill import (
     topk_distill_support_source,
     topk_distill_temperature,
     topk_distill_weight,
+    topk_teacher_student_cross_entropy_matrix,
     uses_topk_distill_loss,
 )
 from verl import DataProto
@@ -49,6 +50,7 @@ def build_actor_micro_batch_loss(
     on_policy: bool,
     gradient_mask_override: torch.Tensor | None = None,
     include_metrics: bool = False,
+    return_teacher_student_cross_entropy: bool = False,
     temperature: float | None = None,
 ) -> ActorMicroBatchLossResult:
     from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
@@ -93,6 +95,22 @@ def build_actor_micro_batch_loss(
         entropy, log_prob, _topk_ids, _topk_log_probs, student_topk_log_probs = forward_output
     else:
         entropy, log_prob = forward_output
+    teacher_student_cross_entropy = None
+    if return_teacher_student_cross_entropy:
+        if not topk_distill_active:
+            raise ValueError(
+                "Teacher-student cross entropy reuse requires an active top-k "
+                "distillation loss."
+            )
+        # Record the exact train-mode distribution used by this optimizer step.
+        teacher_student_cross_entropy = (
+            topk_teacher_student_cross_entropy_matrix(
+                student_topk_log_probs=student_topk_log_probs.detach(),
+                teacher_topk_log_probs=teacher_support_log_probs.detach(),
+                include_tail=topk_distill_include_tail(policy_loss_cfg),
+                temperature=topk_distill_temperature(policy_loss_cfg),
+            ).detach()
+        )
     if gradient_mask_override is not None:
         if gradient_mask_override.shape != response_mask.shape:
             raise ValueError(
@@ -268,4 +286,5 @@ def build_actor_micro_batch_loss(
     return ActorMicroBatchLossResult(
         loss=policy_loss * float(loss_scale_factor),
         metrics=metrics,
+        teacher_student_cross_entropy=teacher_student_cross_entropy,
     )

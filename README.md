@@ -193,11 +193,19 @@ Three formal MOPD variants are kept with 2/4/6/8 GPU profiles, plus metrics smok
 | `configs/mopd_formal_audit_grad_consistency_2gpu_b16_1step_smoke.yaml` | 2-GPU gradient consistency smoke with batch size 16 and one training step. |
 | `configs/mopd_formal_audit_grad_consistency_2gpu_b32_2step_smoke.yaml` | 2-GPU gradient consistency smoke with batch size 32 and two training steps. |
 | `configs/mopd_formal_audit_grad_consistency_2gpu_b64_3step_smoke.yaml` | 2-GPU gradient consistency smoke with batch size 64 and three training steps. |
-| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math.yaml` | Math-only training: 4 actor/rollout GPUs + 2 teacher/ref GPUs. |
-| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_code.yaml` | Code-only training with the same topology and audit surface. |
-| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_if.yaml` | IF-only training with IFBench validation. |
-| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_science.yaml` | Science-only training with GPQA validation. |
-| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math_code.yaml` | Equal-weight math+code training with the same topology and audit surface. |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math.yaml` | Original math-only training: 4 actor/rollout GPUs + 2 teacher/ref GPUs. |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_code.yaml` | Original code-only training with the same 6-GPU topology. |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_if.yaml` | Original IF-only training with IFBench validation. |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_science.yaml` | Original science-only training with GPQA validation. |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math_code.yaml` | Original equal-weight math+code training. |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math_code_science.yaml` | Original equal-weight math+code+science training. |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math.yaml` | Math-only training: 6 actor/rollout GPUs + 2 teacher/ref GPUs, batch 504. |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_code.yaml` | Code-only training with the same topology, batch, and audit surface. |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_if.yaml` | IF-only training with IFBench validation. |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_science.yaml` | Science-only training with GPQA validation. |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code.yaml` | Equal-weight math+code training with the same topology and audit surface. |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code_science.yaml` | Equal-weight math+code+science training with the same topology and batch 504. |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code_science_topk32.yaml` | Top-32 math+code+science distillation with the same 8-GPU topology, `fsdp_size=1`, and batch 504. |
 
 Formal 2/4/6/8 GPU profiles use:
 
@@ -239,22 +247,35 @@ The gradient consistency smoke profiles use `../models/Qwen3-0.6B` to keep check
 
 ### Qwen3-30B-A3B-Instruct-2507 Teacher Profiles
 
-The five production profiles differ only in the selected domain data and
-evaluation sets. They share:
+The six original 6-GPU profiles remain unchanged. They share:
 
 - student: `../models/Qwen3-4B`
 - teacher: `../models/Qwen3-30B-A3B-Instruct-2507`
 - 6 visible GPUs: 4 actor/rollout + 2 teacher/ref
 - actor `fsdp_size=2`, giving two HYBRID_SHARD replicas of two shards
-- rollout TP=2, batch/mini-batch size 512, micro-batch size 1
+- rollout TP=2 and micro-batch size 1
+- batch/mini-batch size 512 for the one/two-domain profiles and 504 for the
+  three-domain profile
 - the unified chosen-token policy-gradient objective
-- domain-gradient audit every four steps, BF16 CPU vectors, training parity,
+- domain-gradient audit every two steps, BF16 CPU vectors, training parity,
   and token-gap vectors; nested sample/token backward is disabled
+
+The six new 8-GPU base profiles mirror the same domains, data, objective, and
+audit surface while using:
+
+- 8 visible GPUs: 6 actor/rollout + 2 teacher/ref
+- actor `fsdp_size=1`, using synchronized full-model actor replicas
+- rollout TP=2 and batch/mini-batch size 504 for every domain combination
+- distinct 8-GPU experiment, audit, checkpoint, and paper-eval output paths
+
+The separate Top-32 profile uses the same `fsdp_size=1` topology and batch 504,
+with its own distillation objective and audit cadence.
 
 Math uses `DeepMath-103K/train_filtered_level6.parquet`; code uses
 `Eurus/code_train.parquet`; IF uses `IF/train.parquet`; science uses
-`Science/train.parquet`; the mixed profile samples math/code with equal weight.
-All profiles use `data.load_parquet_direct=true` and
+`Science/train.parquet`; the mixed profiles sample math/code or
+math/code/science with equal weight. Both base sets use
+`data.load_parquet_direct=true` and
 `mopd_verl/mixed_reward.py`.
 
 Configs default to `logger: '["console","tensorboard","wandb"]'`,

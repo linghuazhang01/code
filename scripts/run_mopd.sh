@@ -13,7 +13,7 @@ Examples:
     trainer.experiment_name=mopd_audit_off_manual
 
   # Submit as a Slurm job
-  scripts/run_mopd.sh configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math_code_science.yaml --slurm
+  scripts/run_mopd.sh configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code_science.yaml --slurm
 
   # With extra Slurm directives (can be repeated)
   scripts/run_mopd.sh configs/... --slurm --slurm-args "--partition=gpu" --slurm-args "--time=24:00:00"
@@ -112,13 +112,41 @@ if [[ "${#EXTRA_ARGS[@]}" -gt 0 ]]; then
 fi
 
 if [[ "${SLURM_FLAG}" == "1" ]]; then
-  # Extract experiment name from config for the job name
-  EXPERIMENT_NAME="$(python3 - "${CONFIG_PATH}" <<'PY'
-import sys, yaml
-config = yaml.safe_load(open(sys.argv[1]))
-print(config.get("trainer", {}).get("experiment_name", "mopd_training"))
+  # Derive the Slurm resources from the selected config's worker pools.
+  IFS=$'\t' read -r EXPERIMENT_NAME SLURM_GPUS SLURM_CPUS SLURM_GPU_IDS < <(
+    "${MOPD_LAUNCH_PYTHON:-python3}" - "${CONFIG_PATH}" <<'PY'
+from pathlib import Path
+import sys
+
+import yaml
+
+
+config = yaml.safe_load(Path(sys.argv[1]).read_text(encoding="utf-8")) or {}
+trainer = config.get("trainer") or {}
+placement = config.get("worker_placement") or {}
+actor_pool = placement.get("actor_rollout") or {}
+ref_pool = placement.get("ref_policy") or {}
+trainer_gpus = int(trainer.get("n_gpus_per_node", 1))
+
+
+def pool_gpus(pool: dict, default: int) -> int:
+    process_on_nodes = pool.get("process_on_nodes")
+    if process_on_nodes:
+        return int(process_on_nodes[0])
+    return int(pool.get("n_gpus_per_node", default))
+
+
+required_gpus = pool_gpus(actor_pool, trainer_gpus)
+if placement.get("separate_ref_policy", False):
+    required_gpus += pool_gpus(ref_pool, trainer_gpus)
+
+ray_init = (config.get("ray_kwargs") or {}).get("ray_init") or {}
+required_cpus = int(ray_init.get("num_cpus", max(8, required_gpus * 4)))
+experiment_name = trainer.get("experiment_name", "mopd_training")
+gpu_ids = ",".join(str(index) for index in range(required_gpus))
+print(experiment_name, required_gpus, required_cpus, gpu_ids, sep="\t")
 PY
-  )"
+  )
   JOB_NAME="mopd_${EXPERIMENT_NAME}"
   SLURM_LOG_DIR="${CODE_DIR}/logs/slurm"
   mkdir -p "${SLURM_LOG_DIR}"
@@ -138,14 +166,14 @@ PY
 #SBATCH --error=${SLURM_LOG}
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gpus=6
-#SBATCH --cpus-per-task=24
+#SBATCH --gpus=${SLURM_GPUS}
+#SBATCH --cpus-per-task=${SLURM_CPUS}
 $(for _arg in "${SLURM_EXTRA_DIRECTIVES[@]}"; do echo "#SBATCH ${_arg}"; done)
 
 cd "${CODE_DIR}"
 export PYTHONPATH="${CODE_DIR}:${VERL_RUNTIME_DIR}:\${PYTHONPATH:-}"
 export PYTHONINTMAXSTRDIGITS="${PYTHONINTMAXSTRDIGITS:-0}"
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5
+export CUDA_VISIBLE_DEVICES=${SLURM_GPU_IDS}
 
 exec "${MOPD_LAUNCH_PYTHON:-python3}" -m mopd_verl.launch ${LAUNCH_ARGS[*]}
 SBATCH
