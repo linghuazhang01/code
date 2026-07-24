@@ -726,6 +726,19 @@ class SGLangRollout(BaseRollout):
                     "n": 1,  # if validate, already repeat in ray_trainer
                 }
             )
+        effective_response_length = int(
+            prompts.meta_info.get(
+                "mopd_response_length",
+                self.config.response_length,
+            )
+        )
+        if effective_response_length <= 0:
+            raise ValueError(
+                "mopd_response_length must be positive when rollout is called."
+            )
+        request_sampling_params["max_new_tokens"] = (
+            effective_response_length
+        )
 
         # Update with any additional kwargs
         request_sampling_params.update(kwargs)

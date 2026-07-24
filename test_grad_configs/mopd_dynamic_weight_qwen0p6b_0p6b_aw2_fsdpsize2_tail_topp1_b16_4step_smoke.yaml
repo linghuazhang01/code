@@ -1,16 +1,16 @@
-# Paired reliability smoke for read-only full-gradient audit.
+# Three-GPU, three-domain smoke for EMA domain weighting and token-gradient
+# attribution.
 #
-# Fixed across the suite:
-# - Qwen3-4B student and Qwen3-8B teacher
-# - deterministic data order and greedy rollout
-# - normal backward always drives optimizer.step()
-# - sequence-masked total/math/code replay is diagnostic only
+# Physical placement:
+# - 2 GPUs for the Qwen3-0.6B actor/rollout (FSDP size 2);
+# - 1 GPU for the shared Qwen3-0.6B teacher/ref policy.
 #
-# Variant:
-# - actor world size: 2
-# - fsdp_size: 1
-# - audit enabled: true
-# - audit frequency: every 2 steps when enabled
+# Diagnostic intent:
+# - train with teacher-support Top-k32 renormalized reverse KL;
+# - rank every domain's active tokens by absolute configured token loss;
+# - replay low-loss 15% mass, Top-k50, and Top-p=1.0 gradients;
+# - update EMA domain weighting at every step and emit three weight metrics for
+#   each of math, code, and science.
 
 runtime:
   python_bin: python
@@ -26,14 +26,18 @@ data:
       - data/G-OPD-Training-Data/DeepMath-103K/train_filtered_level6.parquet
     code:
       - data/G-OPD-Training-Data/Eurus/code_train.parquet
+    science:
+      - data/G-OPD-Training-Data/Science/train.parquet
   domain_sampling_weights:
     math: 1
     code: 1
+    science: 1
   domain_sampling_replacement: true
   load_parquet_direct: true
   val_files:
     - data/eval_data/math/AIME24/test.parquet
     - data/eval_data/code/HumanEvalPlus/test.parquet
+    - data/eval_data/science/GPQA/test.parquet
   train_batch_size: 16
   val_batch_size: 16
   max_prompt_length: 2048
@@ -47,13 +51,14 @@ data:
   enable_thinking: false
 
 model:
-  student_path: /root/autodl-tmp/models/Qwen3-4B
+  student_path: /root/autodl-tmp/models/Qwen3-0.6B
   student_base_path: null
-  math_teacher_path: /root/autodl-tmp/models/Qwen3-8B
-  code_teacher_path: /root/autodl-tmp/models/Qwen3-8B
+  math_teacher_path: /root/autodl-tmp/models/Qwen3-0.6B
+  code_teacher_path: /root/autodl-tmp/models/Qwen3-0.6B
   domain_teacher_paths:
-    math: /root/autodl-tmp/models/Qwen3-8B
-    code: /root/autodl-tmp/models/Qwen3-8B
+    math: /root/autodl-tmp/models/Qwen3-0.6B
+    code: /root/autodl-tmp/models/Qwen3-0.6B
+    science: /root/autodl-tmp/models/Qwen3-0.6B
   teacher_model_device: gpu
 
 actor:
@@ -62,20 +67,19 @@ actor:
   only_reverse_kl_advantages: false
   lambda_vals: 1.0
   multi_teacher_distill: true
-  distill_loss_builder: policy_gradient
-  distill_mode: chosen_token_policy_gradient
-  topk_distill_enabled: false
+  distill_loss_builder: topk_kl
+  distill_mode: topk_renormalized_reverse_kl
+  topk_distill_enabled: true
   topk_distill_kl_direction: reverse
   topk_distill_k: 32
   topk_distill_support_source: teacher
   topk_distill_tail_bucket: false
   topk_distill_temperature: 1.0
-  topk_distill_loss_weight: 0.0
+  topk_distill_loss_weight: 1.0
   topk_distill_logprob_chunk_size: 16
   topk_distill_logprob_mode: sparse
   ppo_mini_batch_size: 16
   ppo_micro_batch_size_per_gpu: 1
-  use_dynamic_bsz: false
   use_kl_loss: true
   kl_loss_coef: 0
   kl_loss_type: low_var_kl
@@ -84,14 +88,14 @@ actor:
   gradient_checkpointing: true
   param_offload: true
   optimizer_offload: true
-  fsdp_size: 1
+  fsdp_size: 2
+  use_dynamic_bsz: false
 
 rollout:
   calculate_log_probs: true
   log_prob_micro_batch_size_per_gpu: 1
   tensor_model_parallel_size: 1
   name: vllm
-  mode: sync
   gpu_memory_utilization: 0.45
   enforce_eager: true
   enable_chunked_prefill: false
@@ -130,10 +134,11 @@ worker_placement:
 
 audit:
   enabled: true
-  output_dir: audit/mopd-grad-reliability-qwen4b-8b-aw2_fsdpsize1_audit_freq2-b16-4step-smoke
+  output_dir: audit/mopd-dynamic-weight-qwen0p6b-0p6b-math-code-science-aw2-fsdpsize2-tail-topp1-b16-4step-smoke
   domains:
     - math
     - code
+    - science
   tensorboard_prefix: mopd
   tensorboard_layout: domain_category
   tensorboard_prune_mode: none
@@ -157,8 +162,6 @@ audit:
   full_gradient_direct_recompute_enabled: false
   sequence_masked_target_enabled: true
   sequence_masked_target_use_as_primary: true
-  sequence_replay_skip_non_target_domains: false
-  sequence_masked_target_closure_rel_l2_threshold: 0.02
   full_gradient_offload_domain_gradients: true
   sample_gradient_enabled: false
   sample_gradient_freq_steps: 1
@@ -170,7 +173,7 @@ audit:
   sample_gradient_log_sample_level: false
   sample_gradient_log_sample_level_freq_steps: 1
   token_gap_enabled: true
-  token_gap_freq_steps: 1
+  token_gap_freq_steps: 2
   token_gap_vocab_vector_enabled: true
   token_gap_vocab_vector_freq_steps: 1
   token_gap_vocab_size: null
@@ -178,40 +181,45 @@ audit:
   entropy_freq_steps: 1
   entropy_vocab_vector_enabled: true
   entropy_vocab_vector_freq_steps: 1
-  topk_teacher_student_cross_entropy_vocab_enabled: true
-  logp_abs_vector_enabled: false
-  token_conflict_enabled: false
-  token_conflict_freq_steps: 1
-  token_conflict_top_k: null
-  token_gradient_enabled: false
-  token_gradient_freq_steps: 1
+  token_gradient_enabled: true
+  token_gradient_freq_steps: 2
+  token_gradient_tail_enabled: true
+  token_gradient_tail_fraction: 0.15
+  token_gradient_tail_min_tokens: 1
   token_gradient_gap_selection_enabled: false
   token_gradient_gap_abs_selection_enabled: false
-  token_gradient_loss_abs_selection_enabled: false
-  token_gradient_top_k: 50
+  token_gradient_loss_abs_selection_enabled: true
+  token_gradient_top_k: null
+  token_gradient_top_p_enabled: true
   token_gradient_top_p: 1.0
+  token_gradient_log_tokens_jsonl_enabled: true
   token_gradient_strict_grad_restore: false
   token_gradient_backward_recompute_enabled: false
   token_gradient_backward_sync_enabled: false
-  gradient_fingerprint_enabled: false
-  gradient_fingerprint_freq_steps: 1
+  dynamic_domain_loss_weighting_enabled: true
+  dynamic_domain_loss_weighting_freq_steps: 1
+  dynamic_domain_loss_weighting_ema_beta: 0.90
+  dynamic_domain_loss_weighting_weight_ema_beta: 0.90
+  dynamic_domain_loss_weighting_alpha: 0.50
+  dynamic_domain_loss_weighting_min: 0.3333333333333333
+  dynamic_domain_loss_weighting_max: 3.0
 
 trainer:
   project_name: MOPD
-  experiment_name: mopd-grad-reliability-qwen4b-8b-aw2_fsdpsize1_audit_freq2-b16-4step-smoke
+  experiment_name: mopd-dynamic-weight-qwen0p6b-0p6b-math-code-science-aw2-fsdpsize2-tail-topp1-b16-4step-smoke
   logger: '["console","tensorboard"]'
   n_gpus_per_node: 2
   nnodes: 1
-  save_freq: 4
+  save_freq: -1
+  default_local_dir: checkpoints/MOPD/mopd-dynamic-weight-qwen0p6b-0p6b-math-code-science-aw2-fsdpsize2-tail-topp1-b16-4step-smoke
   test_freq: -1
   total_epochs: 1
   total_training_steps: 4
-  default_local_dir: checkpoints/MOPD/mopd-grad-reliability-qwen4b-8b-aw2_fsdpsize1_audit_freq2-b16-4step-smoke
+  max_actor_ckpt_to_keep: 1
+  max_critic_ckpt_to_keep: 1
   critic_warmup: 0
   val_before_train: false
   log_val_generations: 0
-  max_actor_ckpt_to_keep: 1
-  max_critic_ckpt_to_keep: 1
 
 ray_kwargs:
   ray_init:

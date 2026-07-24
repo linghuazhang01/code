@@ -188,9 +188,6 @@ audit:
   logp_vector_freq_steps: 1
   logp_abs_vector_enabled: true
   logp_abs_vector_freq_steps: 1
-  token_conflict_enabled: false
-  token_conflict_freq_steps: 1
-  token_conflict_top_k: null
   token_gradient_enabled: false
   token_gradient_freq_steps: 1
   token_gradient_gap_selection_enabled: false

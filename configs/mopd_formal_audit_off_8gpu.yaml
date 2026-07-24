@@ -140,9 +140,6 @@ audit:
   entropy_freq_steps: 1
   entropy_vocab_vector_enabled: false
   entropy_vocab_vector_freq_steps: 1
-  token_conflict_enabled: false
-  token_conflict_freq_steps: 1
-  token_conflict_top_k: null
   token_gradient_enabled: false
   token_gradient_freq_steps: 10
   token_gradient_gap_selection_enabled: true

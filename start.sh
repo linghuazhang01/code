@@ -1,0 +1,1 @@
+GPU_IDS="${GPU_IDS:-0,1,2,3,4,5,6,7}" bash "$(cd "$(dirname "$0")" && pwd)/scripts/run_local_mopd_training.sh" "$(cd "$(dirname "$0")" && pwd)/configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code_science_topk32_reweight.yaml"

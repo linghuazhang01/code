@@ -30,8 +30,21 @@ from typing import Optional
 import numpy as np
 import ray
 import torch
+from mopd_verl.teacher_prefix import (
+    build_dataset_teacher_prefix,
+    build_student_suffix_prompts,
+    fill_teacher_prefix_rollout_log_probs,
+    merge_teacher_prefix_and_student_suffix,
+    restore_teacher_prefix_response_mask,
+    teacher_prefix_dataset_key,
+    teacher_prefix_length,
+    teacher_prefix_rollout_correction_masks,
+    teacher_prefix_rollin_metrics,
+    teacher_prefix_sampling_enabled,
+)
 from mopd_verl.topk_distill import (
     TOPK_SUPPORT_SOURCE_STUDENT,
+    configured_distill_loss_name,
     teacher_tensor_prefix,
     topk_distill_include_tail,
     topk_distill_k,
@@ -636,6 +649,15 @@ class RayPPOTrainer:
         # pop those keys for generation
         batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
         non_tensor_batch_keys_to_pop = set(batch.non_tensor_batch.keys()) - reward_model_keys
+        rollout_config = self.config.actor_rollout_ref.rollout
+        if teacher_prefix_sampling_enabled(rollout_config):
+            prefix_key = teacher_prefix_dataset_key(rollout_config)
+            if prefix_key not in batch.non_tensor_batch:
+                raise KeyError(
+                    "Dataset teacher-prefix sampling requires non-tensor "
+                    f"column {prefix_key!r}."
+                )
+            non_tensor_batch_keys_to_pop.add(prefix_key)
         gen_batch = batch.pop(
             batch_keys=batch_keys_to_pop,
             non_tensor_batch_keys=list(non_tensor_batch_keys_to_pop),
@@ -646,6 +668,109 @@ class RayPPOTrainer:
             gen_batch.non_tensor_batch.update(batch.non_tensor_batch)
 
         return gen_batch
+
+    def _generate_training_sequences(
+        self,
+        gen_batch: DataProto,
+    ) -> tuple[DataProto, dict[str, float]]:
+        """Generate an optional student suffix conditioned on a dataset prefix."""
+
+        rollout_config = self.config.actor_rollout_ref.rollout
+        if not teacher_prefix_sampling_enabled(rollout_config):
+            if not self.async_rollout_mode:
+                return self.actor_rollout_wg.generate_sequences(gen_batch), {}
+            return self.async_rollout_manager.generate_sequences(gen_batch), {}
+
+        if self.async_rollout_mode:
+            raise ValueError(
+                "Dataset teacher-prefix sampling currently supports only "
+                "synchronous single-turn rollout."
+            )
+        rollout_name = str(rollout_config.get("name", "")).lower()
+        if rollout_name not in {"vllm", "sglang"}:
+            raise ValueError(
+                "Dataset teacher-prefix sampling currently supports only "
+                "vLLM and SGLang rollout backends, got "
+                f"{rollout_name!r}."
+            )
+        multi_turn_config = rollout_config.get("multi_turn", None)
+        if multi_turn_config and multi_turn_config.get("enable", False):
+            raise ValueError(
+                "Dataset teacher-prefix sampling currently supports only "
+                "synchronous single-turn rollout."
+            )
+        rollout_corr_config = self.config.algorithm.get(
+            "rollout_correction",
+            None,
+        )
+        if rollout_corr_config and rollout_corr_config.get(
+            "bypass_mode",
+            False,
+        ):
+            raise ValueError(
+                "Dataset teacher-prefix sampling is incompatible with "
+                "rollout-correction bypass_mode because prefix rollout "
+                "log-probabilities were not sampled by the rollout policy."
+            )
+
+        max_response_length = int(self.config.data.max_response_length)
+        prefix_ids, prefix_mask = build_dataset_teacher_prefix(
+            prompts=gen_batch,
+            tokenizer=self.tokenizer,
+            prefix_key=teacher_prefix_dataset_key(rollout_config),
+            prefix_length=teacher_prefix_length(
+                rollout_config,
+                max_response_length,
+            ),
+            pad_token_id=int(self.tokenizer.pad_token_id),
+        )
+        suffix_prompts = build_student_suffix_prompts(
+            prompts=gen_batch,
+            teacher_prefix_ids=prefix_ids,
+            teacher_prefix_mask=prefix_mask,
+            pad_token_id=int(self.tokenizer.pad_token_id),
+        )
+        max_prefix_length = int(
+            prefix_mask.detach().sum(dim=-1).max().cpu().item()
+        )
+        suffix_max_tokens = max(
+            0,
+            max_response_length - max_prefix_length,
+        )
+        suffix_prompts.meta_info["mopd_response_length"] = (
+            suffix_max_tokens
+        )
+        if suffix_max_tokens <= 0:
+            suffix_output = None
+        elif not self.async_rollout_mode:
+            suffix_output = self.actor_rollout_wg.generate_sequences(
+                suffix_prompts
+            )
+        else:
+            suffix_output = self.async_rollout_manager.generate_sequences(
+                suffix_prompts
+            )
+        merged_output = merge_teacher_prefix_and_student_suffix(
+            original_prompts=gen_batch,
+            teacher_prefix_ids=prefix_ids,
+            teacher_prefix_mask=prefix_mask,
+            student_suffix_output=suffix_output,
+            student_suffix_max_tokens=suffix_max_tokens,
+            max_response_length=max_response_length,
+            pad_token_id=int(self.tokenizer.pad_token_id),
+        )
+        if suffix_output is not None:
+            merged_output.meta_info.update(suffix_output.meta_info)
+        else:
+            merged_output.meta_info.setdefault("timing", {})
+        metrics = teacher_prefix_rollin_metrics(
+            teacher_prefix_mask=merged_output.batch["teacher_prefix_mask"],
+            student_suffix_mask=merged_output.batch["student_suffix_mask"],
+            selected=(
+                prefix_mask.detach().bool().any(dim=-1).cpu().numpy()
+            ),
+        )
+        return merged_output, metrics
 
     def _validate(self):
         data_source_lst = []
@@ -1165,10 +1290,12 @@ class RayPPOTrainer:
                 with marked_timer("step", timing_raw):
                     # generate a batch
                     with marked_timer("gen", timing_raw, color="red"):
-                        if not self.async_rollout_mode:
-                            gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch_output)
-                        else:
-                            gen_batch_output = self.async_rollout_manager.generate_sequences(gen_batch_output)
+                        gen_batch_output, teacher_prefix_metrics = (
+                            self._generate_training_sequences(
+                                gen_batch_output
+                            )
+                        )
+                        metrics.update(teacher_prefix_metrics)
 
                         timing_raw.update(gen_batch_output.meta_info["timing"])
                         gen_batch_output.meta_info.pop("timing", None)
@@ -1241,6 +1368,18 @@ class RayPPOTrainer:
                     batch.meta_info["mopd_compute_teacher_entropy"] = bool(
                         self.mopd_audit_logger.should_log_entropy(self.global_steps)
                     )
+                    batch.meta_info["mopd_return_configured_token_loss"] = bool(
+                        self.mopd_audit_logger.enabled
+                    )
+                    batch.meta_info["mopd_configured_token_loss_name"] = (
+                        configured_distill_loss_name(policy_loss_config)
+                    )
+                    batch.meta_info[
+                        "mopd_configured_token_loss_epoch_reduction"
+                    ] = "mean"
+                    batch.meta_info["mopd_configured_token_loss_epoch_count"] = int(
+                        self.config.actor_rollout_ref.actor.get("ppo_epochs", 1)
+                    )
 
                     with marked_timer("reward", timing_raw, color="yellow"):
                         # compute reward model score
@@ -1282,12 +1421,43 @@ class RayPPOTrainer:
                             metrics.update(old_log_prob_metrics)
                             old_log_prob.batch["student_entropy"] = entropys
                             old_log_prob.batch.pop("entropys")
+                            if (
+                                "rollout_log_probs" in batch.batch
+                                and "teacher_prefix_mask" in batch.batch
+                            ):
+                                batch.batch["rollout_log_probs"] = (
+                                    fill_teacher_prefix_rollout_log_probs(
+                                        rollout_log_probs=batch.batch[
+                                            "rollout_log_probs"
+                                        ],
+                                        old_log_probs=old_log_prob.batch[
+                                            "old_log_probs"
+                                        ],
+                                        teacher_prefix_mask=batch.batch[
+                                            "teacher_prefix_mask"
+                                        ],
+                                    )
+                                )
                             batch = batch.union(old_log_prob)
                             if "rollout_log_probs" in batch.batch.keys():
                                 # TODO: we may want to add diff of probs too.
                                 from verl.utils.debug.metrics import calculate_debug_metrics
 
-                                metrics.update(calculate_debug_metrics(batch))
+                                original_response_mask = batch.batch[
+                                    "response_mask"
+                                ]
+                                if "student_suffix_mask" in batch.batch:
+                                    batch.batch["response_mask"] = batch.batch[
+                                        "student_suffix_mask"
+                                    ]
+                                try:
+                                    metrics.update(
+                                        calculate_debug_metrics(batch)
+                                    )
+                                finally:
+                                    batch.batch["response_mask"] = (
+                                        original_response_mask
+                                    )
 
                     assert "old_log_probs" in batch.batch, f'"old_log_prob" not in {batch.batch.keys()=}'
 
@@ -1503,7 +1673,58 @@ class RayPPOTrainer:
                             from verl.trainer.ppo.rollout_corr_helper import compute_rollout_correction_and_add_to_batch
 
                             # Compute IS weights, apply rejection sampling, compute metrics
-                            batch, is_metrics = compute_rollout_correction_and_add_to_batch(batch, rollout_corr_config)
+                            original_response_mask = batch.batch[
+                                "response_mask"
+                            ]
+                            prefix_mask = None
+                            if (
+                                "teacher_prefix_mask" in batch.batch
+                                and "student_suffix_mask" in batch.batch
+                            ):
+                                prefix_mask = batch.batch[
+                                    "teacher_prefix_mask"
+                                ]
+                                prefix_mask, suffix_mask = (
+                                    teacher_prefix_rollout_correction_masks(
+                                        response_mask=original_response_mask,
+                                        teacher_prefix_mask=prefix_mask,
+                                        student_suffix_mask=batch.batch[
+                                            "student_suffix_mask"
+                                        ],
+                                    )
+                                )
+                                batch.batch["response_mask"] = suffix_mask
+                            correction_has_tokens = bool(
+                                batch.batch["response_mask"]
+                                .detach()
+                                .bool()
+                                .any()
+                                .item()
+                            )
+                            if correction_has_tokens:
+                                try:
+                                    batch, is_metrics = (
+                                        compute_rollout_correction_and_add_to_batch(
+                                            batch,
+                                            rollout_corr_config,
+                                        )
+                                    )
+                                except Exception:
+                                    batch.batch["response_mask"] = (
+                                        original_response_mask
+                                    )
+                                    raise
+                            else:
+                                is_metrics = {}
+                            if prefix_mask is not None:
+                                batch.batch["response_mask"] = (
+                                    restore_teacher_prefix_response_mask(
+                                        prefix_mask=prefix_mask,
+                                        corrected_suffix_mask=batch.batch[
+                                            "response_mask"
+                                        ],
+                                    )
+                                )
                             # IS and off-policy metrics already have rollout_corr/ prefix
                             metrics.update(is_metrics)
 
@@ -1542,12 +1763,16 @@ class RayPPOTrainer:
                         critic_output_metrics = reduce_metrics(critic_output.meta_info["metrics"])
                         metrics.update(critic_output_metrics)
 
+                    # During critic warmup there is no actor loss/backward, so an
+                    # actor-loss audit row would not describe an applied loss.
+                    actor_updated_this_step = False
                     # implement critic warmup
                     if self.config.trainer.critic_warmup <= self.global_steps:
                         # update actor
                         with marked_timer("update_actor", timing_raw, color="red"):
                             batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
                             actor_output = self.actor_rollout_wg.update_actor(batch)
+                        actor_updated_this_step = True
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)
                         if reuse_training_topk_cross_entropy:
@@ -1560,8 +1785,40 @@ class RayPPOTrainer:
                             batch.batch[cross_entropy_key] = actor_output.batch[
                                 cross_entropy_key
                             ]
+                        if batch.meta_info.get("mopd_return_configured_token_loss", False):
+                            configured_token_loss_key = "configured_token_loss"
+                            if (
+                                actor_output.batch is None
+                                or configured_token_loss_key not in actor_output.batch
+                            ):
+                                raise RuntimeError(
+                                    "Actor update did not return the requested configured "
+                                    "token-level distillation loss."
+                                )
+                            batch.batch[configured_token_loss_key] = actor_output.batch[
+                                configured_token_loss_key
+                            ]
+                            configured_token_loss_mask_key = (
+                                "configured_token_loss_mask"
+                            )
+                            if (
+                                configured_token_loss_mask_key
+                                not in actor_output.batch
+                            ):
+                                raise RuntimeError(
+                                    "Actor update did not return the configured "
+                                    "token-level loss mask."
+                                )
+                            batch.batch[
+                                configured_token_loss_mask_key
+                            ] = actor_output.batch[
+                                configured_token_loss_mask_key
+                            ]
 
-                    if self.mopd_audit_logger.enabled:
+                    if (
+                        self.mopd_audit_logger.enabled
+                        and actor_updated_this_step
+                    ):
                         metrics.update(
                             self.mopd_audit_logger.log_training_step(
                                 batch=batch,

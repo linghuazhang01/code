@@ -72,6 +72,7 @@ GPU_IDLE_MEMORY_LIMIT_MB="${GPU_IDLE_MEMORY_LIMIT_MB:-1000}"
 VERL_RUNTIME_DIR="${VERL_RUNTIME_DIR:-${CODE_DIR}/third_party/verl}"
 MOPD_LOCAL_CONDA_ENV="${MOPD_LOCAL_CONDA_ENV:-${CONDA_ROOT}/envs/${ENV_NAME}}"
 MOPD_LOCAL_CONDA_ROOT="${MOPD_LOCAL_CONDA_ROOT:-${CONDA_ROOT}}"
+SCREEN_SESSION_NAME_MAX_LENGTH=80
 
 if [[ -d "${MOPD_LOCAL_CONDA_ENV}/bin" ]]; then
   export PATH="${MOPD_LOCAL_CONDA_ENV}/bin:${MOPD_LOCAL_CONDA_ROOT}/bin:${PATH:-}"
@@ -171,7 +172,17 @@ fi
 
 if [[ -z "${RUN_ID}" ]]; then
   config_stem="${CONFIG_LABEL%.*}"
-  RUN_ID="${config_stem}_$(date +%Y%m%d_%H%M%S)"
+  run_timestamp="$(date +%Y%m%d_%H%M%S)"
+  config_checksum="$(printf '%s' "${config_stem}" | cksum | awk '{print $1}')"
+  printf -v config_hash '%08x' "${config_checksum}"
+  run_suffix="_${config_hash}_${run_timestamp}"
+  max_stem_length="$((SCREEN_SESSION_NAME_MAX_LENGTH - ${#run_suffix}))"
+  RUN_ID="${config_stem:0:${max_stem_length}}${run_suffix}"
+fi
+
+if [[ "${#RUN_ID}" -gt "${SCREEN_SESSION_NAME_MAX_LENGTH}" ]]; then
+  echo "RUN_ID cannot exceed ${SCREEN_SESSION_NAME_MAX_LENGTH} characters: ${RUN_ID}" >&2
+  exit 2
 fi
 
 if [[ ! -f "${SCRIPT_DIR}/run_mopd.sh" ]]; then

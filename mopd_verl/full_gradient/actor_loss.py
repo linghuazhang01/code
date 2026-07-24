@@ -51,6 +51,7 @@ def build_actor_micro_batch_loss(
     gradient_mask_override: torch.Tensor | None = None,
     include_metrics: bool = False,
     return_teacher_student_cross_entropy: bool = False,
+    return_configured_token_loss: bool = False,
     temperature: float | None = None,
 ) -> ActorMicroBatchLossResult:
     from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
@@ -96,6 +97,8 @@ def build_actor_micro_batch_loss(
     else:
         entropy, log_prob = forward_output
     teacher_student_cross_entropy = None
+    configured_distill_loss_mat = None
+    prefix_configured_loss_mat = None
     if return_teacher_student_cross_entropy:
         if not topk_distill_active:
             raise ValueError(
@@ -159,6 +162,8 @@ def build_actor_micro_batch_loss(
             )
         else:
             advantages = actor_advantages(actor, model_inputs, old_log_prob)
+        if return_configured_token_loss:
+            configured_distill_loss_mat = -advantages.detach().float()
         loss_mode = str(_cfg_get(_cfg_get(actor.config, "policy_loss", {}), "loss_mode", "vanilla"))
         policy_loss_fn = get_policy_loss_fn(loss_mode)
         pg_loss, pg_metrics = policy_loss_fn(
@@ -204,6 +209,18 @@ def build_actor_micro_batch_loss(
             include_tail=topk_distill_include_tail(policy_loss_cfg),
             temperature=topk_distill_temperature(policy_loss_cfg),
         )
+        rollout_is_weights = model_inputs.get("rollout_is_weights")
+        if rollout_is_weights is not None:
+            if rollout_is_weights.shape != topk_loss_mat.shape:
+                raise ValueError(
+                    "rollout_is_weights must match the top-k token loss "
+                    f"shape: {tuple(rollout_is_weights.shape)} != "
+                    f"{tuple(topk_loss_mat.shape)}."
+                )
+            topk_loss_mat = topk_loss_mat * rollout_is_weights.detach().to(
+                device=topk_loss_mat.device,
+                dtype=topk_loss_mat.dtype,
+            )
         topk_loss = agg_loss(
             loss_mat=topk_loss_mat,
             loss_mask=distill_response_mask,
@@ -211,6 +228,10 @@ def build_actor_micro_batch_loss(
         )
         topk_weight = topk_distill_weight(policy_loss_cfg)
         policy_loss = policy_loss + topk_loss * topk_weight
+        if return_configured_token_loss:
+            configured_distill_loss_mat = (
+                topk_loss_mat.detach().float() * topk_weight
+            )
         if include_metrics:
             metrics["actor/topk_distill_loss"] = topk_loss.detach().item() * float(loss_scale_factor)
             metrics["actor/topk_distill_weight"] = topk_weight
@@ -247,6 +268,10 @@ def build_actor_micro_batch_loss(
             loss_agg_mode=str(_cfg_get(actor.config, "loss_agg_mode", "token-mean")),
         )
         policy_loss = policy_loss + prefix_loss * prefix_weight
+        if return_configured_token_loss:
+            prefix_configured_loss_mat = (
+                prefix_loss_mat.detach().float() * prefix_weight
+            )
         if include_metrics:
             metrics["actor/teacher_prefix_forward_kl_loss"] = (
                 prefix_loss.detach().item() * float(loss_scale_factor)
@@ -283,8 +308,32 @@ def build_actor_micro_batch_loss(
             metrics["actor/kl_coef"] = kl_coef
     if include_metrics:
         metrics["actor/pg_loss"] = pg_loss.detach().item() * float(loss_scale_factor)
+    configured_token_loss = None
+    configured_token_loss_mask = None
+    if return_configured_token_loss:
+        if configured_distill_loss_mat is None:
+            raise RuntimeError(
+                "Configured token loss was requested but no distillation "
+                "loss matrix was produced."
+            )
+        configured_token_loss = (
+            configured_distill_loss_mat
+            * distill_response_mask.detach().float()
+        )
+        configured_token_loss_mask = distill_response_mask.detach().float()
+        if prefix_configured_loss_mat is not None:
+            configured_token_loss = configured_token_loss + (
+                prefix_configured_loss_mat
+                * prefix_loss_mask.detach().float()
+            )
+            configured_token_loss_mask = (
+                configured_token_loss_mask
+                + prefix_loss_mask.detach().float()
+            ).clamp(max=1.0)
     return ActorMicroBatchLossResult(
         loss=policy_loss * float(loss_scale_factor),
         metrics=metrics,
         teacher_student_cross_entropy=teacher_student_cross_entropy,
+        configured_token_loss=configured_token_loss,
+        configured_token_loss_mask=configured_token_loss_mask,
     )

@@ -59,7 +59,6 @@ class MOPDProfileTests(unittest.TestCase):
         self.assertEqual(config.trainer.save_freq, expected_save_freq)
         self.assertEqual(config.ray_kwargs.ray_init.num_cpus, cpu_count)
         self.assertIsNone(config.audit.max_samples_per_domain)
-        self.assertIsNone(config.audit.token_conflict_top_k)
         self.assertTrue(config.actor.topk_distill_enabled)
         self.assertEqual(config.actor.topk_distill_support_source, "teacher")
         self.assertEqual(config.actor.topk_distill_k, 32)
@@ -77,7 +76,7 @@ class MOPDProfileTests(unittest.TestCase):
         if audit_mode in {"all", "loss_only"}:
             self.assertIn(f"+mopd_audit.output_dir=audit/{output_name}", rendered)
             self.assertIn("+mopd_audit.max_samples_per_domain=null", rendered)
-            self.assertIn("+mopd_audit.token_conflict_top_k=null", rendered)
+            self.assertNotIn("token_conflict", rendered)
         else:
             self.assertNotIn("+mopd_audit.", rendered)
         self.assertIn(f"trainer.default_local_dir=checkpoints/{output_name}", rendered)
@@ -103,13 +102,11 @@ class MOPDProfileTests(unittest.TestCase):
                 self.assertTrue(config.audit.token_gap_vocab_vector_enabled)
                 self.assertTrue(config.audit.entropy_enabled)
                 self.assertTrue(config.audit.entropy_vocab_vector_enabled)
-                self.assertTrue(config.audit.token_conflict_enabled)
                 self.assertFalse(config.audit.token_gradient_enabled)
                 self.assertTrue(config.audit.token_gradient_gap_selection_enabled)
                 self.assertTrue(config.audit.token_gradient_gap_abs_selection_enabled)
                 self.assertTrue(config.audit.token_gradient_loss_abs_selection_enabled)
                 self.assertIsNone(config.audit.max_samples_per_domain)
-                self.assertIsNone(config.audit.token_conflict_top_k)
                 self.assertEqual(config.audit.token_gradient_top_k, 100)
                 self.assertEqual(config.audit.token_gradient_top_p, 0.10)
 
@@ -204,13 +201,11 @@ class MOPDProfileTests(unittest.TestCase):
                 self.assertTrue(config.audit.token_gap_vocab_vector_enabled)
                 self.assertTrue(config.audit.entropy_enabled)
                 self.assertTrue(config.audit.entropy_vocab_vector_enabled)
-                self.assertTrue(config.audit.token_conflict_enabled)
                 self.assertFalse(config.audit.token_gradient_enabled)
                 self.assertFalse(config.audit.token_gradient_gap_selection_enabled)
                 self.assertFalse(config.audit.token_gradient_gap_abs_selection_enabled)
                 self.assertTrue(config.audit.token_gradient_loss_abs_selection_enabled)
                 self.assertIsNone(config.audit.max_samples_per_domain)
-                self.assertIsNone(config.audit.token_conflict_top_k)
                 self.assertEqual(config.audit.token_gradient_top_k, 100)
                 self.assertEqual(config.audit.token_gradient_top_p, expected_token_gradient_top_p)
                 self.assertIn("+mopd_audit.token_gradient_gap_selection_enabled=false", rendered)
@@ -253,7 +248,6 @@ class MOPDProfileTests(unittest.TestCase):
         self.assertTrue(config.audit.token_gradient_gap_abs_selection_enabled)
         self.assertTrue(config.audit.token_gradient_loss_abs_selection_enabled)
         self.assertIsNone(config.audit.max_samples_per_domain)
-        self.assertIsNone(config.audit.token_conflict_top_k)
         self.assertEqual(config.audit.token_gradient_top_k, 100)
         self.assertEqual(config.audit.token_gradient_top_p, 0.10)
         self.assertIsNone(config.audit.token_gap_vocab_size)
@@ -266,7 +260,7 @@ class MOPDProfileTests(unittest.TestCase):
         self.assertIn("+mopd_audit.token_gradient_gap_abs_selection_enabled=true", rendered)
         self.assertIn("+mopd_audit.token_gradient_loss_abs_selection_enabled=true", rendered)
         self.assertIn("+mopd_audit.token_gradient_top_k=100", rendered)
-        self.assertIn("+mopd_audit.token_conflict_top_k=null", rendered)
+        self.assertNotIn("token_conflict", rendered)
         self.assertNotIn("token_gradient_top_k_per_sample", rendered)
         self.assertNotIn("token_gradient_max_samples_per_domain", rendered)
         self.assertNotIn("token_gradient_min_teacher_diff", rendered)
@@ -298,7 +292,6 @@ class MOPDProfileTests(unittest.TestCase):
         self.assertFalse(config.audit.token_gradient_gap_abs_selection_enabled)
         self.assertTrue(config.audit.token_gradient_loss_abs_selection_enabled)
         self.assertIsNone(config.audit.max_samples_per_domain)
-        self.assertIsNone(config.audit.token_conflict_top_k)
         self.assertEqual(config.audit.token_gradient_top_k, 100)
         self.assertEqual(config.audit.token_gradient_top_p, 0.10)
         self.assertIsNone(config.audit.token_gap_vocab_size)
@@ -311,10 +304,168 @@ class MOPDProfileTests(unittest.TestCase):
         self.assertIn("+mopd_audit.token_gradient_gap_abs_selection_enabled=false", rendered)
         self.assertIn("+mopd_audit.token_gradient_loss_abs_selection_enabled=true", rendered)
         self.assertIn("+mopd_audit.token_gradient_top_k=100", rendered)
-        self.assertIn("+mopd_audit.token_conflict_top_k=null", rendered)
+        self.assertNotIn("token_conflict", rendered)
         self.assertNotIn("token_gradient_top_k_per_sample", rendered)
         self.assertNotIn("token_gradient_max_samples_per_domain", rendered)
         self.assertNotIn("token_gradient_min_teacher_diff", rendered)
+
+    def test_preferred_gradient_smoke_enables_dynamic_tail_and_top_p1(self) -> None:
+        config_path = (
+            Path(__file__).resolve().parents[1]
+            / "test_grad_configs"
+            / (
+                "mopd_dynamic_weight_qwen0p6b_0p6b_aw2_fsdpsize2_"
+                "tail_topp1_b16_4step_smoke.yaml"
+            )
+        )
+        config = load_config(config_path)
+        rendered = format_command(build_command(config))
+
+        self.assertEqual(config.data.train_batch_size, 16)
+        self.assertEqual(config.data.max_response_length, 512)
+        self.assertTrue(config.data.load_parquet_direct)
+        self.assertFalse(config.data.shuffle)
+        self.assertEqual(
+            config.model.student_path,
+            "/root/autodl-tmp/models/Qwen3-0.6B",
+        )
+        self.assertEqual(
+            config.model.primary_teacher_path,
+            "/root/autodl-tmp/models/Qwen3-0.6B",
+        )
+        expected_domains = {"math", "code", "science"}
+        self.assertEqual(set(config.data.domain_train_files), expected_domains)
+        self.assertEqual(
+            set(config.data.domain_sampling_weights),
+            expected_domains,
+        )
+        self.assertEqual(
+            set(config.model.domain_teacher_paths),
+            expected_domains,
+        )
+        self.assertEqual(config.audit.domains, ["math", "code", "science"])
+        self.assertIn(
+            "data/eval_data/science/GPQA/test.parquet",
+            config.data.val_files,
+        )
+        self.assertEqual(config.actor.ppo_mini_batch_size, 16)
+        self.assertEqual(config.actor.fsdp_size, 2)
+        self.assertEqual(config.actor.distill_loss_builder, "topk_kl")
+        self.assertFalse(config.rollout.do_sample)
+        self.assertEqual(config.rollout.tensor_model_parallel_size, 1)
+        self.assertTrue(config.worker_placement.separate_ref_policy)
+        self.assertEqual(
+            config.worker_placement.actor_rollout.n_gpus_per_node,
+            2,
+        )
+        self.assertEqual(
+            config.worker_placement.ref_policy.n_gpus_per_node,
+            1,
+        )
+        self.assertTrue(config.audit.token_gradient_enabled)
+        self.assertEqual(config.audit.token_gradient_freq_steps, 2)
+        self.assertTrue(config.audit.token_gradient_tail_enabled)
+        self.assertEqual(config.audit.token_gradient_tail_fraction, 0.15)
+        self.assertEqual(config.audit.token_gradient_tail_min_tokens, 1)
+        self.assertTrue(config.audit.token_gradient_top_p_enabled)
+        self.assertIsNone(config.audit.token_gradient_top_k)
+        self.assertEqual(config.audit.token_gradient_top_p, 1.0)
+        self.assertTrue(
+            config.audit.token_gradient_log_tokens_jsonl_enabled
+        )
+        self.assertTrue(config.audit.token_gradient_loss_abs_selection_enabled)
+        self.assertEqual(
+            config.audit.full_grad_training_parity_rel_l2_threshold,
+            2.0e-2,
+        )
+        self.assertTrue(config.audit.dynamic_domain_loss_weighting_enabled)
+        self.assertEqual(
+            config.audit.dynamic_domain_loss_weighting_freq_steps,
+            1,
+        )
+        self.assertEqual(config.runtime.wandb_mode, "disabled")
+        self.assertEqual(config.trainer.logger, '["console","tensorboard"]')
+        self.assertEqual(config.trainer.total_training_steps, 4)
+        self.assertIn("trainer.resume_mode=disable", config.extra_overrides)
+        self.assertIn("+mopd_audit.token_gradient_enabled=true", rendered)
+        self.assertIn("+mopd_audit.token_gradient_tail_enabled=true", rendered)
+        self.assertIn("+mopd_audit.token_gradient_top_p_enabled=true", rendered)
+        self.assertIn("+mopd_audit.token_gradient_top_k=null", rendered)
+        self.assertIn("+mopd_audit.token_gradient_top_p=1.0", rendered)
+        self.assertIn(
+            "+mopd_audit.token_gradient_log_tokens_jsonl_enabled=true",
+            rendered,
+        )
+        self.assertIn(
+            "+mopd_audit.token_gradient_loss_abs_selection_enabled=true",
+            rendered,
+        )
+        self.assertIn(
+            "+mopd_audit.dynamic_domain_loss_weighting_enabled=true",
+            rendered,
+        )
+        self.assertIn(
+            "+actor_rollout_ref.worker_placement.separate_ref_policy=true",
+            rendered,
+        )
+
+    def test_feature_coverage_smoke_exercises_partial_top_p_prefix_and_ppo2(
+        self,
+    ) -> None:
+        config_path = (
+            Path(__file__).resolve().parents[1]
+            / "test_grad_configs"
+            / (
+                "mopd_feature_coverage_qwen0p6b_0p6b_aw2_fsdpsize2_"
+                "top_partial_prefix_ppo2_b8_2step_smoke.yaml"
+            )
+        )
+        config = load_config(config_path)
+        rendered = format_command(build_command(config))
+
+        self.assertEqual(config.data.train_batch_size, 8)
+        self.assertEqual(config.actor.ppo_mini_batch_size, 8)
+        self.assertTrue(config.actor.teacher_prefix_enabled)
+        self.assertEqual(
+            config.actor.teacher_prefix_loss_region,
+            "prefix_and_suffix",
+        )
+        self.assertTrue(config.rollout.teacher_prefix_sampling_enabled)
+        self.assertEqual(config.rollout.teacher_prefix_length, 8)
+        self.assertEqual(
+            config.rollout.teacher_prefix_dataset_key,
+            "data_source",
+        )
+        self.assertTrue(config.audit.token_gradient_enabled)
+        self.assertFalse(config.audit.token_gradient_tail_enabled)
+        self.assertTrue(config.audit.token_gradient_top_p_enabled)
+        self.assertEqual(config.audit.token_gradient_top_k, 10)
+        self.assertEqual(config.audit.token_gradient_top_p, 0.5)
+        self.assertFalse(config.audit.dynamic_domain_loss_weighting_enabled)
+        self.assertEqual(config.trainer.total_training_steps, 2)
+        self.assertIn(
+            "actor_rollout_ref.actor.ppo_epochs=2",
+            config.extra_overrides,
+        )
+        self.assertIn(
+            "actor_rollout_ref.actor.policy_loss."
+            "teacher_prefix_loss_region=prefix_and_suffix",
+            rendered,
+        )
+        self.assertIn(
+            "actor_rollout_ref.rollout."
+            "teacher_prefix_sampling_enabled=True",
+            rendered,
+        )
+        self.assertIn(
+            "+mopd_audit.token_gradient_tail_enabled=false",
+            rendered,
+        )
+        self.assertIn(
+            "+mopd_audit.token_gradient_top_p_enabled=true",
+            rendered,
+        )
+        self.assertIn("+mopd_audit.token_gradient_top_p=0.5", rendered)
 
     def test_audit_off_profile_disables_audit_families(self) -> None:
         config_dir = Path(__file__).resolve().parents[1] / "configs"
@@ -334,7 +485,6 @@ class MOPDProfileTests(unittest.TestCase):
                 self.assertFalse(config.audit.token_gap_vocab_vector_enabled)
                 self.assertFalse(config.audit.entropy_enabled)
                 self.assertFalse(config.audit.entropy_vocab_vector_enabled)
-                self.assertFalse(config.audit.token_conflict_enabled)
                 self.assertFalse(config.audit.token_gradient_enabled)
 
     def test_explicit_rollout_model_lengths_cover_prompt_and_response(self) -> None:

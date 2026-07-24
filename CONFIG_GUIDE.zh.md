@@ -125,7 +125,6 @@ audit:
   topk_teacher_student_cross_entropy_vocab_enabled: true
   logp_vector_enabled: true
   logp_abs_vector_enabled: true
-  token_conflict_enabled: true
   token_gradient_enabled: false
   token_gradient_gap_selection_enabled: true
   token_gradient_gap_abs_selection_enabled: true
@@ -184,7 +183,6 @@ audit:
   topk_teacher_student_cross_entropy_vocab_enabled: true
   logp_vector_enabled: true
   logp_abs_vector_enabled: true
-  token_conflict_enabled: true
   token_gradient_enabled: false
   token_gradient_gap_selection_enabled: false
   token_gradient_gap_abs_selection_enabled: false
@@ -269,7 +267,6 @@ audit:
   entropy_vocab_vector_enabled: false
   topk_teacher_student_cross_entropy_vocab_enabled: false
   logp_abs_vector_enabled: false
-  token_conflict_enabled: false
   token_gradient_enabled: false
   token_gradient_gap_selection_enabled: true
   token_gradient_gap_abs_selection_enabled: true

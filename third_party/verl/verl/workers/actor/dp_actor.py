@@ -622,6 +622,12 @@ class DataParallelPPOActor(BasePPOActor):
                 False,
             )
         )
+        return_configured_token_loss = bool(
+            data.meta_info.get(
+                "mopd_return_configured_token_loss",
+                False,
+            )
+        )
         select_keys = [
             "responses",
             "response_mask",
@@ -687,8 +693,20 @@ class DataParallelPPOActor(BasePPOActor):
             )
         metrics = {}
         teacher_student_cross_entropy_batches = []
+        configured_token_loss_batches = []
+        configured_token_loss_mask_batches = []
+        configured_token_loss_epoch_batches = []
         audit = DomainGradientAudit(self, data.meta_info.get("mopd_full_gradient", {}))
+        if audit.config.dynamic_weighting_enabled and len(mini_batches) != 1:
+            raise ValueError(
+                "Dynamic domain loss weighting requires one optimizer "
+                "mini-batch per actor update so its gradient norms cover the "
+                "entire actor batch."
+            )
         for _ in range(self.config.ppo_epochs):
+            if return_configured_token_loss:
+                configured_token_loss_batches = []
+                configured_token_loss_mask_batches = []
             for mini_batch in mini_batches:
                 if self.config.use_dynamic_bsz:
                     max_token_len = self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
@@ -725,15 +743,23 @@ class DataParallelPPOActor(BasePPOActor):
 
                 micro_batch_metric_rows = []
                 micro_batch_cross_entropy = []
+                micro_batch_configured_token_loss = []
+                micro_batch_configured_token_loss_mask = []
                 for micro_batch, loss_scale in zip(micro_batches, loss_scales, strict=True):
                     result = build_actor_micro_batch_loss(
                         self,
                         micro_batch,
                         loss_scale_factor=loss_scale,
                         on_policy=on_policy,
+                        gradient_mask_override=(
+                            audit.training_gradient_mask(micro_batch)
+                        ),
                         include_metrics=True,
                         return_teacher_student_cross_entropy=(
                             return_teacher_student_cross_entropy
+                        ),
+                        return_configured_token_loss=(
+                            return_configured_token_loss
                         ),
                         temperature=temperature,
                     )
@@ -745,6 +771,14 @@ class DataParallelPPOActor(BasePPOActor):
                     if result.teacher_student_cross_entropy is not None:
                         micro_batch_cross_entropy.append(
                             result.teacher_student_cross_entropy
+                        )
+                    if result.configured_token_loss is not None:
+                        micro_batch_configured_token_loss.append(
+                            result.configured_token_loss
+                        )
+                    if result.configured_token_loss_mask is not None:
+                        micro_batch_configured_token_loss_mask.append(
+                            result.configured_token_loss_mask
                         )
 
                 if return_teacher_student_cross_entropy:
@@ -760,6 +794,33 @@ class DataParallelPPOActor(BasePPOActor):
                     teacher_student_cross_entropy_batches.append(
                         mini_batch_cross_entropy
                     )
+                if return_configured_token_loss:
+                    mini_batch_configured_token_loss = torch.cat(
+                        micro_batch_configured_token_loss,
+                        dim=0,
+                    )
+                    if batch_idx_list is not None:
+                        mini_batch_configured_token_loss = restore_dynamic_batch(
+                            mini_batch_configured_token_loss,
+                            batch_idx_list,
+                        )
+                    configured_token_loss_batches.append(
+                        mini_batch_configured_token_loss
+                    )
+                    mini_batch_configured_token_loss_mask = torch.cat(
+                        micro_batch_configured_token_loss_mask,
+                        dim=0,
+                    )
+                    if batch_idx_list is not None:
+                        mini_batch_configured_token_loss_mask = (
+                            restore_dynamic_batch(
+                                mini_batch_configured_token_loss_mask,
+                                batch_idx_list,
+                            )
+                        )
+                    configured_token_loss_mask_batches.append(
+                        mini_batch_configured_token_loss_mask
+                    )
 
                 contribution_metrics, observation_rows = (
                     aggregate_actor_micro_batch_metrics(micro_batch_metric_rows)
@@ -771,12 +832,25 @@ class DataParallelPPOActor(BasePPOActor):
                 append_to_dict(metrics, audit.compare_training_gradient())
                 grad_norm = self._optimizer_step()
                 append_to_dict(metrics, {"actor/grad_norm": grad_norm.detach().item()})
+            if configured_token_loss_batches:
+                configured_token_loss_epoch_batches.append(
+                    torch.cat(configured_token_loss_batches, dim=0)
+                )
         self.actor_optimizer.zero_grad()
         if return_auxiliary_outputs:
             auxiliary_outputs = {}
             if teacher_student_cross_entropy_batches:
                 auxiliary_outputs["teacher_student_cross_entropy"] = torch.cat(
                     teacher_student_cross_entropy_batches,
+                    dim=0,
+                )
+            if configured_token_loss_epoch_batches:
+                auxiliary_outputs["configured_token_loss"] = torch.stack(
+                    configured_token_loss_epoch_batches,
+                    dim=0,
+                ).mean(dim=0)
+                auxiliary_outputs["configured_token_loss_mask"] = torch.cat(
+                    configured_token_loss_mask_batches,
                     dim=0,
                 )
             return metrics, auxiliary_outputs

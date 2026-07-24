@@ -190,25 +190,47 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"+mopd_audit.logp_vector_freq_steps={audit.logp_vector_freq_steps}",
         f"+mopd_audit.logp_abs_vector_enabled={str(audit.logp_abs_vector_enabled).lower()}",
         f"+mopd_audit.logp_abs_vector_freq_steps={audit.logp_abs_vector_freq_steps}",
-        f"+mopd_audit.token_conflict_enabled={str(audit.token_conflict_enabled).lower()}",
-        f"+mopd_audit.token_conflict_freq_steps={audit.token_conflict_freq_steps}",
-        f"+mopd_audit.token_conflict_top_k={_hydra_scalar(audit.token_conflict_top_k)}",
         f"+mopd_audit.token_gradient_enabled={str(audit.token_gradient_enabled).lower()}",
         f"+mopd_audit.token_gradient_freq_steps={audit.token_gradient_freq_steps}",
+        f"+mopd_audit.token_gradient_tail_enabled="
+        f"{str(audit.token_gradient_tail_enabled).lower()}",
+        "+mopd_audit.token_gradient_tail_fraction="
+        f"{audit.token_gradient_tail_fraction}",
+        "+mopd_audit.token_gradient_tail_min_tokens="
+        f"{audit.token_gradient_tail_min_tokens}",
         f"+mopd_audit.token_gradient_gap_selection_enabled="
         f"{str(audit.token_gradient_gap_selection_enabled).lower()}",
         f"+mopd_audit.token_gradient_gap_abs_selection_enabled="
         f"{str(audit.token_gradient_gap_abs_selection_enabled).lower()}",
         f"+mopd_audit.token_gradient_loss_abs_selection_enabled="
         f"{str(audit.token_gradient_loss_abs_selection_enabled).lower()}",
-        f"+mopd_audit.token_gradient_top_k={audit.token_gradient_top_k}",
+        "+mopd_audit.token_gradient_top_k="
+        f"{'null' if audit.token_gradient_top_k is None else audit.token_gradient_top_k}",
+        f"+mopd_audit.token_gradient_top_p_enabled="
+        f"{str(audit.token_gradient_top_p_enabled).lower()}",
         f"+mopd_audit.token_gradient_top_p={audit.token_gradient_top_p}",
+        "+mopd_audit.token_gradient_log_tokens_jsonl_enabled="
+        f"{str(audit.token_gradient_log_tokens_jsonl_enabled).lower()}",
         f"+mopd_audit.token_gradient_strict_grad_restore="
         f"{str(audit.token_gradient_strict_grad_restore).lower()}",
         "+mopd_audit.token_gradient_backward_recompute_enabled="
         f"{str(audit.token_gradient_backward_recompute_enabled).lower()}",
         "+mopd_audit.token_gradient_backward_sync_enabled="
         f"{str(audit.token_gradient_backward_sync_enabled).lower()}",
+        "+mopd_audit.dynamic_domain_loss_weighting_enabled="
+        f"{str(audit.dynamic_domain_loss_weighting_enabled).lower()}",
+        "+mopd_audit.dynamic_domain_loss_weighting_freq_steps="
+        f"{audit.dynamic_domain_loss_weighting_freq_steps}",
+        "+mopd_audit.dynamic_domain_loss_weighting_ema_beta="
+        f"{audit.dynamic_domain_loss_weighting_ema_beta}",
+        "+mopd_audit.dynamic_domain_loss_weighting_weight_ema_beta="
+        f"{audit.dynamic_domain_loss_weighting_weight_ema_beta}",
+        "+mopd_audit.dynamic_domain_loss_weighting_alpha="
+        f"{audit.dynamic_domain_loss_weighting_alpha}",
+        "+mopd_audit.dynamic_domain_loss_weighting_min="
+        f"{audit.dynamic_domain_loss_weighting_min}",
+        "+mopd_audit.dynamic_domain_loss_weighting_max="
+        f"{audit.dynamic_domain_loss_weighting_max}",
     ]
 
 

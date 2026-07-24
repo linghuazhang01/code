@@ -86,6 +86,11 @@ def build_dataset_teacher_prefix(
         return empty_ids, empty_mask
 
     values = prompts.non_tensor_batch.get(prefix_key)
+    if values is not None and len(values) != batch_size:
+        raise ValueError(
+            f"{prefix_key!r} must contain one entry per prompt, got "
+            f"{len(values)} entries for batch size {batch_size}."
+        )
     token_rows: list[list[int]] = []
     for idx in range(batch_size):
         raw_value = values[idx] if values is not None and idx < len(values) else None
@@ -142,10 +147,25 @@ def build_student_suffix_prompts(
     prompt_ids = prompts.batch["input_ids"]
     prompt_attention = prompts.batch["attention_mask"]
     device = prompt_ids.device
+    raw_prompt_ids = prompts.non_tensor_batch.get("raw_prompt_ids")
+    batch_size = int(prompt_ids.shape[0])
+    if raw_prompt_ids is not None and len(raw_prompt_ids) != batch_size:
+        raise ValueError(
+            "raw_prompt_ids must contain one entry per prompt, got "
+            f"{len(raw_prompt_ids)} entries for batch size {batch_size}."
+        )
 
     token_lists: list[list[int]] = []
-    for idx in range(int(prompt_ids.shape[0])):
-        prompt_tokens = _valid_token_list(prompt_ids[idx], prompt_attention[idx])
+    for idx in range(batch_size):
+        if raw_prompt_ids is None:
+            prompt_tokens = _valid_token_list(
+                prompt_ids[idx],
+                prompt_attention[idx],
+            )
+        else:
+            prompt_tokens = [
+                int(token_id) for token_id in raw_prompt_ids[idx]
+            ]
         prefix_tokens = _valid_token_list(teacher_prefix_ids[idx], teacher_prefix_mask[idx])
         token_lists.append(prompt_tokens + prefix_tokens)
 
@@ -159,9 +179,17 @@ def build_student_suffix_prompts(
         },
         batch_size=input_ids.shape[0],
     )
+    non_tensor_batch = dict(prompts.non_tensor_batch)
+    conditioned_raw_prompt_ids = np.empty(batch_size, dtype=object)
+    conditioned_raw_prompt_ids[:] = [
+        list(token_ids) for token_ids in token_lists
+    ]
+    # vLLM/SGLang prefer raw_prompt_ids over the padded tensor input. Rebuild
+    # this field so the actual rollout context matches input_ids.
+    non_tensor_batch["raw_prompt_ids"] = conditioned_raw_prompt_ids
     return DataProto(
         batch=batch,
-        non_tensor_batch=dict(prompts.non_tensor_batch),
+        non_tensor_batch=non_tensor_batch,
         meta_info=dict(prompts.meta_info),
     )
 
@@ -196,10 +224,19 @@ def merge_teacher_prefix_and_student_suffix(
     response_rows: list[list[int]] = []
     prefix_mask_rows: list[list[int]] = []
     suffix_mask_rows: list[list[int]] = []
+    suffix_rollout_log_probs = (
+        student_suffix_output.batch.get("rollout_log_probs")
+        if student_suffix_output is not None
+        else None
+    )
+    rollout_log_prob_rows: list[torch.Tensor] = []
     for idx in range(batch_size):
         prefix_tokens = _valid_token_list(teacher_prefix_ids[idx], teacher_prefix_mask[idx])
         remaining = max(0, int(max_response_length) - len(prefix_tokens))
-        suffix_tokens = _valid_token_list(suffix_ids[idx], suffix_mask[idx])[:remaining]
+        valid_suffix = suffix_mask[idx].to(dtype=torch.bool)
+        suffix_tokens = suffix_ids[idx][valid_suffix].detach().cpu().tolist()[
+            :remaining
+        ]
         response_tokens = (prefix_tokens + suffix_tokens)[: int(max_response_length)]
         prefix_count = min(len(prefix_tokens), int(max_response_length))
         suffix_count = max(0, len(response_tokens) - prefix_count)
@@ -212,6 +249,28 @@ def merge_teacher_prefix_and_student_suffix(
             + [1] * suffix_count
             + [0] * (int(max_response_length) - prefix_count - suffix_count)
         )
+        if isinstance(suffix_rollout_log_probs, torch.Tensor):
+            valid_log_probs = suffix_rollout_log_probs[idx][valid_suffix][
+                :suffix_count
+            ]
+            rollout_log_prob_rows.append(
+                torch.cat(
+                    [
+                        torch.zeros(
+                            prefix_count,
+                            dtype=suffix_rollout_log_probs.dtype,
+                            device=device,
+                        ),
+                        valid_log_probs.to(device),
+                        torch.full(
+                            (padding,),
+                            -1.0,
+                            dtype=suffix_rollout_log_probs.dtype,
+                            device=device,
+                        ),
+                    ]
+                )
+            )
 
     responses = torch.tensor(response_rows, dtype=torch.long, device=device)
     final_prefix_mask = torch.tensor(prefix_mask_rows, dtype=prompt_attention.dtype, device=device)
@@ -230,24 +289,87 @@ def merge_teacher_prefix_and_student_suffix(
     else:
         position_ids = compute_position_id_with_mask(attention_mask)
 
-    batch = TensorDict(
-        {
-            "prompts": prompt_ids,
-            "responses": responses,
-            "input_ids": input_ids,
-            "attention_mask": attention_mask,
-            "position_ids": position_ids,
-            "response_mask": response_mask,
-            "teacher_prefix_mask": final_prefix_mask,
-            "student_suffix_mask": final_suffix_mask,
-        },
-        batch_size=batch_size,
-    )
+    batch_values = {
+        "prompts": prompt_ids,
+        "responses": responses,
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "position_ids": position_ids,
+        "response_mask": response_mask,
+        "teacher_prefix_mask": final_prefix_mask,
+        "student_suffix_mask": final_suffix_mask,
+    }
+    if rollout_log_prob_rows:
+        batch_values["rollout_log_probs"] = torch.stack(
+            rollout_log_prob_rows,
+            dim=0,
+        )
+    batch = TensorDict(batch_values, batch_size=batch_size)
     return DataProto(
         batch=batch,
         non_tensor_batch=dict(original_prompts.non_tensor_batch),
         meta_info=dict(original_prompts.meta_info),
     )
+
+
+def fill_teacher_prefix_rollout_log_probs(
+    *,
+    rollout_log_probs: torch.Tensor,
+    old_log_probs: torch.Tensor,
+    teacher_prefix_mask: torch.Tensor,
+) -> torch.Tensor:
+    """Assign neutral IS ratios to dataset-provided teacher-prefix tokens."""
+
+    prefix_mask = teacher_prefix_mask.to(
+        device=rollout_log_probs.device,
+        dtype=torch.bool,
+    )
+    return torch.where(
+        prefix_mask,
+        old_log_probs.detach().to(
+            device=rollout_log_probs.device,
+            dtype=rollout_log_probs.dtype,
+        ),
+        rollout_log_probs,
+    )
+
+
+def teacher_prefix_rollout_correction_masks(
+    *,
+    response_mask: torch.Tensor,
+    teacher_prefix_mask: torch.Tensor,
+    student_suffix_mask: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Separate fixed prefix tokens from suffix-only rollout correction."""
+
+    prefix_mask = teacher_prefix_mask.to(
+        device=response_mask.device,
+        dtype=response_mask.dtype,
+    )
+    suffix_mask = student_suffix_mask.to(
+        device=response_mask.device,
+        dtype=response_mask.dtype,
+    )
+    return (
+        prefix_mask * response_mask,
+        suffix_mask * response_mask,
+    )
+
+
+def restore_teacher_prefix_response_mask(
+    *,
+    prefix_mask: torch.Tensor,
+    corrected_suffix_mask: torch.Tensor,
+) -> torch.Tensor:
+    """Restore prefix loss activity after suffix rejection sampling."""
+
+    return (
+        prefix_mask.to(
+            device=corrected_suffix_mask.device,
+            dtype=corrected_suffix_mask.dtype,
+        )
+        + corrected_suffix_mask
+    ).clamp(max=1)
 
 
 def teacher_prefix_rollin_metrics(

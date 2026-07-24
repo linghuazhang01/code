@@ -368,6 +368,17 @@ class vLLMRollout(BaseRollout):
                 "temperature": self.config.val_kwargs.temperature,
                 "n": 1,  # if validate, already repeat in ray_trainer
             }
+        effective_response_length = int(
+            prompts.meta_info.get(
+                "mopd_response_length",
+                self.config.response_length,
+            )
+        )
+        if effective_response_length <= 0:
+            raise ValueError(
+                "mopd_response_length must be positive when rollout is called."
+            )
+        kwargs["max_tokens"] = effective_response_length
 
         lora_requests = None
         if self.lora_kwargs:

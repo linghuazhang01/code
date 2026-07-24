@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, Mapping
 
 import torch
 from torch.distributed.tensor import DTensor
@@ -154,6 +154,93 @@ def vector_dot(
     return _reduce(actor, [_local_dot(left, right)])[0]
 
 
+def reweighted_total_vector(
+    total_vector: GradientVector,
+    vectors: Mapping[str, GradientVector],
+    weights: Mapping[str, float],
+) -> GradientVector:
+    """Reweight configured domains while preserving unconfigured residuals."""
+
+    if not total_vector:
+        return tuple()
+    vector_items = tuple(vectors.items())
+    chunk_count = len(total_vector)
+    if any(len(vector) != chunk_count for _domain, vector in vector_items):
+        raise ValueError("Domain gradient vectors have different parameter counts.")
+
+    output: list[torch.Tensor] = []
+    for chunk_index in range(chunk_count):
+        reference = total_vector[chunk_index]
+        total = reference.float().clone()
+        for domain, vector in vector_items:
+            chunk = vector[chunk_index]
+            if chunk.shape != reference.shape:
+                raise ValueError("Domain gradient chunks have different shapes.")
+            total.add_(
+                chunk.float(),
+                alpha=float(weights.get(domain, 1.0)) - 1.0,
+            )
+        output.append(total.to(dtype=reference.dtype))
+    return tuple(output)
+
+
+def tail_gradient_metrics_from_gram(
+    *,
+    domain_sq: float,
+    tail_sq: float,
+    tail_domain_dot: float,
+) -> dict[str, float]:
+    """Describe a tail-token gradient relative to its full domain gradient."""
+
+    return gradient_subset_metrics_from_gram(
+        prefix="tail",
+        domain_sq=domain_sq,
+        subset_sq=tail_sq,
+        subset_domain_dot=tail_domain_dot,
+    )
+
+
+def gradient_subset_metrics_from_gram(
+    *,
+    prefix: str,
+    domain_sq: float,
+    subset_sq: float,
+    subset_domain_dot: float,
+) -> dict[str, float]:
+    """Describe any selected-token gradient relative to a domain gradient."""
+
+    domain_norm = math.sqrt(max(domain_sq, 0.0))
+    subset_norm = math.sqrt(max(subset_sq, 0.0))
+    return {
+        f"{prefix}_grad_norm": subset_norm,
+        f"{prefix}_grad_norm_over_domain_norm": (
+            subset_norm / max(domain_norm, 1e-30)
+        ),
+        f"{prefix}_grad_cos_to_domain": (
+            subset_domain_dot / max(subset_norm * domain_norm, 1e-30)
+        ),
+        f"{prefix}_grad_signed_projection_share": (
+            subset_domain_dot / max(domain_sq, 1e-30)
+        ),
+    }
+
+
+def top_p1_gradient_metrics_from_domain_sq(
+    domain_sq: float,
+) -> dict[str, float]:
+    """Return full-token closure metrics when token-gradient top-p is one."""
+
+    domain_norm = math.sqrt(max(domain_sq, 0.0))
+    has_gradient = domain_norm > 0.0
+    closure_value = 1.0 if has_gradient else 0.0
+    return {
+        "top_p1_grad_norm": domain_norm,
+        "top_p1_grad_norm_over_domain_norm": closure_value,
+        "top_p1_grad_cos_to_domain": closure_value,
+        "top_p1_grad_signed_projection_share": closure_value,
+    }
+
+
 def vector_nbytes(vector: GradientVector) -> int:
     return sum(int(chunk.numel()) * int(chunk.element_size()) for chunk in vector)
 
@@ -237,11 +324,13 @@ def domain_metrics_from_gram(
         "global/audit/gradient_correctness_storage_fp32": float(
             all_vectors_fp32
         ),
-        "global/full_grad/total_grad_norm": math.sqrt(max(total_sq, 0.0)),
+        "global/pre_reweight_full_grad/total_grad_norm": math.sqrt(
+            max(total_sq, 0.0)
+        ),
     }
     for domain in domains:
         safe_domain = _safe_name(domain)
-        metrics[f"{safe_domain}/full_grad/grad_norm"] = math.sqrt(
+        metrics[f"{safe_domain}/pre_reweight_full_grad/grad_norm"] = math.sqrt(
             max(domain_sq[domain], 0.0)
         )
         comparison = _comparison(
@@ -250,11 +339,13 @@ def domain_metrics_from_gram(
             domain_total_dot[domain],
         )
         metrics[
-            f"global/full_grad_alignment/{safe_domain}_vs_total/"
-            "full_grad_cosine_domain_total"
+            "global/pre_reweight_full_grad_alignment/"
+            f"{safe_domain}_vs_pre_reweight_total/"
+            "pre_reweight_full_grad_cosine_domain_total"
         ] = comparison["cosine"]
         metrics[
-            f"global/full_grad_contribution/{safe_domain}_to_total/"
+            "global/pre_reweight_full_grad_contribution/"
+            f"{safe_domain}_to_pre_reweight_total/"
             "signed_projection_share"
         ] = comparison["projection_share"]
 
@@ -268,7 +359,8 @@ def domain_metrics_from_gram(
             )
             pair = f"{_safe_name(left_domain)}_vs_{_safe_name(right_domain)}"
             metrics[
-                f"global/full_grad_conflict/{pair}/full_grad_cosine_train_i_k"
+                "global/pre_reweight_full_grad_conflict/"
+                f"{pair}/pre_reweight_full_grad_cosine_train_i_k"
             ] = comparison["cosine"]
 
     domain_sum_sq = sum(domain_sq.values()) + 2.0 * sum(pair_dot.values())
@@ -304,15 +396,13 @@ def domain_metrics_from_gram(
         not all_vectors_fp32 and estimated_roundoff > closure_threshold
     )
     closure_payload["passed"] = float(closure["rel_l2"] <= closure_threshold)
-    for prefix in (
-        "global/full_grad_closure/domain_sum_vs_audit_total",
-        # Compatibility alias: this legacy group has always used audit replay
-        # total rather than the production training gradient.
-        "global/full_grad_closure/domain_sum_vs_training",
-    ):
-        metrics.update(
-            {f"{prefix}/{name}": value for name, value in closure_payload.items()}
-        )
+    prefix = (
+        "global/pre_reweight_full_grad_closure/"
+        "domain_sum_vs_pre_reweight_audit_total"
+    )
+    metrics.update(
+        {f"{prefix}/{name}": value for name, value in closure_payload.items()}
+    )
     return metrics
 
 

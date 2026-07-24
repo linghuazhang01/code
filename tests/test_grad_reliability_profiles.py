@@ -10,18 +10,18 @@ from mopd_verl.settings import MOPDConfig, load_config
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = ROOT / "test_grad_configs"
-PROFILE_PREFIX = "mopd_grad_reliability_qwen4b_8b_aw2"
-HYBRID_PROFILE_PREFIX = "mopd_grad_reliability_qwen4b_8b_aw4"
-RELIABILITY_PROFILE_GLOB = "mopd_grad_reliability_qwen4b_8b_aw*.yaml"
+PROFILE_PREFIX = "mopd_grad_reliability_qwen0p6b_0p6b_aw2"
+HYBRID_PROFILE_PREFIX = "mopd_grad_reliability_qwen0p6b_0p6b_aw4"
+RELIABILITY_PROFILE_GLOB = "mopd_grad_reliability_qwen0p6b_0p6b_aw*.yaml"
 EXPECTED_PROFILE_NAMES = {
-    "mopd_grad_reliability_qwen4b_8b_aw2_fsdpsize1_audit_freq2_b16_4step_smoke.yaml",
-    "mopd_grad_reliability_qwen4b_8b_aw2_fsdpsize1_audit_off_b16_4step_smoke.yaml",
-    "mopd_grad_reliability_qwen4b_8b_aw2_fsdpsize2_audit_freq2_b16_4step_smoke.yaml",
-    "mopd_grad_reliability_qwen4b_8b_aw4_fsdpsize2_audit_freq2_b16_4step_smoke.yaml",
-    "mopd_grad_reliability_qwen4b_8b_aw4_fsdpsize2_audit_off_b16_4step_smoke.yaml",
+    "mopd_grad_reliability_qwen0p6b_0p6b_aw2_fsdpsize1_audit_freq2_b16_4step_smoke.yaml",
+    "mopd_grad_reliability_qwen0p6b_0p6b_aw2_fsdpsize1_audit_off_b16_4step_smoke.yaml",
+    "mopd_grad_reliability_qwen0p6b_0p6b_aw2_fsdpsize2_audit_freq2_b16_4step_smoke.yaml",
+    "mopd_grad_reliability_qwen0p6b_0p6b_aw4_fsdpsize2_audit_freq2_b16_4step_smoke.yaml",
+    "mopd_grad_reliability_qwen0p6b_0p6b_aw4_fsdpsize2_audit_off_b16_4step_smoke.yaml",
 }
-STUDENT_PATH = "/root/autodl-tmp/models/Qwen3-4B"
-TEACHER_PATH = "/root/autodl-tmp/models/Qwen3-8B"
+STUDENT_PATH = "/root/autodl-tmp/models/Qwen3-0.6B"
+TEACHER_PATH = "/root/autodl-tmp/models/Qwen3-0.6B"
 
 
 class GradientReliabilityProfileTests(unittest.TestCase):

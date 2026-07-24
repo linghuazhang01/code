@@ -213,19 +213,28 @@ class AuditConfig:
     logp_vector_freq_steps: int = 1
     logp_abs_vector_enabled: bool = False
     logp_abs_vector_freq_steps: int = 1
-    token_conflict_enabled: bool = True
-    token_conflict_freq_steps: int = 1
-    token_conflict_top_k: int | None = None
     token_gradient_enabled: bool = False
     token_gradient_freq_steps: int = 10
+    token_gradient_tail_enabled: bool = True
+    token_gradient_tail_fraction: float = 0.10
+    token_gradient_tail_min_tokens: int = 1
     token_gradient_gap_selection_enabled: bool = True
     token_gradient_gap_abs_selection_enabled: bool = True
     token_gradient_loss_abs_selection_enabled: bool = True
-    token_gradient_top_k: int = 100
+    token_gradient_top_k: int | None = 100
+    token_gradient_top_p_enabled: bool = False
     token_gradient_top_p: float = 0.10
+    token_gradient_log_tokens_jsonl_enabled: bool = True
     token_gradient_strict_grad_restore: bool = False
     token_gradient_backward_recompute_enabled: bool = True
     token_gradient_backward_sync_enabled: bool = True
+    dynamic_domain_loss_weighting_enabled: bool = False
+    dynamic_domain_loss_weighting_freq_steps: int = 10
+    dynamic_domain_loss_weighting_ema_beta: float = 0.90
+    dynamic_domain_loss_weighting_weight_ema_beta: float = 0.90
+    dynamic_domain_loss_weighting_alpha: float = 0.50
+    dynamic_domain_loss_weighting_min: float = 1.0 / 3.0
+    dynamic_domain_loss_weighting_max: float = 3.0
     gradient_fingerprint_enabled: bool = False
     gradient_fingerprint_freq_steps: int = 1
 
@@ -526,17 +535,58 @@ def load_config(path: str | Path) -> MOPDConfig:
         attn_implementation=attn_implementation,
     )
     audit = AuditConfig(**_expect_mapping(root.get("audit", {}), "audit"))
+    if not 0.0 < audit.token_gradient_tail_fraction <= 1.0:
+        raise ValueError(
+            "audit.token_gradient_tail_fraction must be in (0, 1]."
+        )
+    if audit.token_gradient_tail_min_tokens < 1:
+        raise ValueError(
+            "audit.token_gradient_tail_min_tokens must be at least 1."
+        )
+    if not 0.0 <= audit.token_gradient_top_p <= 1.0:
+        raise ValueError(
+            "audit.token_gradient_top_p must be in [0, 1]."
+        )
+    if audit.token_gradient_enabled and (
+        audit.token_gradient_tail_enabled
+        or audit.token_gradient_top_p_enabled
+    ) and not audit.token_gradient_loss_abs_selection_enabled:
+        raise ValueError(
+            "Loss-ranked token-gradient statistics require "
+            "audit.token_gradient_loss_abs_selection_enabled=true."
+        )
+    if not 0.0 <= audit.dynamic_domain_loss_weighting_ema_beta < 1.0:
+        raise ValueError(
+            "audit.dynamic_domain_loss_weighting_ema_beta must be in [0, 1)."
+        )
+    if not 0.0 <= audit.dynamic_domain_loss_weighting_weight_ema_beta < 1.0:
+        raise ValueError(
+            "audit.dynamic_domain_loss_weighting_weight_ema_beta must be "
+            "in [0, 1)."
+        )
+    if audit.dynamic_domain_loss_weighting_alpha < 0.0:
+        raise ValueError(
+            "audit.dynamic_domain_loss_weighting_alpha must be non-negative."
+        )
+    if (
+        audit.dynamic_domain_loss_weighting_min <= 0.0
+        or audit.dynamic_domain_loss_weighting_min > 1.0
+        or audit.dynamic_domain_loss_weighting_max < 1.0
+    ):
+        raise ValueError(
+            "Dynamic domain loss weight bounds must be positive and contain "
+            "1.0."
+        )
     retired_gradient_modes = [
         name
         for name, enabled in (
             ("audit.sample_gradient_enabled", audit.sample_gradient_enabled),
-            ("audit.token_gradient_enabled", audit.token_gradient_enabled),
         )
         if enabled
     ]
     if retired_gradient_modes:
         raise ValueError(
-            "The clean domain-gradient rebuild retired nested sample/token backward "
+            "The clean domain-gradient rebuild retired nested sample backward "
             f"replay. Disable: {', '.join(retired_gradient_modes)}."
         )
 

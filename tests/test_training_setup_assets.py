@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -150,8 +151,101 @@ class TrainingSetupAssetScriptTests(unittest.TestCase):
             "CUDA_VISIBLE_DEVICES",
             "GPU_IDLE_MEMORY_LIMIT_MB",
             "REQUIRED_GPUS",
+            "SCREEN_SESSION_NAME_MAX_LENGTH=80",
+            "config_checksum=",
+            "config_hash",
         ):
             self.assertIn(expected, source)
+
+    def test_local_training_default_run_id_fits_screen_limit(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        script_path = root / "scripts" / "run_local_mopd_training.sh"
+        source_config_path = (
+            root
+            / "test_grad_configs"
+            / (
+                "mopd_grad_reliability_qwen0p6b_0p6b_aw2_fsdpsize2_"
+                "audit_freq2_b16_4step_smoke.yaml"
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            model_dir = temp_path / "model"
+            model_dir.mkdir()
+            config = yaml.safe_load(source_config_path.read_text(encoding="utf-8"))
+            config["model"]["student_path"] = str(model_dir)
+            config["model"]["math_teacher_path"] = str(model_dir)
+            config["model"]["code_teacher_path"] = str(model_dir)
+            config["model"]["domain_teacher_paths"] = {
+                domain: str(model_dir)
+                for domain in config["model"]["domain_teacher_paths"]
+            }
+            config_path = temp_path / source_config_path.name
+            config_path.write_text(
+                yaml.safe_dump(config, sort_keys=False),
+                encoding="utf-8",
+            )
+
+            bin_dir = temp_path / "bin"
+            bin_dir.mkdir()
+            fake_screen = bin_dir / "screen"
+            fake_screen.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [[ \"${1:-}\" == \"-ls\" ]]; then exit 0; fi\n"
+                "if [[ \"${1:-}\" == \"-dmS\" ]]; then\n"
+                "  [[ \"${#2}\" -le 80 ]] || exit 42\n"
+                "  exit 0\n"
+                "fi\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            fake_screen.chmod(0o755)
+
+            env = os.environ.copy()
+            env.update(
+                {
+                    "GPU_IDS": "0,1,2",
+                    "LOG_DIR": str(temp_path / "logs"),
+                    "MOPD_LOCAL_CONDA_ENV": str(temp_path / "missing-env"),
+                    "MOPD_LOCAL_CONDA_ROOT": str(temp_path / "missing-conda"),
+                    "PATH": f"{bin_dir}:{Path(sys.executable).parent}:{env['PATH']}",
+                    "STOP_STALE_RAY": "0",
+                }
+            )
+            result = subprocess.run(
+                [
+                    "/bin/bash",
+                    str(script_path),
+                    str(config_path),
+                    "--dry-run",
+                    "--",
+                    "trainer.save_freq=-1",
+                ],
+                cwd=root,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            run_id = (temp_path / "logs" / "opd_target_run_id").read_text(
+                encoding="utf-8",
+            ).strip()
+
+        self.assertLessEqual(len(run_id), 80)
+        self.assertRegex(run_id, r"_[0-9a-f]{8}_[0-9]{8}_[0-9]{6}$")
+
+    def test_grad_config_start_script_is_a_single_config_command(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        script_path = root / "test_grad_configs" / "start.sh"
+        source = script_path.read_text(encoding="utf-8")
+
+        self.assertEqual(len(source.splitlines()), 1)
+        self.assertIn('GPU_IDS="${GPU_IDS:-0,1,2}"', source)
+        self.assertIn("scripts/run_local_mopd_training.sh", source)
+        self.assertIn('"$1"', source)
 
     def test_qwen30b_teacher_checks_disk_before_requiring_python(self) -> None:
         script_path = (

@@ -220,7 +220,10 @@ class Qwen30BInstruct2507ProfileTests(unittest.TestCase):
                 self.assertTrue(config.audit.logp_vocab_per_occurrence_mean_vector_enabled)
                 self.assertTrue(config.audit.logp_abs_vocab_per_occurrence_mean_vector_enabled)
                 self.assertTrue(config.audit.entropy_vocab_per_occurrence_mean_vector_enabled)
-                self.assertFalse(config.audit.entropy_enabled)
+                self.assertEqual(
+                    config.audit.entropy_enabled,
+                    filename == MATH_CODE_SCIENCE_TOPK32_PROFILE,
+                )
                 self.assertTrue(config.audit.entropy_vocab_vector_enabled)
                 self.assertEqual(
                     config.audit.topk_teacher_student_cross_entropy_vocab_enabled,
@@ -246,8 +249,29 @@ class Qwen30BInstruct2507ProfileTests(unittest.TestCase):
                 self.assertEqual(config.audit.logp_vector_freq_steps, 1)
                 self.assertTrue(config.audit.logp_abs_vector_enabled)
                 self.assertFalse(config.audit.sample_gradient_enabled)
-                self.assertFalse(config.audit.token_gradient_enabled)
-                self.assertFalse(config.audit.token_conflict_enabled)
+                self.assertEqual(
+                    config.audit.token_gradient_enabled,
+                    filename == MATH_CODE_SCIENCE_TOPK32_PROFILE,
+                )
+                if filename == MATH_CODE_SCIENCE_TOPK32_PROFILE:
+                    self.assertEqual(config.audit.token_gradient_freq_steps, 4)
+                    self.assertTrue(config.audit.token_gradient_tail_enabled)
+                    self.assertEqual(
+                        config.audit.token_gradient_tail_fraction,
+                        0.10,
+                    )
+                    self.assertEqual(
+                        config.audit.token_gradient_tail_min_tokens,
+                        1,
+                    )
+                    self.assertTrue(config.audit.token_gradient_top_p_enabled)
+                    self.assertIsNone(config.audit.token_gradient_top_k)
+                    self.assertTrue(
+                        config.audit.token_gradient_log_tokens_jsonl_enabled
+                    )
+                self.assertFalse(
+                    config.audit.dynamic_domain_loss_weighting_enabled
+                )
 
                 self.assertIn(TEACHER_PATH, rendered)
                 self.assertIn("data.max_response_length=16384", rendered)
@@ -279,6 +303,32 @@ class Qwen30BInstruct2507ProfileTests(unittest.TestCase):
                     rendered,
                 )
                 self.assertIn("+mopd_audit.logp_vector_enabled=true", rendered)
+                self.assertIn(
+                    "+mopd_audit.token_gradient_tail_fraction=0.1",
+                    rendered,
+                )
+                if filename == MATH_CODE_SCIENCE_TOPK32_PROFILE:
+                    self.assertIn(
+                        "+mopd_audit.token_gradient_tail_enabled=true",
+                        rendered,
+                    )
+                    self.assertIn(
+                        "+mopd_audit.token_gradient_top_p_enabled=true",
+                        rendered,
+                    )
+                    self.assertIn(
+                        "+mopd_audit.token_gradient_top_k=null",
+                        rendered,
+                    )
+                    self.assertIn(
+                        "+mopd_audit."
+                        "token_gradient_log_tokens_jsonl_enabled=true",
+                        rendered,
+                    )
+                self.assertIn(
+                    "+mopd_audit.dynamic_domain_loss_weighting_enabled=false",
+                    rendered,
+                )
                 if expected_domains - {"math", "code"}:
                     self.assertIn("actor_rollout_ref.ref.model.teacher_paths", rendered)
                 self.assertIn(

@@ -57,7 +57,7 @@ remove-padding：
 ENV_NAME=mopd-verl-blackwell \
 GPU_IDS=0,1,2 \
   bash scripts/run_local_mopd_training.sh \
-  test_grad_configs/mopd_grad_reliability_qwen4b_8b_aw2_fsdpsize2_audit_freq2_b16_4step_smoke.yaml \
+  test_grad_configs/mopd_grad_reliability_qwen0p6b_0p6b_aw2_fsdpsize2_audit_freq2_b16_4step_smoke.yaml \
   --run-id blackwell_fsdpsize2_smoke_$(date +%Y%m%d_%H%M%S) -- \
   actor_rollout_ref.model.use_remove_padding=false \
   trainer.save_freq=-1
@@ -185,7 +185,7 @@ REQUIRE_M2RL_EVAL_DATA=1 \
 | `configs/mopd_formal_audit_off_8gpu.yaml` | 8 卡 audit-off 训练。 |
 | `configs/mopd_formal_audit_all_smoke.yaml` | 2 卡 one-step 指标 smoke，打开全部 audit 输出和 full-vocab vectors。 |
 | `configs/mopd_formal_audit_loss_only_smoke.yaml` | 2 卡 one-step domain-gradient 与 loss-metric smoke。 |
-| `configs/mopd_formal_audit_grad_consistency_2gpu_b16_1step_smoke.yaml` | 2 卡 batch size 16、1 step 的 gradient consistency smoke。 |
+| `test_grad_configs/mopd_dynamic_weight_qwen0p6b_0p6b_aw2_fsdpsize2_tail_topp1_b16_4step_smoke.yaml` | Canonical 3 卡 `[1/3, 3]` bounded applied-weight EMA，以及按 domain 和 configured token loss 排序的 tail、Top-p=1 gradient smoke；Top-k replay 已关闭，入选 token ID 会写入 JSONL。 |
 | `configs/mopd_formal_audit_grad_consistency_2gpu_b32_2step_smoke.yaml` | 2 卡 batch size 32、2 step 的 gradient consistency smoke。 |
 | `configs/mopd_formal_audit_grad_consistency_2gpu_b64_3step_smoke.yaml` | 2 卡 batch size 64、3 step 的 gradient consistency smoke。 |
 | `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math.yaml` | 原始 Math-only：4 张 actor/rollout GPU + 2 张 teacher/ref GPU。 |
@@ -289,7 +289,7 @@ setup script 不再维护额外的 pip requirements 或依赖安装脚本。IF/s
 ```bash
 cd /path/to/OPD-code
 GPU_IDS=0,1,2 bash scripts/run_local_mopd_training.sh \
-  test_grad_configs/mopd_grad_reliability_qwen4b_8b_aw2_fsdpsize2_audit_freq2_b16_4step_smoke.yaml \
+  test_grad_configs/mopd_grad_reliability_qwen0p6b_0p6b_aw2_fsdpsize2_audit_freq2_b16_4step_smoke.yaml \
   --run-id mopd_fsdpsize2_smoke_$(date +%Y%m%d_%H%M%S)
 ```
 
@@ -304,7 +304,7 @@ gradient 和 optimizer state。
 
 ```bash
 scripts/run_mopd.sh \
-  test_grad_configs/mopd_grad_reliability_qwen4b_8b_aw2_fsdpsize2_audit_freq2_b16_4step_smoke.yaml \
+  test_grad_configs/mopd_grad_reliability_qwen0p6b_0p6b_aw2_fsdpsize2_audit_freq2_b16_4step_smoke.yaml \
   --dry-run
 ```
 
@@ -327,14 +327,14 @@ MIN_FREE_GB=300 \
 - `loss_variance_sample.jsonl`
 - `token_gap_vectors.jsonl`
 - `token_gap_vocab_vectors.jsonl`
+- `token_gradient_vocab_vectors.jsonl`
 - `entropy_distribution_vectors.jsonl`
 - `entropy_vocab_vectors.jsonl`
-- `token_conflict_attribution.jsonl`
 - `validation_probe.jsonl`
 - `validation_gain_variance.jsonl`
 - `training_cost.jsonl`
 - `audit_errors.jsonl`
 
-full-vocab vector 文件使用 token-id 坐标：第 `v` 维对应 tokenizer token id `v`。`token_gap_vocab_vectors.jsonl` 保存 signed/absolute log-prob gap 的 sum 和 mean vector；`entropy_vocab_vectors.jsonl` 保存 `student_entropy` 与 `teacher_student_cross_entropy` 的 sum 和 mean vector。
+full-vocab vector 文件使用 token-id 坐标：第 `v` 维对应 tokenizer token id `v`。`token_gap_vocab_vectors.jsonl` 保存 signed/absolute log-prob gap 的 sum 和 mean vector；`token_gradient_vocab_vectors.jsonl` 按 selected token ID 去重，并为每个 step/domain/selection 保存累计 occurrence count 和 configured-loss sum vectors；`entropy_vocab_vectors.jsonl` 保存 `student_entropy` 与 `teacher_student_cross_entropy` 的 sum 和 mean vector。
 
 详细 metric 定义见 [metrics_zh.md](metrics_zh.md)。配置字段和常用 override 见 [CONFIG_GUIDE.zh.md](CONFIG_GUIDE.zh.md)。

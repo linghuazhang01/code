@@ -19,7 +19,7 @@ def _is_domain_data_metric(key: str) -> bool:
 
 
 def _is_domain_loss_metric(key: str) -> bool:
-    return key in {
+    return key.startswith("token_opd_loss_") or key in {
         "advantage_mean",
         "sample_opd_loss_mean",
         "sample_opd_loss_std",
@@ -58,36 +58,8 @@ def _is_domain_sample_grad_contribution_metric(key: str) -> bool:
 
 
 def _is_domain_teacher_metric(key: str) -> bool:
-    return key in {"teacher_confidence_mean", "teacher_student_gap_mean"}
-
-
-def _is_domain_token_conflict_metric(key: str) -> bool:
-    return key in {
-        "combined_diff_mass",
-        "combined_diff_mean",
-        "combined_diff_mass_frac",
-        "combined_diff_p95",
-        "combined_diff_max",
-        "opd_signal_abs_mean",
-        "proxy_mass",
-        "proxy_mean",
-        "proxy_mass_frac",
-        "student_teacher_diff_mass",
-        "student_teacher_diff_mean",
-        "student_teacher_diff_p95",
-        "student_teacher_diff_max",
-        "teacher_disagreement_mean",
-        "teacher_teacher_diff_mass",
-        "teacher_teacher_diff_mean",
-        "teacher_teacher_diff_mass_frac",
-        "teacher_teacher_diff_p95",
-        "teacher_teacher_diff_max",
-        "token_abs_opd_loss_mean",
-        "top1_teacher_diff_share",
-        "top10_teacher_diff_share",
-        "top1_token_share",
-        "top10_token_share",
-        "unique_token_count",
+    return key.startswith("teacher_student_gap_") or key in {
+        "teacher_confidence_mean"
     }
 
 
@@ -137,8 +109,6 @@ def domain_metric_category(key: str) -> str:
         return "token_gap"
     if _is_domain_entropy_metric(key):
         return "entropy"
-    if _is_domain_token_conflict_metric(key):
-        return "token_conflict"
     if key.startswith("calibration"):
         return "calibration"
     if key == "duplicate_rate":

@@ -1,8 +1,9 @@
 # Domain-gradient experiment configs
 
-这里集中保存当前约定的五份 4B student / 8B teacher domain-gradient regression
-实验配置。本目录是这五个 GPU regression experiments 的唯一配置来源；不要在
-`configs/` 下维护第二份副本。launcher、测试和 regression prompt 均直接引用本目录。
+这里集中保存 GPU domain-gradient regression 与专项 smoke 配置。五份 paired
+reliability experiments 使用 Qwen3-0.6B student / Qwen3-0.6B teacher；动态权重、token attribution
+等专项检查也在本目录维护 canonical profile，不在 `configs/` 下保留第二份副本。
+launcher、测试和 regression prompt 均直接引用本目录。
 
 ## 实验矩阵
 
@@ -17,18 +18,27 @@
 每份配置均使用 4 个 training steps、batch size 16；audit-on 配置在 step 2/4
 计算 full gradient，并使用 BF16 保存 gradient vector。
 
+## 动态权重专项 smoke
+
+| 配置 | Actor world | `fsdp_size` | 所需 GPU | Steps | 用途 |
+|---|---:|---:|---:|---:|---|
+| `mopd_dynamic_weight_qwen0p6b_0p6b_aw2_fsdpsize2_tail_topp1_b16_4step_smoke.yaml` | 2 | 2 | 3 | 4 | 在 math、code、science 三个 domain 上验证 `[1/3, 3]` bounded applied-weight EMA，以及每个 domain 内按 `abs(configured token loss)` 排序的低 loss 15% mass、Top-p=1 gradient；Top-k replay 关闭，并记录 token JSONL |
+| `mopd_feature_coverage_qwen0p6b_0p6b_aw2_fsdpsize2_top_partial_prefix_ppo2_b8_2step_smoke.yaml` | 2 | 2 | 3 | 2 | 验证 Top-only、partial Top-p=0.5、teacher-prefix/suffix active mask，以及两次 PPO epoch 的 configured token-loss 平均 |
+
 ## 文件与 SHA-256
 
 ```text
-0c3552fce4ed9ce15ce4e3a205f714217e60c816f61286bf6726dc6d9f864924  mopd_grad_reliability_qwen4b_8b_aw2_fsdpsize1_audit_freq2_b16_4step_smoke.yaml
-3b1e65482d1836833e903f6fc03d63d98a94654d328482e3434bdc0ee2fcec8d  mopd_grad_reliability_qwen4b_8b_aw2_fsdpsize1_audit_off_b16_4step_smoke.yaml
-10c9ff9da9764f91356d1216b36139ce4ce6de9f3728d521bd43e1579fb4e32d  mopd_grad_reliability_qwen4b_8b_aw2_fsdpsize2_audit_freq2_b16_4step_smoke.yaml
-86231492c7ce51499cf7ea2933760639cb8793b622d329e5d9acebe530152c09  mopd_grad_reliability_qwen4b_8b_aw4_fsdpsize2_audit_freq2_b16_4step_smoke.yaml
-0fb474da1abac463c0a383f2ba5525dd7c07e6b000a15be7615f0e24c0448444  mopd_grad_reliability_qwen4b_8b_aw4_fsdpsize2_audit_off_b16_4step_smoke.yaml
+d7c26962c3cf311a50350336b9b74e2bb19ac75c7014484a28ed523d84d7be93  mopd_grad_reliability_qwen0p6b_0p6b_aw2_fsdpsize1_audit_freq2_b16_4step_smoke.yaml
+cf7775e904ac2c9c7f7be78f7dadb144ad2bd1edcd25a1b11ecde4fadb75ebce  mopd_grad_reliability_qwen0p6b_0p6b_aw2_fsdpsize1_audit_off_b16_4step_smoke.yaml
+57536e39715a02692b6d4c14f79370baa80563f437f81a3ae4fad956655e32e6  mopd_grad_reliability_qwen0p6b_0p6b_aw2_fsdpsize2_audit_freq2_b16_4step_smoke.yaml
+6eec10dd3181c981651524f19408b6a472e989f51fe0f98f86d8234fa7eaaa63  mopd_grad_reliability_qwen0p6b_0p6b_aw4_fsdpsize2_audit_freq2_b16_4step_smoke.yaml
+ae4d46cbf8c44251ad8e3fc4e0ffde78257d44ffb8b72632a1b2d755264cd4b4  mopd_grad_reliability_qwen0p6b_0p6b_aw4_fsdpsize2_audit_off_b16_4step_smoke.yaml
+caa8760ce8c1644a270c41ef322ac7584b826a9babd974e8ec643641a1f5e114  mopd_dynamic_weight_qwen0p6b_0p6b_aw2_fsdpsize2_tail_topp1_b16_4step_smoke.yaml
+cd71a11a76e3171213afe5c1ea475e741836c88198ec6c94c29d9ccfff0cab62  mopd_feature_coverage_qwen0p6b_0p6b_aw2_fsdpsize2_top_partial_prefix_ppo2_b8_2step_smoke.yaml
 ```
 
-以上 hash 对应本目录的 canonical 文件。后续修改配置时，必须同时更新 hash、实验
-矩阵与 `tests/test_grad_reliability_profiles.py` 中的 contract。
+以上 hash 对应本目录的 canonical 文件。后续修改配置时，必须同时更新 hash、对应
+实验矩阵与 profile contract 测试。
 
 ## 执行注意事项
 

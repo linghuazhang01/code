@@ -60,7 +60,7 @@ run, keep remove-padding disabled:
 ENV_NAME=mopd-verl-blackwell \
 GPU_IDS=0,1,2 \
   bash scripts/run_local_mopd_training.sh \
-  test_grad_configs/mopd_grad_reliability_qwen4b_8b_aw2_fsdpsize2_audit_freq2_b16_4step_smoke.yaml \
+  test_grad_configs/mopd_grad_reliability_qwen0p6b_0p6b_aw2_fsdpsize2_audit_freq2_b16_4step_smoke.yaml \
   --run-id blackwell_fsdpsize2_smoke_$(date +%Y%m%d_%H%M%S) -- \
   actor_rollout_ref.model.use_remove_padding=false \
   trainer.save_freq=-1
@@ -190,7 +190,7 @@ Three formal MOPD variants are kept with 2/4/6/8 GPU profiles, plus metrics smok
 | `configs/mopd_formal_audit_off_8gpu.yaml` | 8-GPU audit-off run. |
 | `configs/mopd_formal_audit_all_smoke.yaml` | 2-GPU one-step metrics smoke run with all audit outputs and full-vocab vectors enabled. |
 | `configs/mopd_formal_audit_loss_only_smoke.yaml` | 2-GPU one-step domain-gradient and loss-metric smoke run. |
-| `configs/mopd_formal_audit_grad_consistency_2gpu_b16_1step_smoke.yaml` | 2-GPU gradient consistency smoke with batch size 16 and one training step. |
+| `test_grad_configs/mopd_dynamic_weight_qwen0p6b_0p6b_aw2_fsdpsize2_tail_topp1_b16_4step_smoke.yaml` | Canonical 3-GPU smoke for `[1/3, 3]` bounded applied-weight EMA and per-domain configured-loss-ranked tail and Top-p=1 gradients; Top-k replay is disabled and selected token IDs are written to JSONL. |
 | `configs/mopd_formal_audit_grad_consistency_2gpu_b32_2step_smoke.yaml` | 2-GPU gradient consistency smoke with batch size 32 and two training steps. |
 | `configs/mopd_formal_audit_grad_consistency_2gpu_b64_3step_smoke.yaml` | 2-GPU gradient consistency smoke with batch size 64 and three training steps. |
 | `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math.yaml` | Original math-only training: 4 actor/rollout GPUs + 2 teacher/ref GPUs. |
@@ -299,7 +299,7 @@ Run from the local checkout:
 ```bash
 cd /path/to/OPD-code
 GPU_IDS=0,1,2 bash scripts/run_local_mopd_training.sh \
-  test_grad_configs/mopd_grad_reliability_qwen4b_8b_aw2_fsdpsize2_audit_freq2_b16_4step_smoke.yaml \
+  test_grad_configs/mopd_grad_reliability_qwen0p6b_0p6b_aw2_fsdpsize2_audit_freq2_b16_4step_smoke.yaml \
   --run-id mopd_fsdpsize2_smoke_$(date +%Y%m%d_%H%M%S)
 ```
 
@@ -315,7 +315,7 @@ Local dry-run:
 
 ```bash
 scripts/run_mopd.sh \
-  test_grad_configs/mopd_grad_reliability_qwen4b_8b_aw2_fsdpsize2_audit_freq2_b16_4step_smoke.yaml \
+  test_grad_configs/mopd_grad_reliability_qwen0p6b_0p6b_aw2_fsdpsize2_audit_freq2_b16_4step_smoke.yaml \
   --dry-run
 ```
 
@@ -352,14 +352,14 @@ Important files include:
 - `loss_variance_sample.jsonl`
 - `token_gap_vectors.jsonl`
 - `token_gap_vocab_vectors.jsonl`
+- `token_gradient_vocab_vectors.jsonl`
 - `entropy_distribution_vectors.jsonl`
 - `entropy_vocab_vectors.jsonl`
-- `token_conflict_attribution.jsonl`
 - `validation_probe.jsonl`
 - `validation_gain_variance.jsonl`
 - `training_cost.jsonl`
 - `audit_errors.jsonl`
 
-Full-vocab vector files use token-id coordinates: index `v` corresponds to tokenizer token id `v`. `token_gap_vocab_vectors.jsonl` stores signed/absolute log-prob gap sum and mean vectors. `entropy_vocab_vectors.jsonl` stores `student_entropy` and `teacher_student_cross_entropy` sum and mean vectors.
+Full-vocab vector files use token-id coordinates: index `v` corresponds to tokenizer token id `v`. `token_gap_vocab_vectors.jsonl` stores signed/absolute log-prob gap sum and mean vectors. `token_gradient_vocab_vectors.jsonl` deduplicates selected token IDs and stores cumulative occurrence count plus configured-loss sum vectors for each step/domain/selection. `entropy_vocab_vectors.jsonl` stores `student_entropy` and `teacher_student_cross_entropy` sum and mean vectors.
 
 For detailed metric definitions, see [metrics_zh.md](metrics_zh.md). For config field explanations and common overrides, see [CONFIG_GUIDE.zh.md](CONFIG_GUIDE.zh.md).

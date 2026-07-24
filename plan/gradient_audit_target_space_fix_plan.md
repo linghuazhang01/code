@@ -305,7 +305,7 @@ After closure is confirmed:
 ### Required First Run
 
 ```text
-configs/mopd_formal_audit_grad_consistency_2gpu_b16_1step_smoke.yaml
+test_grad_configs/mopd_dynamic_weight_qwen4b_8b_aw2_fsdpsize2_tail_topp1_b16_4step_smoke.yaml
 ```
 
 Expected after Phase 1:

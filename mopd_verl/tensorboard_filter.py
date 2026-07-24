@@ -11,11 +11,12 @@ DIRECT_AUDIT_CATEGORIES = {
     "audit",
     "advantage",
     "cost",
-    "full_grad",
-    "full_grad_alignment",
-    "full_grad_closure",
-    "full_grad_contribution",
-    "full_grad_conflict",
+    "dynamic_weight",
+    "pre_reweight_full_grad",
+    "pre_reweight_full_grad_alignment",
+    "pre_reweight_full_grad_closure",
+    "pre_reweight_full_grad_contribution",
+    "pre_reweight_full_grad_conflict",
     "full_grad_cost",
     "full_grad_training_parity",
     "loss",
@@ -32,7 +33,6 @@ DIRECT_AUDIT_CATEGORIES = {
     "teacher",
     "entropy",
     "entropy_vocab_cosine",
-    "token_conflict",
     "token_gap",
     "token_gap_vocab_cosine",
     "token_grad",
@@ -52,6 +52,10 @@ CORE_DOMAIN_LOSS = {
     "sample_opd_loss_std",
     "sample_opd_loss_variance",
     "token_opd_loss_mean",
+    "token_opd_loss_p05",
+    "token_opd_loss_p50",
+    "token_opd_loss_p95",
+    "token_opd_loss_sum",
     "token_opd_loss_std",
     "token_opd_loss_variance",
 }
@@ -140,11 +144,24 @@ CORE_GLOBAL_LOSS = {
     "sample_opd_loss_std",
     "sample_opd_loss_variance",
     "token_opd_loss_mean",
+    "token_opd_loss_p05",
+    "token_opd_loss_p50",
+    "token_opd_loss_p95",
+    "token_opd_loss_sum",
     "token_opd_loss_std",
     "token_opd_loss_variance",
 }
 CORE_GLOBAL_OPTIMIZATION = {"learning_rate"}
-CORE_DOMAIN_TEACHER = {"teacher_confidence_mean", "teacher_student_gap_mean"}
+CORE_DOMAIN_TEACHER = {
+    "teacher_confidence_mean",
+    "teacher_student_gap_mean",
+    "teacher_student_gap_p05",
+    "teacher_student_gap_p50",
+    "teacher_student_gap_p95",
+    "teacher_student_gap_std",
+    "teacher_student_gap_sum",
+    "teacher_student_gap_variance",
+}
 CORE_TOKEN_GAP = {
     "gap_abs_mean",
     "gap_abs_p95",
@@ -182,6 +199,7 @@ CORE_DOMAIN_ENTROPY = {
     "cross_entropy_available",
     "entropy_distribution_available",
     "student_entropy_mean",
+    "student_entropy_p05",
     "student_entropy_p50",
     "student_entropy_p95",
     "student_entropy_std",
@@ -189,42 +207,18 @@ CORE_DOMAIN_ENTROPY = {
     "sum_teacher_entropy",
     "sum_teacher_student_cross_entropy",
     "teacher_entropy_mean",
+    "teacher_entropy_p05",
     "teacher_entropy_p50",
     "teacher_entropy_p95",
     "teacher_entropy_std",
     "teacher_student_cross_entropy_mean",
+    "teacher_student_cross_entropy_p05",
     "teacher_student_cross_entropy_p50",
     "teacher_student_cross_entropy_p95",
     "teacher_student_cross_entropy_std",
 }
-CORE_TOKEN_CONFLICT = {
-    "combined_diff_mass",
-    "combined_diff_mean",
-    "combined_diff_mass_frac",
-    "combined_diff_p95",
-    "combined_diff_max",
-    "opd_signal_abs_mean",
-    "proxy_mass",
-    "proxy_mean",
-    "proxy_mass_frac",
-    "student_teacher_diff_mass",
-    "student_teacher_diff_mean",
-    "student_teacher_diff_p95",
-    "student_teacher_diff_max",
-    "teacher_disagreement_mean",
-    "teacher_teacher_diff_mass",
-    "teacher_teacher_diff_mean",
-    "teacher_teacher_diff_mass_frac",
-    "teacher_teacher_diff_p95",
-    "teacher_teacher_diff_max",
-    "token_abs_opd_loss_mean",
-    "top1_teacher_diff_share",
-    "top10_teacher_diff_share",
-    "top1_token_share",
-    "top10_token_share",
-    "unique_token_count",
-}
 CORE_TOKEN_GRAD = {
+    "domain_token_count",
     "global_candidate_gap_mass",
     "global_candidate_gap_abs_mass",
     "global_candidate_loss_abs_mass",
@@ -235,6 +229,31 @@ CORE_TOKEN_GRAD = {
     "norm_max",
     "selected_sample_count",
     "selected_token_count",
+    "tail_fraction_configured",
+    "tail_grad_cos_to_domain",
+    "tail_grad_norm",
+    "tail_grad_norm_over_domain_norm",
+    "tail_grad_signed_projection_share",
+    "tail_token_count",
+    "tail_token_fraction",
+    "top_k_configured",
+    "top_k_token_count",
+    "top_k_token_fraction",
+    "top_p_fraction_configured",
+    "top_p_token_count",
+    "top_p_token_fraction",
+    "top_p1_grad_cos_to_domain",
+    "top_p1_grad_norm",
+    "top_p1_grad_norm_over_domain_norm",
+    "top_p1_grad_signed_projection_share",
+    "top_p1_token_count",
+    "top_p1_token_fraction",
+}
+CORE_DYNAMIC_WEIGHT = {
+    "applied_gradient_weight",
+    "bounded_target_gradient_weight",
+    "ema_grad_norm",
+    "weighted_grad_norm",
 }
 CORE_TOKEN_GRAD_CONFLICT = {
     "conflict_to_other_max",
@@ -290,7 +309,9 @@ CORE_TOKEN_GRAD_COST = {
 CORE_DOMAIN_REWARD = {"training_accuracy", "training_reward_mean"}
 CORE_DOMAIN_COVERAGE = {"duplicate_rate"}
 CORE_FULL_GRAD = {"grad_norm", "sample_count"}
-CORE_FULL_GRAD_ALIGNMENT = {"full_grad_cosine_domain_total"}
+CORE_FULL_GRAD_ALIGNMENT = {
+    "pre_reweight_full_grad_cosine_domain_total"
+}
 CORE_FULL_GRAD_CONTRIBUTION = {"signed_projection_share"}
 CORE_FULL_GRAD_TRAINING_PARITY = {
     "candidate_norm",
@@ -311,7 +332,7 @@ CORE_CONFLICT = {
     "conflict_magnitude_i_k",
     "cosine_invalid",
     "dot_available",
-    "full_grad_cosine_train_i_k",
+    "pre_reweight_full_grad_cosine_train_i_k",
     "shape_mismatch",
 }
 CORE_AUDIT = {
@@ -463,6 +484,8 @@ def _keep_global(category: str, metric: str, parts: list[str]) -> bool:
         )
     if category == "cost":
         return metric in CORE_GLOBAL_COST
+    if category == "dynamic_weight":
+        return metric in CORE_DYNAMIC_WEIGHT
     if category == "full_grad_cost":
         return metric in {
             "backward_seconds",
@@ -471,7 +494,7 @@ def _keep_global(category: str, metric: str, parts: list[str]) -> bool:
             "finish_mini_batch_seconds",
             "max_memory_allocated_gb",
         }
-    if category == "full_grad_closure":
+    if category == "pre_reweight_full_grad_closure":
         return metric in CORE_FULL_GRAD_CLOSURE
     if category == "full_grad_sequence":
         return (
@@ -480,9 +503,9 @@ def _keep_global(category: str, metric: str, parts: list[str]) -> bool:
         )
     if category == "token_grad_cost":
         return metric in CORE_TOKEN_GRAD_COST
-    if category == "full_grad_alignment":
+    if category == "pre_reweight_full_grad_alignment":
         return metric in CORE_FULL_GRAD_ALIGNMENT
-    if category == "full_grad_contribution":
+    if category == "pre_reweight_full_grad_contribution":
         return metric in CORE_FULL_GRAD_CONTRIBUTION
     if category == "full_grad_training_parity":
         return (
@@ -492,10 +515,12 @@ def _keep_global(category: str, metric: str, parts: list[str]) -> bool:
         )
     if category == "data":
         return metric in CORE_GLOBAL_DATA
-    if category == "full_grad_conflict":
+    if category == "pre_reweight_full_grad_conflict":
         return metric in CORE_CONFLICT
     if category == "loss":
         return metric in CORE_GLOBAL_LOSS
+    if category == "teacher":
+        return metric in CORE_DOMAIN_TEACHER
     if category == "token_gap_vocab_cosine":
         return metric in CORE_TOKEN_GAP_VOCAB_COSINE
     if category == "logp_vocab_cosine":
@@ -520,6 +545,8 @@ def _keep_domain(category: str, metric: str, parts: list[str]) -> bool:
         return metric in CORE_DOMAIN_DATA
     if category == "loss":
         return metric in CORE_DOMAIN_LOSS
+    if category == "dynamic_weight":
+        return metric in CORE_DYNAMIC_WEIGHT
     if category == "advantage":
         return metric in CORE_DOMAIN_ADVANTAGE
     if category == "length":
@@ -534,7 +561,7 @@ def _keep_domain(category: str, metric: str, parts: list[str]) -> bool:
         return metric in CORE_SAMPLE_GRAD_CLOSURE
     if category == "sample_grad_cost":
         return metric in CORE_SAMPLE_GRAD_COST
-    if category == "full_grad":
+    if category == "pre_reweight_full_grad":
         return metric in CORE_FULL_GRAD
     if category == "teacher":
         return metric in CORE_DOMAIN_TEACHER
@@ -542,8 +569,6 @@ def _keep_domain(category: str, metric: str, parts: list[str]) -> bool:
         return metric in CORE_TOKEN_GAP
     if category == "entropy":
         return metric in CORE_DOMAIN_ENTROPY
-    if category == "token_conflict":
-        return metric in CORE_TOKEN_CONFLICT
     if category == "token_grad":
         return metric in CORE_TOKEN_GRAD or metric.endswith(
             (
@@ -554,6 +579,9 @@ def _keep_domain(category: str, metric: str, parts: list[str]) -> bool:
                 "_gap_abs_mass_frac",
                 "_loss_abs_mass",
                 "_loss_abs_mass_frac",
+                "_grad_norm",
+                "_grad_norm_over_domain_norm",
+                "_grad_signed_projection_share",
                 "_non_none_grad_count",
                 "_none_grad_count",
                 "_param_count",

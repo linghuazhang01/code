@@ -198,7 +198,7 @@ audit:
   logp_vocab_per_occurrence_mean_vector_enabled: true
   logp_abs_vocab_per_occurrence_mean_vector_enabled: true
   entropy_vocab_per_occurrence_mean_vector_enabled: true
-  entropy_enabled: false
+  entropy_enabled: true
   entropy_freq_steps: 1
   entropy_vocab_vector_enabled: true
   entropy_vocab_vector_freq_steps: 1
@@ -211,19 +211,28 @@ audit:
   logp_vector_freq_steps: 1
   logp_abs_vector_enabled: true
   logp_abs_vector_freq_steps: 1
-  token_conflict_enabled: false
-  token_conflict_freq_steps: 1
-  token_conflict_top_k: null
-  token_gradient_enabled: false
-  token_gradient_freq_steps: 1
+  token_gradient_enabled: true
+  token_gradient_freq_steps: 4
+  token_gradient_tail_enabled: true
+  token_gradient_tail_fraction: 0.10
+  token_gradient_tail_min_tokens: 1
   token_gradient_gap_selection_enabled: false
   token_gradient_gap_abs_selection_enabled: false
-  token_gradient_loss_abs_selection_enabled: false
-  token_gradient_top_k: 50
+  token_gradient_loss_abs_selection_enabled: true
+  token_gradient_top_k: null
+  token_gradient_top_p_enabled: true
   token_gradient_top_p: 1.0
+  token_gradient_log_tokens_jsonl_enabled: true
   token_gradient_strict_grad_restore: false
   token_gradient_backward_recompute_enabled: false
   token_gradient_backward_sync_enabled: false
+  dynamic_domain_loss_weighting_enabled: false
+  dynamic_domain_loss_weighting_freq_steps: 4
+  dynamic_domain_loss_weighting_ema_beta: 0.90
+  dynamic_domain_loss_weighting_weight_ema_beta: 0.90
+  dynamic_domain_loss_weighting_alpha: 0.50
+  dynamic_domain_loss_weighting_min: 0.3333333333333333
+  dynamic_domain_loss_weighting_max: 3.0
   gradient_fingerprint_enabled: false
   gradient_fingerprint_freq_steps: 1
 

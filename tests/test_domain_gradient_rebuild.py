@@ -57,6 +57,63 @@ class DomainGradientConfigTests(unittest.TestCase):
                 }
             )
 
+    def test_tail_token_gradient_replay_is_supported(self) -> None:
+        config = DomainGradientConfig.from_meta(
+            {
+                "enabled": True,
+                "domain_gradient_enabled": True,
+                "domains": ["math", "code"],
+                "token_gradient_enabled": True,
+                "token_gradient_tail_fraction": 0.2,
+                "token_gradient_tail_min_tokens": 2,
+            }
+        )
+
+        self.assertTrue(config.enabled)
+        self.assertTrue(config.token_gradient_enabled)
+        self.assertTrue(config.token_gradient_tail_enabled)
+        self.assertEqual(config.token_gradient_tail_fraction, 0.2)
+        self.assertEqual(config.token_gradient_tail_min_tokens, 2)
+        self.assertFalse(config.token_gradient_top_p_enabled)
+
+    def test_partial_top_p_gradient_statistics_are_supported(self) -> None:
+        config = DomainGradientConfig.from_meta(
+            {
+                "enabled": True,
+                "domain_gradient_enabled": True,
+                "domains": ["math"],
+                "token_gradient_enabled": True,
+                "token_gradient_tail_enabled": False,
+                "token_gradient_top_p_enabled": True,
+                "token_gradient_top_k": None,
+                "token_gradient_top_p": 0.5,
+                "token_gradient_loss_abs_selection_enabled": True,
+                "token_gradient_vocab_size": 128,
+            }
+        )
+
+        self.assertEqual(config.token_gradient_top_p, 0.5)
+        self.assertIsNone(config.token_gradient_top_k)
+        self.assertEqual(config.token_gradient_vocab_size, 128)
+
+    def test_token_gradient_master_requires_an_enabled_subset(self) -> None:
+        from mopd_verl.verl_audit import MOPDAuditLogger
+
+        logger = MOPDAuditLogger(
+            {
+                "mopd_audit": {
+                    "enabled": True,
+                    "domains": ["math"],
+                    "token_gradient_enabled": True,
+                    "token_gradient_tail_enabled": False,
+                    "token_gradient_top_p_enabled": False,
+                    "token_gradient_freq_steps": 1,
+                }
+            }
+        )
+
+        self.assertFalse(logger.should_compute_token_gradient(1))
+
     def test_audit_frequency_emits_only_current_even_source_steps(self) -> None:
         from mopd_verl.verl_audit import MOPDAuditLogger
 
@@ -86,6 +143,37 @@ class DomainGradientConfigTests(unittest.TestCase):
         self.assertFalse(configs[0].enabled)
         self.assertFalse(configs[2].enabled)
 
+    def test_dynamic_weighting_keeps_actor_hook_active_between_updates(self) -> None:
+        from mopd_verl.verl_audit import MOPDAuditLogger
+
+        logger = MOPDAuditLogger(
+            {
+                "mopd_audit": {
+                    "enabled": True,
+                    "full_gradient_enabled": False,
+                    "domains": ["math", "code"],
+                    "dynamic_domain_loss_weighting_enabled": True,
+                    "dynamic_domain_loss_weighting_freq_steps": 4,
+                }
+            }
+        )
+
+        step_one_meta = logger.full_gradient_meta("train", 1)[
+            "mopd_full_gradient"
+        ]
+        step_four_meta = logger.full_gradient_meta("train", 4)[
+            "mopd_full_gradient"
+        ]
+        step_one = DomainGradientConfig.from_meta(step_one_meta)
+        step_four = DomainGradientConfig.from_meta(step_four_meta)
+
+        self.assertTrue(logger.should_compute_full_gradient(1))
+        self.assertFalse(step_one.enabled)
+        self.assertTrue(step_one.dynamic_weighting_enabled)
+        self.assertFalse(step_one.dynamic_weighting_update_enabled)
+        self.assertTrue(step_four.enabled)
+        self.assertTrue(step_four.dynamic_weighting_update_enabled)
+
 
 class DomainGradientSourceTests(unittest.TestCase):
     def test_training_and_audit_share_one_loss_builder(self) -> None:
@@ -104,7 +192,7 @@ class DomainGradientSourceTests(unittest.TestCase):
         self.assertNotIn("total_plus_domain", audit_source)
         self.assertNotIn("floating_response_gradient_mask", audit_source)
         self.assertIn("domain_vectors", audit_source)
-        self.assertIn("1 + domain_count", audit_source)
+        self.assertIn("+ domain_count", audit_source)
 
     def test_audit_total_uses_configured_storage_dtype(self) -> None:
         audit_source = (
@@ -203,6 +291,59 @@ class DomainGradientSourceTests(unittest.TestCase):
             actor_source,
         )
         self.assertIn("return_auxiliary_outputs=True", worker_source)
+
+    def test_configured_token_loss_reuses_the_production_forward(self) -> None:
+        trainer_source = (
+            ROOT / "third_party/verl/verl/trainer/ppo/ray_trainer.py"
+        ).read_text(encoding="utf-8")
+        actor_source = (
+            ROOT / "third_party/verl/verl/workers/actor/dp_actor.py"
+        ).read_text(encoding="utf-8")
+
+        update_index = trainer_source.index(
+            "actor_output = self.actor_rollout_wg.update_actor(batch)"
+        )
+        copy_index = trainer_source.index(
+            'configured_token_loss_key = "configured_token_loss"'
+        )
+        audit_index = trainer_source.index(
+            "self.mopd_audit_logger.log_training_step("
+        )
+
+        self.assertLess(update_index, copy_index)
+        self.assertLess(copy_index, audit_index)
+        self.assertIn("return_configured_token_loss=(", actor_source)
+        self.assertIn(
+            "mini_batch_configured_token_loss = restore_dynamic_batch(",
+            actor_source,
+        )
+        self.assertIn(
+            "configured_token_loss_epoch_batches",
+            actor_source,
+        )
+        self.assertIn(
+            'auxiliary_outputs["configured_token_loss_mask"]',
+            actor_source,
+        )
+        self.assertIn(
+            ").mean(dim=0)",
+            actor_source,
+        )
+
+    def test_dynamic_weighting_requires_full_actor_batch_replay(self) -> None:
+        actor_source = (
+            ROOT / "third_party/verl/verl/workers/actor/dp_actor.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "audit.config.dynamic_weighting_enabled "
+            "and len(mini_batches) != 1",
+            actor_source,
+        )
+        self.assertIn(
+            '"entire actor batch."',
+            actor_source,
+        )
 
     def test_patch_script_cannot_inject_retired_tracker_api(self) -> None:
         source = (ROOT / "scripts/apply_gopd_audit_patch.py").read_text(
@@ -313,6 +454,36 @@ class GradientGateTorchTests(unittest.TestCase):
         code = gradient(torch.tensor([0.0, 0.0, 1.0, 1.0]))
 
         torch.testing.assert_close(math + code, total, rtol=1e-6, atol=1e-7)
+
+    def test_fractional_gradient_gate_is_bitwise_identity_in_bfloat16(
+        self,
+    ) -> None:
+        try:
+            import torch
+            from mopd_verl.full_gradient.loss_support import (
+                gate_tensor_gradient,
+            )
+        except ModuleNotFoundError as exc:
+            self.skipTest(f"torch/verl is unavailable in this environment: {exc}")
+
+        values = torch.tensor(
+            [[-7.75, -0.125, 0.75], [1.5, 4.25, 15.5]],
+            dtype=torch.bfloat16,
+            requires_grad=True,
+        )
+        gate = torch.tensor(
+            [1.3425, 0.6575],
+            dtype=torch.float32,
+        )
+
+        gated_values = gate_tensor_gradient(values, gate)
+
+        self.assertTrue(torch.equal(gated_values, values))
+        gated_values.float().sum().backward()
+        expected_gradient = gate.to(dtype=torch.bfloat16).unsqueeze(-1).expand_as(
+            values
+        )
+        self.assertTrue(torch.equal(values.grad, expected_gradient))
 
     def test_boolean_response_mask_preserves_domain_gradient_gate(self) -> None:
         try:
@@ -438,6 +609,10 @@ class GradientGateTorchTests(unittest.TestCase):
             2e-2,
         )
         prefix = "global/full_grad_training_parity/audit_total_vs_training_total"
+        self.assertAlmostEqual(metrics[f"{prefix}/cosine"], 1.0)
+        self.assertAlmostEqual(metrics[f"{prefix}/norm_ratio"], 1.0)
+        self.assertAlmostEqual(metrics[f"{prefix}/projection_share"], 1.0)
+        self.assertAlmostEqual(metrics[f"{prefix}/diff_norm"], 0.0)
         self.assertLessEqual(metrics[f"{prefix}/rel_l2"], 1e-8)
         self.assertEqual(metrics[f"{prefix}/passed"], 1.0)
         self.assertLessEqual(compact_metrics[f"{prefix}/rel_l2"], 2e-2)

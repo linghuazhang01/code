@@ -115,6 +115,26 @@ def uses_topk_distill_loss(policy_loss_config: Any) -> bool:
     return distill_loss_builder(policy_loss_config) == DISTILL_LOSS_BUILDER_TOPK_KL
 
 
+def configured_distill_loss_name(policy_loss_config: Any) -> str:
+    """Return the per-token distillation loss represented by audit metrics."""
+
+    builder = distill_loss_builder(policy_loss_config)
+    name = (
+        resolved_topk_distill_mode(policy_loss_config)
+        if builder == DISTILL_LOSS_BUILDER_TOPK_KL
+        else builder
+    )
+    if builder == DISTILL_LOSS_BUILDER_POLICY_GRADIENT:
+        name = "policy_gradient_distillation_signal"
+    if (
+        bool(cfg_get(policy_loss_config, "teacher_prefix_enabled", False))
+        and teacher_prefix_loss_region(policy_loss_config)
+        != TEACHER_PREFIX_SUFFIX_ONLY
+    ):
+        return f"{name}+teacher_prefix_forward_kl"
+    return name
+
+
 def resolved_topk_distill_mode(policy_loss_config: Any) -> str:
     mode = distill_mode(policy_loss_config)
     if mode == CHOSEN_TOKEN_REVERSE_KL and bool(cfg_get(policy_loss_config, "topk_distill_enabled", False)):
@@ -302,8 +322,7 @@ def teacher_prefix_masks(
         suffix_mask = suffix_mask * response_mask
     if region == TEACHER_PREFIX_PREFIX_ONLY:
         suffix_mask = torch.zeros_like(response_mask)
-    active = bool(prefix_mask.detach().sum().item() > 0.0)
-    return prefix_loss_mask, suffix_mask, active
+    return prefix_loss_mask, suffix_mask, True
 
 
 def chosen_token_forward_kl_matrix(

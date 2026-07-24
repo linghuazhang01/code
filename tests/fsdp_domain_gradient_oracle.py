@@ -368,8 +368,10 @@ def main() -> None:
             float((parameter - gathered_parameters[0]).abs().max().item())
             for parameter in gathered_parameters[1:]
         )
-    closure_prefix = "global/full_grad_closure/domain_sum_vs_audit_total"
-    legacy_closure_prefix = "global/full_grad_closure/domain_sum_vs_training"
+    closure_prefix = (
+        "global/pre_reweight_full_grad_closure/"
+        "domain_sum_vs_pre_reweight_audit_total"
+    )
     parity_prefix = "global/full_grad_training_parity/audit_total_vs_training_total"
     total_norm_rel_error = abs(total_sq - analytic_total_sq) / max(
         analytic_total_sq,
@@ -432,10 +434,7 @@ def main() -> None:
     assert total_norm_rel_error <= args.tolerance
     assert compact_norm_rel_error <= args.bf16_tolerance
     assert metrics[f"{closure_prefix}/rel_l2"] <= args.tolerance
-    for key, value in metrics.items():
-        if key.startswith(f"{closure_prefix}/"):
-            suffix = key.removeprefix(closure_prefix)
-            assert metrics[f"{legacy_closure_prefix}{suffix}"] == value
+    assert not any("domain_sum_vs_training" in key for key in metrics)
     assert compact_metrics[f"{closure_prefix}/rel_l2"] <= args.bf16_tolerance
     assert compact_metrics["global/audit/gradient_correctness_storage_fp32"] == 0.0
     assert parity[f"{parity_prefix}/rel_l2"] <= args.tolerance

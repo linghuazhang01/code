@@ -28,6 +28,8 @@ class ActorMicroBatchLossResult:
     loss: torch.Tensor
     metrics: dict[str, Any]
     teacher_student_cross_entropy: torch.Tensor | None = None
+    configured_token_loss: torch.Tensor | None = None
+    configured_token_loss_mask: torch.Tensor | None = None
 
 
 ACTOR_LOSS_CONTRIBUTION_METRICS: Final[frozenset[str]] = frozenset(
@@ -224,7 +226,10 @@ def gate_tensor_gradient(
     gate = mask.to(device=value.device, dtype=value.dtype)
     while gate.ndim < value.ndim:
         gate = gate.unsqueeze(-1)
-    return value * gate + value.detach() * (1.0 - gate)
+    # Express the straight-through estimator around an exact zero residual.
+    # This keeps the forward tensor bitwise identical even in BF16 while the
+    # derivative with respect to ``value`` is scaled by ``gate``.
+    return value.detach() + (value - value.detach()) * gate
 
 
 def floating_response_gradient_mask(

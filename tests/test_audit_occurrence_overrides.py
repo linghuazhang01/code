@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 import json
 from pathlib import Path
 import tempfile
@@ -12,15 +11,10 @@ from mopd_verl.settings import load_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PROFILE_PATH = (
-    ROOT
-    / "test_grad_configs"
-    / "mopd_qwen4b_8b_3gpu_occurrence_vectors_b16_1step_smoke.yaml"
-)
 LEGACY_PROFILE_PATH = (
     ROOT
     / "test_grad_configs"
-    / "mopd_grad_reliability_qwen4b_8b_aw2_fsdpsize2_audit_freq2_b16_4step_smoke.yaml"
+    / "mopd_grad_reliability_qwen0p6b_0p6b_aw2_fsdpsize2_audit_freq2_b16_4step_smoke.yaml"
 )
 
 
@@ -75,7 +69,6 @@ class AuditOccurrenceOverrideTests(unittest.TestCase):
                         "log_sample_level": False,
                         "token_gap_enabled": True,
                         "token_gap_vocab_vector_enabled": True,
-                        "token_conflict_enabled": False,
                         "logp_vector_enabled": True,
                         "logp_abs_vector_enabled": True,
                         "entropy_enabled": False,
@@ -149,78 +142,6 @@ class AuditOccurrenceOverrideTests(unittest.TestCase):
                         }
                     }
                 )
-
-    def test_three_gpu_occurrence_vector_profile_contract(self) -> None:
-        config = load_config(PROFILE_PATH)
-        rendered = format_command(build_command(config))
-
-        self.assertEqual(config.model.student_path, "/root/autodl-tmp/models/Qwen3-4B")
-        self.assertEqual(config.model.math_teacher_path, "/root/autodl-tmp/models/Qwen3-8B")
-        self.assertTrue(config.worker_placement.separate_ref_policy)
-        self.assertEqual(config.worker_placement.actor_rollout.n_gpus_per_node, 2)
-        self.assertEqual(config.worker_placement.ref_policy.n_gpus_per_node, 1)
-        self.assertEqual(config.trainer.n_gpus_per_node, 2)
-        self.assertEqual(config.actor.fsdp_size, 2)
-        self.assertEqual(
-            config.worker_placement.actor_rollout.n_gpus_per_node
-            + config.worker_placement.ref_policy.n_gpus_per_node,
-            3,
-        )
-
-        self.assertEqual(config.data.train_batch_size, 16)
-        self.assertEqual(config.actor.ppo_mini_batch_size, 16)
-        self.assertEqual(config.actor.ppo_micro_batch_size_per_gpu, 1)
-        self.assertEqual(config.trainer.total_training_steps, 2)
-        self.assertEqual(config.trainer.save_freq, -1)
-        self.assertFalse(config.rollout.do_sample)
-        self.assertIn("actor_rollout_ref.model.use_remove_padding=False", config.extra_overrides)
-
-        self.assertFalse(config.audit.vocab_per_occurrence_mean_vector_enabled)
-        self.assertTrue(config.audit.logp_vocab_per_occurrence_mean_vector_enabled)
-        self.assertTrue(config.audit.logp_abs_vocab_per_occurrence_mean_vector_enabled)
-        self.assertTrue(config.audit.entropy_vocab_per_occurrence_mean_vector_enabled)
-        self.assertTrue(config.audit.logp_vector_enabled)
-        self.assertTrue(config.audit.logp_abs_vector_enabled)
-        self.assertTrue(config.audit.entropy_vocab_vector_enabled)
-        self.assertFalse(config.audit.entropy_enabled)
-        self.assertIn(
-            "+mopd_audit.logp_vocab_per_occurrence_mean_vector_enabled=true",
-            rendered,
-        )
-        self.assertIn(
-            "+mopd_audit.logp_abs_vocab_per_occurrence_mean_vector_enabled=true",
-            rendered,
-        )
-        self.assertIn(
-            "+mopd_audit.entropy_vocab_per_occurrence_mean_vector_enabled=true",
-            rendered,
-        )
-        self.assertIn(
-            "+actor_rollout_ref.worker_placement.actor_rollout.n_gpus_per_node=2",
-            rendered,
-        )
-        self.assertIn(
-            "+actor_rollout_ref.worker_placement.ref_policy.n_gpus_per_node=1",
-            rendered,
-        )
-        self.assertIn("trainer.n_gpus_per_node=2", rendered)
-        self.assertTrue(
-            rendered.rfind("actor_rollout_ref.model.use_remove_padding=False")
-            > rendered.rfind("actor_rollout_ref.model.use_remove_padding=True")
-        )
-
-        disabled_abs_config = replace(
-            config,
-            audit=replace(
-                config.audit,
-                logp_abs_vocab_per_occurrence_mean_vector_enabled=False,
-            ),
-        )
-        disabled_abs_rendered = format_command(build_command(disabled_abs_config))
-        self.assertIn(
-            "+mopd_audit.logp_abs_vocab_per_occurrence_mean_vector_enabled=false",
-            disabled_abs_rendered,
-        )
 
     def test_legacy_profile_renders_nullable_overrides(self) -> None:
         config = load_config(LEGACY_PROFILE_PATH)

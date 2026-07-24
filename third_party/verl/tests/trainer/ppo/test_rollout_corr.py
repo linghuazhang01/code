@@ -337,6 +337,81 @@ def test_mask_mode():
     print("   ✓ Mask mode correctly separates IS weights from rejection")
 
 
+def test_empty_sequence_rows_do_not_pollute_is_metrics_or_normalization():
+    """Ignore prefix-only rows that have no student suffix tokens."""
+
+    old_log_prob = torch.tensor(
+        [[-10.0, -10.0, -10.0], [-1.0, -1.0, -1.0]]
+    )
+    rollout_log_prob = torch.tensor(
+        [[0.0, 0.0, 0.0], [-2.0, -2.0, -2.0]]
+    )
+    response_mask = torch.tensor(
+        [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]]
+    )
+
+    _, _, token_metrics = compute_rollout_correction_and_rejection_mask(
+        old_log_prob=old_log_prob,
+        rollout_log_prob=rollout_log_prob,
+        response_mask=response_mask,
+        rollout_is="token",
+        rollout_is_threshold=2.0,
+        rollout_rs=None,
+    )
+    sequence_weights, _, sequence_metrics = (
+        compute_rollout_correction_and_rejection_mask(
+            old_log_prob=old_log_prob,
+            rollout_log_prob=rollout_log_prob,
+            response_mask=response_mask,
+            rollout_is="sequence",
+            rollout_is_threshold=2.0,
+            rollout_rs=None,
+            rollout_is_batch_normalize=True,
+        )
+    )
+    _, _, rejection_metrics = (
+        compute_rollout_correction_and_rejection_mask(
+            old_log_prob=old_log_prob,
+            rollout_log_prob=torch.tensor(
+                [[0.0, 0.0, 0.0], [-1.0, -1.0, -1.0]]
+            ),
+            response_mask=response_mask,
+            rollout_is=None,
+            rollout_rs="sequence",
+            rollout_rs_threshold=2.0,
+            rollout_rs_threshold_lower=0.5,
+        )
+    )
+
+    expected_weight = torch.exp(torch.tensor(1.0)).item()
+    assert token_metrics["rollout_corr/rollout_is_seq_mean"] == (
+        expected_weight
+    )
+    assert token_metrics["rollout_corr/rollout_is_seq_min"] == (
+        expected_weight
+    )
+    assert token_metrics["rollout_corr/rollout_is_seq_fraction_low"] == 0.0
+    assert token_metrics["rollout_corr/training_log_ppl"] == 1.0
+    assert token_metrics["rollout_corr/log_ppl_diff"] == -1.0
+    assert token_metrics["rollout_corr/ppl_ratio"] == (
+        torch.exp(torch.tensor(-1.0)).item()
+    )
+    assert token_metrics["rollout_corr/chi2_seq"] == (
+        torch.exp(torch.tensor(6.0)).item() - 1.0
+    )
+    assert sequence_metrics[
+        "rollout_corr/rollout_is_batch_norm_factor"
+    ] == 2.0
+    assert rejection_metrics["rollout_corr/rollout_rs_seq_mean"] == 1.0
+    assert rejection_metrics[
+        "rollout_corr/rollout_rs_seq_masked_fraction"
+    ] == 0.0
+    assert torch.equal(
+        sequence_weights.batch["rollout_is_weights"][0],
+        torch.zeros(3),
+    )
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("Rollout Correction Test Suite")

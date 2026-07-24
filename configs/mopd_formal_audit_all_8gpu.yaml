@@ -163,9 +163,6 @@ audit:
   topk_teacher_student_cross_entropy_temperature: 1.0
   logp_abs_vector_enabled: true
   logp_abs_vector_freq_steps: 1
-  token_conflict_enabled: true
-  token_conflict_freq_steps: 1
-  token_conflict_top_k: null
   token_gradient_enabled: false
   token_gradient_freq_steps: 1
   token_gradient_gap_selection_enabled: true
