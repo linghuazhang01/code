@@ -409,6 +409,102 @@ class MOPDProfileTests(unittest.TestCase):
             rendered,
         )
 
+    def test_five_gpu_topk32_reweight_smoke_matches_production_semantics(
+        self,
+    ) -> None:
+        config_path = (
+            Path(__file__).resolve().parents[1]
+            / "test_grad_configs"
+            / (
+                "mopd_topk32_reweight_qwen0p6b_0p6b_aw4_fsdpsize2_"
+                "topp0p1_b24_5step_5gpu_smoke.yaml"
+            )
+        )
+        config = load_config(config_path)
+        rendered = format_command(build_command(config))
+
+        self.assertEqual(
+            config.model.student_path,
+            "/root/autodl-tmp/models/Qwen3-0.6B",
+        )
+        self.assertEqual(
+            config.model.primary_teacher_path,
+            "/root/autodl-tmp/models/Qwen3-0.6B",
+        )
+        self.assertEqual(config.data.train_batch_size, 24)
+        self.assertEqual(config.actor.ppo_mini_batch_size, 24)
+        self.assertEqual(config.data.max_response_length, 512)
+        domain_count = len(config.data.domain_sampling_weights)
+        self.assertEqual(
+            config.data.train_batch_size % (4 * domain_count),
+            0,
+        )
+        self.assertEqual(config.actor.distill_loss_builder, "topk_kl")
+        self.assertEqual(
+            config.actor.distill_mode,
+            "topk_renormalized_reverse_kl",
+        )
+        self.assertTrue(config.actor.topk_distill_enabled)
+        self.assertEqual(config.actor.topk_distill_k, 32)
+        self.assertEqual(config.actor.fsdp_size, 2)
+        self.assertEqual(config.rollout.tensor_model_parallel_size, 2)
+        self.assertTrue(config.worker_placement.separate_ref_policy)
+        self.assertEqual(
+            config.worker_placement.actor_rollout.n_gpus_per_node,
+            4,
+        )
+        self.assertEqual(
+            config.worker_placement.ref_policy.n_gpus_per_node,
+            1,
+        )
+        self.assertEqual(config.trainer.n_gpus_per_node, 4)
+        self.assertEqual(config.audit.full_gradient_freq_steps, 4)
+        self.assertTrue(config.audit.token_gradient_enabled)
+        self.assertEqual(config.audit.token_gradient_freq_steps, 4)
+        self.assertFalse(config.audit.token_gradient_tail_enabled)
+        self.assertIsNone(config.audit.token_gradient_top_k)
+        self.assertTrue(config.audit.token_gradient_top_p_enabled)
+        self.assertEqual(config.audit.token_gradient_top_p, 0.1)
+        self.assertTrue(config.audit.dynamic_domain_loss_weighting_enabled)
+        self.assertEqual(
+            config.audit.dynamic_domain_loss_weighting_freq_steps,
+            4,
+        )
+        self.assertEqual(
+            config.audit.dynamic_domain_loss_weighting_min,
+            1.0 / 3.0,
+        )
+        self.assertEqual(
+            config.audit.dynamic_domain_loss_weighting_max,
+            3.0,
+        )
+        self.assertEqual(config.trainer.total_training_steps, 5)
+        self.assertIn(
+            "custom_reward_function.path=mopd_verl/mixed_reward.py",
+            config.extra_overrides,
+        )
+        self.assertIn(
+            "custom_reward_function.name=compute_score",
+            config.extra_overrides,
+        )
+        self.assertIn("trainer.resume_mode=disable", config.extra_overrides)
+        self.assertIn(
+            "+actor_rollout_ref.worker_placement.actor_rollout."
+            "n_gpus_per_node=4",
+            rendered,
+        )
+        self.assertIn(
+            "+actor_rollout_ref.worker_placement.ref_policy."
+            "n_gpus_per_node=1",
+            rendered,
+        )
+        self.assertIn("+mopd_audit.token_gradient_top_k=null", rendered)
+        self.assertIn("+mopd_audit.token_gradient_top_p=0.1", rendered)
+        self.assertIn(
+            "+mopd_audit.dynamic_domain_loss_weighting_freq_steps=4",
+            rendered,
+        )
+
     def test_feature_coverage_smoke_exercises_partial_top_p_prefix_and_ppo2(
         self,
     ) -> None:

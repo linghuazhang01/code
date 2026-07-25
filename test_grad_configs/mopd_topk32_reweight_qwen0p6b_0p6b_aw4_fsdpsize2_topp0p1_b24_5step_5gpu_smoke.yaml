@@ -1,30 +1,21 @@
-# Eight-GPU math+code+science Top-32 training profile for Qwen3-4B student distillation from
-# Qwen3-30B-A3B-Instruct-2507.
+# Five-GPU production-semantic smoke derived from the Qwen3-4B/30B-A3B
+# Top-32 reweight training profile.
 #
-# Physical GPU layout:
-# - actor/rollout pool: 6 GPUs for Qwen3-4B student + vLLM
-# - ref/teacher pool: 2 GPUs for Qwen3-30B-A3B-Instruct-2507
+# Physical placement:
+# - 4 GPUs for the Qwen3-0.6B actor/rollout (FSDP size 2, rollout TP 2);
+# - 1 GPU for the shared Qwen3-0.6B teacher/ref policy.
 #
-# Keep trainer.n_gpus_per_node equal to the actor/rollout pool size, because
-# verl uses trainer.* as the actor DP world size. Launch with all eight GPUs, e.g.
-# GPU_IDS=0,1,2,3,4,5,6,7.
-#
-# Enabled audit families:
-# - math/code/science full gradient audit
-# - token-gap/logp vectors, including full-vocab token-id vectors
-# - student-entropy full-vocab vectors
-# - Top-p loss-mass token gradients
-# - bounded EMA dynamic domain loss weighting
-#
-# Disabled audit families:
-# - sample gradients
-# - token-gradient tail and fixed Top-k selections
-# - per-occurrence mean vocab vectors and token-conflict diagnostics
+# Diagnostic intent:
+# - preserve teacher-support Top-k32 renormalized reverse KL;
+# - run full/domain and Top-p=0.1 loss-mass token gradients at step 4;
+# - update bounded EMA domain weights in [1/3, 3] at step 4;
+# - run step 5 with the persisted weights to verify they remain active between
+#   update steps.
 
 runtime:
   python_bin: python
   verl_module: verl.trainer.main_ppo
-  wandb_mode: online
+  wandb_mode: disabled
   wandb_entity: null
   env_file: .env.local
   used_model: no_api
@@ -45,36 +36,30 @@ data:
   load_parquet_direct: true
   val_files:
     - data/eval_data/math/AIME24/test.parquet
-    - data/eval_data/math/AIME25/test.parquet
-    - data/eval_data/math/HMMT25Feb/test.parquet
-    - data/eval_data/math/HMMT25Nov/test.parquet
     - data/eval_data/code/HumanEvalPlus/test.parquet
-    - data/eval_data/code/MBPPPlus/test.parquet
-    # Prepare with scripts/prepare_m2rl_eval_data.sh.
     - data/eval_data/science/GPQA/test.parquet
-    # - data/eval_data/code/LiveCodeBench/test.parquet
-  # 504 = 6 actor GPUs x 3 domains x 28 samples.
-  train_batch_size: 504
+  # 24 = 4 actor GPUs x 3 domains x 2 samples.
+  train_batch_size: 24
+  val_batch_size: 24
   max_prompt_length: 2048
-  max_response_length: 16384
-  val_batch_size: 1024
+  max_response_length: 512
   filter_overlong_prompts: true
   truncation: error
-  shuffle: true
+  shuffle: false
   validation_shuffle: false
   seed: 42
   return_raw_chat: true
   enable_thinking: false
 
 model:
-  student_path: ../models/Qwen3-4B
+  student_path: /root/autodl-tmp/models/Qwen3-0.6B
   student_base_path: null
-  math_teacher_path: ../models/Qwen3-30B-A3B-Instruct-2507
-  code_teacher_path: ../models/Qwen3-30B-A3B-Instruct-2507
+  math_teacher_path: /root/autodl-tmp/models/Qwen3-0.6B
+  code_teacher_path: /root/autodl-tmp/models/Qwen3-0.6B
   domain_teacher_paths:
-    math: ../models/Qwen3-30B-A3B-Instruct-2507
-    code: ../models/Qwen3-30B-A3B-Instruct-2507
-    science: ../models/Qwen3-30B-A3B-Instruct-2507
+    math: /root/autodl-tmp/models/Qwen3-0.6B
+    code: /root/autodl-tmp/models/Qwen3-0.6B
+    science: /root/autodl-tmp/models/Qwen3-0.6B
   teacher_model_device: gpu
   attn_implementation: flash_attention_2
 
@@ -95,17 +80,17 @@ actor:
   topk_distill_loss_weight: 1.0
   topk_distill_logprob_chunk_size: 16
   topk_distill_logprob_mode: sparse
-  ppo_mini_batch_size: 504
+  ppo_mini_batch_size: 24
   ppo_micro_batch_size_per_gpu: 1
   use_kl_loss: true
   kl_loss_coef: 0
   kl_loss_type: low_var_kl
   entropy_coeff: 0
-  ppo_max_token_len_per_gpu: 32768
+  ppo_max_token_len_per_gpu: 4096
   gradient_checkpointing: true
   param_offload: true
   optimizer_offload: true
-  fsdp_size: 1
+  fsdp_size: 2
   use_dynamic_bsz: false
 
 rollout:
@@ -114,14 +99,14 @@ rollout:
   tensor_model_parallel_size: 2
   name: vllm
   mode: sync
-  gpu_memory_utilization: 0.6
+  gpu_memory_utilization: 0.45
   enforce_eager: true
   enable_chunked_prefill: false
   n: 1
-  max_num_batched_tokens: 32768
-  max_model_len: 18432
+  max_num_batched_tokens: 4096
+  max_model_len: 3072
   max_num_seqs: 24
-  do_sample: true
+  do_sample: false
   temperature: 1.0
   top_p: 1.0
   val_n: 1
@@ -144,15 +129,15 @@ extra_overrides:
 worker_placement:
   separate_ref_policy: true
   actor_rollout:
-    n_gpus_per_node: 6
+    n_gpus_per_node: 4
     nnodes: 1
   ref_policy:
-    n_gpus_per_node: 2
+    n_gpus_per_node: 1
     nnodes: 1
 
 audit:
   enabled: true
-  output_dir: audit/qwen4b_30b_a3b_instruct_2507_math_code_science_topk32_reweight
+  output_dir: audit/mopd-topk32-reweight-qwen0p6b-0p6b-aw4-fsdpsize2-topp0p1-b24-5step-5gpu-smoke
   domains:
     - math
     - code
@@ -224,7 +209,7 @@ audit:
   token_gradient_loss_abs_selection_enabled: true
   token_gradient_top_k: null
   token_gradient_top_p_enabled: true
-  token_gradient_top_p: 0.05
+  token_gradient_top_p: 0.1
   token_gradient_log_tokens_jsonl_enabled: true
   token_gradient_strict_grad_restore: false
   token_gradient_backward_recompute_enabled: false
@@ -239,42 +224,24 @@ audit:
   gradient_fingerprint_enabled: false
   gradient_fingerprint_freq_steps: 1
 
-paper_eval:
-  enabled: false
-  script_path: eval/scripts/run_paper_eval_suite.sh
-  model_path: null
-  output_dir: eval_outputs/paper_suite/qwen4b_30b_a3b_instruct_2507_math_code_science_topk32_reweight
-  datasets:
-    - aime24
-    - aime25
-    - hmmt25_feb
-    - hmmt25_nov
-    - humaneval_plus
-    - mbpp_plus
-    - lcb
-  run_on_initial_validation: true
-  evaluate_current_checkpoint: true
-  fail_on_error: false
-  timeout_seconds: 0
-
 trainer:
   project_name: MOPD
-  experiment_name: qwen4b-from-30b-a3b-instruct-2507-math-code-science-topk32-reweight
-  logger: '["console","tensorboard","wandb"]'
-  n_gpus_per_node: 6
+  experiment_name: mopd-topk32-reweight-qwen0p6b-0p6b-aw4-fsdpsize2-topp0p1-b24-5step-5gpu-smoke
+  logger: '["console","tensorboard"]'
+  n_gpus_per_node: 4
   nnodes: 1
-  save_freq: 5
+  save_freq: -1
   test_freq: -1
-  total_epochs: 3
-  total_training_steps: 200
-  default_local_dir: checkpoints/MOPD/qwen4b-from-30b-a3b-instruct-2507-math-code-science-topk32-reweight
+  total_epochs: 1
+  total_training_steps: 5
+  default_local_dir: checkpoints/MOPD/mopd-topk32-reweight-qwen0p6b-0p6b-aw4-fsdpsize2-topp0p1-b24-5step-5gpu-smoke
   critic_warmup: 0
   val_before_train: false
-  log_val_generations: 10
-  max_actor_ckpt_to_keep: 4
+  log_val_generations: 0
+  max_actor_ckpt_to_keep: 1
   max_critic_ckpt_to_keep: 1
 
 ray_kwargs:
   ray_init:
     include_dashboard: false
-    num_cpus: 24
+    num_cpus: 32

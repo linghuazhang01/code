@@ -24,6 +24,7 @@ launcher、测试和 regression prompt 均直接引用本目录。
 |---|---:|---:|---:|---:|---|
 | `mopd_dynamic_weight_qwen0p6b_0p6b_aw2_fsdpsize2_tail_topp1_b16_4step_smoke.yaml` | 2 | 2 | 3 | 4 | 在 math、code、science 三个 domain 上验证 `[1/3, 3]` bounded applied-weight EMA，以及每个 domain 内按 `abs(configured token loss)` 排序的低 loss 15% mass、Top-p=1 gradient；Top-k replay 关闭，并记录 token JSONL |
 | `mopd_feature_coverage_qwen0p6b_0p6b_aw2_fsdpsize2_top_partial_prefix_ppo2_b8_2step_smoke.yaml` | 2 | 2 | 3 | 2 | 验证 Top-only、partial Top-p=0.5、teacher-prefix/suffix active mask，以及两次 PPO epoch 的 configured token-loss 平均 |
+| `mopd_topk32_reweight_qwen0p6b_0p6b_aw4_fsdpsize2_topp0p1_b24_5step_5gpu_smoke.yaml` | 4 | 2 | 5 | 5 | 按正式 Top-32 reweight 配置验证 4+1 GPU placement、rollout TP=2、step 4 的 Top-p=0.1/full-gradient/bounded-EMA 更新，以及 step 5 继续应用已更新权重 |
 
 ## 文件与 SHA-256
 
@@ -35,6 +36,7 @@ cf7775e904ac2c9c7f7be78f7dadb144ad2bd1edcd25a1b11ecde4fadb75ebce  mopd_grad_reli
 ae4d46cbf8c44251ad8e3fc4e0ffde78257d44ffb8b72632a1b2d755264cd4b4  mopd_grad_reliability_qwen0p6b_0p6b_aw4_fsdpsize2_audit_off_b16_4step_smoke.yaml
 caa8760ce8c1644a270c41ef322ac7584b826a9babd974e8ec643641a1f5e114  mopd_dynamic_weight_qwen0p6b_0p6b_aw2_fsdpsize2_tail_topp1_b16_4step_smoke.yaml
 cd71a11a76e3171213afe5c1ea475e741836c88198ec6c94c29d9ccfff0cab62  mopd_feature_coverage_qwen0p6b_0p6b_aw2_fsdpsize2_top_partial_prefix_ppo2_b8_2step_smoke.yaml
+def62780e628f5262498a93daeb3d91853a66213bd967b617c5b32cdd98db879  mopd_topk32_reweight_qwen0p6b_0p6b_aw4_fsdpsize2_topp0p1_b24_5step_5gpu_smoke.yaml
 ```
 
 以上 hash 对应本目录的 canonical 文件。后续修改配置时，必须同时更新 hash、对应
