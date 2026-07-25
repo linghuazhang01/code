@@ -231,9 +231,9 @@ audit:
   token_gradient_backward_sync_enabled: false
   dynamic_domain_loss_weighting_enabled: true
   dynamic_domain_loss_weighting_freq_steps: 4
-  dynamic_domain_loss_weighting_ema_beta: 0.90
-  dynamic_domain_loss_weighting_weight_ema_beta: 0.90
-  dynamic_domain_loss_weighting_alpha: 0.50
+  dynamic_domain_loss_weighting_ema_beta: 0.70
+  dynamic_domain_loss_weighting_weight_ema_beta: 0.50
+  dynamic_domain_loss_weighting_alpha: 0.75
   dynamic_domain_loss_weighting_min: 0.3333333333333333
   dynamic_domain_loss_weighting_max: 3.0
   gradient_fingerprint_enabled: false
