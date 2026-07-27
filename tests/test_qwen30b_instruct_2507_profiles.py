@@ -270,7 +270,7 @@ class Qwen30BInstruct2507ProfileTests(unittest.TestCase):
                         config.audit.token_gradient_tail_min_tokens,
                         1,
                     )
-                    self.assertTrue(config.audit.token_gradient_top_p_enabled)
+                    self.assertFalse(config.audit.token_gradient_top_p_enabled)
                     self.assertIsNone(config.audit.token_gradient_top_k)
                     self.assertTrue(
                         config.audit.token_gradient_log_tokens_jsonl_enabled
@@ -319,7 +319,7 @@ class Qwen30BInstruct2507ProfileTests(unittest.TestCase):
                         rendered,
                     )
                     self.assertIn(
-                        "+mopd_audit.token_gradient_top_p_enabled=true",
+                        "+mopd_audit.token_gradient_top_p_enabled=false",
                         rendered,
                     )
                     self.assertIn(

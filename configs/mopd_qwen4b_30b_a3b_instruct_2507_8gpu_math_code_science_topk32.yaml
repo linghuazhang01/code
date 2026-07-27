@@ -13,9 +13,10 @@
 # - math/code/science full gradient audit
 # - token-gap/logp vectors, including full-vocab token-id vectors
 # - student-entropy full-vocab vectors
+# - tail-selected token gradients (10% loss mass)
 #
 # Disabled audit families:
-# - token gradients
+# - token-gradient Top-P/Top-K selection
 # - sample gradients
 # - entropy distribution/scalars and token-conflict diagnostics
 
@@ -220,7 +221,7 @@ audit:
   token_gradient_gap_abs_selection_enabled: false
   token_gradient_loss_abs_selection_enabled: true
   token_gradient_top_k: null
-  token_gradient_top_p_enabled: true
+  token_gradient_top_p_enabled: false
   token_gradient_top_p: 1.0
   token_gradient_log_tokens_jsonl_enabled: true
   token_gradient_strict_grad_restore: false
