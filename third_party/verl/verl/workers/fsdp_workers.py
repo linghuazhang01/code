@@ -43,6 +43,7 @@ except ImportError:
     from torch.distributed._tensor import DTensor
 
 import verl.utils.torch_functional as verl_F
+from mopd_verl.reproducibility import derive_seed
 from verl import DataProto
 from verl.models.transformers.monkey_patch import apply_monkey_patch
 from verl.single_controller.base import Worker
@@ -618,7 +619,8 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         # 3. init trainer and rollout random states
         self.torch_random_states = get_torch_device().get_rng_state()
         gen_dp_rank = rollout_device_mesh["dp"].get_local_rank()
-        get_torch_device().manual_seed(gen_dp_rank + 1000)  # make sure all tp ranks have the same random states
+        rollout_seed = int(self.config.rollout.get("seed", 0))
+        get_torch_device().manual_seed(derive_seed(rollout_seed, gen_dp_rank))
         self.gen_random_states = get_torch_device().get_rng_state()
         get_torch_device().set_rng_state(self.torch_random_states)
 

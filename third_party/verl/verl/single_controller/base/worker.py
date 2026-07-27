@@ -171,6 +171,10 @@ class Worker(WorkerHelper):
         self._rank = rank
         self._world_size = world_size
 
+        from mopd_verl.reproducibility import seed_worker_from_environment
+
+        seed_worker_from_environment(rank)
+
         master_addr = os.environ["MASTER_ADDR"]
         master_port = os.environ["MASTER_PORT"]
 

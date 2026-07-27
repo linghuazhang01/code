@@ -11,6 +11,7 @@ import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from mopd_verl.reproducibility import GLOBAL_SEED_ENV, PYTHON_HASH_SEED_ENV
 from mopd_verl.settings import MOPDConfig, WorkerPoolPlacementConfig, load_config
 
 
@@ -373,6 +374,7 @@ def build_overrides(config: MOPDConfig) -> list[str]:
         f"actor_rollout_ref.rollout.n={rollout.n}",
         f"actor_rollout_ref.rollout.max_num_batched_tokens={rollout.max_num_batched_tokens}",
         f"actor_rollout_ref.rollout.max_num_seqs={rollout.max_num_seqs}",
+        f"actor_rollout_ref.rollout.seed={rollout.seed}",
         f"actor_rollout_ref.rollout.do_sample={_bool(rollout.do_sample)}",
         f"actor_rollout_ref.rollout.temperature={rollout.temperature}",
         f"actor_rollout_ref.rollout.top_p={rollout.top_p}",
@@ -388,6 +390,7 @@ def build_overrides(config: MOPDConfig) -> list[str]:
         "actor_rollout_ref.ref.fsdp_config.model_dtype=bfloat16",
         "algorithm.use_kl_in_reward=False",
         "reward_model.reward_manager=naive",
+        f"+trainer.seed={trainer.seed}",
         f"trainer.critic_warmup={trainer.critic_warmup}",
         f"trainer.val_before_train={_bool(trainer.val_before_train)}",
         f"trainer.logger={trainer.logger}",
@@ -470,6 +473,8 @@ def run_command(command: Sequence[str], config: MOPDConfig) -> int:
         env.setdefault(key, value)
     env.setdefault("PYTHONUNBUFFERED", "1")
     env.setdefault("PYTHONINTMAXSTRDIGITS", "0")
+    env[GLOBAL_SEED_ENV] = str(config.trainer.seed)
+    env[PYTHON_HASH_SEED_ENV] = str(config.trainer.seed)
     if config.runtime.wandb_entity is not None and "WANDB_ENTITY" not in shell_env:
         env["WANDB_ENTITY"] = config.runtime.wandb_entity
     env.setdefault("WANDB_MODE", config.runtime.wandb_mode)

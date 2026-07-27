@@ -101,6 +101,9 @@ do_sample: True
 # number of responses (i.e. num sample times). > 1 for grpo
 n: 1
 
+# Random seed used by the rollout inference engine.
+seed: 0
+
 # Whether rollout samples a teacher prefix before the student suffix
 teacher_prefix_sampling_enabled: false
 

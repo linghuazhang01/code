@@ -256,6 +256,7 @@ class PaperEvalConfig:
 class TrainerConfig:
     project_name: str = "on-policy-distillation"
     experiment_name: str = "Qwen3-4B-Non-Thinking-Multi-Teacher-Distill-ExOPD"
+    seed: int = 42
     logger: str = '["console","wandb"]'
     n_gpus_per_node: int = 8
     nnodes: int = 1

@@ -162,6 +162,12 @@ class Qwen30BInstruct2507ProfileTests(unittest.TestCase):
                 self.assertGreaterEqual(config.actor.ppo_max_token_len_per_gpu, 18432)
                 self.assertTrue(config.rollout.do_sample)
                 self.assertGreater(config.rollout.temperature, 0.0)
+                self.assertEqual(config.trainer.seed, 42)
+                self.assertEqual(config.data.seed, 42)
+                self.assertEqual(config.rollout.seed, 42)
+                self.assertIn("+trainer.seed=42", rendered)
+                self.assertIn("data.seed=42", rendered)
+                self.assertIn("actor_rollout_ref.rollout.seed=42", rendered)
                 self.assertGreaterEqual(
                     config.rollout.max_model_len or 0,
                     config.data.max_prompt_length + config.data.max_response_length,

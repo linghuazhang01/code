@@ -121,6 +121,7 @@ class RolloutConfig(BaseConfig):
     top_p: float = 1.0
     do_sample: bool = True
     n: int = 1
+    seed: int = 0
 
     teacher_prefix_sampling_enabled: bool = False
     teacher_prefix_length: int = 1024

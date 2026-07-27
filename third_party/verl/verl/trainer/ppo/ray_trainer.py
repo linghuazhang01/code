@@ -30,6 +30,8 @@ from typing import Optional
 import numpy as np
 import ray
 import torch
+
+from mopd_verl.reproducibility import derive_seed
 from mopd_verl.teacher_prefix import (
     build_dataset_teacher_prefix,
     build_student_suffix_prompts,
@@ -502,6 +504,11 @@ class RayPPOTrainer:
             collate_fn = default_collate_fn
 
         num_workers = self.config.data["dataloader_num_workers"]
+        data_seed = int(self.config.data.get("seed", 0))
+        train_dataloader_generator = torch.Generator()
+        train_dataloader_generator.manual_seed(derive_seed(data_seed))
+        val_dataloader_generator = torch.Generator()
+        val_dataloader_generator.manual_seed(derive_seed(data_seed, 1))
 
         if train_batch_sampler is not None:
             self.train_dataloader = StatefulDataLoader(
@@ -509,6 +516,7 @@ class RayPPOTrainer:
                 batch_sampler=train_batch_sampler,
                 num_workers=num_workers,
                 collate_fn=collate_fn,
+                generator=train_dataloader_generator,
             )
         else:
             self.train_dataloader = StatefulDataLoader(
@@ -518,6 +526,7 @@ class RayPPOTrainer:
                 drop_last=True,
                 collate_fn=collate_fn,
                 sampler=train_sampler,
+                generator=train_dataloader_generator,
             )
 
         val_batch_size = self.config.data.val_batch_size  # Prefer config value if set
@@ -531,6 +540,7 @@ class RayPPOTrainer:
             shuffle=self.config.data.get("validation_shuffle", True),
             drop_last=False,
             collate_fn=collate_fn,
+            generator=val_dataloader_generator,
         )
 
         assert len(self.train_dataloader) >= 1, "Train dataloader is empty!"

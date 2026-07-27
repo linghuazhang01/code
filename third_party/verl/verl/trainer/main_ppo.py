@@ -22,6 +22,7 @@ import hydra
 import ray
 from omegaconf import OmegaConf
 
+from mopd_verl.reproducibility import GLOBAL_SEED_ENV, PYTHON_HASH_SEED_ENV, seed_everything
 from verl.experimental.dataset.sampler import AbstractSampler
 from verl.trainer.constants_ppo import get_ppo_ray_runtime_env
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
@@ -99,6 +100,15 @@ def run_ppo(config, task_runner_class=None) -> None:
                 model paths, and training hyperparameters.
         task_runner_class: For recipe to change TaskRunner.
     """
+    global_seed = int(config.trainer.get("seed", 42))
+    seed_everything(global_seed)
+    seed_runtime_env = {
+        "env_vars": {
+            GLOBAL_SEED_ENV: str(global_seed),
+            PYTHON_HASH_SEED_ENV: str(global_seed),
+        }
+    }
+
     # Check if Ray is not initialized
     if not ray.is_initialized():
         # Initialize Ray with a local cluster configuration
@@ -115,7 +125,7 @@ def run_ppo(config, task_runner_class=None) -> None:
             runtime_env_vars["TRANSFER_QUEUE_ENABLE"] = "1"
             runtime_env_kwargs["env_vars"] = runtime_env_vars
 
-        runtime_env = OmegaConf.merge(default_runtime_env, runtime_env_kwargs)
+        runtime_env = OmegaConf.merge(default_runtime_env, runtime_env_kwargs, seed_runtime_env)
         ray_init_kwargs = OmegaConf.create({**ray_init_kwargs, "runtime_env": runtime_env})
         print(f"ray init kwargs: {ray_init_kwargs}")
         ray.init(**OmegaConf.to_container(ray_init_kwargs))
@@ -137,9 +147,12 @@ def run_ppo(config, task_runner_class=None) -> None:
         nsight_options = OmegaConf.to_container(
             config.global_profiler.global_tool_config.nsys.controller_nsight_options
         )
-        runner = task_runner_class.options(runtime_env={"nsight": nsight_options}).remote()
+        task_runtime_env = OmegaConf.merge(seed_runtime_env, {"nsight": nsight_options})
+        runner = task_runner_class.options(
+            runtime_env=OmegaConf.to_container(task_runtime_env)
+        ).remote()
     else:
-        runner = task_runner_class.remote()
+        runner = task_runner_class.options(runtime_env=seed_runtime_env).remote()
     ray.get(runner.run.remote(config))
 
     # [Optional] get the path of the timeline trace file from the configuration, default to None
@@ -321,6 +334,7 @@ class TaskRunner:
         print(f"TaskRunner hostname: {socket.gethostname()}, PID: {os.getpid()}")
         pprint(OmegaConf.to_container(config, resolve=True))
         OmegaConf.resolve(config)
+        seed_everything(int(config.trainer.get("seed", 42)))
 
         actor_rollout_cls, ray_worker_group_cls = self.add_actor_rollout_worker(config)
         self.add_critic_worker(config)

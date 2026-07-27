@@ -260,6 +260,7 @@ paper_eval:
 trainer:
   project_name: MOPD
   experiment_name: qwen4b-from-30b-a3b-instruct-2507-math-code-science-topk32-reweight
+  seed: 42
   logger: '["console","tensorboard","wandb"]'
   n_gpus_per_node: 6
   nnodes: 1
