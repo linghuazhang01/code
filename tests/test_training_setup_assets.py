@@ -326,6 +326,86 @@ class TrainingSetupAssetScriptTests(unittest.TestCase):
         self.assertIn('profile_suffix="::${config_reference##*::}"', source)
         self.assertIn('"${absolute_config}${profile_suffix}" "$@"', source)
 
+    def test_root_start_script_selects_config_and_preserves_default(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        script_path = root / "start.sh"
+        selected_config = (
+            root
+            / "test_grad_configs"
+            / "mopd_domain_weighting_qwen0p6b_8b_matrix.yaml"
+        )
+        default_config = (
+            root
+            / "configs"
+            / (
+                "mopd_qwen4b_30b_a3b_instruct_2507_8gpu_"
+                "math_code_science_topk32.yaml"
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bin_dir = Path(temp_dir) / "bin"
+            bin_dir.mkdir()
+            fake_bash = bin_dir / "bash"
+            fake_bash.write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' \"$@\"\n",
+                encoding="utf-8",
+            )
+            fake_bash.chmod(0o755)
+            env = os.environ.copy()
+            env.pop("MOPD_CONFIG", None)
+            env["PATH"] = f"{bin_dir}:{env['PATH']}"
+
+            cases = (
+                (
+                    ["--config", f"{selected_config}::gradnorm", "--dry-run"],
+                    f"{selected_config}::gradnorm",
+                ),
+                (
+                    [f"{selected_config}::projection", "--dry-run"],
+                    f"{selected_config}::projection",
+                ),
+                (["--dry-run"], str(default_config)),
+            )
+            for args, expected_config in cases:
+                with self.subTest(args=args):
+                    result = subprocess.run(
+                        ["/bin/bash", str(script_path), *args],
+                        cwd=root,
+                        env=env,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    forwarded = result.stdout.splitlines()
+                    self.assertEqual(
+                        forwarded[0],
+                        str(root / "scripts" / "run_local_mopd_training.sh"),
+                    )
+                    self.assertEqual(forwarded[1], expected_config)
+                    self.assertIn("--dry-run", forwarded)
+
+    def test_root_start_script_rejects_missing_config(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        result = subprocess.run(
+            [
+                "/bin/bash",
+                str(root / "start.sh"),
+                "--config",
+                "configs/does-not-exist.yaml",
+            ],
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("Config not found:", result.stderr)
+
     def test_qwen30b_teacher_checks_disk_before_requiring_python(self) -> None:
         script_path = (
             Path(__file__).resolve().parents[1]
