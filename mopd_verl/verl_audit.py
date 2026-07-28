@@ -745,6 +745,13 @@ class MOPDAuditLogger:
                 )
             ),
         )
+        self.dynamic_domain_loss_weighting_signal_source = str(
+            _cfg_get(
+                audit_config,
+                "dynamic_domain_loss_weighting_signal_source",
+                "gradient_norm",
+            )
+        ).strip().lower()
         self.dynamic_domain_loss_weighting_ema_beta = float(
             _cfg_get(
                 audit_config,
@@ -779,6 +786,57 @@ class MOPDAuditLogger:
                 "dynamic_domain_loss_weighting_max",
                 3.0,
             )
+        )
+        self.control_token_loss_weighting_enabled = bool(
+            _cfg_get(
+                audit_config,
+                "control_token_loss_weighting_enabled",
+                False,
+            )
+        )
+        self.control_token_loss_weight = float(
+            _cfg_get(audit_config, "control_token_loss_weight", 1.0)
+        )
+        self.control_token_ids = tuple(
+            dict.fromkeys(
+                int(token_id)
+                for token_id in _cfg_get(
+                    audit_config,
+                    "control_token_ids",
+                    (),
+                )
+            )
+        )
+        self.all_domain_shared_token_loss_weighting_enabled = bool(
+            _cfg_get(
+                audit_config,
+                "all_domain_shared_token_loss_weighting_enabled",
+                False,
+            )
+        )
+        self.all_domain_shared_token_loss_weight = float(
+            _cfg_get(
+                audit_config,
+                "all_domain_shared_token_loss_weight",
+                1.0,
+            )
+        )
+        self.all_domain_shared_token_selection_mode = str(
+            _cfg_get(
+                audit_config,
+                "all_domain_shared_token_selection_mode",
+                "per_step_mean_abs_loss",
+            )
+        ).strip().lower()
+        raw_shared_top_k = _cfg_get(
+            audit_config,
+            "all_domain_shared_token_top_k",
+            100,
+        )
+        self.all_domain_shared_token_top_k = (
+            None
+            if raw_shared_top_k is None
+            else max(1, int(raw_shared_top_k))
         )
         policy_loss = _cfg_get(_cfg_get(_cfg_get(config, "actor_rollout_ref", {}), "actor", {}), "policy_loss", {})
         self.lambda_vals = float(_cfg_get(policy_loss, "lambda_vals", 1.0))
@@ -904,6 +962,8 @@ class MOPDAuditLogger:
             or sample_gradient_active
             or self.should_compute_token_gradient(step)
             or self.dynamic_domain_loss_weighting_enabled
+            or self.control_token_loss_weighting_enabled
+            or self.all_domain_shared_token_loss_weighting_enabled
         )
 
     def should_compute_domain_gradient(self, step: int) -> bool:
@@ -1132,6 +1192,9 @@ class MOPDAuditLogger:
                 "dynamic_domain_loss_weighting_freq_steps": (
                     self.dynamic_domain_loss_weighting_freq_steps
                 ),
+                "dynamic_domain_loss_weighting_signal_source": (
+                    self.dynamic_domain_loss_weighting_signal_source
+                ),
                 "dynamic_domain_loss_weighting_ema_beta": (
                     self.dynamic_domain_loss_weighting_ema_beta
                 ),
@@ -1146,6 +1209,25 @@ class MOPDAuditLogger:
                 ),
                 "dynamic_domain_loss_weighting_max": (
                     self.dynamic_domain_loss_weighting_max
+                ),
+                "control_token_loss_weighting_enabled": (
+                    self.control_token_loss_weighting_enabled
+                    and mode == "train"
+                ),
+                "control_token_loss_weight": self.control_token_loss_weight,
+                "control_token_ids": self.control_token_ids,
+                "all_domain_shared_token_loss_weighting_enabled": (
+                    self.all_domain_shared_token_loss_weighting_enabled
+                    and mode == "train"
+                ),
+                "all_domain_shared_token_loss_weight": (
+                    self.all_domain_shared_token_loss_weight
+                ),
+                "all_domain_shared_token_selection_mode": (
+                    self.all_domain_shared_token_selection_mode
+                ),
+                "all_domain_shared_token_top_k": (
+                    self.all_domain_shared_token_top_k
                 ),
                 "domain_partition": domain_partition or {},
             }

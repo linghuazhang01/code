@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import yaml
+from mopd_verl.config_profiles import load_raw_config
 
 DEFAULT_PAPER_EVAL_DATASETS = [
     "aime24",
@@ -230,11 +230,19 @@ class AuditConfig:
     token_gradient_backward_sync_enabled: bool = True
     dynamic_domain_loss_weighting_enabled: bool = False
     dynamic_domain_loss_weighting_freq_steps: int = 10
+    dynamic_domain_loss_weighting_signal_source: str = "gradient_norm"
     dynamic_domain_loss_weighting_ema_beta: float = 0.90
     dynamic_domain_loss_weighting_weight_ema_beta: float = 0.90
     dynamic_domain_loss_weighting_alpha: float = 0.50
     dynamic_domain_loss_weighting_min: float = 1.0 / 3.0
     dynamic_domain_loss_weighting_max: float = 3.0
+    control_token_loss_weighting_enabled: bool = False
+    control_token_loss_weight: float = 1.0
+    control_token_ids: list[int] = field(default_factory=list)
+    all_domain_shared_token_loss_weighting_enabled: bool = False
+    all_domain_shared_token_loss_weight: float = 1.0
+    all_domain_shared_token_selection_mode: str = "per_step_mean_abs_loss"
+    all_domain_shared_token_top_k: int | None = 100
     gradient_fingerprint_enabled: bool = False
     gradient_fingerprint_freq_steps: int = 1
 
@@ -419,9 +427,7 @@ def _same_model_path(left: Any, right: Any) -> bool:
 
 
 def load_config(path: str | Path) -> MOPDConfig:
-    config_path = Path(path)
-    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    root = _expect_mapping(raw, "root")
+    root = load_raw_config(path)
 
     data_raw = _expect_mapping(root.get("data", {}), "data")
     model_raw = _expect_mapping(root.get("model", {}), "model")
@@ -565,6 +571,14 @@ def load_config(path: str | Path) -> MOPDConfig:
             "audit.dynamic_domain_loss_weighting_weight_ema_beta must be "
             "in [0, 1)."
         )
+    if audit.dynamic_domain_loss_weighting_signal_source not in {
+        "gradient_norm",
+        "domain_gradient_projection_share",
+    }:
+        raise ValueError(
+            "audit.dynamic_domain_loss_weighting_signal_source must be "
+            "'gradient_norm' or 'domain_gradient_projection_share'."
+        )
     if audit.dynamic_domain_loss_weighting_alpha < 0.0:
         raise ValueError(
             "audit.dynamic_domain_loss_weighting_alpha must be non-negative."
@@ -577,6 +591,45 @@ def load_config(path: str | Path) -> MOPDConfig:
         raise ValueError(
             "Dynamic domain loss weight bounds must be positive and contain "
             "1.0."
+        )
+    if audit.control_token_loss_weight < 1.0:
+        raise ValueError(
+            "audit.control_token_loss_weight must be at least 1.0."
+        )
+    if (
+        audit.control_token_loss_weighting_enabled
+        and not audit.control_token_ids
+    ):
+        raise ValueError(
+            "audit.control_token_ids must be non-empty when control-token "
+            "loss weighting is enabled."
+        )
+    if audit.all_domain_shared_token_loss_weight < 1.0:
+        raise ValueError(
+            "audit.all_domain_shared_token_loss_weight must be at least 1.0."
+        )
+    if audit.all_domain_shared_token_selection_mode not in {
+        "per_step_mean_abs_loss",
+        "cumulative_abs_loss",
+    }:
+        raise ValueError(
+            "audit.all_domain_shared_token_selection_mode must be "
+            "'per_step_mean_abs_loss' or 'cumulative_abs_loss'."
+        )
+    if (
+        audit.all_domain_shared_token_top_k is not None
+        and audit.all_domain_shared_token_top_k < 1
+    ):
+        raise ValueError(
+            "audit.all_domain_shared_token_top_k must be null or at least 1."
+        )
+    if (
+        audit.all_domain_shared_token_loss_weighting_enabled
+        and len(audit.domains) < 2
+    ):
+        raise ValueError(
+            "All-domain shared-token loss weighting requires at least two "
+            "audit domains."
         )
     retired_gradient_modes = [
         name

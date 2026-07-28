@@ -8,6 +8,8 @@ from pathlib import Path
 
 import yaml
 
+from mopd_verl.config_profiles import load_raw_config
+
 
 class TrainingSetupAssetScriptTests(unittest.TestCase):
     def test_setup_training_env_syncs_the_single_environment_file(self) -> None:
@@ -163,17 +165,16 @@ class TrainingSetupAssetScriptTests(unittest.TestCase):
         source_config_path = (
             root
             / "test_grad_configs"
-            / (
-                "mopd_grad_reliability_qwen0p6b_0p6b_aw2_fsdpsize2_"
-                "audit_freq2_b16_4step_smoke.yaml"
-            )
+            / "mopd_grad_reliability_qwen0p6b_8b_matrix.yaml"
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             model_dir = temp_path / "model"
             model_dir.mkdir()
-            config = yaml.safe_load(source_config_path.read_text(encoding="utf-8"))
+            config = load_raw_config(
+                f"{source_config_path}::aw2_fsdp2_audit_on"
+            )
             config["model"]["student_path"] = str(model_dir)
             config["model"]["math_teacher_path"] = str(model_dir)
             config["model"]["code_teacher_path"] = str(model_dir)
@@ -183,7 +184,16 @@ class TrainingSetupAssetScriptTests(unittest.TestCase):
             }
             config_path = temp_path / source_config_path.name
             config_path.write_text(
-                yaml.safe_dump(config, sort_keys=False),
+                yaml.safe_dump(
+                    {
+                        "profile_matrix": {
+                            "version": 1,
+                            "base": config,
+                            "profiles": {"local": {}},
+                        }
+                    },
+                    sort_keys=False,
+                ),
                 encoding="utf-8",
             )
 
@@ -217,7 +227,7 @@ class TrainingSetupAssetScriptTests(unittest.TestCase):
                 [
                     "/bin/bash",
                     str(script_path),
-                    str(config_path),
+                    f"{config_path}::local",
                     "--dry-run",
                     "--",
                     "trainer.save_freq=-1",
@@ -237,15 +247,84 @@ class TrainingSetupAssetScriptTests(unittest.TestCase):
         self.assertLessEqual(len(run_id), 80)
         self.assertRegex(run_id, r"_[0-9a-f]{8}_[0-9]{8}_[0-9]{6}$")
 
-    def test_grad_config_start_script_is_a_single_config_command(self) -> None:
+    def test_slurm_resources_apply_profile_and_hydra_overrides(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        script_path = root / "scripts" / "run_mopd.sh"
+        config_reference = (
+            root
+            / "test_grad_configs"
+            / "mopd_grad_reliability_qwen0p6b_8b_matrix.yaml"
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            bin_dir = temp_path / "bin"
+            log_dir = temp_path / "slurm"
+            bin_dir.mkdir()
+            fake_sbatch = bin_dir / "sbatch"
+            fake_sbatch.write_text(
+                "#!/usr/bin/env bash\n"
+                "echo 'Submitted batch job 12345'\n",
+                encoding="utf-8",
+            )
+            fake_sbatch.chmod(0o755)
+
+            env = os.environ.copy()
+            env.update(
+                {
+                    "MOPD_LAUNCH_PYTHON": sys.executable,
+                    "PATH": f"{bin_dir}:{env['PATH']}",
+                    "SLURM_LOG_DIR": str(log_dir),
+                }
+            )
+            result = subprocess.run(
+                [
+                    "/bin/bash",
+                    str(script_path),
+                    f"{config_reference}::aw2_fsdp2_audit_on",
+                    "--slurm",
+                    "--",
+                    "trainer.experiment_name=slurm_override",
+                    "trainer.n_gpus_per_node=4",
+                    (
+                        "+actor_rollout_ref.worker_placement.actor_rollout."
+                        "process_on_nodes=[4]"
+                    ),
+                    (
+                        "+actor_rollout_ref.worker_placement.ref_policy."
+                        "process_on_nodes=[2]"
+                    ),
+                    "ray_kwargs.ray_init.num_cpus=37",
+                ],
+                cwd=root,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            generated_scripts = list(
+                log_dir.glob("mopd_slurm_override_*.sbatch")
+            )
+            self.assertEqual(len(generated_scripts), 1)
+            source = generated_scripts[0].read_text(encoding="utf-8")
+
+        self.assertIn("#SBATCH --job-name=mopd_slurm_override", source)
+        self.assertIn("#SBATCH --gpus=6", source)
+        self.assertIn("#SBATCH --cpus-per-task=37", source)
+        self.assertIn("export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5", source)
+        self.assertIn("::aw2_fsdp2_audit_on", source)
+
+    def test_grad_config_start_script_preserves_profile_selector(self) -> None:
         root = Path(__file__).resolve().parents[1]
         script_path = root / "test_grad_configs" / "start.sh"
         source = script_path.read_text(encoding="utf-8")
 
-        self.assertEqual(len(source.splitlines()), 1)
         self.assertIn('GPU_IDS="${GPU_IDS:-0,1,2}"', source)
         self.assertIn("scripts/run_local_mopd_training.sh", source)
-        self.assertIn('"$1"', source)
+        self.assertIn('profile_suffix="::${config_reference##*::}"', source)
+        self.assertIn('"${absolute_config}${profile_suffix}" "$@"', source)
 
     def test_qwen30b_teacher_checks_disk_before_requiring_python(self) -> None:
         script_path = (

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Sequence
 
 import torch
+from verl.utils.device import get_device_id
 
 from mopd_verl.domain_gradient.config import DomainGradientConfig
 from mopd_verl.domain_gradient.geometry import (
@@ -33,14 +34,33 @@ from mopd_verl.domain_gradient.token_selection import (
     select_top_loss_mass,
     total_loss_abs_mass,
 )
+from mopd_verl.domain_gradient.token_weighting import (
+    SharedTokenSelection,
+    aligned_response_token_ids,
+    append_shared_token_selection_jsonl,
+    select_all_domain_shared_tokens,
+    token_gradient_weights,
+    update_cumulative_shared_token_selection,
+)
+from mopd_verl.domain_gradient.token_weighting_metrics import (
+    format_loss_amplification_metrics,
+    local_loss_amplification_statistics,
+    reduce_loss_amplification_statistics,
+)
+from mopd_verl.domain_gradient.token_weighting_state import (
+    CUMULATIVE_ABS_LOSS_SELECTION,
+    CumulativeTokenLossState,
+    initial_cumulative_token_loss_state,
+)
 from mopd_verl.domain_gradient.weighting import (
+    DOMAIN_GRADIENT_PROJECTION_SHARE_SIGNAL,
+    GRADIENT_NORM_SIGNAL,
     DomainWeightState,
     initial_domain_weight_state,
     update_domain_weight_state,
 )
 from mopd_verl.full_gradient.actor_loss import build_actor_micro_batch_loss
 from mopd_verl.full_gradient.labels import _labels_from_mapping
-from verl.utils.device import get_device_id
 
 
 @dataclass(frozen=True)
@@ -51,6 +71,12 @@ class _TokenSelection:
     candidate_loss_abs_mass: float
     selected_token_count: int
     selected_loss_abs_mass: float
+
+
+_CandidateData = tuple[
+    dict[str, tuple[LocalTokenCandidate, ...]],
+    tuple[torch.Tensor, ...],
+]
 
 
 class DomainGradientAudit:
@@ -83,16 +109,84 @@ class DomainGradientAudit:
         if (
             not isinstance(weight_state, DomainWeightState)
             or weight_state.domains != self.config.domains
+            or (
+                weight_state.signal_source
+                != self.config.dynamic_weighting_signal_source
+            )
         ):
-            weight_state = initial_domain_weight_state(self.config.domains)
+            weight_state = initial_domain_weight_state(
+                self.config.domains,
+                signal_source=self.config.dynamic_weighting_signal_source,
+            )
         self._weight_state = weight_state
+        self._shared_token_selection = SharedTokenSelection(
+            token_ids=tuple(),
+            domain_top_token_ids=tuple(
+                (domain, tuple()) for domain in self.config.domains
+            ),
+        )
+        self._token_id_tensor_cache: dict[
+            tuple[str, torch.device, torch.dtype],
+            torch.Tensor,
+        ] = {}
+        self._cumulative_token_loss_state: (
+            CumulativeTokenLossState | None
+        ) = None
+        if (
+            self.config.all_domain_shared_token_weighting_enabled
+            and self.config.all_domain_shared_token_selection_mode
+            == CUMULATIVE_ABS_LOSS_SELECTION
+        ):
+            cumulative_state = getattr(
+                actor,
+                "_mopd_cumulative_token_loss_state",
+                None,
+            )
+            serialized_cumulative_state = (
+                optimizer_groups[0].get(
+                    "mopd_cumulative_token_loss_state"
+                )
+                if optimizer_groups
+                else None
+            )
+            if (
+                not isinstance(
+                    cumulative_state,
+                    CumulativeTokenLossState,
+                )
+                and isinstance(serialized_cumulative_state, dict)
+            ):
+                cumulative_state = CumulativeTokenLossState.from_mapping(
+                    serialized_cumulative_state
+                )
+            if cumulative_state is None:
+                cumulative_state = initial_cumulative_token_loss_state(
+                    self.config.domains
+                )
+            if not isinstance(
+                cumulative_state,
+                CumulativeTokenLossState,
+            ):
+                raise ValueError(
+                    "Cumulative token-loss state has an unsupported type."
+                )
+            if cumulative_state.domains != self.config.domains:
+                raise ValueError(
+                    "Cumulative token-loss state domains do not match "
+                    "the current shared-token configuration."
+                )
+            if (
+                cumulative_state.selection_mode
+                != self.config.all_domain_shared_token_selection_mode
+            ):
+                raise ValueError(
+                    "Cumulative token-loss state selection mode does not "
+                    "match the current configuration."
+                )
+            self._cumulative_token_loss_state = cumulative_state
 
     def _persist_weight_state(self) -> None:
-        setattr(
-            self.actor,
-            "_mopd_domain_weight_state",
-            self._weight_state,
-        )
+        self.actor._mopd_domain_weight_state = self._weight_state
         optimizer_groups = getattr(
             getattr(self.actor, "actor_optimizer", None),
             "param_groups",
@@ -103,11 +197,33 @@ class DomainGradientAudit:
                 self._weight_state.as_dict()
             )
 
+    def _persist_cumulative_token_loss_state(self) -> None:
+        state = self._cumulative_token_loss_state
+        if state is None:
+            return
+        self.actor._mopd_cumulative_token_loss_state = state
+        optimizer_groups = getattr(
+            getattr(self.actor, "actor_optimizer", None),
+            "param_groups",
+            (),
+        )
+        if optimizer_groups:
+            optimizer_groups[0]["mopd_cumulative_token_loss_state"] = (
+                state.as_dict()
+            )
+
     def _should_update_dynamic_weighting(self) -> bool:
         return (
             self.config.dynamic_weighting_enabled
             and self.config.dynamic_weighting_update_enabled
             and self._weight_state.last_updated_step != self.config.step
+        )
+
+    def _production_weighting_enabled(self) -> bool:
+        return (
+            self.config.dynamic_weighting_enabled
+            or self.config.control_token_weighting_enabled
+            or self.config.all_domain_shared_token_weighting_enabled
         )
 
     @property
@@ -130,27 +246,94 @@ class DomainGradientAudit:
         weights = rows.unsqueeze(-1).expand(response_mask.shape)
         return weights
 
+    def _cached_token_id_tensor(
+        self,
+        name: str,
+        token_ids: Sequence[int],
+        reference: torch.Tensor,
+    ) -> torch.Tensor:
+        """Reuse immutable selected-token tensors across micro-batches."""
+
+        key = (name, reference.device, reference.dtype)
+        cached = self._token_id_tensor_cache.get(key)
+        if cached is None:
+            cached = torch.tensor(
+                tuple(token_ids),
+                device=reference.device,
+                dtype=reference.dtype,
+            )
+            self._token_id_tensor_cache[key] = cached
+        return cached
+
     def training_gradient_mask(
         self,
         micro_batch: Any,
     ) -> torch.Tensor | None:
-        """Return current per-domain production gradient multipliers."""
+        """Return current domain and token production gradient multipliers."""
 
-        if not self.config.dynamic_weighting_enabled:
+        token_weighting_enabled = (
+            self.config.control_token_weighting_enabled
+            or self.config.all_domain_shared_token_weighting_enabled
+        )
+        if (
+            not self.config.dynamic_weighting_enabled
+            and not token_weighting_enabled
+        ):
             return None
         model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
         response_mask = model_inputs["response_mask"]
-        labels = _labels_from_mapping(
-            model_inputs,
-            int(response_mask.shape[0]),
-        )
-        weights = self._weight_state.weight_map()
-        rows = torch.tensor(
-            [weights.get(label, 1.0) for label in labels],
-            device=response_mask.device,
+        gradient_weights = torch.ones_like(
+            response_mask,
             dtype=torch.float32,
         )
-        return rows.unsqueeze(-1).expand(response_mask.shape)
+        if self.config.dynamic_weighting_enabled:
+            labels = _labels_from_mapping(
+                model_inputs,
+                int(response_mask.shape[0]),
+            )
+            domain_weights = self._weight_state.weight_map()
+            rows = torch.tensor(
+                [domain_weights.get(label, 1.0) for label in labels],
+                device=response_mask.device,
+                dtype=torch.float32,
+            )
+            gradient_weights = gradient_weights * rows.unsqueeze(-1)
+        if token_weighting_enabled:
+            token_ids = aligned_response_token_ids(
+                model_inputs,
+                response_mask,
+            )
+            if token_ids is None:
+                raise ValueError(
+                    "Token loss weighting requires response-aligned token "
+                    "IDs in responses, response_ids, or input_ids."
+                )
+            gradient_weights = gradient_weights * token_gradient_weights(
+                token_ids,
+                control_token_ids=(
+                    self._cached_token_id_tensor(
+                        "control",
+                        self.config.control_token_ids,
+                        token_ids,
+                    )
+                    if self.config.control_token_weighting_enabled
+                    else ()
+                ),
+                control_token_weight=self.config.control_token_weight,
+                shared_token_ids=(
+                    self._cached_token_id_tensor(
+                        "shared",
+                        self._shared_token_selection.token_ids,
+                        token_ids,
+                    )
+                    if self.config.all_domain_shared_token_weighting_enabled
+                    else ()
+                ),
+                shared_token_weight=(
+                    self.config.all_domain_shared_token_weight
+                ),
+            )
+        return gradient_weights
 
     def _backward_replay(
         self,
@@ -162,11 +345,16 @@ class DomainGradientAudit:
         temperature: float,
         domain: str | None,
         gradient_masks: Sequence[torch.Tensor] | None = None,
-    ) -> None:
+        collect_loss_abs_candidates: bool = False,
+    ) -> _CandidateData | None:
         if gradient_masks is not None and len(gradient_masks) != len(micro_batches):
             raise ValueError(
                 "Token selection must provide one gradient mask per micro-batch."
             )
+        candidates: dict[str, list[LocalTokenCandidate]] = {
+            domain_name: [] for domain_name in self.config.domains
+        }
+        mask_templates: list[torch.Tensor] = []
         state.restore_runtime()
         state.clear_gradients()
         for index, (micro_batch, loss_scale) in enumerate(
@@ -186,12 +374,35 @@ class DomainGradientAudit:
                 on_policy=on_policy,
                 gradient_mask_override=gradient_mask,
                 include_metrics=False,
+                return_configured_token_loss=collect_loss_abs_candidates,
                 temperature=temperature,
             )
             if self.actor.scaler is not None:
                 self.actor.scaler.scale(result.loss).backward()
             else:
                 result.loss.backward()
+            if collect_loss_abs_candidates:
+                micro_candidates, mask_template = (
+                    self._loss_abs_candidates_for_micro_batch(
+                        result,
+                        micro_batch,
+                        micro_batch_index=index,
+                    )
+                )
+                for domain_name in self.config.domains:
+                    candidates[domain_name].extend(
+                        micro_candidates[domain_name]
+                    )
+                mask_templates.append(mask_template)
+        if not collect_loss_abs_candidates:
+            return None
+        return (
+            {
+                domain_name: tuple(domain_candidates)
+                for domain_name, domain_candidates in candidates.items()
+            },
+            tuple(mask_templates),
+        )
 
     def _snapshot_training_gradient_reference(
         self,
@@ -210,7 +421,7 @@ class DomainGradientAudit:
         )
         if any(mask is None for mask in optional_masks):
             raise RuntimeError(
-                "Dynamic parity replay requires a training gradient mask."
+                "Weighted parity replay requires a training gradient mask."
             )
         gradient_masks = tuple(
             mask for mask in optional_masks if mask is not None
@@ -254,6 +465,81 @@ class DomainGradientAudit:
         )
         return metrics
 
+    def _loss_abs_candidates_for_micro_batch(
+        self,
+        result: Any,
+        micro_batch: Any,
+        *,
+        micro_batch_index: int,
+    ) -> tuple[
+        dict[str, tuple[LocalTokenCandidate, ...]],
+        torch.Tensor,
+    ]:
+        configured_loss = result.configured_token_loss
+        configured_mask = result.configured_token_loss_mask
+        if configured_loss is None or configured_mask is None:
+            raise RuntimeError(
+                "Loss-ranked token gradients require configured token loss."
+            )
+        if configured_loss.shape != configured_mask.shape:
+            raise ValueError(
+                "Configured token loss and mask must have the same shape."
+            )
+        model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
+        labels = _labels_from_mapping(
+            model_inputs,
+            int(configured_loss.shape[0]),
+        )
+        token_ids_cpu = response_token_ids(model_inputs, configured_loss)
+        loss_cpu = configured_loss.detach().float().cpu()
+        loss_abs_cpu = loss_cpu.abs()
+        active_cpu = configured_mask.detach().bool().cpu()
+        candidates: dict[str, list[LocalTokenCandidate]] = {
+            domain: [] for domain in self.config.domains
+        }
+        for sample_index, domain in enumerate(labels):
+            if domain not in candidates:
+                continue
+            positions = torch.nonzero(
+                active_cpu[sample_index],
+                as_tuple=False,
+            ).flatten()
+            for token_index in positions.tolist():
+                loss_abs = float(
+                    loss_abs_cpu[sample_index, token_index].item()
+                )
+                if not math.isfinite(loss_abs):
+                    continue
+                configured_token_loss = float(
+                    loss_cpu[sample_index, token_index].item()
+                )
+                candidates[domain].append(
+                    LocalTokenCandidate(
+                        micro_batch_index=micro_batch_index,
+                        sample_index=sample_index,
+                        token_index=int(token_index),
+                        token_id=(
+                            int(
+                                token_ids_cpu[
+                                    sample_index,
+                                    token_index,
+                                ].item()
+                            )
+                            if token_ids_cpu is not None
+                            else None
+                        ),
+                        configured_loss=configured_token_loss,
+                        loss_abs=loss_abs,
+                    )
+                )
+        return (
+            {
+                domain: tuple(domain_candidates)
+                for domain, domain_candidates in candidates.items()
+            },
+            torch.zeros_like(configured_mask, dtype=torch.float32),
+        )
+
     def _collect_loss_abs_candidates(
         self,
         micro_batches: Sequence[Any],
@@ -261,10 +547,7 @@ class DomainGradientAudit:
         *,
         on_policy: bool,
         temperature: float,
-    ) -> tuple[
-        dict[str, tuple[LocalTokenCandidate, ...]],
-        tuple[torch.Tensor, ...],
-    ]:
+    ) -> _CandidateData:
         candidates: dict[str, list[LocalTokenCandidate]] = {
             domain: [] for domain in self.config.domains
         }
@@ -282,63 +565,18 @@ class DomainGradientAudit:
                     return_configured_token_loss=True,
                     temperature=temperature,
                 )
-            configured_loss = result.configured_token_loss
-            configured_mask = result.configured_token_loss_mask
-            if configured_loss is None or configured_mask is None:
-                raise RuntimeError(
-                    "Loss-ranked token gradients require configured token loss."
+            micro_candidates, mask_template = (
+                self._loss_abs_candidates_for_micro_batch(
+                    result,
+                    micro_batch,
+                    micro_batch_index=micro_batch_index,
                 )
-            if configured_loss.shape != configured_mask.shape:
-                raise ValueError(
-                    "Configured token loss and mask must have the same shape."
+            )
+            for domain in self.config.domains:
+                candidates[domain].extend(
+                    micro_candidates[domain]
                 )
-            model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
-            labels = _labels_from_mapping(
-                model_inputs,
-                int(configured_loss.shape[0]),
-            )
-            token_ids_cpu = response_token_ids(model_inputs, configured_loss)
-            loss_cpu = configured_loss.detach().float().cpu()
-            loss_abs_cpu = loss_cpu.abs()
-            active_cpu = configured_mask.detach().bool().cpu()
-            mask_templates.append(
-                torch.zeros_like(configured_mask, dtype=torch.float32)
-            )
-            for sample_index, domain in enumerate(labels):
-                if domain not in candidates:
-                    continue
-                positions = torch.nonzero(
-                    active_cpu[sample_index],
-                    as_tuple=False,
-                ).flatten()
-                for token_index in positions.tolist():
-                    loss_abs = float(
-                        loss_abs_cpu[sample_index, token_index].item()
-                    )
-                    if not math.isfinite(loss_abs):
-                        continue
-                    configured_token_loss = float(
-                        loss_cpu[sample_index, token_index].item()
-                    )
-                    candidates[domain].append(
-                        LocalTokenCandidate(
-                            micro_batch_index=micro_batch_index,
-                            sample_index=sample_index,
-                            token_index=int(token_index),
-                            token_id=(
-                                int(
-                                    token_ids_cpu[
-                                        sample_index,
-                                        token_index,
-                                    ].item()
-                                )
-                                if token_ids_cpu is not None
-                                else None
-                            ),
-                            configured_loss=configured_token_loss,
-                            loss_abs=loss_abs,
-                        )
-                    )
+            mask_templates.append(mask_template)
         return (
             {
                 domain: tuple(domain_candidates)
@@ -434,12 +672,21 @@ class DomainGradientAudit:
         *,
         on_policy: bool,
         temperature: float,
+        candidate_data: tuple[
+            dict[str, tuple[LocalTokenCandidate, ...]],
+            tuple[torch.Tensor, ...],
+        ]
+        | None = None,
     ) -> dict[str, dict[str, _TokenSelection]]:
-        local_by_domain, mask_templates = self._collect_loss_abs_candidates(
-            micro_batches,
-            loss_scales,
-            on_policy=on_policy,
-            temperature=temperature,
+        local_by_domain, mask_templates = (
+            candidate_data
+            if candidate_data is not None
+            else self._collect_loss_abs_candidates(
+                micro_batches,
+                loss_scales,
+                on_policy=on_policy,
+                temperature=temperature,
+            )
         )
         selections: dict[str, dict[str, _TokenSelection]] = {}
         for domain in self.config.domains:
@@ -497,6 +744,148 @@ class DomainGradientAudit:
                 },
             )
         return selections
+
+    def _refresh_shared_token_selection(
+        self,
+        candidates_by_domain: dict[
+            str,
+            tuple[LocalTokenCandidate, ...],
+        ],
+    ) -> dict[str, float]:
+        if (
+            self.config.all_domain_shared_token_selection_mode
+            == CUMULATIVE_ABS_LOSS_SELECTION
+        ):
+            if self._cumulative_token_loss_state is None:
+                raise RuntimeError(
+                    "Cumulative shared-token selection requires state."
+                )
+            (
+                self._shared_token_selection,
+                self._cumulative_token_loss_state,
+            ) = update_cumulative_shared_token_selection(
+                candidates_by_domain,
+                self.config.domains,
+                top_k=self.config.all_domain_shared_token_top_k,
+                step=self.config.step,
+                state=self._cumulative_token_loss_state,
+            )
+            self._persist_cumulative_token_loss_state()
+        else:
+            self._shared_token_selection = select_all_domain_shared_tokens(
+                candidates_by_domain,
+                self.config.domains,
+                top_k=self.config.all_domain_shared_token_top_k,
+            )
+        self._token_id_tensor_cache = {
+            key: value
+            for key, value in self._token_id_tensor_cache.items()
+            if key[0] != "shared"
+        }
+        append_shared_token_selection_jsonl(
+            output_dir=self.config.output_dir,
+            step=self.config.step,
+            top_k=self.config.all_domain_shared_token_top_k,
+            selection=self._shared_token_selection,
+            selection_mode=(
+                self.config.all_domain_shared_token_selection_mode
+            ),
+            cumulative_state=self._cumulative_token_loss_state,
+        )
+        metrics: dict[str, float] = {
+            "global/token_weight/all_domain_shared_token_type_count": float(
+                len(self._shared_token_selection.token_ids)
+            ),
+            "global/token_weight/all_domain_shared_token_weight": (
+                self.config.all_domain_shared_token_weight
+            ),
+            "global/token_weight/shared_selection_is_cumulative": float(
+                self.config.all_domain_shared_token_selection_mode
+                == CUMULATIVE_ABS_LOSS_SELECTION
+            ),
+        }
+        for domain, token_ids in (
+            self._shared_token_selection.domain_top_token_ids
+        ):
+            metrics[
+                f"{domain}/token_weight/high_loss_token_type_count"
+            ] = float(len(token_ids))
+        if self._cumulative_token_loss_state is not None:
+            for domain, summary in (
+                self._cumulative_token_loss_state.domain_summaries().items()
+            ):
+                for name, value in summary.items():
+                    metrics[
+                        f"{domain}/token_weight/{name}"
+                    ] = value
+        return metrics
+
+    def _token_weighting_metrics(self) -> dict[str, float]:
+        metrics: dict[str, float] = {}
+        if self.config.control_token_weighting_enabled:
+            metrics.update(
+                {
+                    "global/token_weight/control_token_id_count": float(
+                        len(self.config.control_token_ids)
+                    ),
+                    "global/token_weight/control_token_weight": (
+                        self.config.control_token_weight
+                    ),
+                }
+            )
+        if self.config.all_domain_shared_token_weighting_enabled:
+            metrics.update(
+                {
+                    "global/token_weight/"
+                    "all_domain_shared_token_type_count": float(
+                        len(self._shared_token_selection.token_ids)
+                    ),
+                    "global/token_weight/all_domain_shared_token_weight": (
+                        self.config.all_domain_shared_token_weight
+                    ),
+                }
+            )
+        return metrics
+
+    def _loss_amplification_metrics(
+        self,
+        candidates_by_domain: dict[
+            str,
+            tuple[LocalTokenCandidate, ...],
+        ],
+        micro_batches: Sequence[Any],
+    ) -> dict[str, float]:
+        """Compare raw and effective configured-loss mass for production masks."""
+
+        actual_masks = tuple(
+            mask.detach().float().cpu()
+            for micro_batch in micro_batches
+            if (mask := self.training_gradient_mask(micro_batch)) is not None
+        )
+        if len(actual_masks) != len(micro_batches):
+            raise RuntimeError(
+                "Loss amplification metrics require production gradient masks."
+            )
+        local_by_domain = local_loss_amplification_statistics(
+            candidates_by_domain,
+            self.config.domains,
+            actual_masks,
+            domain_weights=self._weight_state.weight_map(),
+            dynamic_weighting_enabled=self.config.dynamic_weighting_enabled,
+            control_token_ids=self.config.control_token_ids,
+            control_weighting_enabled=(
+                self.config.control_token_weighting_enabled
+            ),
+            control_weight=self.config.control_token_weight,
+            shared_token_ids=self._shared_token_selection.token_ids,
+            shared_weighting_enabled=(
+                self.config.all_domain_shared_token_weighting_enabled
+            ),
+            shared_weight=self.config.all_domain_shared_token_weight,
+        )
+        return format_loss_amplification_metrics(
+            reduce_loss_amplification_statistics(local_by_domain)
+        )
 
     def _token_selection_metrics(
         self,
@@ -570,12 +959,14 @@ class DomainGradientAudit:
     def _dynamic_weight_metrics(
         self,
         domain_sq: dict[str, float] | None = None,
+        source_signals: dict[str, float] | None = None,
+        signed_projection_shares: dict[str, float] | None = None,
     ) -> dict[str, float]:
         if not self.config.dynamic_weighting_enabled:
             return {}
         weights = self._weight_state.weight_map()
         target_weights = self._weight_state.target_weight_map()
-        ema_norms = self._weight_state.ema_norm_map()
+        ema_signals = self._weight_state.ema_signal_map()
         metrics: dict[str, float] = {}
         for domain in self.config.domains:
             weight = weights.get(domain, 1.0)
@@ -585,14 +976,69 @@ class DomainGradientAudit:
             metrics[
                 f"{domain}/dynamic_weight/bounded_target_gradient_weight"
             ] = target_weights.get(domain, weight)
-            metrics[f"{domain}/dynamic_weight/ema_grad_norm"] = (
-                ema_norms.get(domain, 0.0)
+            metrics[f"{domain}/dynamic_weight/ema_source_signal"] = (
+                ema_signals.get(domain, 0.0)
             )
+            metrics[
+                f"{domain}/dynamic_weight/"
+                "source_is_projection_share"
+            ] = float(
+                self.config.dynamic_weighting_signal_source
+                == DOMAIN_GRADIENT_PROJECTION_SHARE_SIGNAL
+            )
+            if (
+                self.config.dynamic_weighting_signal_source
+                == GRADIENT_NORM_SIGNAL
+            ):
+                metrics[f"{domain}/dynamic_weight/ema_grad_norm"] = (
+                    ema_signals.get(domain, 0.0)
+                )
+            if source_signals is not None:
+                metrics[f"{domain}/dynamic_weight/source_signal"] = (
+                    source_signals.get(domain, 0.0)
+                )
+            if signed_projection_shares is not None:
+                metrics[
+                    f"{domain}/dynamic_weight/"
+                    "raw_signed_projection_share"
+                ] = signed_projection_shares.get(domain, 0.0)
             if domain_sq is not None:
                 metrics[f"{domain}/dynamic_weight/weighted_grad_norm"] = (
                     weight * max(domain_sq.get(domain, 0.0), 0.0) ** 0.5
                 )
         return metrics
+
+    def _dynamic_weight_signals(
+        self,
+        *,
+        total_sq: float,
+        domain_sq: dict[str, float],
+        domain_total_dot: dict[str, float],
+    ) -> tuple[dict[str, float], dict[str, float] | None]:
+        if (
+            self.config.dynamic_weighting_signal_source
+            == GRADIENT_NORM_SIGNAL
+        ):
+            return (
+                {
+                    domain: max(value, 0.0) ** 0.5
+                    for domain, value in domain_sq.items()
+                },
+                None,
+            )
+        denominator = max(float(total_sq), 1e-12)
+        signed_shares = {
+            domain: float(domain_total_dot.get(domain, 0.0))
+            / denominator
+            for domain in self.config.domains
+        }
+        return (
+            {
+                domain: abs(share)
+                for domain, share in signed_shares.items()
+            },
+            signed_shares,
+        )
 
     def run_before_training(
         self,
@@ -602,23 +1048,85 @@ class DomainGradientAudit:
         on_policy: bool,
         temperature: float,
     ) -> dict[str, float]:
-        if not self.enabled:
-            return self._dynamic_weight_metrics()
         if len(micro_batches) != len(loss_scales):
             raise ValueError(
                 "Each audit micro-batch must have exactly one training loss scale."
             )
+        token_weighting_active = (
+            self.config.control_token_weighting_enabled
+            or self.config.all_domain_shared_token_weighting_enabled
+        )
+        shared_token_active = (
+            self.config.all_domain_shared_token_weighting_enabled
+        )
+        token_gradient_active = (
+            self.config.token_gradient_enabled
+            and (
+                self.config.token_gradient_tail_enabled
+                or self.config.token_gradient_top_p_enabled
+            )
+        )
+        if not self.enabled and not shared_token_active:
+            return {
+                **self._dynamic_weight_metrics(),
+                **self._token_weighting_metrics(),
+            }
 
         state = AuditState.capture(self.actor)
         try:
-            self._backward_replay(
+            metrics = self._token_weighting_metrics()
+            candidate_data = None
+            if shared_token_active and not self.enabled:
+                candidate_data = self._collect_loss_abs_candidates(
+                    micro_batches,
+                    loss_scales,
+                    on_policy=on_policy,
+                    temperature=temperature,
+                )
+                metrics.update(
+                    self._refresh_shared_token_selection(
+                        candidate_data[0]
+                    )
+                )
+            if not self.enabled:
+                metrics.update(self._dynamic_weight_metrics())
+                if candidate_data is not None:
+                    metrics.update(
+                        self._loss_amplification_metrics(
+                            candidate_data[0],
+                            micro_batches,
+                        )
+                    )
+                return metrics
+
+            candidate_data = self._backward_replay(
                 state,
                 micro_batches,
                 loss_scales,
                 on_policy=on_policy,
                 temperature=temperature,
                 domain=None,
+                collect_loss_abs_candidates=(
+                    token_weighting_active or token_gradient_active
+                ),
             )
+            if (
+                token_weighting_active or token_gradient_active
+            ) and candidate_data is None:
+                raise RuntimeError(
+                    "The total audit replay did not return requested "
+                    "configured-loss candidates."
+                )
+            if shared_token_active:
+                if candidate_data is None:
+                    raise RuntimeError(
+                        "Shared-token weighting requires loss candidates."
+                    )
+                metrics.update(
+                    self._refresh_shared_token_selection(
+                        candidate_data[0]
+                    )
+                )
             audit_total = snapshot_gradients(
                 self.actor,
                 self.config.storage_dtype,
@@ -655,27 +1163,30 @@ class DomainGradientAudit:
                 for left_index, left_domain in enumerate(self.config.domains)
                 for right_domain in self.config.domains[left_index + 1 :]
             }
-            metrics = domain_metrics_from_gram(
-                self.actor,
-                self.config.domains,
-                total_sq=total_sq,
-                domain_sq=domain_sq,
-                domain_total_dot=domain_total_dot,
-                pair_dot=pair_dot,
-                closure_threshold=self.config.closure_rel_l2_threshold,
-                all_vectors_fp32=(
-                    self.config.storage_dtype.lower() in {"float32", "fp32"}
-                ),
-                storage_dtype=self.config.storage_dtype,
-            )
-            token_vector_peak_bytes = 0
-            token_gradient_active = (
-                self.config.token_gradient_enabled
-                and (
-                    self.config.token_gradient_tail_enabled
-                    or self.config.token_gradient_top_p_enabled
+            metrics.update(
+                domain_metrics_from_gram(
+                    self.actor,
+                    self.config.domains,
+                    total_sq=total_sq,
+                    domain_sq=domain_sq,
+                    domain_total_dot=domain_total_dot,
+                    pair_dot=pair_dot,
+                    closure_threshold=self.config.closure_rel_l2_threshold,
+                    all_vectors_fp32=(
+                        self.config.storage_dtype.lower()
+                        in {"float32", "fp32"}
+                    ),
+                    storage_dtype=self.config.storage_dtype,
                 )
             )
+            source_signals, signed_projection_shares = (
+                self._dynamic_weight_signals(
+                    total_sq=total_sq,
+                    domain_sq=domain_sq,
+                    domain_total_dot=domain_total_dot,
+                )
+            )
+            token_vector_peak_bytes = 0
             if token_gradient_active:
                 state.restore_runtime()
                 state.clear_gradients()
@@ -684,6 +1195,7 @@ class DomainGradientAudit:
                     loss_scales,
                     on_policy=on_policy,
                     temperature=temperature,
+                    candidate_data=candidate_data,
                 )
                 for domain, domain_selections in token_selections.items():
                     for selection_name, selection in domain_selections.items():
@@ -740,10 +1252,7 @@ class DomainGradientAudit:
             if self._should_update_dynamic_weighting():
                 self._weight_state = update_domain_weight_state(
                     self._weight_state,
-                    {
-                        domain: max(value, 0.0) ** 0.5
-                        for domain, value in domain_sq.items()
-                    },
+                    source_signals,
                     ema_beta=self.config.dynamic_weighting_ema_beta,
                     weight_ema_beta=(
                         self.config.dynamic_weighting_weight_ema_beta
@@ -754,10 +1263,17 @@ class DomainGradientAudit:
                     step=self.config.step,
                 )
                 self._persist_weight_state()
+            if candidate_data is not None:
+                metrics.update(
+                    self._loss_amplification_metrics(
+                        candidate_data[0],
+                        micro_batches,
+                    )
+                )
             parity_total = audit_total
             dynamic_parity_replay_count = 0
             if (
-                self.config.dynamic_weighting_enabled
+                self._production_weighting_enabled()
                 and self.config.parity_enabled
             ):
                 parity_total = self._snapshot_training_gradient_reference(
@@ -768,7 +1284,13 @@ class DomainGradientAudit:
                     temperature=temperature,
                 )
                 dynamic_parity_replay_count = 1
-            metrics.update(self._dynamic_weight_metrics(domain_sq))
+            metrics.update(
+                self._dynamic_weight_metrics(
+                    domain_sq,
+                    source_signals,
+                    signed_projection_shares,
+                )
+            )
             domain_count = len(self.config.domains)
             token_selection_count = (
                 int(self.config.token_gradient_tail_enabled)

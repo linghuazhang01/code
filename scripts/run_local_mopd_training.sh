@@ -4,10 +4,13 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/run_local_mopd_training.sh <config> [--run-id RUN_ID] [--foreground] [--tail] [--dry-run] [-- <hydra overrides...>]
+  scripts/run_local_mopd_training.sh <config[::profile]> [--run-id RUN_ID] [--foreground] [--tail] [--dry-run] [-- <hydra overrides...>]
 
 Examples:
   scripts/run_local_mopd_training.sh configs/mopd_formal_audit_all_2gpu.yaml
+
+  scripts/run_local_mopd_training.sh \
+    test_grad_configs/mopd_domain_weighting_qwen0p6b_8b_matrix.yaml::gradnorm
 
   scripts/run_local_mopd_training.sh configs/mopd_formal_audit_all_4gpu.yaml \
     --run-id mopd_manual_test
@@ -157,17 +160,30 @@ if [[ -z "${CONFIG_ARG}" ]]; then
   exit 2
 fi
 
-if [[ "${CONFIG_ARG}" == /* ]]; then
-  CONFIG_PATH="${CONFIG_ARG}"
-  CONFIG_LABEL="$(basename "${CONFIG_ARG}")"
+CONFIG_PROFILE=""
+CONFIG_FILE_ARG="${CONFIG_ARG}"
+if [[ "${CONFIG_ARG}" == *::* ]]; then
+  CONFIG_PROFILE="${CONFIG_ARG##*::}"
+  CONFIG_FILE_ARG="${CONFIG_ARG%::*}"
+fi
+
+if [[ "${CONFIG_FILE_ARG}" == /* ]]; then
+  CONFIG_PATH="${CONFIG_FILE_ARG}"
 else
-  CONFIG_PATH="${CODE_DIR}/${CONFIG_ARG}"
-  CONFIG_LABEL="${CONFIG_ARG##*/}"
+  CONFIG_PATH="${CODE_DIR}/${CONFIG_FILE_ARG}"
 fi
 
 if [[ ! -f "${CONFIG_PATH}" ]]; then
   echo "Config not found: ${CONFIG_PATH}" >&2
   exit 2
+fi
+CONFIG_REFERENCE="${CONFIG_PATH}"
+CONFIG_FILE_LABEL="$(basename "${CONFIG_PATH}")"
+if [[ -n "${CONFIG_PROFILE}" ]]; then
+  CONFIG_REFERENCE="${CONFIG_REFERENCE}::${CONFIG_PROFILE}"
+  CONFIG_LABEL="${CONFIG_FILE_LABEL%.*}--${CONFIG_PROFILE}.yaml"
+else
+  CONFIG_LABEL="${CONFIG_FILE_LABEL}"
 fi
 
 if [[ -z "${RUN_ID}" ]]; then
@@ -198,14 +214,15 @@ fi
 
 export PYTHONPATH="${CODE_DIR}:${VERL_RUNTIME_DIR}:${PYTHONPATH:-}"
 
-python - "${CONFIG_PATH}" "${CODE_DIR}" <<'PY'
+python - "${CONFIG_REFERENCE}" "${CODE_DIR}" <<'PY'
 from pathlib import Path
 import sys
-import yaml
 
-config_path = Path(sys.argv[1])
+from mopd_verl.config_profiles import load_raw_config
+
+config_reference = sys.argv[1]
 code_dir = Path(sys.argv[2])
-config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+config = load_raw_config(config_reference)
 
 paths: list[str] = []
 data = config.get("data") or {}
@@ -256,13 +273,12 @@ if missing:
     raise SystemExit(2)
 PY
 
-REQUIRED_GPUS="$(python - "${CONFIG_PATH}" "${EXTRA_ARGS[@]}" <<'PY'
-from pathlib import Path
+REQUIRED_GPUS="$(python - "${CONFIG_REFERENCE}" "${EXTRA_ARGS[@]}" <<'PY'
 import sys
-import yaml
 
-config_path = Path(sys.argv[1])
-config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+from mopd_verl.config_profiles import load_raw_config
+
+config = load_raw_config(sys.argv[1])
 trainer = config.get("trainer") or {}
 worker_placement = config.get("worker_placement") or (config.get("actor_rollout_ref") or {}).get("worker_placement") or {}
 actor_rollout = worker_placement.get("actor_rollout") or {}
@@ -399,12 +415,12 @@ fi
 
 AUDIT_OUTPUT_DIR=""
 if ! has_hydra_override "mopd_audit.output_dir"; then
-  AUDIT_CONFIG_INFO="$(python - "${CONFIG_PATH}" <<'PY'
-from pathlib import Path
+  AUDIT_CONFIG_INFO="$(python - "${CONFIG_REFERENCE}" <<'PY'
 import sys
-import yaml
 
-config = yaml.safe_load(Path(sys.argv[1]).read_text(encoding="utf-8")) or {}
+from mopd_verl.config_profiles import load_raw_config
+
+config = load_raw_config(sys.argv[1])
 audit = config.get("audit") or {}
 enabled = bool(audit.get("enabled", False))
 output_dir = str(audit.get("output_dir") or "mopd_audit")
@@ -425,7 +441,7 @@ fi
 
 echo "${RUN_ID}" > "${LOG_DIR}/opd_target_run_id"
 echo "${LOG_FILE}" > "${LOG_DIR}/opd_target_log"
-echo "${CONFIG_PATH}" > "${LOG_DIR}/opd_target_config"
+echo "${CONFIG_REFERENCE}" > "${LOG_DIR}/opd_target_config"
 echo "${GPU_CSV}" > "${LOG_DIR}/opd_target_gpu_csv"
 
 EXTRA_ARGS_Q=""
@@ -470,7 +486,7 @@ trap 'kill \${GPU_MONITOR_PID} 2>/dev/null || true' EXIT
 
 {
   echo RUN_ID=$(quote "${RUN_ID}")
-  echo CONFIG=$(quote "${CONFIG_PATH}")
+  echo CONFIG=$(quote "${CONFIG_REFERENCE}")
   echo CODE_DIR=$(quote "${CODE_DIR}")
   echo VERL_RUNTIME_DIR=$(quote "${VERL_RUNTIME_DIR}")
   echo CUDA_VISIBLE_DEVICES=$(quote "${GPU_IDS}")
@@ -479,14 +495,14 @@ trap 'kill \${GPU_MONITOR_PID} 2>/dev/null || true' EXIT
   echo START_TS=\$(date -Is)
   echo PYTHON_BIN=\$(command -v python)
   python --version
-  $(printf "%s" "${DRY_RUN_ENV}")bash scripts/run_mopd.sh $(quote "${CONFIG_PATH}")${RUN_MOPD_EXTRA_ARGS_Q}
+  $(printf "%s" "${DRY_RUN_ENV}")bash scripts/run_mopd.sh $(quote "${CONFIG_REFERENCE}")${RUN_MOPD_EXTRA_ARGS_Q}
 } 2>&1 | tee -a $(quote "${LOG_FILE}")
 LAUNCH
 chmod +x "${LAUNCH_FILE}"
 
 echo "== Local training launch =="
 echo "CODE_DIR=${CODE_DIR}"
-echo "CONFIG=${CONFIG_PATH}"
+echo "CONFIG=${CONFIG_REFERENCE}"
 echo "VERL_RUNTIME_DIR=${VERL_RUNTIME_DIR}"
 echo "MOPD_LOCAL_CONDA_ENV=${MOPD_LOCAL_CONDA_ENV}"
 echo "GPU_IDS=${GPU_IDS}"

@@ -222,6 +222,8 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"{str(audit.dynamic_domain_loss_weighting_enabled).lower()}",
         "+mopd_audit.dynamic_domain_loss_weighting_freq_steps="
         f"{audit.dynamic_domain_loss_weighting_freq_steps}",
+        "+mopd_audit.dynamic_domain_loss_weighting_signal_source="
+        f"{audit.dynamic_domain_loss_weighting_signal_source}",
         "+mopd_audit.dynamic_domain_loss_weighting_ema_beta="
         f"{audit.dynamic_domain_loss_weighting_ema_beta}",
         "+mopd_audit.dynamic_domain_loss_weighting_weight_ema_beta="
@@ -232,6 +234,20 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"{audit.dynamic_domain_loss_weighting_min}",
         "+mopd_audit.dynamic_domain_loss_weighting_max="
         f"{audit.dynamic_domain_loss_weighting_max}",
+        "+mopd_audit.control_token_loss_weighting_enabled="
+        f"{str(audit.control_token_loss_weighting_enabled).lower()}",
+        "+mopd_audit.control_token_loss_weight="
+        f"{audit.control_token_loss_weight}",
+        "+mopd_audit.control_token_ids="
+        f"{_hydra_int_list(audit.control_token_ids)}",
+        "+mopd_audit.all_domain_shared_token_loss_weighting_enabled="
+        f"{str(audit.all_domain_shared_token_loss_weighting_enabled).lower()}",
+        "+mopd_audit.all_domain_shared_token_loss_weight="
+        f"{audit.all_domain_shared_token_loss_weight}",
+        "+mopd_audit.all_domain_shared_token_selection_mode="
+        f"{audit.all_domain_shared_token_selection_mode}",
+        "+mopd_audit.all_domain_shared_token_top_k="
+        f"{'null' if audit.all_domain_shared_token_top_k is None else audit.all_domain_shared_token_top_k}",
     ]
 
 

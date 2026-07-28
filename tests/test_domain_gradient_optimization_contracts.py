@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import sys
+import tempfile
 import unittest
 from collections.abc import Iterator
 from contextlib import contextmanager
-from types import ModuleType
-from types import SimpleNamespace
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -45,6 +47,213 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
             select_tail_loss_mass(tokens, 0.2, minimum_tokens=1),
             (tokens[2], tokens[3]),
         )
+
+    def test_shared_tokens_use_per_domain_mean_absolute_loss_top_k(
+        self,
+    ) -> None:
+        torch = self._torch()
+        with self._stubbed_verl(torch):
+            from mopd_verl.domain_gradient.token_logging import (
+                LocalTokenCandidate,
+            )
+            from mopd_verl.domain_gradient.token_weighting import (
+                select_all_domain_shared_tokens,
+            )
+
+            def candidate(token_id: int, loss_abs: float) -> LocalTokenCandidate:
+                return LocalTokenCandidate(
+                    micro_batch_index=0,
+                    sample_index=0,
+                    token_index=0,
+                    token_id=token_id,
+                    configured_loss=loss_abs,
+                    loss_abs=loss_abs,
+                )
+
+            selection = select_all_domain_shared_tokens(
+                {
+                    "math": (
+                        candidate(10, 5.0),
+                        candidate(10, 5.0),
+                        candidate(20, 8.0),
+                        candidate(20, 0.0),
+                    ),
+                    "code": (
+                        candidate(10, 4.0),
+                        candidate(20, 3.0),
+                    ),
+                    "science": (
+                        candidate(10, 2.0),
+                        candidate(20, 1.0),
+                    ),
+                },
+                ("math", "code", "science"),
+                top_k=1,
+            )
+
+        self.assertEqual(selection.token_ids, (10,))
+
+    def test_cumulative_abs_loss_shared_tokens_accumulate_once_per_step(
+        self,
+    ) -> None:
+        torch = self._torch()
+        with self._stubbed_verl(torch):
+            from mopd_verl.domain_gradient.token_logging import (
+                LocalTokenCandidate,
+            )
+            from mopd_verl.domain_gradient.token_weighting import (
+                update_cumulative_shared_token_selection,
+            )
+            from mopd_verl.domain_gradient.token_weighting_state import (
+                CumulativeTokenLossState,
+                initial_cumulative_token_loss_state,
+            )
+
+            def candidate(
+                token_id: int,
+                loss_abs: float,
+            ) -> LocalTokenCandidate:
+                return LocalTokenCandidate(
+                    micro_batch_index=0,
+                    sample_index=0,
+                    token_index=0,
+                    token_id=token_id,
+                    configured_loss=loss_abs,
+                    loss_abs=loss_abs,
+                )
+
+            domains = ("math", "code", "science")
+            first_candidates = {
+                domain: (
+                    candidate(10, 3.0),
+                    candidate(10, 3.0),
+                    candidate(20, 5.0),
+                )
+                for domain in domains
+            }
+            first_selection, first_state = (
+                update_cumulative_shared_token_selection(
+                    first_candidates,
+                    domains,
+                    top_k=1,
+                    step=0,
+                    state=initial_cumulative_token_loss_state(domains),
+                )
+            )
+            second_candidates = {
+                domain: (candidate(20, 10.0),)
+                for domain in domains
+            }
+            second_selection, second_state = (
+                update_cumulative_shared_token_selection(
+                    second_candidates,
+                    domains,
+                    top_k=1,
+                    step=1,
+                    state=first_state,
+                )
+            )
+            duplicate_selection, duplicate_state = (
+                update_cumulative_shared_token_selection(
+                    {
+                        domain: (candidate(10, 1000.0),)
+                        for domain in domains
+                    },
+                    domains,
+                    top_k=1,
+                    step=1,
+                    state=second_state,
+                )
+            )
+            restored = CumulativeTokenLossState.from_mapping(
+                duplicate_state.as_dict()
+            )
+
+        self.assertEqual(first_selection.token_ids, (10,))
+        self.assertEqual(second_selection.token_ids, (20,))
+        self.assertEqual(duplicate_selection.token_ids, (20,))
+        self.assertEqual(duplicate_state, second_state)
+        self.assertEqual(restored, second_state)
+        self.assertEqual(second_state.last_updated_step, 1)
+
+    def test_cumulative_null_uses_all_observed_domain_token_types(
+        self,
+    ) -> None:
+        torch = self._torch()
+        with self._stubbed_verl(torch):
+            from mopd_verl.domain_gradient.token_logging import (
+                LocalTokenCandidate,
+            )
+            from mopd_verl.domain_gradient.token_weighting import (
+                update_cumulative_shared_token_selection,
+            )
+            from mopd_verl.domain_gradient.token_weighting_state import (
+                initial_cumulative_token_loss_state,
+            )
+
+            def candidate(token_id: int) -> LocalTokenCandidate:
+                return LocalTokenCandidate(
+                    micro_batch_index=0,
+                    sample_index=0,
+                    token_index=0,
+                    token_id=token_id,
+                    configured_loss=1.0,
+                    loss_abs=1.0,
+                )
+
+            domains = ("math", "code", "science")
+            selection, state = update_cumulative_shared_token_selection(
+                {
+                    "math": (candidate(10), candidate(20)),
+                    "code": (candidate(10), candidate(30)),
+                    "science": (candidate(10), candidate(40)),
+                },
+                domains,
+                top_k=None,
+                step=0,
+                state=initial_cumulative_token_loss_state(domains),
+            )
+
+        self.assertEqual(selection.token_ids, (10,))
+        self.assertEqual(
+            state.domain_summaries()["math"][
+                "observed_token_type_count"
+            ],
+            2.0,
+        )
+
+    def test_shared_token_selection_is_logged_for_reproducibility(
+        self,
+    ) -> None:
+        torch = self._torch()
+        with self._stubbed_verl(torch):
+            from mopd_verl.domain_gradient.token_weighting import (
+                SharedTokenSelection,
+                append_shared_token_selection_jsonl,
+            )
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                append_shared_token_selection_jsonl(
+                    output_dir=temp_dir,
+                    step=7,
+                    top_k=100,
+                    selection=SharedTokenSelection(
+                        token_ids=(10,),
+                        domain_top_token_ids=(
+                            ("math", (10, 20)),
+                            ("code", (10, 30)),
+                            ("science", (10, 40)),
+                        ),
+                    ),
+                )
+                record = json.loads(
+                    (
+                        Path(temp_dir) / "shared_token_weighting.jsonl"
+                    ).read_text(encoding="utf-8")
+                )
+
+        self.assertEqual(record["step"], 7)
+        self.assertEqual(record["all_domain_shared_token_ids"], [10])
 
     @contextmanager
     def _stubbed_verl(self, torch: Any) -> Iterator[None]:
@@ -928,7 +1137,528 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
             0.5,
         )
 
-    def test_dynamic_parity_reference_replays_current_training_masks(self) -> None:
+    def test_disabled_weighting_fast_path_skips_actor_state_capture(
+        self,
+    ) -> None:
+        torch = self._torch()
+        with self._stubbed_verl(torch):
+            from mopd_verl.domain_gradient.audit import DomainGradientAudit
+
+            audit = DomainGradientAudit(
+                SimpleNamespace(),
+                {
+                    "enabled": False,
+                    "domain_gradient_enabled": False,
+                    "domains": ["math", "code", "science"],
+                    "dynamic_domain_loss_weighting_enabled": False,
+                    "control_token_loss_weighting_enabled": False,
+                    "all_domain_shared_token_loss_weighting_enabled": False,
+                },
+            )
+            with (
+                patch(
+                    "mopd_verl.domain_gradient.audit.AuditState.capture"
+                ) as capture,
+                patch.object(
+                    audit,
+                    "_collect_loss_abs_candidates",
+                ) as collect,
+            ):
+                metrics = audit.run_before_training(
+                    (),
+                    (),
+                    on_policy=True,
+                    temperature=1.0,
+                )
+
+        self.assertEqual(metrics, {})
+        capture.assert_not_called()
+        collect.assert_not_called()
+
+    def test_control_only_non_audit_step_skips_candidate_forward(
+        self,
+    ) -> None:
+        torch = self._torch()
+        with self._stubbed_verl(torch):
+            from mopd_verl.domain_gradient.audit import DomainGradientAudit
+
+            audit = DomainGradientAudit(
+                SimpleNamespace(),
+                {
+                    "enabled": True,
+                    "domain_gradient_enabled": False,
+                    "domains": ["math", "code"],
+                    "control_token_loss_weighting_enabled": True,
+                    "control_token_loss_weight": 2.0,
+                    "control_token_ids": [10],
+                },
+            )
+            micro_batch = SimpleNamespace(
+                batch={
+                    "response_mask": torch.ones(2, 2),
+                    "responses": torch.tensor([[10, 20], [30, 10]]),
+                },
+                non_tensor_batch={"domain": ["math", "code"]},
+            )
+            with (
+                patch(
+                    "mopd_verl.domain_gradient.audit.AuditState.capture"
+                ) as capture,
+                patch.object(
+                    audit,
+                    "_collect_loss_abs_candidates",
+                ) as collect,
+            ):
+                metrics = audit.run_before_training(
+                    (micro_batch,),
+                    (1.0,),
+                    on_policy=True,
+                    temperature=1.0,
+                )
+            gradient_mask = audit.training_gradient_mask(micro_batch)
+
+        capture.assert_not_called()
+        collect.assert_not_called()
+        self.assertEqual(
+            metrics["global/token_weight/control_token_id_count"],
+            1.0,
+        )
+        self.assertEqual(
+            metrics["global/token_weight/control_token_weight"],
+            2.0,
+        )
+        torch.testing.assert_close(
+            gradient_mask,
+            torch.tensor([[2.0, 1.0], [1.0, 2.0]]),
+        )
+
+    def test_shared_non_audit_step_keeps_required_candidate_forward(
+        self,
+    ) -> None:
+        torch = self._torch()
+        with self._stubbed_verl(torch):
+            from mopd_verl.domain_gradient.audit import DomainGradientAudit
+
+            audit = DomainGradientAudit(
+                SimpleNamespace(),
+                {
+                    "enabled": True,
+                    "domain_gradient_enabled": False,
+                    "domains": ["math", "code"],
+                    "all_domain_shared_token_loss_weighting_enabled": True,
+                    "all_domain_shared_token_loss_weight": 1.5,
+                },
+            )
+            candidate_data = (
+                {"math": tuple(), "code": tuple()},
+                tuple(),
+            )
+            state = MagicMock()
+            with (
+                patch(
+                    "mopd_verl.domain_gradient.audit.AuditState.capture",
+                    return_value=state,
+                ),
+                patch.object(
+                    audit,
+                    "_collect_loss_abs_candidates",
+                    return_value=candidate_data,
+                ) as collect,
+                patch.object(
+                    audit,
+                    "_refresh_shared_token_selection",
+                    return_value={},
+                ) as refresh,
+                patch.object(
+                    audit,
+                    "_loss_amplification_metrics",
+                    return_value={},
+                ),
+                patch.object(
+                    audit,
+                    "_backward_replay",
+                ) as replay,
+            ):
+                audit.run_before_training(
+                    tuple(),
+                    tuple(),
+                    on_policy=True,
+                    temperature=1.0,
+                )
+
+        collect.assert_called_once()
+        refresh.assert_called_once_with(candidate_data[0])
+        replay.assert_not_called()
+        state.restore.assert_called_once()
+
+    def test_backward_replay_can_return_loss_candidates(
+        self,
+    ) -> None:
+        torch = self._torch()
+        with self._stubbed_verl(torch):
+            from mopd_verl.domain_gradient.audit import DomainGradientAudit
+
+            audit = DomainGradientAudit(
+                SimpleNamespace(scaler=None),
+                {
+                    "domains": ["math", "code"],
+                },
+            )
+            micro_batch = SimpleNamespace(
+                batch={
+                    "response_mask": torch.ones(2, 2),
+                    "responses": torch.tensor([[10, 20], [30, 40]]),
+                },
+                non_tensor_batch={"domain": ["math", "code"]},
+            )
+            result = SimpleNamespace(
+                loss=torch.tensor(3.0, requires_grad=True),
+                configured_token_loss=torch.tensor(
+                    [[1.0, -2.0], [3.0, 4.0]]
+                ),
+                configured_token_loss_mask=torch.ones(2, 2),
+            )
+            state = MagicMock()
+            with patch(
+                "mopd_verl.domain_gradient.audit."
+                "build_actor_micro_batch_loss",
+                return_value=result,
+            ) as build_loss:
+                candidate_data = audit._backward_replay(
+                    state,
+                    (micro_batch,),
+                    (1.0,),
+                    on_policy=True,
+                    temperature=1.0,
+                    domain=None,
+                    collect_loss_abs_candidates=True,
+                )
+
+        self.assertIsNotNone(candidate_data)
+        assert candidate_data is not None
+        candidates_by_domain, mask_templates = candidate_data
+        self.assertEqual(
+            tuple(
+                candidate.token_id
+                for candidate in candidates_by_domain["math"]
+            ),
+            (10, 20),
+        )
+        self.assertEqual(
+            tuple(
+                candidate.loss_abs
+                for candidate in candidates_by_domain["code"]
+            ),
+            (3.0, 4.0),
+        )
+        self.assertEqual(len(mask_templates), 1)
+        self.assertTrue(
+            build_loss.call_args.kwargs["return_configured_token_loss"]
+        )
+        state.restore_runtime.assert_called_once()
+        state.clear_gradients.assert_called_once()
+        self.assertEqual(float(result.loss.grad), 1.0)
+
+    def test_enabled_audit_reuses_total_replay_candidates(
+        self,
+    ) -> None:
+        torch = self._torch()
+        with self._stubbed_verl(torch):
+            from mopd_verl.domain_gradient.audit import DomainGradientAudit
+
+            actor = SimpleNamespace(config={}, scaler=None)
+            audit = DomainGradientAudit(
+                actor,
+                {
+                    "enabled": True,
+                    "domain_gradient_enabled": True,
+                    "domains": ["math", "code"],
+                    "full_grad_training_parity_freq_steps": -1,
+                    "control_token_loss_weighting_enabled": True,
+                    "control_token_loss_weight": 2.0,
+                    "control_token_ids": [10],
+                },
+            )
+            candidate_data = (
+                {"math": tuple(), "code": tuple()},
+                tuple(),
+            )
+            state = MagicMock()
+            vector = (torch.tensor([1.0]),)
+            with (
+                patch(
+                    "mopd_verl.domain_gradient.audit.AuditState.capture",
+                    return_value=state,
+                ),
+                patch.object(
+                    audit,
+                    "_collect_loss_abs_candidates",
+                ) as collect,
+                patch.object(
+                    audit,
+                    "_backward_replay",
+                    side_effect=(candidate_data, None, None),
+                ) as replay,
+                patch(
+                    "mopd_verl.domain_gradient.audit.snapshot_gradients",
+                    return_value=vector,
+                ),
+            ):
+                audit.run_before_training(
+                    tuple(),
+                    tuple(),
+                    on_policy=True,
+                    temperature=1.0,
+                )
+
+        collect.assert_not_called()
+        self.assertEqual(replay.call_count, 3)
+        first_call = replay.call_args_list[0]
+        self.assertIsNone(first_call.kwargs["domain"])
+        self.assertNotIn("gradient_masks", first_call.kwargs)
+        self.assertTrue(
+            first_call.kwargs["collect_loss_abs_candidates"]
+        )
+        state.restore.assert_called_once()
+
+    def test_domain_control_and_shared_token_weights_compose(self) -> None:
+        torch = self._torch()
+        with self._stubbed_verl(torch):
+            from mopd_verl.domain_gradient.audit import DomainGradientAudit
+            from mopd_verl.domain_gradient.token_weighting import (
+                SharedTokenSelection,
+            )
+            from mopd_verl.domain_gradient.weighting import DomainWeightState
+
+            actor = SimpleNamespace(
+                _mopd_domain_weight_state=DomainWeightState(
+                    domains=("math", "code"),
+                    ema_norms=(1.0, 2.0),
+                    weights=(1.5, 0.5),
+                    update_count=1,
+                )
+            )
+            audit = DomainGradientAudit(
+                actor,
+                {
+                    "domains": ["math", "code"],
+                    "dynamic_domain_loss_weighting_enabled": True,
+                    "control_token_loss_weighting_enabled": True,
+                    "control_token_loss_weight": 2.0,
+                    "control_token_ids": [10],
+                    "all_domain_shared_token_loss_weighting_enabled": True,
+                    "all_domain_shared_token_loss_weight": 3.0,
+                },
+            )
+            audit._shared_token_selection = SharedTokenSelection(
+                token_ids=(20,),
+                domain_top_token_ids=(
+                    ("math", (20,)),
+                    ("code", (20,)),
+                ),
+            )
+            micro_batch = SimpleNamespace(
+                batch={
+                    "response_mask": torch.ones(2, 3),
+                    "responses": torch.tensor(
+                        [[10, 20, 30], [20, 10, 30]]
+                    ),
+                },
+                non_tensor_batch={"domain": ["math", "code"]},
+            )
+
+            mask = audit.training_gradient_mask(micro_batch)
+            cached_token_id_tensors = tuple(
+                audit._token_id_tensor_cache.values()
+            )
+            repeated_mask = audit.training_gradient_mask(micro_batch)
+            repeated_cached_token_id_tensors = tuple(
+                audit._token_id_tensor_cache.values()
+            )
+
+            self.assertEqual(len(cached_token_id_tensors), 2)
+            self.assertTrue(
+                all(
+                    first is second
+                    for first, second in zip(
+                        cached_token_id_tensors,
+                        repeated_cached_token_id_tensors,
+                        strict=True,
+                    )
+                )
+            )
+
+        torch.testing.assert_close(
+            mask,
+            torch.tensor(
+                [
+                    [3.0, 4.5, 1.5],
+                    [1.5, 1.0, 0.5],
+                ]
+            ),
+        )
+        torch.testing.assert_close(repeated_mask, mask)
+
+    def test_loss_amplification_metrics_compare_raw_and_weighted_mass(
+        self,
+    ) -> None:
+        torch = self._torch()
+        with self._stubbed_verl(torch):
+            from mopd_verl.domain_gradient.audit import DomainGradientAudit
+            from mopd_verl.domain_gradient.token_logging import (
+                LocalTokenCandidate,
+            )
+            from mopd_verl.domain_gradient.token_weighting import (
+                SharedTokenSelection,
+            )
+
+            audit = DomainGradientAudit(
+                SimpleNamespace(),
+                {
+                    "domains": ["math", "code"],
+                    "control_token_loss_weighting_enabled": True,
+                    "control_token_loss_weight": 2.0,
+                    "control_token_ids": [10],
+                    "all_domain_shared_token_loss_weighting_enabled": True,
+                    "all_domain_shared_token_loss_weight": 3.0,
+                },
+            )
+            audit._shared_token_selection = SharedTokenSelection(
+                token_ids=(10, 20),
+                domain_top_token_ids=(
+                    ("math", (10, 20)),
+                    ("code", (10, 20)),
+                ),
+            )
+
+            def candidate(
+                token_id: int,
+                loss: float,
+                sample_index: int,
+                token_index: int,
+            ) -> LocalTokenCandidate:
+                return LocalTokenCandidate(
+                    micro_batch_index=0,
+                    sample_index=sample_index,
+                    token_index=token_index,
+                    token_id=token_id,
+                    configured_loss=loss,
+                    loss_abs=abs(loss),
+                )
+
+            metrics = audit._loss_amplification_metrics(
+                {
+                    "math": (
+                        candidate(10, 2.0, 0, 0),
+                        candidate(20, 1.0, 0, 1),
+                    ),
+                    "code": (candidate(30, 4.0, 1, 0),),
+                },
+                (
+                    SimpleNamespace(
+                        batch={
+                            "response_mask": torch.ones(2, 2),
+                            "responses": torch.tensor(
+                                [[10, 20], [30, 0]]
+                            ),
+                        },
+                        non_tensor_batch={
+                            "domain": ["math", "code"]
+                        },
+                    ),
+                ),
+            )
+
+        self.assertEqual(
+            metrics["global/token_weight/occurrence_count"],
+            3.0,
+        )
+        self.assertEqual(
+            metrics[
+                "global/token_weight/amplified_occurrence_count"
+            ],
+            2.0,
+        )
+        self.assertAlmostEqual(
+            metrics[
+                "global/token_weight/mean_token_gradient_multiplier"
+            ],
+            10.0 / 3.0,
+        )
+        self.assertAlmostEqual(
+            metrics[
+                "global/token_weight/raw_configured_loss_abs_mass"
+            ],
+            7.0,
+        )
+        self.assertAlmostEqual(
+            metrics[
+                "global/token_weight/"
+                "token_weighted_configured_loss_abs_mass"
+            ],
+            19.0,
+        )
+        self.assertAlmostEqual(
+            metrics[
+                "global/token_weight/"
+                "token_weighted_to_raw_abs_loss_mass_ratio"
+            ],
+            19.0 / 7.0,
+        )
+        self.assertEqual(
+            metrics[
+                "global/token_weight/"
+                "control_shared_overlap_occurrence_count"
+            ],
+            1.0,
+        )
+        self.assertEqual(
+            metrics[
+                "global/token_weight/"
+                "gradient_multiplier_mean_abs_error"
+            ],
+            0.0,
+        )
+
+    def test_projection_share_source_uses_absolute_controller_signal(
+        self,
+    ) -> None:
+        torch = self._torch()
+        with self._stubbed_verl(torch):
+            from mopd_verl.domain_gradient.audit import DomainGradientAudit
+
+            audit = DomainGradientAudit(
+                SimpleNamespace(),
+                {
+                    "domains": ["math", "code", "science"],
+                    "dynamic_domain_loss_weighting_enabled": True,
+                    "dynamic_domain_loss_weighting_signal_source": (
+                        "domain_gradient_projection_share"
+                    ),
+                },
+            )
+            signals, signed = audit._dynamic_weight_signals(
+                total_sq=10.0,
+                domain_sq={"math": 1.0, "code": 4.0, "science": 9.0},
+                domain_total_dot={
+                    "math": 2.0,
+                    "code": -1.0,
+                    "science": 9.0,
+                },
+            )
+
+        self.assertEqual(
+            signals,
+            {"math": 0.2, "code": 0.1, "science": 0.9},
+        )
+        self.assertEqual(
+            signed,
+            {"math": 0.2, "code": -0.1, "science": 0.9},
+        )
+
+    def test_weighted_parity_reference_replays_composed_training_masks(
+        self,
+    ) -> None:
         torch = self._torch()
         with self._stubbed_verl(torch):
             from mopd_verl.domain_gradient.audit import DomainGradientAudit
@@ -949,10 +1679,18 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
                     "domain_gradient_enabled": True,
                     "domains": ["math", "code"],
                     "dynamic_domain_loss_weighting_enabled": True,
+                    "control_token_loss_weighting_enabled": True,
+                    "control_token_loss_weight": 2.0,
+                    "control_token_ids": [10],
                 },
             )
             micro_batch = SimpleNamespace(
-                batch={"response_mask": torch.ones(2, 2)},
+                batch={
+                    "response_mask": torch.ones(2, 2),
+                    "responses": torch.tensor(
+                        [[10, 30], [30, 10]]
+                    ),
+                },
                 non_tensor_batch={"domain": ["math", "code"]},
             )
             replay = MagicMock()
@@ -978,7 +1716,7 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
         self.assertEqual(len(call.kwargs["gradient_masks"]), 1)
         torch.testing.assert_close(
             call.kwargs["gradient_masks"][0],
-            torch.tensor([[1.5, 1.5], [0.5, 0.5]]),
+            torch.tensor([[3.0, 1.5], [0.5, 1.0]]),
         )
 
     def test_dynamic_metrics_expose_only_requested_domain_values(self) -> None:
@@ -1013,10 +1751,14 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
                 "math/dynamic_weight/applied_gradient_weight",
                 "math/dynamic_weight/bounded_target_gradient_weight",
                 "math/dynamic_weight/ema_grad_norm",
+                "math/dynamic_weight/ema_source_signal",
+                "math/dynamic_weight/source_is_projection_share",
                 "math/dynamic_weight/weighted_grad_norm",
                 "code/dynamic_weight/applied_gradient_weight",
                 "code/dynamic_weight/bounded_target_gradient_weight",
                 "code/dynamic_weight/ema_grad_norm",
+                "code/dynamic_weight/ema_source_signal",
+                "code/dynamic_weight/source_is_projection_share",
                 "code/dynamic_weight/weighted_grad_norm",
             },
         )
@@ -1107,6 +1849,50 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
             )
 
         self.assertEqual(restored._weight_state, first_audit._weight_state)
+
+    def test_cumulative_token_loss_state_round_trips_optimizer_state(
+        self,
+    ) -> None:
+        torch = self._torch()
+        with self._stubbed_verl(torch):
+            from mopd_verl.domain_gradient.audit import DomainGradientAudit
+            from mopd_verl.domain_gradient.token_weighting_state import (
+                CumulativeTokenLossState,
+            )
+
+            first_optimizer = SimpleNamespace(param_groups=[{}])
+            first_actor = SimpleNamespace(actor_optimizer=first_optimizer)
+            config = {
+                "domains": ["math", "code"],
+                "all_domain_shared_token_loss_weighting_enabled": True,
+                "all_domain_shared_token_selection_mode": (
+                    "cumulative_abs_loss"
+                ),
+            }
+            first_audit = DomainGradientAudit(first_actor, config)
+            first_audit._cumulative_token_loss_state = (
+                CumulativeTokenLossState(
+                    domains=("math", "code"),
+                    statistics=(
+                        ("math", ((10, 3.5, 2),)),
+                        ("code", ((10, 4.5, 1),)),
+                    ),
+                    last_updated_step=7,
+                )
+            )
+            first_audit._persist_cumulative_token_loss_state()
+
+            second_actor = SimpleNamespace(
+                actor_optimizer=SimpleNamespace(
+                    param_groups=[dict(first_optimizer.param_groups[0])]
+                )
+            )
+            restored = DomainGradientAudit(second_actor, config)
+
+        self.assertEqual(
+            restored._cumulative_token_loss_state,
+            first_audit._cumulative_token_loss_state,
+        )
 
     def test_reweighted_total_preserves_unconfigured_domain_residual(self) -> None:
         torch = self._torch()

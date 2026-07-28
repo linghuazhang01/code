@@ -703,6 +703,14 @@ class DataParallelPPOActor(BasePPOActor):
                 "mini-batch per actor update so its gradient norms cover the "
                 "entire actor batch."
             )
+        if audit.config.all_domain_shared_token_weighting_enabled and (
+            len(mini_batches) != 1 or self.config.ppo_epochs != 1
+        ):
+            raise ValueError(
+                "All-domain shared-token loss weighting requires exactly "
+                "one optimizer mini-batch and one PPO epoch per actor update "
+                "so each Top-K intersection covers the complete global step."
+            )
         for _ in range(self.config.ppo_epochs):
             if return_configured_token_loss:
                 configured_token_loss_batches = []

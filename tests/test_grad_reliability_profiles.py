@@ -1,51 +1,55 @@
 from __future__ import annotations
 
+import unittest
 from dataclasses import replace
 from pathlib import Path
-import unittest
 
+from mopd_verl.config_profiles import list_config_profiles
 from mopd_verl.launch import build_command, format_command
 from mopd_verl.settings import MOPDConfig, load_config
 
-
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = ROOT / "test_grad_configs"
-PROFILE_PREFIX = "mopd_grad_reliability_qwen0p6b_0p6b_aw2"
-HYBRID_PROFILE_PREFIX = "mopd_grad_reliability_qwen0p6b_0p6b_aw4"
-RELIABILITY_PROFILE_GLOB = "mopd_grad_reliability_qwen0p6b_0p6b_aw*.yaml"
-EXPECTED_PROFILE_NAMES = {
-    "mopd_grad_reliability_qwen0p6b_0p6b_aw2_fsdpsize1_audit_freq2_b16_4step_smoke.yaml",
-    "mopd_grad_reliability_qwen0p6b_0p6b_aw2_fsdpsize1_audit_off_b16_4step_smoke.yaml",
-    "mopd_grad_reliability_qwen0p6b_0p6b_aw2_fsdpsize2_audit_freq2_b16_4step_smoke.yaml",
-    "mopd_grad_reliability_qwen0p6b_0p6b_aw4_fsdpsize2_audit_freq2_b16_4step_smoke.yaml",
-    "mopd_grad_reliability_qwen0p6b_0p6b_aw4_fsdpsize2_audit_off_b16_4step_smoke.yaml",
-}
+MATRIX_PATH = CONFIG_DIR / "mopd_grad_reliability_qwen0p6b_8b_matrix.yaml"
+EXPECTED_PROFILE_NAMES = (
+    "aw2_fsdp1_audit_on",
+    "aw2_fsdp1_audit_off",
+    "aw2_fsdp2_audit_on",
+    "aw4_fsdp2_audit_on",
+    "aw4_fsdp2_audit_off",
+)
 STUDENT_PATH = "/root/autodl-tmp/models/Qwen3-0.6B"
-TEACHER_PATH = "/root/autodl-tmp/models/Qwen3-0.6B"
+TEACHER_PATH = "/root/autodl-tmp/models/Qwen3-8B"
 
 
 class GradientReliabilityProfileTests(unittest.TestCase):
-    def test_regression_directory_contains_exactly_five_profiles(self) -> None:
-        paths = set(path.name for path in CONFIG_DIR.glob(RELIABILITY_PROFILE_GLOB))
-        self.assertEqual(paths, EXPECTED_PROFILE_NAMES)
+    def test_matrix_contains_exactly_five_profiles(self) -> None:
+        self.assertEqual(
+            list_config_profiles(MATRIX_PATH),
+            EXPECTED_PROFILE_NAMES,
+        )
+        self.assertEqual(
+            tuple(
+                CONFIG_DIR.glob(
+                    "mopd_grad_reliability_qwen0p6b_0p6b_aw*.yaml"
+                )
+            ),
+            (),
+        )
 
     def _load(
         self,
         fsdp_size: int,
         audit_enabled: bool,
     ) -> tuple[Path, MOPDConfig]:
-        audit_mode = "audit_freq2" if audit_enabled else "audit_off"
-        path = CONFIG_DIR / (
-            f"{PROFILE_PREFIX}_fsdpsize{fsdp_size}_{audit_mode}_b16_4step_smoke.yaml"
-        )
-        return path, load_config(path)
+        audit_mode = "audit_on" if audit_enabled else "audit_off"
+        profile = f"aw2_fsdp{fsdp_size}_{audit_mode}"
+        return MATRIX_PATH, load_config(f"{MATRIX_PATH}::{profile}")
 
     def _load_hybrid(self, audit_enabled: bool) -> tuple[Path, MOPDConfig]:
-        audit_mode = "audit_freq2" if audit_enabled else "audit_off"
-        path = CONFIG_DIR / (
-            f"{HYBRID_PROFILE_PREFIX}_fsdpsize2_{audit_mode}_b16_4step_smoke.yaml"
-        )
-        return path, load_config(path)
+        audit_mode = "audit_on" if audit_enabled else "audit_off"
+        profile = f"aw4_fsdp2_{audit_mode}"
+        return MATRIX_PATH, load_config(f"{MATRIX_PATH}::{profile}")
 
     def test_two_gpu_student_one_gpu_teacher_profiles(self) -> None:
         for fsdp_size in (1, 2):
@@ -57,6 +61,10 @@ class GradientReliabilityProfileTests(unittest.TestCase):
                 self.assertEqual(config.model.primary_teacher_path, TEACHER_PATH)
                 self.assertEqual(config.model.math_teacher_path, TEACHER_PATH)
                 self.assertEqual(config.model.code_teacher_path, TEACHER_PATH)
+                self.assertNotEqual(
+                    config.model.student_path,
+                    config.model.primary_teacher_path,
+                )
                 self.assertIsNone(config.model.secondary_teacher_path)
                 self.assertEqual(config.model.teacher_model_device, "gpu")
 
@@ -258,11 +266,9 @@ class GradientReliabilityProfileTests(unittest.TestCase):
         )
 
     def test_all_reliability_profiles_use_finite_logprob_temperature(self) -> None:
-        paths = sorted(CONFIG_DIR.glob(RELIABILITY_PROFILE_GLOB))
-        self.assertGreater(len(paths), 0)
-        for path in paths:
-            with self.subTest(config=path.name):
-                config = load_config(path)
+        for profile in EXPECTED_PROFILE_NAMES:
+            with self.subTest(profile=profile):
+                config = load_config(f"{MATRIX_PATH}::{profile}")
                 self.assertGreater(config.rollout.temperature, 0.0)
                 if not config.rollout.do_sample:
                     self.assertIn(

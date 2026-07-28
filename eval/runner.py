@@ -6,8 +6,9 @@ import argparse
 import json
 import logging
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Iterator, Sequence
 
 from eval.common import (
     DEFAULT_DATA_FILES,
@@ -158,16 +159,83 @@ def generate_one(
     )
 
 
-def load_vllm_model(model_path: str, torch_dtype: str, tensor_parallel_size: int, gpu_memory_utilization: float) -> Any:
+def load_vllm_model(
+    model_path: str,
+    torch_dtype: str,
+    tensor_parallel_size: int,
+    gpu_memory_utilization: float,
+    *,
+    max_model_len: int | None = None,
+    max_num_batched_tokens: int | None = None,
+    max_num_seqs: int | None = None,
+    enforce_eager: bool = False,
+    enable_chunked_prefill: bool | None = None,
+) -> Any:
     from vllm import LLM
 
-    return LLM(
-        model=model_path,
-        dtype=torch_dtype,
-        tensor_parallel_size=tensor_parallel_size,
-        gpu_memory_utilization=gpu_memory_utilization,
-        trust_remote_code=True,
-    )
+    optional_kwargs: dict[str, Any] = {}
+    if max_model_len is not None:
+        optional_kwargs["max_model_len"] = max_model_len
+    if max_num_batched_tokens is not None:
+        optional_kwargs["max_num_batched_tokens"] = max_num_batched_tokens
+    if max_num_seqs is not None:
+        optional_kwargs["max_num_seqs"] = max_num_seqs
+    if enable_chunked_prefill is not None:
+        optional_kwargs["enable_chunked_prefill"] = enable_chunked_prefill
+
+    with _temporary_vllm_v1_chunked_prefill_setting(
+        enable_chunked_prefill,
+        max_num_batched_tokens=max_num_batched_tokens,
+        max_num_seqs=max_num_seqs,
+    ):
+        return LLM(
+            model=model_path,
+            dtype=torch_dtype,
+            tensor_parallel_size=tensor_parallel_size,
+            gpu_memory_utilization=gpu_memory_utilization,
+            trust_remote_code=True,
+            enforce_eager=enforce_eager,
+            **optional_kwargs,
+        )
+
+
+@contextmanager
+def _temporary_vllm_v1_chunked_prefill_setting(
+    enable_chunked_prefill: bool | None,
+    *,
+    max_num_batched_tokens: int | None,
+    max_num_seqs: int | None,
+    engine_args_cls: Any | None = None,
+) -> Iterator[None]:
+    """Make vLLM V1 honor an explicit disabled chunked-prefill setting."""
+    if enable_chunked_prefill is not False:
+        yield
+        return
+    if max_num_batched_tokens is None or max_num_seqs is None:
+        raise ValueError(
+            "Disabling chunked prefill on vLLM V1 requires explicit "
+            "max_num_batched_tokens and max_num_seqs."
+        )
+    if engine_args_cls is None:
+        from vllm.engine.arg_utils import EngineArgs
+
+        engine_args_cls = EngineArgs
+
+    original = engine_args_cls._set_default_args
+
+    def _set_default_args_and_disable(
+        self: Any,
+        usage_context: Any,
+        model_config: Any,
+    ) -> None:
+        original(self, usage_context, model_config)
+        self.enable_chunked_prefill = False
+
+    engine_args_cls._set_default_args = _set_default_args_and_disable
+    try:
+        yield
+    finally:
+        engine_args_cls._set_default_args = original
 
 
 def generate_vllm_batch(
@@ -272,12 +340,86 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device-map", default="auto")
     parser.add_argument("--tensor-parallel-size", type=int, default=1)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
+    parser.add_argument("--max-model-len", type=int, default=None)
+    parser.add_argument("--max-num-batched-tokens", type=int, default=None)
+    parser.add_argument("--max-num-seqs", type=int, default=None)
+    parser.add_argument("--enforce-eager", action="store_true")
+    parser.add_argument(
+        "--enable-chunked-prefill",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
     parser.add_argument("--score-code", action="store_true", help="Execute code validation rewards when code data is included.")
     parser.add_argument("--save-completions", action="store_true", help="Store full completions in samples JSONL.")
     parser.add_argument("--skip-missing-data-files", action="store_true", help="Skip missing validation parquet files.")
     parser.add_argument("--num-samples", type=int, default=1, help="Rollouts per prompt; use 32 for GRPO AIME Avg@32.")
     parser.add_argument("--seed", type=int, default=42, help="Base generation seed for reproducible sampling.")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from a validated thinking_eval_samples.jsonl prefix instead of overwriting it.",
+    )
     return parser.parse_args()
+
+
+def load_incremental_results(path: Path) -> list[EvalResult]:
+    results: list[EvalResult] = []
+    with path.open(encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+                results.append(EvalResult(**payload))
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise ValueError(f"Invalid resume record at {path}:{line_number}") from exc
+    return results
+
+
+def validate_resume_prefix(
+    results: Sequence[EvalResult],
+    samples: Sequence[EvalSample],
+    modes: Sequence[str],
+    num_samples: int,
+) -> None:
+    sample_count = len(samples)
+    expected_count = sample_count * len(modes) * num_samples
+    if len(results) > expected_count:
+        raise ValueError(
+            f"Resume file contains {len(results)} records, but this run expects only {expected_count}."
+        )
+
+    for result_index, result in enumerate(results):
+        mode_index, mode_remainder = divmod(result_index, num_samples * sample_count)
+        rollout_index, sample_index = divmod(mode_remainder, sample_count)
+        expected_sample = samples[sample_index]
+        expected_mode = modes[mode_index]
+        if (
+            result.mode != expected_mode
+            or result.rollout_index != rollout_index
+            or result.sample_id != expected_sample.sample_id
+            or result.dataset != expected_sample.dataset
+        ):
+            raise ValueError(
+                "Resume file is not a strict prefix of the requested run at "
+                f"record {result_index + 1}: expected "
+                f"mode={expected_mode!r}, rollout={rollout_index}, "
+                f"sample_id={expected_sample.sample_id!r}, dataset={expected_sample.dataset!r}; "
+                f"found mode={result.mode!r}, rollout={result.rollout_index}, "
+                f"sample_id={result.sample_id!r}, dataset={result.dataset!r}."
+            )
+
+
+def completed_samples_for_rollout(
+    completed_results: int,
+    *,
+    mode_index: int,
+    rollout_index: int,
+    sample_count: int,
+    num_samples: int,
+) -> int:
+    rollout_offset = (mode_index * num_samples + rollout_index) * sample_count
+    return min(max(completed_results - rollout_offset, 0), sample_count)
 
 
 def main() -> None:
@@ -296,15 +438,29 @@ def main() -> None:
     if args.num_samples > 1 and args.temperature <= 0:
         LOGGER.warning("num_samples=%d with temperature=0 produces repeated greedy outputs.", args.num_samples)
 
-    results: list[EvalResult] = []
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "eval_run_config.json").write_text(
+    config_name = "eval_resume_config.json" if args.resume else "eval_run_config.json"
+    (output_dir / config_name).write_text(
         json.dumps(vars(args), indent=2, ensure_ascii=False, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     incremental_samples_path = output_dir / "thinking_eval_samples.jsonl"
-    if incremental_samples_path.exists():
+    if args.resume:
+        if not incremental_samples_path.exists():
+            raise FileNotFoundError(
+                f"--resume requires an existing incremental result file: {incremental_samples_path}"
+            )
+        results = load_incremental_results(incremental_samples_path)
+        validate_resume_prefix(results, samples, args.modes, args.num_samples)
+        LOGGER.info(
+            "Resuming from %d/%d validated result records.",
+            len(results),
+            len(samples) * len(args.modes) * args.num_samples,
+        )
+    else:
+        results = []
+    if incremental_samples_path.exists() and not args.resume:
         incremental_samples_path.unlink()
     mode_token_limits = {
         "thinking": args.max_new_tokens_thinking,
@@ -317,11 +473,36 @@ def main() -> None:
         ("non_thinking", "code"): args.max_new_tokens_non_thinking_code,
     }
     if args.backend == "vllm":
-        llm = load_vllm_model(args.model_path, args.torch_dtype, args.tensor_parallel_size, args.gpu_memory_utilization)
+        llm = load_vllm_model(
+            args.model_path,
+            args.torch_dtype,
+            args.tensor_parallel_size,
+            args.gpu_memory_utilization,
+            max_model_len=args.max_model_len,
+            max_num_batched_tokens=args.max_num_batched_tokens,
+            max_num_seqs=args.max_num_seqs,
+            enforce_eager=args.enforce_eager,
+            enable_chunked_prefill=args.enable_chunked_prefill,
+        )
         tokenizer = llm.get_tokenizer()
-        for mode in args.modes:
+        for mode_index, mode in enumerate(args.modes):
             for rollout_index in range(args.num_samples):
-                for start in range(0, len(samples), args.batch_size):
+                resume_start = completed_samples_for_rollout(
+                    len(results),
+                    mode_index=mode_index,
+                    rollout_index=rollout_index,
+                    sample_count=len(samples),
+                    num_samples=args.num_samples,
+                )
+                if resume_start == len(samples):
+                    continue
+                if resume_start % args.batch_size != 0:
+                    raise ValueError(
+                        "vLLM resume point must align with --batch-size because results are "
+                        f"committed one batch at a time; got {resume_start} completed samples "
+                        f"with batch_size={args.batch_size}."
+                    )
+                for start in range(resume_start, len(samples), args.batch_size):
                     generation_seed = args.seed + rollout_index * len(samples) + start
                     batch = samples[start : start + args.batch_size]
                     batch_max_new_tokens = max(
@@ -365,9 +546,16 @@ def main() -> None:
                         )
     else:
         model, tokenizer = load_model_and_tokenizer(args.model_path, args.torch_dtype, args.device_map)
-        for mode in args.modes:
+        for mode_index, mode in enumerate(args.modes):
             for rollout_index in range(args.num_samples):
-                for index, sample in enumerate(samples, start=1):
+                resume_start = completed_samples_for_rollout(
+                    len(results),
+                    mode_index=mode_index,
+                    rollout_index=rollout_index,
+                    sample_count=len(samples),
+                    num_samples=args.num_samples,
+                )
+                for index, sample in enumerate(samples[resume_start:], start=resume_start + 1):
                     generation_seed = args.seed + rollout_index * len(samples) + index - 1
                     max_new_tokens = resolve_max_new_tokens(sample, mode, mode_token_limits, ability_token_limits)
                     LOGGER.info(

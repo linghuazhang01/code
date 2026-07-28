@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+from mopd_verl.config_profiles import list_config_profiles
 from mopd_verl.launch import build_command, format_command
 from mopd_verl.settings import load_config
 
@@ -314,7 +315,7 @@ class MOPDProfileTests(unittest.TestCase):
             Path(__file__).resolve().parents[1]
             / "test_grad_configs"
             / (
-                "mopd_dynamic_weight_qwen0p6b_0p6b_aw2_fsdpsize2_"
+                "mopd_dynamic_weight_qwen0p6b_8b_aw2_fsdpsize2_"
                 "tail_topp1_b16_4step_smoke.yaml"
             )
         )
@@ -331,7 +332,7 @@ class MOPDProfileTests(unittest.TestCase):
         )
         self.assertEqual(
             config.model.primary_teacher_path,
-            "/root/autodl-tmp/models/Qwen3-0.6B",
+            "/root/autodl-tmp/models/Qwen3-8B",
         )
         expected_domains = {"math", "code", "science"}
         self.assertEqual(set(config.data.domain_train_files), expected_domains)
@@ -416,7 +417,7 @@ class MOPDProfileTests(unittest.TestCase):
             Path(__file__).resolve().parents[1]
             / "test_grad_configs"
             / (
-                "mopd_topk32_reweight_qwen0p6b_0p6b_aw4_fsdpsize2_"
+                "mopd_topk32_reweight_qwen0p6b_8b_aw4_fsdpsize2_"
                 "topp0p1_b24_5step_5gpu_smoke.yaml"
             )
         )
@@ -429,7 +430,7 @@ class MOPDProfileTests(unittest.TestCase):
         )
         self.assertEqual(
             config.model.primary_teacher_path,
-            "/root/autodl-tmp/models/Qwen3-0.6B",
+            "/root/autodl-tmp/models/Qwen3-8B",
         )
         self.assertEqual(config.data.train_batch_size, 24)
         self.assertEqual(config.actor.ppo_mini_batch_size, 24)
@@ -512,7 +513,7 @@ class MOPDProfileTests(unittest.TestCase):
             Path(__file__).resolve().parents[1]
             / "test_grad_configs"
             / (
-                "mopd_feature_coverage_qwen0p6b_0p6b_aw2_fsdpsize2_"
+                "mopd_feature_coverage_qwen0p6b_8b_aw2_fsdpsize2_"
                 "top_partial_prefix_ppo2_b8_2step_smoke.yaml"
             )
         )
@@ -582,6 +583,247 @@ class MOPDProfileTests(unittest.TestCase):
                 self.assertFalse(config.audit.entropy_enabled)
                 self.assertFalse(config.audit.entropy_vocab_vector_enabled)
                 self.assertFalse(config.audit.token_gradient_enabled)
+
+    def test_new_weighting_smoke_profiles_cover_requested_modes(self) -> None:
+        matrix_path = (
+            Path(__file__).resolve().parents[1] / "test_grad_configs"
+            / "mopd_domain_weighting_qwen0p6b_8b_matrix.yaml"
+        )
+        cases = {
+            "gradnorm": (
+                "gradient_norm",
+                True,
+                False,
+                False,
+                "per_step_mean_abs_loss",
+                1.0,
+                1.0,
+                2,
+            ),
+            "projection": (
+                "domain_gradient_projection_share",
+                True,
+                False,
+                False,
+                "per_step_mean_abs_loss",
+                1.0,
+                1.0,
+                2,
+            ),
+            "projection_control_perstep": (
+                "domain_gradient_projection_share",
+                True,
+                True,
+                True,
+                "per_step_mean_abs_loss",
+                1.5,
+                1.5,
+                2,
+            ),
+            "control44_cumulative": (
+                "gradient_norm",
+                False,
+                True,
+                True,
+                "cumulative_abs_loss",
+                2.0,
+                3.0,
+                3,
+            ),
+        }
+        self.assertEqual(
+            list_config_profiles(matrix_path),
+            tuple(cases),
+        )
+        expected_control_ids = {
+            300,
+            641,
+            758,
+            983,
+            1083,
+            1156,
+            1249,
+            1416,
+            1431,
+            1986,
+            2014,
+            2055,
+            2121,
+            2461,
+            2679,
+            2938,
+            4226,
+            4354,
+            4416,
+            4695,
+            5005,
+            5338,
+            7039,
+            7281,
+            8704,
+            9112,
+            9211,
+            9658,
+            11209,
+            11284,
+            12209,
+            12549,
+            13023,
+            13394,
+            15277,
+            16141,
+            16085,
+            17949,
+            19357,
+            21806,
+            22477,
+            44500,
+            54815,
+            73877,
+        }
+
+        for profile, expected in cases.items():
+            with self.subTest(profile=profile):
+                config = load_config(f"{matrix_path}::{profile}")
+                rendered = format_command(build_command(config))
+                (
+                    source,
+                    dynamic,
+                    control,
+                    shared,
+                    selection_mode,
+                    control_weight,
+                    shared_weight,
+                    total_training_steps,
+                ) = expected
+                self.assertEqual(config.data.train_batch_size, 12)
+                self.assertEqual(config.actor.ppo_mini_batch_size, 12)
+                self.assertEqual(config.actor.fsdp_size, 2)
+                self.assertTrue(config.worker_placement.separate_ref_policy)
+                self.assertEqual(
+                    config.worker_placement.actor_rollout.n_gpus_per_node,
+                    2,
+                )
+                self.assertEqual(
+                    config.worker_placement.ref_policy.n_gpus_per_node,
+                    1,
+                )
+                self.assertEqual(config.audit.domains, ["math", "code", "science"])
+                self.assertEqual(
+                    config.audit.dynamic_domain_loss_weighting_signal_source,
+                    source,
+                )
+                self.assertEqual(
+                    config.audit.dynamic_domain_loss_weighting_enabled,
+                    dynamic,
+                )
+                self.assertEqual(
+                    config.audit.control_token_loss_weighting_enabled,
+                    control,
+                )
+                self.assertEqual(
+                    config.audit.all_domain_shared_token_loss_weighting_enabled,
+                    shared,
+                )
+                self.assertEqual(
+                    config.audit.all_domain_shared_token_selection_mode,
+                    selection_mode,
+                )
+                self.assertEqual(
+                    config.audit.control_token_loss_weight,
+                    control_weight,
+                )
+                self.assertEqual(
+                    config.audit.all_domain_shared_token_loss_weight,
+                    shared_weight,
+                )
+                self.assertEqual(
+                    config.trainer.total_training_steps,
+                    total_training_steps,
+                )
+                self.assertEqual(
+                    config.audit.tensorboard_prune_mode,
+                    "core",
+                )
+                self.assertIn("tensorboard", str(config.trainer.logger))
+                self.assertIn(
+                    "actor_rollout_ref.actor.ppo_epochs=1",
+                    config.extra_overrides,
+                )
+                self.assertIn(
+                    "+mopd_audit.dynamic_domain_loss_weighting_signal_source="
+                    f"{source}",
+                    rendered,
+                )
+                self.assertIn(
+                    "+mopd_audit.dynamic_domain_loss_weighting_enabled="
+                    f"{str(dynamic).lower()}",
+                    rendered,
+                )
+                self.assertIn(
+                    "+mopd_audit.control_token_loss_weighting_enabled="
+                    f"{str(control).lower()}",
+                    rendered,
+                )
+                self.assertIn(
+                    "+mopd_audit.all_domain_shared_token_loss_weighting_enabled="
+                    f"{str(shared).lower()}",
+                    rendered,
+                )
+                self.assertIn(
+                    "+mopd_audit.all_domain_shared_token_selection_mode="
+                    f"{selection_mode}",
+                    rendered,
+                )
+                if control:
+                    self.assertEqual(
+                        len(config.audit.control_token_ids),
+                        44,
+                    )
+                    self.assertEqual(
+                        len(set(config.audit.control_token_ids)),
+                        44,
+                    )
+                    self.assertEqual(
+                        set(config.audit.control_token_ids),
+                        expected_control_ids,
+                    )
+                    self.assertGreater(
+                        config.audit.control_token_loss_weight,
+                        1.0,
+                    )
+                    self.assertIn(
+                        "+mopd_audit.control_token_ids=[",
+                        rendered,
+                    )
+                    self.assertIn(
+                        "+mopd_audit.control_token_loss_weight="
+                        f"{config.audit.control_token_loss_weight}",
+                        rendered,
+                    )
+                if shared:
+                    self.assertEqual(
+                        config.audit.all_domain_shared_token_top_k,
+                        (
+                            500
+                            if selection_mode == "cumulative_abs_loss"
+                            else 50
+                        ),
+                    )
+                    self.assertGreater(
+                        config.audit.all_domain_shared_token_loss_weight,
+                        1.0,
+                    )
+                    self.assertIn(
+                        "+mopd_audit.all_domain_shared_token_top_k="
+                        f"{config.audit.all_domain_shared_token_top_k}",
+                        rendered,
+                    )
+                    self.assertIn(
+                        "+mopd_audit.all_domain_shared_token_loss_weight="
+                        f"{config.audit.all_domain_shared_token_loss_weight}",
+                        rendered,
+                    )
 
     def test_explicit_rollout_model_lengths_cover_prompt_and_response(self) -> None:
         config_dir = Path(__file__).resolve().parents[1] / "configs"

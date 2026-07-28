@@ -5,6 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from mopd_verl.domain_gradient.token_weighting_state import (
+    PER_STEP_MEAN_ABS_LOSS_SELECTION,
+    SHARED_TOKEN_SELECTION_MODES,
+)
+from mopd_verl.domain_gradient.weighting import DYNAMIC_WEIGHT_SIGNALS
+
 
 def _get(config: Any, key: str, default: Any = None) -> Any:
     if isinstance(config, dict):
@@ -39,11 +45,19 @@ class DomainGradientConfig:
     token_gradient_vocab_size: int | None
     dynamic_weighting_enabled: bool
     dynamic_weighting_update_enabled: bool
+    dynamic_weighting_signal_source: str
     dynamic_weighting_ema_beta: float
     dynamic_weighting_weight_ema_beta: float
     dynamic_weighting_alpha: float
     dynamic_weighting_min: float
     dynamic_weighting_max: float
+    control_token_weighting_enabled: bool
+    control_token_weight: float
+    control_token_ids: tuple[int, ...]
+    all_domain_shared_token_weighting_enabled: bool
+    all_domain_shared_token_weight: float
+    all_domain_shared_token_selection_mode: str
+    all_domain_shared_token_top_k: int | None
     unsupported_modes: tuple[str, ...]
 
     @classmethod
@@ -52,6 +66,11 @@ class DomainGradientConfig:
         parity_frequency = int(_get(meta, "full_grad_training_parity_freq_steps", 1))
         step = int(_get(meta, "step", 0))
         raw_top_k = _get(meta, "token_gradient_top_k", 100)
+        raw_shared_top_k = _get(
+            meta,
+            "all_domain_shared_token_top_k",
+            100,
+        )
         config = cls(
             enabled=bool(_get(meta, "enabled", False))
             and bool(_get(meta, "domain_gradient_enabled", True)),
@@ -123,6 +142,13 @@ class DomainGradientConfig:
                     False,
                 )
             ),
+            dynamic_weighting_signal_source=str(
+                _get(
+                    meta,
+                    "dynamic_domain_loss_weighting_signal_source",
+                    "gradient_norm",
+                )
+            ).strip().lower(),
             dynamic_weighting_ema_beta=float(
                 _get(meta, "dynamic_domain_loss_weighting_ema_beta", 0.90)
             ),
@@ -145,6 +171,40 @@ class DomainGradientConfig:
             ),
             dynamic_weighting_max=float(
                 _get(meta, "dynamic_domain_loss_weighting_max", 3.0)
+            ),
+            control_token_weighting_enabled=bool(
+                _get(meta, "control_token_loss_weighting_enabled", False)
+            ),
+            control_token_weight=float(
+                _get(meta, "control_token_loss_weight", 1.0)
+            ),
+            control_token_ids=tuple(
+                dict.fromkeys(
+                    int(token_id)
+                    for token_id in _get(meta, "control_token_ids", ())
+                )
+            ),
+            all_domain_shared_token_weighting_enabled=bool(
+                _get(
+                    meta,
+                    "all_domain_shared_token_loss_weighting_enabled",
+                    False,
+                )
+            ),
+            all_domain_shared_token_weight=float(
+                _get(meta, "all_domain_shared_token_loss_weight", 1.0)
+            ),
+            all_domain_shared_token_selection_mode=str(
+                _get(
+                    meta,
+                    "all_domain_shared_token_selection_mode",
+                    PER_STEP_MEAN_ABS_LOSS_SELECTION,
+                )
+            ).strip().lower(),
+            all_domain_shared_token_top_k=(
+                None
+                if raw_shared_top_k is None
+                else int(raw_shared_top_k)
             ),
             unsupported_modes=tuple(
                 name
@@ -183,6 +243,12 @@ class DomainGradientConfig:
                 "dynamic_domain_loss_weighting_weight_ema_beta must be "
                 "in [0, 1)."
             )
+        if self.dynamic_weighting_signal_source not in DYNAMIC_WEIGHT_SIGNALS:
+            allowed = ", ".join(sorted(DYNAMIC_WEIGHT_SIGNALS))
+            raise ValueError(
+                "dynamic_domain_loss_weighting_signal_source must be one "
+                f"of: {allowed}."
+            )
         if self.dynamic_weighting_alpha < 0.0:
             raise ValueError(
                 "dynamic_domain_loss_weighting_alpha must be non-negative."
@@ -195,6 +261,45 @@ class DomainGradientConfig:
             raise ValueError(
                 "Dynamic domain loss weight bounds must be positive and "
                 "contain 1.0."
+            )
+        if self.control_token_weight < 1.0:
+            raise ValueError(
+                "control_token_loss_weight must be at least 1.0."
+            )
+        if (
+            self.control_token_weighting_enabled
+            and not self.control_token_ids
+        ):
+            raise ValueError(
+                "Control-token loss weighting requires control_token_ids."
+            )
+        if self.all_domain_shared_token_weight < 1.0:
+            raise ValueError(
+                "all_domain_shared_token_loss_weight must be at least 1.0."
+            )
+        if (
+            self.all_domain_shared_token_selection_mode
+            not in SHARED_TOKEN_SELECTION_MODES
+        ):
+            allowed = ", ".join(sorted(SHARED_TOKEN_SELECTION_MODES))
+            raise ValueError(
+                "all_domain_shared_token_selection_mode must be one of: "
+                f"{allowed}."
+            )
+        if (
+            self.all_domain_shared_token_top_k is not None
+            and self.all_domain_shared_token_top_k < 1
+        ):
+            raise ValueError(
+                "all_domain_shared_token_top_k must be null or at least 1."
+            )
+        if (
+            self.all_domain_shared_token_weighting_enabled
+            and len(self.domains) < 2
+        ):
+            raise ValueError(
+                "All-domain shared-token weighting requires at least two "
+                "configured domains."
             )
         if not self.enabled:
             return

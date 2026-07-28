@@ -1,20 +1,18 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import tempfile
-from typing import Any
 import unittest
+from pathlib import Path
+from typing import Any
 
 from mopd_verl.launch import build_command, format_command
 from mopd_verl.settings import load_config
 
-
 ROOT = Path(__file__).resolve().parents[1]
 LEGACY_PROFILE_PATH = (
-    ROOT
-    / "test_grad_configs"
-    / "mopd_grad_reliability_qwen0p6b_0p6b_aw2_fsdpsize2_audit_freq2_b16_4step_smoke.yaml"
+    f"{ROOT / 'test_grad_configs' / 'mopd_grad_reliability_qwen0p6b_8b_matrix.yaml'}"
+    "::aw2_fsdp2_audit_on"
 )
 
 

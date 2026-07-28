@@ -40,6 +40,7 @@ DIRECT_AUDIT_CATEGORIES = {
     "token_grad_conflict",
     "token_grad_contribution",
     "token_grad_cost",
+    "token_weight",
     "calibration",
     "coverage",
 }
@@ -254,6 +255,35 @@ CORE_DYNAMIC_WEIGHT = {
     "bounded_target_gradient_weight",
     "ema_grad_norm",
     "weighted_grad_norm",
+}
+CORE_TOKEN_WEIGHT = {
+    "all_domain_shared_token_type_count",
+    "all_domain_shared_token_weight",
+    "amplified_occurrence_count",
+    "amplified_token_occurrence_fraction",
+    "configured_token_occurrence_count",
+    "control_occurrence_count",
+    "control_shared_overlap_occurrence_count",
+    "control_token_id_count",
+    "control_token_weight",
+    "cumulative_abs_loss_mass",
+    "cumulative_occurrence_count",
+    "effective_configured_loss_abs_mass",
+    "effective_configured_loss_mass",
+    "effective_to_raw_abs_loss_mass_ratio",
+    "gradient_multiplier_abs_error_sum",
+    "gradient_multiplier_mean_abs_error",
+    "high_loss_token_type_count",
+    "mean_effective_gradient_multiplier",
+    "mean_token_gradient_multiplier",
+    "observed_token_type_count",
+    "occurrence_count",
+    "raw_configured_loss_abs_mass",
+    "raw_configured_loss_mass",
+    "shared_occurrence_count",
+    "shared_selection_is_cumulative",
+    "token_weighted_configured_loss_abs_mass",
+    "token_weighted_to_raw_abs_loss_mass_ratio",
 }
 CORE_TOKEN_GRAD_CONFLICT = {
     "conflict_to_other_max",
@@ -486,6 +516,8 @@ def _keep_global(category: str, metric: str, parts: list[str]) -> bool:
         return metric in CORE_GLOBAL_COST
     if category == "dynamic_weight":
         return metric in CORE_DYNAMIC_WEIGHT
+    if category == "token_weight":
+        return metric in CORE_TOKEN_WEIGHT
     if category == "full_grad_cost":
         return metric in {
             "backward_seconds",
@@ -547,6 +579,8 @@ def _keep_domain(category: str, metric: str, parts: list[str]) -> bool:
         return metric in CORE_DOMAIN_LOSS
     if category == "dynamic_weight":
         return metric in CORE_DYNAMIC_WEIGHT
+    if category == "token_weight":
+        return metric in CORE_TOKEN_WEIGHT
     if category == "advantage":
         return metric in CORE_DOMAIN_ADVANTAGE
     if category == "length":

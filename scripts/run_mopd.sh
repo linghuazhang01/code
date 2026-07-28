@@ -4,10 +4,14 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/run_mopd.sh [config] [--dry-run] [--slurm] [--slurm-args <sbatch directive>]... [-- <hydra overrides...>]
+  scripts/run_mopd.sh [config[::profile]] [--dry-run] [--slurm] [--slurm-args <sbatch directive>]... [-- <hydra overrides...>]
 
 Examples:
   scripts/run_mopd.sh configs/mopd_formal_audit_all_2gpu.yaml --dry-run
+
+  scripts/run_mopd.sh \
+    test_grad_configs/mopd_grad_reliability_qwen0p6b_8b_matrix.yaml::aw2_fsdp2_audit_on \
+    --dry-run
 
   scripts/run_mopd.sh configs/mopd_formal_audit_off_2gpu.yaml -- \
     trainer.experiment_name=mopd_audit_off_manual
@@ -22,6 +26,7 @@ Environment:
   MOPD_CONFIG=<default config when config arg is omitted>
   VERL_RUNTIME_DIR=<vendored verl runtime dir>
   MOPD_LAUNCH_PYTHON=<python executable for this launcher, default: python3>
+  SLURM_LOG_DIR=<Slurm script/log directory, default: CODE_DIR/logs/slurm>
   SLURM_EXTRA_ENV=<space-separated sbatch directives, alternative to --slurm-args>
 USAGE
 }
@@ -83,6 +88,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+CONFIG_PROFILE=""
+if [[ "${CONFIG_PATH}" == *::* ]]; then
+  CONFIG_PROFILE="${CONFIG_PATH##*::}"
+  CONFIG_PATH="${CONFIG_PATH%::*}"
+fi
+
 if [[ "${CONFIG_PATH}" != /* ]]; then
   CONFIG_PATH="${CODE_DIR}/${CONFIG_PATH}"
 fi
@@ -90,6 +101,10 @@ fi
 if [[ ! -f "${CONFIG_PATH}" ]]; then
   echo "Config not found: ${CONFIG_PATH}" >&2
   exit 2
+fi
+CONFIG_REFERENCE="${CONFIG_PATH}"
+if [[ -n "${CONFIG_PROFILE}" ]]; then
+  CONFIG_REFERENCE="${CONFIG_REFERENCE}::${CONFIG_PROFILE}"
 fi
 
 if [[ ! -f "${VERL_RUNTIME_DIR}/verl/trainer/main_ppo.py" ]]; then
@@ -103,7 +118,7 @@ export PYTHONPATH="${CODE_DIR}:${VERL_RUNTIME_DIR}:${PYTHONPATH:-}"
 export PYTHONINTMAXSTRDIGITS="${PYTHONINTMAXSTRDIGITS:-0}"
 cd "${CODE_DIR}"
 
-ARGS=(--config "${CONFIG_PATH}")
+ARGS=(--config "${CONFIG_REFERENCE}")
 if [[ "${DRY_RUN:-0}" == "1" || "${DRY_RUN_FLAG}" == "1" ]]; then
   ARGS+=(--dry-run)
 fi
@@ -113,42 +128,131 @@ fi
 
 if [[ "${SLURM_FLAG}" == "1" ]]; then
   # Derive the Slurm resources from the selected config's worker pools.
-  IFS=$'\t' read -r EXPERIMENT_NAME SLURM_GPUS SLURM_CPUS SLURM_GPU_IDS < <(
-    "${MOPD_LAUNCH_PYTHON:-python3}" - "${CONFIG_PATH}" <<'PY'
-from pathlib import Path
+  SLURM_RESOURCE_LINE="$(
+    "${MOPD_LAUNCH_PYTHON:-python3}" - \
+      "${CONFIG_REFERENCE}" "${EXTRA_ARGS[@]}" <<'PY'
 import sys
 
-import yaml
+from mopd_verl.config_profiles import load_raw_config
+
+config = load_raw_config(sys.argv[1])
+placement = config.get("worker_placement") or (
+    (config.get("actor_rollout_ref") or {}).get("worker_placement") or {}
+)
 
 
-config = yaml.safe_load(Path(sys.argv[1]).read_text(encoding="utf-8")) or {}
+def parse_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def parse_int(value, key):
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"{key} must be an integer, got {value!r}") from exc
+    if numeric <= 0:
+        raise SystemExit(f"{key} must be positive, got {numeric!r}")
+    return numeric
+
+
+def parse_process_on_nodes(value, key):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        cleaned = value.strip().strip("[]")
+        value = [] if not cleaned else [
+            part.strip() for part in cleaned.split(",")
+        ]
+    if not isinstance(value, list) or not value:
+        raise SystemExit(
+            f"{key} must be a non-empty list of positive integers, "
+            f"got {value!r}"
+        )
+    return [parse_int(item, f"{key}[]") for item in value]
+
+
+def pool_gpus(pool, default, key):
+    process_on_nodes = parse_process_on_nodes(
+        pool.get("process_on_nodes"),
+        f"{key}.process_on_nodes",
+    )
+    if process_on_nodes is not None:
+        return process_on_nodes[0]
+    return parse_int(
+        pool.get("n_gpus_per_node", default),
+        f"{key}.n_gpus_per_node",
+    )
+
+
+def set_path(root, dotted_key, raw_value):
+    parts = dotted_key.split(".")
+    cursor = root
+    for part in parts[:-1]:
+        next_cursor = cursor.get(part)
+        if not isinstance(next_cursor, dict):
+            next_cursor = {}
+            cursor[part] = next_cursor
+        cursor = next_cursor
+    cursor[parts[-1]] = raw_value.strip().strip("'\"")
+
+
+for override in sys.argv[2:]:
+    if "=" not in override:
+        continue
+    key, raw_value = override.split("=", 1)
+    key = key.lstrip("+")
+    if key in {
+        "trainer.n_gpus_per_node",
+        "trainer.experiment_name",
+        "ray_kwargs.ray_init.num_cpus",
+    }:
+        set_path(config, key, raw_value)
+    elif key.startswith("worker_placement."):
+        set_path({"worker_placement": placement}, key, raw_value)
+    elif key.startswith("actor_rollout_ref.worker_placement."):
+        set_path(
+            {"actor_rollout_ref": {"worker_placement": placement}},
+            key,
+            raw_value,
+        )
+
 trainer = config.get("trainer") or {}
-placement = config.get("worker_placement") or {}
 actor_pool = placement.get("actor_rollout") or {}
 ref_pool = placement.get("ref_policy") or {}
-trainer_gpus = int(trainer.get("n_gpus_per_node", 1))
-
-
-def pool_gpus(pool: dict, default: int) -> int:
-    process_on_nodes = pool.get("process_on_nodes")
-    if process_on_nodes:
-        return int(process_on_nodes[0])
-    return int(pool.get("n_gpus_per_node", default))
-
-
-required_gpus = pool_gpus(actor_pool, trainer_gpus)
-if placement.get("separate_ref_policy", False):
-    required_gpus += pool_gpus(ref_pool, trainer_gpus)
-
+trainer_gpus = parse_int(
+    trainer.get("n_gpus_per_node", 1),
+    "trainer.n_gpus_per_node",
+)
+required_gpus = pool_gpus(
+    actor_pool,
+    trainer_gpus,
+    "worker_placement.actor_rollout",
+)
+if parse_bool(placement.get("separate_ref_policy", False)):
+    required_gpus += pool_gpus(
+        ref_pool,
+        trainer_gpus,
+        "worker_placement.ref_policy",
+    )
 ray_init = (config.get("ray_kwargs") or {}).get("ray_init") or {}
-required_cpus = int(ray_init.get("num_cpus", max(8, required_gpus * 4)))
+required_cpus = parse_int(
+    ray_init.get("num_cpus", max(8, required_gpus * 4)),
+    "ray_kwargs.ray_init.num_cpus",
+)
 experiment_name = trainer.get("experiment_name", "mopd_training")
 gpu_ids = ",".join(str(index) for index in range(required_gpus))
 print(experiment_name, required_gpus, required_cpus, gpu_ids, sep="\t")
 PY
-  )
+  )"
+  IFS=$'\t' read -r \
+    EXPERIMENT_NAME SLURM_GPUS SLURM_CPUS SLURM_GPU_IDS \
+    <<< "${SLURM_RESOURCE_LINE}"
   JOB_NAME="mopd_${EXPERIMENT_NAME}"
-  SLURM_LOG_DIR="${CODE_DIR}/logs/slurm"
+  SLURM_LOG_DIR="${SLURM_LOG_DIR:-${CODE_DIR}/logs/slurm}"
   mkdir -p "${SLURM_LOG_DIR}"
   SLURM_LOG="${SLURM_LOG_DIR}/${JOB_NAME}_%j.log"
 
@@ -180,7 +284,7 @@ SBATCH
 
   chmod +x "${SBATCH_SCRIPT}"
   echo "Submitting Slurm job: ${JOB_NAME}"
-  echo "Config: ${CONFIG_PATH}"
+  echo "Config: ${CONFIG_REFERENCE}"
   echo "Slurm script: ${SBATCH_SCRIPT}"
 
   SBATCH_OUTPUT="$(sbatch "${SBATCH_SCRIPT}")"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import tempfile
 import unittest
@@ -28,11 +29,46 @@ from eval.domains.search import extract_search_answer, is_search_dataset
 from eval.domains.toolrl.prepare_data import toolrl_jsonl_to_verl_parquet
 from eval.report import _ability
 from eval.report import _compact_record, _detail_record
-from eval.runner import resolve_max_new_tokens
+from eval.runner import (
+    _temporary_vllm_v1_chunked_prefill_setting,
+    completed_samples_for_rollout,
+    load_incremental_results,
+    resolve_max_new_tokens,
+    validate_resume_prefix,
+)
 from eval.domains.scoring import score_completion
 
 
 class ThinkingEvalTest(unittest.TestCase):
+    def test_vllm_v1_respects_explicit_disabled_chunked_prefill(self) -> None:
+        class FakeEngineArgs:
+            def _set_default_args(self, _usage_context: object, _model_config: object) -> None:
+                self.enable_chunked_prefill = True
+
+        engine_args = FakeEngineArgs()
+
+        with _temporary_vllm_v1_chunked_prefill_setting(
+            False,
+            max_num_batched_tokens=32768,
+            max_num_seqs=24,
+            engine_args_cls=FakeEngineArgs,
+        ):
+            engine_args._set_default_args(object(), object())
+            self.assertFalse(engine_args.enable_chunked_prefill)
+
+        engine_args._set_default_args(object(), object())
+        self.assertTrue(engine_args.enable_chunked_prefill)
+
+    def test_vllm_v1_disabled_chunked_prefill_requires_explicit_limits(self) -> None:
+        with self.assertRaisesRegex(ValueError, "requires explicit"):
+            with _temporary_vllm_v1_chunked_prefill_setting(
+                False,
+                max_num_batched_tokens=None,
+                max_num_seqs=24,
+                engine_args_cls=object,
+            ):
+                pass
+
     def test_default_data_files_include_small_code_validation(self) -> None:
         self.assertIn("data/eval_data/code/HumanEvalPlus/test.parquet", DEFAULT_DATA_FILES)
         self.assertIn("data/eval_data/code/MBPPPlus/test.parquet", DEFAULT_DATA_FILES)
@@ -357,6 +393,83 @@ def has_close_elements(numbers: List[float], threshold: float) -> bool:
 
         self.assertEqual(len(lines), 2)
         self.assertEqual(json.loads(lines[0])["completion"], "response")
+
+    def test_resume_helpers_validate_strict_prefix_and_progress(self) -> None:
+        samples = [
+            EvalSample(
+                sample_id=f"sample-{index}",
+                dataset="dataset",
+                ability="math",
+                messages=[{"role": "user", "content": str(index)}],
+                ground_truth=str(index),
+            )
+            for index in range(3)
+        ]
+        results = [
+            EvalResult(
+                mode="non_thinking",
+                enable_thinking=False,
+                sample_id=sample.sample_id,
+                dataset=sample.dataset,
+                ability=sample.ability,
+                ground_truth=sample.ground_truth,
+                prediction=sample.ground_truth,
+                score=1.0,
+                correct=True,
+                prompt_tokens=1,
+                generated_tokens=1,
+                thinking_tokens=0,
+                answer_tokens=1,
+                total_tokens=2,
+                latency_seconds=0.1,
+                generated_tokens_per_second=10.0,
+                completion_preview=sample.ground_truth,
+            )
+            for sample in samples[:2]
+        ]
+
+        validate_resume_prefix(results, samples, ["non_thinking"], 1)
+        self.assertEqual(
+            completed_samples_for_rollout(
+                len(results),
+                mode_index=0,
+                rollout_index=0,
+                sample_count=len(samples),
+                num_samples=1,
+            ),
+            2,
+        )
+
+        invalid = [dataclasses.replace(results[0], sample_id="wrong")]
+        with self.assertRaisesRegex(ValueError, "not a strict prefix"):
+            validate_resume_prefix(invalid, samples, ["non_thinking"], 1)
+
+    def test_load_incremental_results_round_trip(self) -> None:
+        result = EvalResult(
+            mode="non_thinking",
+            enable_thinking=False,
+            sample_id="a",
+            dataset="dataset",
+            ability="math",
+            ground_truth="1",
+            prediction="1",
+            score=1.0,
+            correct=True,
+            prompt_tokens=1,
+            generated_tokens=2,
+            thinking_tokens=0,
+            answer_tokens=2,
+            total_tokens=3,
+            latency_seconds=0.1,
+            generated_tokens_per_second=20.0,
+            completion_preview="ok",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "thinking_eval_samples.jsonl"
+            path.write_text(json.dumps(dataclasses.asdict(result)) + "\n", encoding="utf-8")
+            loaded = load_incremental_results(path)
+
+        self.assertEqual(loaded, [result])
 
     def test_resolve_max_new_tokens_prefers_ability_override(self) -> None:
         sample = EvalSample(

@@ -57,7 +57,7 @@ remove-padding：
 ENV_NAME=mopd-verl-blackwell \
 GPU_IDS=0,1,2 \
   bash scripts/run_local_mopd_training.sh \
-  test_grad_configs/mopd_grad_reliability_qwen0p6b_0p6b_aw2_fsdpsize2_audit_freq2_b16_4step_smoke.yaml \
+  test_grad_configs/mopd_grad_reliability_qwen0p6b_8b_matrix.yaml::aw2_fsdp2_audit_on \
   --run-id blackwell_fsdpsize2_smoke_$(date +%Y%m%d_%H%M%S) -- \
   actor_rollout_ref.model.use_remove_padding=false \
   trainer.save_freq=-1
@@ -185,7 +185,7 @@ REQUIRE_M2RL_EVAL_DATA=1 \
 | `configs/mopd_formal_audit_off_8gpu.yaml` | 8 卡 audit-off 训练。 |
 | `configs/mopd_formal_audit_all_smoke.yaml` | 2 卡 one-step 指标 smoke，打开全部 audit 输出和 full-vocab vectors。 |
 | `configs/mopd_formal_audit_loss_only_smoke.yaml` | 2 卡 one-step domain-gradient 与 loss-metric smoke。 |
-| `test_grad_configs/mopd_dynamic_weight_qwen0p6b_0p6b_aw2_fsdpsize2_tail_topp1_b16_4step_smoke.yaml` | Canonical 3 卡 `[1/3, 3]` bounded applied-weight EMA，以及按 domain 和 configured token loss 排序的 tail、Top-p=1 gradient smoke；Top-k replay 已关闭，入选 token ID 会写入 JSONL。 |
+| `test_grad_configs/mopd_dynamic_weight_qwen0p6b_8b_aw2_fsdpsize2_tail_topp1_b16_4step_smoke.yaml` | Canonical 3 卡 `[1/3, 3]` bounded applied-weight EMA，以及按 domain 和 configured token loss 排序的 tail、Top-p=1 gradient smoke；Top-k replay 已关闭，入选 token ID 会写入 JSONL。 |
 | `configs/mopd_formal_audit_grad_consistency_2gpu_b32_2step_smoke.yaml` | 2 卡 batch size 32、2 step 的 gradient consistency smoke。 |
 | `configs/mopd_formal_audit_grad_consistency_2gpu_b64_3step_smoke.yaml` | 2 卡 batch size 64、3 step 的 gradient consistency smoke。 |
 | `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math.yaml` | 原始 Math-only：4 张 actor/rollout GPU + 2 张 teacher/ref GPU。 |
@@ -289,7 +289,7 @@ setup script 不再维护额外的 pip requirements 或依赖安装脚本。IF/s
 ```bash
 cd /path/to/OPD-code
 GPU_IDS=0,1,2 bash scripts/run_local_mopd_training.sh \
-  test_grad_configs/mopd_grad_reliability_qwen0p6b_0p6b_aw2_fsdpsize2_audit_freq2_b16_4step_smoke.yaml \
+  test_grad_configs/mopd_grad_reliability_qwen0p6b_8b_matrix.yaml::aw2_fsdp2_audit_on \
   --run-id mopd_fsdpsize2_smoke_$(date +%Y%m%d_%H%M%S)
 ```
 
@@ -304,7 +304,7 @@ gradient 和 optimizer state。
 
 ```bash
 scripts/run_mopd.sh \
-  test_grad_configs/mopd_grad_reliability_qwen0p6b_0p6b_aw2_fsdpsize2_audit_freq2_b16_4step_smoke.yaml \
+  test_grad_configs/mopd_grad_reliability_qwen0p6b_8b_matrix.yaml::aw2_fsdp2_audit_on \
   --dry-run
 ```
 

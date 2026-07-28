@@ -4,12 +4,10 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
-from types import ModuleType
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 from mopd_verl.domain_gradient.config import DomainGradientConfig
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -174,6 +172,86 @@ class DomainGradientConfigTests(unittest.TestCase):
         self.assertTrue(step_four.enabled)
         self.assertTrue(step_four.dynamic_weighting_update_enabled)
 
+    def test_dynamic_weighting_accepts_projection_share_source(self) -> None:
+        config = DomainGradientConfig.from_meta(
+            {
+                "domains": ["math", "code", "science"],
+                "dynamic_domain_loss_weighting_enabled": True,
+                "dynamic_domain_loss_weighting_signal_source": (
+                    "domain_gradient_projection_share"
+                ),
+            }
+        )
+
+        self.assertEqual(
+            config.dynamic_weighting_signal_source,
+            "domain_gradient_projection_share",
+        )
+
+    def test_token_weighting_configuration_is_validated(self) -> None:
+        config = DomainGradientConfig.from_meta(
+            {
+                "domains": ["math", "code", "science"],
+                "control_token_loss_weighting_enabled": True,
+                "control_token_loss_weight": 2.0,
+                "control_token_ids": [11, 22, 11],
+                "all_domain_shared_token_loss_weighting_enabled": True,
+                "all_domain_shared_token_loss_weight": 1.5,
+                "all_domain_shared_token_selection_mode": (
+                    "cumulative_abs_loss"
+                ),
+                "all_domain_shared_token_top_k": 200,
+            }
+        )
+
+        self.assertEqual(config.control_token_ids, (11, 22))
+        self.assertEqual(config.control_token_weight, 2.0)
+        self.assertEqual(
+            config.all_domain_shared_token_selection_mode,
+            "cumulative_abs_loss",
+        )
+        self.assertEqual(config.all_domain_shared_token_top_k, 200)
+
+    def test_invalid_shared_token_selection_mode_is_rejected(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "all_domain_shared_token_selection_mode",
+        ):
+            DomainGradientConfig.from_meta(
+                {
+                    "domains": ["math", "code"],
+                    "all_domain_shared_token_loss_weighting_enabled": True,
+                    "all_domain_shared_token_selection_mode": "future_loss",
+                }
+            )
+
+    def test_token_weighting_keeps_actor_hook_active_without_grad_audit(
+        self,
+    ) -> None:
+        from mopd_verl.verl_audit import MOPDAuditLogger
+
+        logger = MOPDAuditLogger(
+            {
+                "mopd_audit": {
+                    "enabled": True,
+                    "full_gradient_enabled": False,
+                    "domains": ["math", "code", "science"],
+                    "control_token_loss_weighting_enabled": True,
+                    "control_token_loss_weight": 2.0,
+                    "control_token_ids": [10],
+                }
+            }
+        )
+
+        self.assertTrue(logger.should_compute_full_gradient(1))
+        meta = logger.full_gradient_meta("train", 1)[
+            "mopd_full_gradient"
+        ]
+        config = DomainGradientConfig.from_meta(meta)
+        self.assertFalse(config.enabled)
+        self.assertTrue(config.control_token_weighting_enabled)
+        self.assertEqual(config.control_token_ids, (10,))
+
 
 class DomainGradientSourceTests(unittest.TestCase):
     def test_training_and_audit_share_one_loss_builder(self) -> None:
@@ -214,6 +292,22 @@ class DomainGradientSourceTests(unittest.TestCase):
 
         self.assertNotIn("floating_response_gradient_mask(", actor_loss_source)
         self.assertIn("gradient_mask_override.to(", actor_loss_source)
+
+    def test_shared_token_weighting_requires_one_full_step_batch(
+        self,
+    ) -> None:
+        actor_source = (
+            ROOT / "third_party/verl/verl/workers/actor/dp_actor.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "audit.config.all_domain_shared_token_weighting_enabled",
+            actor_source,
+        )
+        self.assertIn(
+            "len(mini_batches) != 1 or self.config.ppo_epochs != 1",
+            actor_source,
+        )
 
     def test_old_tracker_is_only_a_compatibility_shim(self) -> None:
         source = (ROOT / "mopd_verl/full_gradient/tracker.py").read_text(encoding="utf-8")
@@ -417,6 +511,7 @@ class GradientGateTorchTests(unittest.TestCase):
     def test_masked_mean_ignores_non_finite_masked_values(self) -> None:
         try:
             import torch
+
             from mopd_verl.full_gradient.loss_support import masked_mean
         except ModuleNotFoundError as exc:
             self.skipTest(f"torch/verl is unavailable in this environment: {exc}")
@@ -429,6 +524,7 @@ class GradientGateTorchTests(unittest.TestCase):
     def test_domain_gradient_sum_matches_unmasked_gradient(self) -> None:
         try:
             import torch
+
             from mopd_verl.full_gradient.loss_support import (
                 gate_tensor_gradient,
             )
@@ -460,6 +556,7 @@ class GradientGateTorchTests(unittest.TestCase):
     ) -> None:
         try:
             import torch
+
             from mopd_verl.full_gradient.loss_support import (
                 gate_tensor_gradient,
             )
@@ -488,6 +585,7 @@ class GradientGateTorchTests(unittest.TestCase):
     def test_boolean_response_mask_preserves_domain_gradient_gate(self) -> None:
         try:
             import torch
+
             from mopd_verl.full_gradient.loss_support import (
                 floating_response_gradient_mask,
                 gate_tensor_gradient,

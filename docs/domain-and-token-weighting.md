@@ -1,0 +1,145 @@
+# Domain 与 token loss weighting
+
+这组功能通过 production actor loss 的 backward-only gradient mask 生效。
+默认值全部保持原训练行为；只有显式开启对应开关时才改变优化。
+
+## 1. 动态 domain 权重的信息源
+
+```yaml
+audit:
+  enabled: true
+  dynamic_domain_loss_weighting_enabled: true
+  dynamic_domain_loss_weighting_signal_source: gradient_norm
+```
+
+`dynamic_domain_loss_weighting_signal_source` 支持：
+
+- `gradient_norm`：使用每个 domain 的 `||g_d||₂`。
+- `domain_gradient_projection_share`：先计算 signed share
+  `<g_d, g_total> / ||g_total||₂²`，保留 signed 值用于日志，再将绝对值
+  作为 non-negative controller signal。
+
+两种信号都经过 signal EMA、inverse weighting、上下界裁剪和 weight EMA。
+切换信息源时，checkpoint 中旧的 controller EMA 会自动重置，避免量纲混用。
+
+## 2. 提高 Control token 的优化比重
+
+```yaml
+audit:
+  enabled: true
+  control_token_loss_weighting_enabled: true
+  control_token_loss_weight: 2.0
+  control_token_ids: [123, 456]
+```
+
+`control_token_ids` 是当前 tokenizer 下的 token ID，必须由实验配置显式给出。
+上述配置把匹配 token 对 actor gradient 的贡献乘以 `2.0`。token ID 与
+tokenizer 强绑定，不能直接复用其他模型的 ID。
+
+当前 Qwen3 Control smoke 使用 44 个 ID，严格等于之前 Rising/Stable
+Mean-Gap 六组 Top-100 类别表中实际被标为 `discourse/control` 的唯一 token
+ID 并集。此前额外保留的 8 个 curated ID 已移除，因此实验白名单与旧报告
+口径一一对齐。
+
+原 31-ID smoke 只覆盖了上述统计集合中的 23 个 ID；现已补入遗漏的 21 个
+Top-100 Control ID，包括 `as`、`In`、`This`、`As`、`For`、`Then`、
+`Also`、`Note`、`assume`、`hence`、`suppose` 等实际 tokenizer 形式。
+这里对齐的是当时六组 `domain × phase` Top-100 类别统计的实际 token
+并集，而不是将 heuristic 词典中从未进入 Top-100 的所有大小写/空格变体
+无限扩张。
+
+## 3. 提高所有 domain 共同高 loss token 的优化比重
+
+```yaml
+audit:
+  enabled: true
+  domains: [math, code, science]
+  all_domain_shared_token_loss_weighting_enabled: true
+  all_domain_shared_token_loss_weight: 1.5
+  all_domain_shared_token_selection_mode: per_step_mean_abs_loss
+  all_domain_shared_token_top_k: 100
+```
+
+`all_domain_shared_token_selection_mode` 支持：
+
+- `per_step_mean_abs_loss`（默认）：每个 optimizer mini-batch 在正式
+  backward 前执行：
+
+1. 对每个 domain，按 token ID 聚合当前 `|configured token loss|`。
+2. 用 per-occurrence mean absolute loss 给唯一 token ID 排名。
+3. 每个 domain 保留 Top-K token ID。
+4. 取所有配置 domain 的 token ID 交集。
+5. 将交集 token 对 actor gradient 的贡献乘以配置权重。
+
+- `cumulative_abs_loss`：将每个 global step 的 absolute configured-loss
+  mass 累加到按 domain/token ID 保存的状态中，用累计 mass 排名，再取各
+  domain Top-K 的交集。当前 step 会在 production backward 前纳入累计值；
+  状态随 optimizer checkpoint 保存，且同一个 global step 最多累计一次。
+
+两者都是在线 high-loss proxy，不是需要观察下一个 checkpoint 才能计算的
+ex-post loss reduction。`all_domain_shared_token_top_k: null` 表示使用所选
+时间范围内每个 domain 出现的全部有效 token ID：per-step 模式对应当前
+step，cumulative 模式对应 run 开始至当前 step。
+
+为了保证“每 step”确实覆盖完整 actor batch，开启该功能时要求
+`ppo_mini_batch_size` 等于 actor batch size，并且 `ppo_epochs: 1`；不满足
+时训练会直接报错，而不会静默改成局部 mini-batch intersection。
+
+每次选择的 domain Top-K 和最终交集会写入
+`<audit.output_dir>/shared_token_weighting.jsonl`，便于复现实验和检查实际被
+加权的 token ID。
+
+## 4. 组合规则与日志
+
+三类权重按乘法组合：
+
+```text
+effective_weight =
+    domain_weight
+    × control_token_weight
+    × all_domain_shared_token_weight
+```
+
+例如某 token 同时是 Control token 和三域共享 token，两个 token factor
+都会生效。forward loss 与现有 loss metric 保持不变，改变的是 backward
+时各 token 的 gradient contribution。
+
+专项组合 smoke config 将 Control 权重设为 `2.0`、cumulative shared 权重
+设为 `3.0`，因此 ordinary / Control-only / Shared-only / overlap token 的
+multiplier 分别为 `1x / 2x / 3x / 6x`。dynamic domain weighting 在该配置
+中关闭，避免 domain factor 干扰这四类 token multiplier 的核验。
+
+主要新增 metric：
+
+- `{domain}/dynamic_weight/source_signal`
+- `{domain}/dynamic_weight/ema_source_signal`
+- `{domain}/dynamic_weight/raw_signed_projection_share`
+- `global/token_weight/control_token_id_count`
+- `global/token_weight/all_domain_shared_token_type_count`
+- `{domain}/token_weight/high_loss_token_type_count`
+- `global/token_weight/raw_configured_loss_abs_mass`
+- `global/token_weight/token_weighted_configured_loss_abs_mass`
+- `global/token_weight/effective_configured_loss_abs_mass`
+- `global/token_weight/token_weighted_to_raw_abs_loss_mass_ratio`
+- `global/token_weight/effective_to_raw_abs_loss_mass_ratio`
+- `global/token_weight/mean_token_gradient_multiplier`
+- `global/token_weight/amplified_token_occurrence_fraction`
+- `global/token_weight/gradient_multiplier_mean_abs_error`
+
+这些 amplification metric 使用第一次 no-grad forward 的原始 configured
+token loss 和即将在第二次 production forward 中应用的 multiplier 计算。
+gradient gate 保持 forward loss 不变，因此它们可以同时显示 raw loss mass
+与实际 backward weighting 的有效 mass。
+`gradient_multiplier_mean_abs_error` 比较 production gradient mask 与根据
+domain/control/shared 配置独立计算的期望 multiplier，正常应接近 `0`。
+
+Canonical GPU smoke profiles 统一位于：
+
+```text
+test_grad_configs/mopd_domain_weighting_qwen0p6b_8b_matrix.yaml
+```
+
+可选 profile 为 `gradnorm`、`projection`、
+`projection_control_perstep` 和 `control44_cumulative`，启动时使用
+`<matrix.yaml>::<profile>` 语法。Control-only 与 shared-only 行为继续由
+unit/contract tests 独立覆盖。

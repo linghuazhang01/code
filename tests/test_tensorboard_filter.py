@@ -70,3 +70,23 @@ def test_core_filter_drops_retired_token_conflict_metrics() -> None:
     }
 
     assert filter_tensorboard_metrics(metrics, "core") == {}
+
+
+def test_core_filter_keeps_token_weight_amplification_metrics() -> None:
+    metrics = {
+        "global/token_weight/raw_configured_loss_abs_mass": 10.0,
+        "global/token_weight/effective_configured_loss_abs_mass": 15.0,
+        "global/token_weight/effective_to_raw_abs_loss_mass_ratio": 1.5,
+        "global/token_weight/mean_token_gradient_multiplier": 1.4,
+        "global/token_weight/gradient_multiplier_mean_abs_error": 0.0,
+        "global/token_weight/amplified_token_occurrence_fraction": 0.3,
+        "global/token_weight/control_token_id_count": 44.0,
+        "global/token_weight/control_occurrence_count": 12.0,
+        "global/token_weight/shared_occurrence_count": 10.0,
+        "global/token_weight/control_shared_overlap_occurrence_count": 4.0,
+        "global/token_weight/token_weighted_to_raw_abs_loss_mass_ratio": 2.0,
+        "math/token_weight/cumulative_abs_loss_mass": 120.0,
+        "math/token_weight/observed_token_type_count": 500.0,
+    }
+
+    assert filter_tensorboard_metrics(metrics, "core") == metrics

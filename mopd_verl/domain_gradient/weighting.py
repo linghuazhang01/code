@@ -1,9 +1,21 @@
-"""Pure helpers for gradient-norm-driven domain loss weights."""
+"""Pure helpers for signal-driven domain loss weights."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Mapping
+
+
+GRADIENT_NORM_SIGNAL = "gradient_norm"
+DOMAIN_GRADIENT_PROJECTION_SHARE_SIGNAL = (
+    "domain_gradient_projection_share"
+)
+DYNAMIC_WEIGHT_SIGNALS = frozenset(
+    {
+        GRADIENT_NORM_SIGNAL,
+        DOMAIN_GRADIENT_PROJECTION_SHARE_SIGNAL,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -16,6 +28,7 @@ class DomainWeightState:
     target_weights: tuple[float, ...] = ()
     update_count: int = 0
     last_updated_step: int | None = None
+    signal_source: str = GRADIENT_NORM_SIGNAL
 
     def weight_map(self) -> dict[str, float]:
         return dict(zip(self.domains, self.weights, strict=True))
@@ -29,7 +42,12 @@ class DomainWeightState:
         return dict(zip(self.domains, target_weights, strict=True))
 
     def ema_norm_map(self) -> dict[str, float]:
+        """Backward-compatible name for the controller EMA signal."""
+
         return dict(zip(self.domains, self.ema_norms, strict=True))
+
+    def ema_signal_map(self) -> dict[str, float]:
+        return self.ema_norm_map()
 
     def as_dict(self) -> dict[str, object]:
         target_weights = (
@@ -44,6 +62,7 @@ class DomainWeightState:
             "target_weights": target_weights,
             "update_count": self.update_count,
             "last_updated_step": self.last_updated_step,
+            "signal_source": self.signal_source,
         }
 
     @classmethod
@@ -73,17 +92,29 @@ class DomainWeightState:
             target_weights=target_weights,
             update_count=int(value.get("update_count", 0)),
             last_updated_step=None if raw_step is None else int(raw_step),
+            signal_source=str(
+                value.get("signal_source", GRADIENT_NORM_SIGNAL)
+            ),
         )
 
 
-def initial_domain_weight_state(domains: tuple[str, ...]) -> DomainWeightState:
+def initial_domain_weight_state(
+    domains: tuple[str, ...],
+    *,
+    signal_source: str = GRADIENT_NORM_SIGNAL,
+) -> DomainWeightState:
     """Create unit weights before the first gradient observation."""
 
+    if signal_source not in DYNAMIC_WEIGHT_SIGNALS:
+        raise ValueError(
+            f"Unsupported dynamic domain weight signal: {signal_source!r}."
+        )
     return DomainWeightState(
         domains=domains,
         ema_norms=tuple(0.0 for _ in domains),
         weights=tuple(1.0 for _ in domains),
         target_weights=tuple(1.0 for _ in domains),
+        signal_source=signal_source,
     )
 
 
@@ -125,7 +156,7 @@ def _bounded_mean_one(
 
 def update_domain_weight_state(
     state: DomainWeightState,
-    gradient_norms: Mapping[str, float],
+    signals: Mapping[str, float],
     *,
     ema_beta: float,
     weight_ema_beta: float,
@@ -135,7 +166,7 @@ def update_domain_weight_state(
     step: int | None = None,
     epsilon: float = 1e-12,
 ) -> DomainWeightState:
-    """EMA-smooth bounded inverse-norm targets from globally reduced norms."""
+    """EMA-smooth bounded inverse targets from non-negative signals."""
 
     if not 0.0 <= ema_beta < 1.0:
         raise ValueError("ema_beta must be in [0, 1).")
@@ -147,7 +178,7 @@ def update_domain_weight_state(
         raise ValueError("Domain weight bounds must be positive and ordered.")
 
     observed = tuple(
-        max(0.0, float(gradient_norms.get(domain, 0.0)))
+        max(0.0, float(signals.get(domain, 0.0)))
         for domain in state.domains
     )
     if state.update_count == 0:
@@ -196,4 +227,5 @@ def update_domain_weight_state(
         target_weights=target_weights,
         update_count=state.update_count + 1,
         last_updated_step=step,
+        signal_source=state.signal_source,
     )
