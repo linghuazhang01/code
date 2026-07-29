@@ -14,7 +14,7 @@
 # - token-gap/logp vectors, including full-vocab token-id vectors
 # - student-entropy full-vocab vectors
 # - Top-p loss-mass token gradients (10% loss mass)
-# - production reweight: 1.5x per-step all-domain shared Top-100 token weighting
+# - production reweight: 1.5x per-step all-domain shared all-token weighting
 #
 # Disabled audit families:
 # - token-gradient tail and fixed Top-k selections
@@ -152,7 +152,7 @@ worker_placement:
 
 audit:
   enabled: true
-  output_dir: audit/qwen4b_30b_a3b_instruct_2507_math_code_science_topk32_reweight_shared_perstep_top100
+  output_dir: audit/qwen4b_30b_a3b_instruct_2507_math_code_science_topk32_reweight_shared_perstep_alltokens
   domains:
     - math
     - code
@@ -241,9 +241,9 @@ audit:
   control_token_loss_weight: 1.0
   control_token_ids: []
   all_domain_shared_token_loss_weighting_enabled: true
-  all_domain_shared_token_loss_weight: 1.5
+  all_domain_shared_token_loss_weight: 2.0
   all_domain_shared_token_selection_mode: per_step_mean_abs_loss
-  all_domain_shared_token_top_k: 100
+  all_domain_shared_token_top_k: null
   gradient_fingerprint_enabled: false
   gradient_fingerprint_freq_steps: 1
 
@@ -251,7 +251,7 @@ paper_eval:
   enabled: false
   script_path: eval/scripts/run_paper_eval_suite.sh
   model_path: null
-  output_dir: eval_outputs/paper_suite/qwen4b_30b_a3b_instruct_2507_math_code_science_topk32_reweight_shared_perstep_top100
+  output_dir: eval_outputs/paper_suite/qwen4b_30b_a3b_instruct_2507_math_code_science_topk32_reweight_shared_perstep_alltokens
   datasets:
     - aime24
     - aime25
@@ -267,7 +267,7 @@ paper_eval:
 
 trainer:
   project_name: MOPD
-  experiment_name: qwen4b-from-30b-a3b-instruct-2507-math-code-science-topk32-reweight-shared-perstep-top100
+  experiment_name: qwen4b-from-30b-a3b-instruct-2507-math-code-science-topk32-reweight-shared-perstep-alltokens
   logger: '["console","tensorboard","wandb"]'
   n_gpus_per_node: 6
   nnodes: 1
@@ -275,7 +275,7 @@ trainer:
   test_freq: -1
   total_epochs: 3
   total_training_steps: 200
-  default_local_dir: checkpoints/MOPD/qwen4b-from-30b-a3b-instruct-2507-math-code-science-topk32-reweight-shared-perstep-top100
+  default_local_dir: checkpoints/MOPD/qwen4b-from-30b-a3b-instruct-2507-math-code-science-topk32-reweight-shared-perstep-alltokens
   critic_warmup: 0
   val_before_train: false
   log_val_generations: 10
