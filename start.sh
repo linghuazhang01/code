@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+echo "=== start.sh begin ==="
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+echo "SCRIPT_DIR=${SCRIPT_DIR}"
 DEFAULT_CONFIG_PATH="${SCRIPT_DIR}/configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code_science_topk32.yaml"
 MOPD_SEED="${MOPD_SEED:-42}"
 
@@ -75,10 +77,19 @@ export FLASH_ATTENTION_DETERMINISTIC="${FLASH_ATTENTION_DETERMINISTIC:-1}"
 export VLLM_ENABLE_V1_MULTIPROCESSING="${VLLM_ENABLE_V1_MULTIPROCESSING:-0}"
 
 export GPU_IDS="${GPU_IDS:-0,1,2,3,4,5,6,7}"
-exec bash "${SCRIPT_DIR}/scripts/run_local_mopd_training.sh" \
+echo "CONFIG_REFERENCE=${CONFIG_REFERENCE}"
+echo "=== start.sh: exec run_local_mopd_training.sh ==="
+
+# Temporarily disable set -e so we can capture the exit code
+set +e
+bash "${SCRIPT_DIR}/scripts/run_local_mopd_training.sh" \
   "${CONFIG_REFERENCE}" \
   "$@" \
   -- \
   "++data.seed=${MOPD_SEED}" \
   "++actor_rollout_ref.rollout.seed=${MOPD_SEED}" \
   "++trainer.seed=${MOPD_SEED}"
+rc=$?
+set -e
+echo "=== start.sh: run_local_mopd_training.sh exited with rc=${rc} ==="
+exit ${rc}

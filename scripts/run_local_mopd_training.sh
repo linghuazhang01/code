@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Enable trace so we can see where the script fails
+set -x
 
 usage() {
   cat <<'USAGE'
@@ -177,6 +179,7 @@ if [[ ! -f "${CONFIG_PATH}" ]]; then
   echo "Config not found: ${CONFIG_PATH}" >&2
   exit 2
 fi
+echo "Config: ${CONFIG_PATH}"
 CONFIG_REFERENCE="${CONFIG_PATH}"
 CONFIG_FILE_LABEL="$(basename "${CONFIG_PATH}")"
 if [[ -n "${CONFIG_PROFILE}" ]]; then
@@ -206,6 +209,8 @@ if [[ ! -f "${SCRIPT_DIR}/run_mopd.sh" ]]; then
   exit 2
 fi
 
+echo "[0/6] verl runtime: ${VERL_RUNTIME_DIR}/verl/trainer/main_ppo.py"
+
 if [[ ! -f "${VERL_RUNTIME_DIR}/verl/trainer/main_ppo.py" ]]; then
   echo "Vendored verl runtime not found: ${VERL_RUNTIME_DIR}" >&2
   echo "Expected ${VERL_RUNTIME_DIR}/verl/trainer/main_ppo.py" >&2
@@ -214,7 +219,8 @@ fi
 
 export PYTHONPATH="${CODE_DIR}:${VERL_RUNTIME_DIR}:${PYTHONPATH:-}"
 
-python - "${CONFIG_REFERENCE}" "${CODE_DIR}" <<'PY'
+echo "[1/6] Validating config data and model paths..."
+python - "${CONFIG_REFERENCE}" "${CODE_DIR}" 2>&1 <<'PY'
 from pathlib import Path
 import sys
 
@@ -361,6 +367,7 @@ if separate_ref_policy:
 print(required_gpus)
 PY
 )"
+echo "[2/6] Required GPUs: ${REQUIRED_GPUS}, Visible GPUs: ${VISIBLE_GPU_COUNT}"
 
 if [[ "${REQUIRED_GPUS}" -gt "${VISIBLE_GPU_COUNT}" ]]; then
   cat >&2 <<EOF
@@ -375,6 +382,7 @@ EOF
 fi
 
 mkdir -p "${LOG_DIR}"
+echo "[3/6] Log dir: ${LOG_DIR}"
 LOG_FILE="${LOG_DIR}/${RUN_ID}.log"
 GPU_CSV="${LOG_DIR}/${RUN_ID}_gpu.csv"
 LAUNCH_FILE="${LOG_DIR}/${RUN_ID}.launch.sh"
@@ -390,10 +398,12 @@ if [[ "${FOREGROUND}" != "1" ]]; then
     exit 2
   fi
 fi
+echo "[4/6] Foreground mode: ${FOREGROUND}"
 
 if [[ "${DRY_RUN_FLAG}" == "1" ]]; then
   echo "Dry run: skipping GPU idle check."
 elif command -v nvidia-smi >/dev/null 2>&1; then
+  echo "[5/6] Checking GPU idle state..."
   for gpu_id in "${GPU_ID_LIST[@]}"; do
     GPU_USED="$(nvidia-smi --id="${gpu_id}" --query-gpu=memory.used --format=csv,noheader,nounits | head -n 1 | tr -dc '0-9')"
     if [[ -z "${GPU_USED}" ]]; then
@@ -413,9 +423,10 @@ if [[ "${STOP_STALE_RAY}" == "1" ]]; then
   ray stop --force >/dev/null 2>&1 || true
 fi
 
+echo "[6/6] Resolving audit config..."
 AUDIT_OUTPUT_DIR=""
 if ! has_hydra_override "mopd_audit.output_dir"; then
-  AUDIT_CONFIG_INFO="$(python - "${CONFIG_REFERENCE}" <<'PY'
+  AUDIT_CONFIG_INFO="$(python - "${CONFIG_REFERENCE}" 2>&1 <<'PY'
 import sys
 
 from mopd_verl.config_profiles import load_raw_config
