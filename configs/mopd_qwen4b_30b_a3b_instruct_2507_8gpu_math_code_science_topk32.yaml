@@ -24,7 +24,9 @@ runtime:
   python_bin: python
   verl_module: verl.trainer.main_ppo
   wandb_mode: online
-  wandb_entity: null
+  wandb_entity: lz101-rice-university
+  wandb_run_id: 14r9am6q
+  wandb_resume: must
   env_file: .env.local
   used_model: no_api
 
@@ -138,6 +140,7 @@ rollout_correction:
 extra_overrides:
   - custom_reward_function.path=mopd_verl/mixed_reward.py
   - custom_reward_function.name=compute_score
+  - trainer.resume_mode=resume_path
 
 worker_placement:
   separate_ref_policy: true
@@ -257,7 +260,7 @@ paper_eval:
 
 trainer:
   project_name: MOPD
-  experiment_name: qwen4b-from-30b-a3b-instruct-2507-math-code-science-topk32
+  experiment_name: qwen4b-from-30b-a3b-instruct-2507-math-code-science-topk32_20260727_173251
   logger: '["console","tensorboard","wandb"]'
   n_gpus_per_node: 6
   nnodes: 1
