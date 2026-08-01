@@ -139,7 +139,7 @@ rollout_correction:
 extra_overrides:
   - custom_reward_function.path=mopd_verl/mixed_reward.py
   - custom_reward_function.name=compute_score
-  - trainer.resume_mode=disable
+  - trainer.resume_mode=auto
 
 worker_placement:
   separate_ref_policy: true
