@@ -297,8 +297,29 @@ class RuntimeConfig:
     verl_module: str = "verl.trainer.main_ppo"
     wandb_mode: str = "online"
     wandb_entity: str | None = None
+    wandb_run_id: str | None = None
+    wandb_resume: str | None = None
     env_file: str | None = None
     used_model: str = "no_api"
+
+    def __post_init__(self) -> None:
+        if self.wandb_run_id is not None:
+            if not self.wandb_run_id.strip():
+                raise ValueError("runtime.wandb_run_id must be non-empty.")
+            if len(self.wandb_run_id) > 64:
+                raise ValueError(
+                    "runtime.wandb_run_id must not exceed 64 characters."
+                )
+        if self.wandb_resume not in {None, "allow", "must", "never", "auto"}:
+            raise ValueError(
+                "runtime.wandb_resume must be one of: allow, must, never, "
+                "auto, or null."
+            )
+        if self.wandb_resume == "must" and self.wandb_run_id is None:
+            raise ValueError(
+                "runtime.wandb_run_id is required when "
+                "runtime.wandb_resume=must."
+            )
 
 
 @dataclass(frozen=True)

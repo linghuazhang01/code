@@ -491,9 +491,19 @@ def run_command(command: Sequence[str], config: MOPDConfig) -> int:
     env.setdefault("PYTHONINTMAXSTRDIGITS", "0")
     env[GLOBAL_SEED_ENV] = str(config.trainer.seed)
     env[PYTHON_HASH_SEED_ENV] = str(config.trainer.seed)
-    if config.runtime.wandb_entity is not None and "WANDB_ENTITY" not in shell_env:
+    explicit_wandb_run = config.runtime.wandb_run_id is not None
+    if config.runtime.wandb_entity is not None and (
+        explicit_wandb_run or "WANDB_ENTITY" not in shell_env
+    ):
         env["WANDB_ENTITY"] = config.runtime.wandb_entity
-    env.setdefault("WANDB_MODE", config.runtime.wandb_mode)
+    if explicit_wandb_run:
+        env["WANDB_PROJECT"] = config.trainer.project_name
+        env["WANDB_RUN_ID"] = config.runtime.wandb_run_id
+        env["WANDB_MODE"] = config.runtime.wandb_mode
+    else:
+        env.setdefault("WANDB_MODE", config.runtime.wandb_mode)
+    if config.runtime.wandb_resume is not None:
+        env["WANDB_RESUME"] = config.runtime.wandb_resume
     env.setdefault("USED_MODEL", config.runtime.used_model)
     return subprocess.call(list(command), env=env)
 
@@ -517,10 +527,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if extra_args and extra_args[0] == "--":
         extra_args = extra_args[1:]
 
-    # Append timestamp to experiment name so repeated runs produce distinct
-    # tensorboard log dirs and don't collide.
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    extra_args = [f"trainer.experiment_name={config.trainer.experiment_name}_{timestamp}", *extra_args]
+    # Fresh runs get unique log names. An explicit W&B run ID preserves the
+    # configured name while resuming that exact run.
+    if config.runtime.wandb_run_id is None:
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        extra_args = [
+            f"trainer.experiment_name={config.trainer.experiment_name}_{timestamp}",
+            *extra_args,
+        ]
 
     command = build_command(config, extra_args)
     if args.dry_run:

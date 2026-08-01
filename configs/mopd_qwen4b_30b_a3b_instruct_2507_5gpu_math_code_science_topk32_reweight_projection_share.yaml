@@ -28,7 +28,9 @@ runtime:
   python_bin: python3
   verl_module: verl.trainer.main_ppo
   wandb_mode: online
-  wandb_entity: null
+  wandb_entity: lz101-rice-university
+  wandb_run_id: qhtj51n5
+  wandb_resume: must
   env_file: .env.local
   used_model: no_api
 
@@ -142,7 +144,9 @@ rollout_correction:
 extra_overrides:
   - custom_reward_function.path=mopd_verl/mixed_reward.py
   - custom_reward_function.name=compute_score
-  - trainer.resume_mode=disable
+  # Restores model, optimizer, and dynamic-weight state from default_local_dir.
+  # The runtime section above also resumes the exact W&B run.
+  - trainer.resume_mode=auto
 
 worker_placement:
   separate_ref_policy: true
@@ -270,7 +274,7 @@ paper_eval:
 
 trainer:
   project_name: MOPD
-  experiment_name: qwen4b-from-30b-a3b-instruct-2507-math-code-science-topk32-reweight-projection-share-5gpu
+  experiment_name: qwen4b-from-30b-a3b-instruct-2507-math-code-science-topk32-reweight-projection-share-5gpu_20260731_131456
   logger: '["console","tensorboard","wandb"]'
   n_gpus_per_node: 4
   nnodes: 1
