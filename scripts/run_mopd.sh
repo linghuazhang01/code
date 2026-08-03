@@ -243,6 +243,10 @@ required_cpus = parse_int(
     ray_init.get("num_cpus", max(8, required_gpus * 4)),
     "ray_kwargs.ray_init.num_cpus",
 )
+# Server has 192 CPUs.  If the config asks for fewer than 72,
+# double it (minimum 64) so Ray and vLLM have enough headroom.
+if required_cpus < 72:
+    required_cpus = max(64, required_cpus * 2)
 experiment_name = trainer.get("experiment_name", "mopd_training")
 gpu_ids = ",".join(str(index) for index in range(required_gpus))
 print(experiment_name, required_gpus, required_cpus, gpu_ids, sep="\t")
