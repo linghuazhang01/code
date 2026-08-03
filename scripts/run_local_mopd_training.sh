@@ -477,6 +477,8 @@ if [[ -d $(quote "${MOPD_LOCAL_CONDA_ENV}")/bin ]]; then
   export PATH=$(quote "${MOPD_LOCAL_CONDA_ENV}")/bin:$(quote "${MOPD_LOCAL_CONDA_ROOT}")/bin:\${PATH:-}
 fi
 export CUDA_VISIBLE_DEVICES=$(quote "${GPU_IDS}")
+# Unset ROCR_VISIBLE_DEVICES to avoid conflict with CUDA_VISIBLE_DEVICES.
+unset ROCR_VISIBLE_DEVICES
 export PYTHONUNBUFFERED=1
 export PYTHONINTMAXSTRDIGITS=0
 export VERL_RUNTIME_DIR=$(quote "${VERL_RUNTIME_DIR}")
