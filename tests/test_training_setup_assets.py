@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -121,6 +122,41 @@ class TrainingSetupAssetScriptTests(unittest.TestCase):
         self.assertIn('REQUIRE_4DOMAIN_TRAIN_DATA="${REQUIRE_4DOMAIN_TRAIN_DATA:-1}"', source)
         self.assertIn('"IF/train.parquet"', source)
         self.assertIn('"Science/train.parquet"', source)
+
+    def test_qwen1p7b_goosereason_data_wrapper_requires_four_domains(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        script_path = (
+            root / "scripts" / "download_qwen1p7b_goosereason_data.sh"
+        )
+        source = script_path.read_text(encoding="utf-8")
+        declared_train_assets = set(
+            re.findall(r'train_root / "([^"]+)"', source)
+        )
+        declared_eval_assets = set(
+            re.findall(r'eval_root / "([^"]+)"', source)
+        )
+        config_names = (
+            "mopd_qwen1p7b_base_goosereason4b_instruct_6gpu_"
+            "math_code_science_topk32_reweight_auditall_nosamplegrad.yaml",
+            "mopd_qwen1p7b_base_goosereason4b_instruct_8gpu_"
+            "math_code_science_topk32_reweight_auditall_nosamplegrad.yaml",
+        )
+
+        for config_name in config_names:
+            config = load_raw_config(root / "configs" / config_name)
+            expected_train_assets = {
+                path.removeprefix("data/G-OPD-Training-Data/")
+                for paths in config["data"]["domain_train_files"].values()
+                for path in paths
+            }
+            expected_eval_assets = {
+                path.removeprefix("data/eval_data/")
+                for path in config["data"]["val_files"]
+            }
+            self.assertEqual(declared_train_assets, expected_train_assets)
+            self.assertEqual(declared_eval_assets, expected_eval_assets)
+
+        self.assertIn("REQUIRE_4DOMAIN_TRAIN_DATA=1", source)
 
     def test_download_data_has_lfs_pointer_fallback_with_timeout(self) -> None:
         script_path = (

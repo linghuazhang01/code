@@ -1519,6 +1519,9 @@ class MOPDAuditLogger:
             configured_token_loss,
             configured_token_loss_mask,
         )
+        sample_token_opd_loss_defined = configured_token_loss_mask.sum(
+            dim=-1
+        ).gt(0)
         sample_opd_loss = (
             configured_token_loss * configured_token_loss_mask
         ).sum(dim=-1)
@@ -1582,6 +1585,10 @@ class MOPDAuditLogger:
 
         opd_losses = _tensor_to_float_list(sample_opd_loss)
         sample_token_opd_loss_means = _tensor_to_float_list(sample_token_opd_loss_mean)
+        sample_token_opd_loss_defined_flags = [
+            bool(value)
+            for value in _tensor_to_int_list(sample_token_opd_loss_defined)
+        ]
         sample_loss_vars = _tensor_to_float_list(sample_loss_var)
         loss_cvs = _tensor_to_float_list(sample_loss_cv)
         token_counts = [float(x) for x in effective_tokens]
@@ -1866,6 +1873,14 @@ class MOPDAuditLogger:
                         entropy_vocab_rows.append(entropy_vocab_row)
             domain_sample_losses = [opd_losses[idx] for idx in indices]
             domain_sample_stats = _sample_value_stats(domain_sample_losses)
+            domain_sample_token_loss_means = [
+                sample_token_opd_loss_means[idx]
+                for idx in indices
+                if sample_token_opd_loss_defined_flags[idx]
+            ]
+            domain_sample_token_loss_stats = _sample_value_stats(
+                domain_sample_token_loss_means
+            )
 
             confidence_values = [float(np.clip(math.exp(value), 0.0, 1.0)) for value in domain_teacher_logprobs]
             correctness_for_domain = [correctness_values[idx] for idx in indices] if correctness_values is not None else []
@@ -1887,6 +1902,15 @@ class MOPDAuditLogger:
                 "sample_opd_loss_mean": domain_sample_stats["mean"],
                 "sample_opd_loss_std": domain_sample_stats["std"],
                 "sample_opd_loss_variance": domain_sample_stats["variance"],
+                "sample_token_opd_loss_mean": domain_sample_token_loss_stats[
+                    "mean"
+                ],
+                "sample_token_opd_loss_std": domain_sample_token_loss_stats[
+                    "std"
+                ],
+                "sample_token_opd_loss_variance": (
+                    domain_sample_token_loss_stats["variance"]
+                ),
                 "high_variance_sample_rate": None
                 if not domain_cvs
                 else float(np.mean([cv > self.high_variance_cv_threshold for cv in domain_cvs])),
@@ -1952,6 +1976,15 @@ class MOPDAuditLogger:
                     "sample_opd_loss_mean": row["sample_opd_loss_mean"],
                     "sample_opd_loss_std": row["sample_opd_loss_std"],
                     "sample_opd_loss_variance": row["sample_opd_loss_variance"],
+                    "sample_token_opd_loss_mean": row[
+                        "sample_token_opd_loss_mean"
+                    ],
+                    "sample_token_opd_loss_std": row[
+                        "sample_token_opd_loss_std"
+                    ],
+                    "sample_token_opd_loss_variance": row[
+                        "sample_token_opd_loss_variance"
+                    ],
                     "high_variance_sample_rate": row["high_variance_sample_rate"],
                 }
             )
@@ -1971,6 +2004,9 @@ class MOPDAuditLogger:
                 "sample_opd_loss_mean",
                 "sample_opd_loss_std",
                 "sample_opd_loss_variance",
+                "sample_token_opd_loss_mean",
+                "sample_token_opd_loss_std",
+                "sample_token_opd_loss_variance",
                 "high_variance_sample_rate",
                 "advantage_mean",
                 "positive_frac",
@@ -2059,8 +2095,21 @@ class MOPDAuditLogger:
                             ),
                             "effective_tokens": token_counts[idx],
                             "opd_loss": opd_losses[idx],
-                            "sample_token_opd_loss_mean": sample_token_opd_loss_means[idx],
-                            "sample_token_opd_loss_variance": float(sample_loss_var[idx].detach().cpu().item()),
+                            "sample_token_opd_loss_mean": (
+                                sample_token_opd_loss_means[idx]
+                                if sample_token_opd_loss_defined_flags[idx]
+                                else None
+                            ),
+                            "sample_token_opd_loss_variance": (
+                                float(
+                                    sample_loss_var[idx]
+                                    .detach()
+                                    .cpu()
+                                    .item()
+                                )
+                                if sample_token_opd_loss_defined_flags[idx]
+                                else None
+                            ),
                             "training_reward": None if reward_values is None else reward_values[idx],
                             "training_correctness": None if correctness_values is None else correctness_values[idx],
                         }
@@ -2166,11 +2215,30 @@ class MOPDAuditLogger:
                 "teacher_student_gap",
             )
             global_sample_stats = _sample_value_stats(opd_losses)
+            global_sample_token_loss_stats = _sample_value_stats(
+                [
+                    value
+                    for value, is_defined in zip(
+                        sample_token_opd_loss_means,
+                        sample_token_opd_loss_defined_flags,
+                    )
+                    if is_defined
+                ]
+            )
             global_loss_metrics = {
                 **global_token_stats,
                 "sample_opd_loss_mean": global_sample_stats["mean"],
                 "sample_opd_loss_std": global_sample_stats["std"],
                 "sample_opd_loss_variance": global_sample_stats["variance"],
+                "sample_token_opd_loss_mean": (
+                    global_sample_token_loss_stats["mean"]
+                ),
+                "sample_token_opd_loss_std": (
+                    global_sample_token_loss_stats["std"]
+                ),
+                "sample_token_opd_loss_variance": (
+                    global_sample_token_loss_stats["variance"]
+                ),
             }
             for key, value in global_loss_metrics.items():
                 numeric = finite_float(value)

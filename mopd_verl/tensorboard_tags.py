@@ -19,16 +19,20 @@ def _is_domain_data_metric(key: str) -> bool:
 
 
 def _is_domain_loss_metric(key: str) -> bool:
-    return key.startswith("token_opd_loss_") or key in {
-        "advantage_mean",
-        "sample_opd_loss_mean",
-        "sample_opd_loss_std",
-        "sample_opd_loss_variance",
-        "token_opd_loss_mean",
-        "token_opd_loss_std",
-        "token_opd_loss_variance",
-        "high_variance_sample_rate",
-    }
+    return (
+        key.startswith("token_opd_loss_")
+        or key.startswith("sample_token_opd_loss_")
+        or key in {
+            "advantage_mean",
+            "sample_opd_loss_mean",
+            "sample_opd_loss_std",
+            "sample_opd_loss_variance",
+            "token_opd_loss_mean",
+            "token_opd_loss_std",
+            "token_opd_loss_variance",
+            "high_variance_sample_rate",
+        }
+    )
 
 
 def _is_domain_advantage_metric(key: str) -> bool:
