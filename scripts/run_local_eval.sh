@@ -52,25 +52,21 @@ Options:
   --save-completions      Save full model completions in JSONL output.
   --resume                Resume an existing output directory from its validated
                           incremental JSONL prefix.
+  --wandb-project NAME    Upload metrics/artifacts to this W&B project.
+  --wandb-entity NAME     Optional W&B entity override.
+  --wandb-group NAME      Optional W&B run group.
+  --wandb-mode NAME       online, offline, or disabled (default: online).
+  --wandb-upload-raw      Upload full rollout JSONL and report files as an artifact.
+  --wandb-timeout-seconds N
+                          Per-run upload timeout (default: 1800; 0 disables it).
+  --wandb-env-file PATH   Env file parsed with the training launcher logic.
+  --defer-wandb-upload    Write the local report but let a parent launcher upload it.
+  --no-wandb              Disable W&B even when EVAL_WANDB_PROJECT is set.
   --dry-run               Validate inputs and print the command only.
   -h, --help              Show this help.
 
-Examples:
-  scripts/run_local_eval.sh --model-path ../models/Qwen3-4B-Non-Thinking-RL-Math-Step500 \
-    --datasets aime24 --max-samples 2 --save-completions
-
-  scripts/run_local_eval.sh --model-path Qwen/Qwen3-4B \
-    --datasets aime24,humaneval_plus --modes non_thinking,thinking --score-code
-
-  CUDA_VISIBLE_DEVICES=0,1,2,3 scripts/run_local_eval.sh \
-    --model-path Qwen/Qwen3-30B-A3B-Instruct-2507 --backend vllm \
-    --tensor-parallel-size 4 --datasets aime24,gpqa_diamond
-
-  scripts/run_local_eval.sh --model-path /path/to/model \
-    --datasets training_ceiling --max-samples 100
 USAGE
 }
-
 MODEL_PATH="${MODEL_PATH:-}"
 DATASETS="${DATASETS:-aime24,aime25,hmmt25feb,hmmt25nov,humaneval_plus,mbpp_plus}"
 MODES="${MODES:-non_thinking}"
@@ -100,7 +96,15 @@ RESUME=0
 DRY_RUN=0
 NEEDS_TRAINING_CODE_SCORER=0
 NEEDS_IF_SCORER=0
-
+WANDB_PROJECT_NAME="${EVAL_WANDB_PROJECT:-}"
+WANDB_ENTITY_NAME="${EVAL_WANDB_ENTITY:-}"
+WANDB_GROUP_NAME="${EVAL_WANDB_GROUP:-}"
+WANDB_MODE_NAME="${EVAL_WANDB_MODE:-online}"
+WANDB_UPLOAD_RAW="${EVAL_WANDB_UPLOAD_RAW:-0}"
+WANDB_ENABLED="${EVAL_WANDB_ENABLED:-1}"
+WANDB_TIMEOUT_SECONDS="${EVAL_WANDB_TIMEOUT_SECONDS:-1800}"
+WANDB_ENV_FILE="${EVAL_WANDB_ENV_FILE:-${CODE_DIR}/.env.local}"
+DEFER_WANDB_UPLOAD=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --model-path) MODEL_PATH="${2:?--model-path requires a value}"; shift 2 ;;
@@ -129,12 +133,20 @@ while [[ $# -gt 0 ]]; do
     --score-code) SCORE_CODE=1; shift ;;
     --save-completions) SAVE_COMPLETIONS=1; shift ;;
     --resume) RESUME=1; shift ;;
+    --wandb-project) WANDB_PROJECT_NAME="${2:?--wandb-project requires a value}"; WANDB_ENABLED=1; shift 2 ;;
+    --wandb-entity) WANDB_ENTITY_NAME="${2:?--wandb-entity requires a value}"; shift 2 ;;
+    --wandb-group) WANDB_GROUP_NAME="${2:?--wandb-group requires a value}"; shift 2 ;;
+    --wandb-mode) WANDB_MODE_NAME="${2:?--wandb-mode requires a value}"; shift 2 ;;
+    --wandb-upload-raw) WANDB_UPLOAD_RAW=1; shift ;;
+    --wandb-timeout-seconds) WANDB_TIMEOUT_SECONDS="${2:?--wandb-timeout-seconds requires a value}"; shift 2 ;;
+    --wandb-env-file) WANDB_ENV_FILE="${2:?--wandb-env-file requires a value}"; shift 2 ;;
+    --defer-wandb-upload) DEFER_WANDB_UPLOAD=1; shift ;;
+    --no-wandb) WANDB_ENABLED=0; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
-
 [[ -n "${MODEL_PATH}" ]] || { echo "--model-path is required" >&2; exit 2; }
 [[ "${MAX_NEW_TOKENS}" =~ ^[1-9][0-9]*$ ]] || {
   echo "--max-new-tokens must be a positive integer" >&2
@@ -165,6 +177,24 @@ fi
   echo "--sample-offset must be a non-negative integer" >&2
   exit 2
 }
+[[ "${WANDB_MODE_NAME}" == "online" || "${WANDB_MODE_NAME}" == "offline" \
+  || "${WANDB_MODE_NAME}" == "disabled" ]] || {
+  echo "--wandb-mode must be online, offline, or disabled" >&2
+  exit 2
+}
+[[ "${WANDB_UPLOAD_RAW}" == "0" || "${WANDB_UPLOAD_RAW}" == "1" ]] || {
+  echo "EVAL_WANDB_UPLOAD_RAW must be 0 or 1" >&2
+  exit 2
+}
+[[ "${WANDB_ENABLED}" == "0" || "${WANDB_ENABLED}" == "1" ]] || {
+  echo "EVAL_WANDB_ENABLED must be 0 or 1" >&2
+  exit 2
+}
+[[ "${WANDB_TIMEOUT_SECONDS}" =~ ^[0-9]+$ ]] || {
+  echo "--wandb-timeout-seconds must be a non-negative integer" >&2
+  exit 2
+}
+[[ "${WANDB_ENABLED}" == "1" ]] || WANDB_PROJECT_NAME=""
 
 IFS=',' read -r -a DATASET_NAMES <<< "${DATASETS}"
 DATA_FILES=()
@@ -298,6 +328,12 @@ if [[ "${BACKEND}" == "vllm" ]]; then
   printf '[local-eval] tensor parallel size: %s\n' "${TENSOR_PARALLEL_SIZE}"
 fi
 printf '[local-eval] output: %s\n' "${OUTPUT_DIR}"
+if [[ -n "${WANDB_PROJECT_NAME}" ]]; then
+  printf '[local-eval] W&B: project=%s group=%s mode=%s raw_artifact=%s timeout=%ss env_file=%s\n' \
+    "${WANDB_PROJECT_NAME}" "${WANDB_GROUP_NAME:-<none>}" "${WANDB_MODE_NAME}" \
+    "${WANDB_UPLOAD_RAW}" "${WANDB_TIMEOUT_SECONDS}" "${WANDB_ENV_FILE}"
+  [[ "${DEFER_WANDB_UPLOAD}" == "0" ]] || echo "[local-eval] W&B upload deferred to parent launcher."
+fi
 
 if [[ "${DRY_RUN}" == "1" ]]; then
   printf '[local-eval] command:'
@@ -341,5 +377,24 @@ cd "${CODE_DIR}"
   --run-id "${RUN_ID}" \
   --model-path "${MODEL_PATH}" \
   --status final
+
+if [[ -n "${WANDB_PROJECT_NAME}" && "${DEFER_WANDB_UPLOAD}" == "0" ]]; then
+  WANDB_COMMAND=(
+    bash "${CODE_DIR}/scripts/upload_eval_result_to_wandb.sh"
+    --python "${PYTHON_BIN}"
+    --output-dir "${OUTPUT_DIR}"
+    --project "${WANDB_PROJECT_NAME}"
+    --mode "${WANDB_MODE_NAME}"
+    --upload-raw "${WANDB_UPLOAD_RAW}"
+    --timeout-seconds "${WANDB_TIMEOUT_SECONDS}"
+    --env-file "${WANDB_ENV_FILE}"
+  )
+  [[ -z "${WANDB_ENTITY_NAME}" ]] || WANDB_COMMAND+=(--entity "${WANDB_ENTITY_NAME}")
+  [[ -z "${WANDB_GROUP_NAME}" ]] || WANDB_COMMAND+=(--group "${WANDB_GROUP_NAME}")
+  if ! "${WANDB_COMMAND[@]}"; then
+    echo "[local-eval] W&B upload is pending; local results are complete." >&2
+    echo "[local-eval] retry with: ${PYTHON_BIN} -m eval.wandb_upload --output-dir ${OUTPUT_DIR} --project ${WANDB_PROJECT_NAME} --env-file ${WANDB_ENV_FILE}" >&2
+  fi
+fi
 
 printf '[local-eval] report: %s/README.md\n' "${OUTPUT_DIR}"

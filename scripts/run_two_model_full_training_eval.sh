@@ -21,15 +21,22 @@ TEMPERATURE="${TEMPERATURE:-0}"
 TOP_P="${TOP_P:-1.0}"
 SEED="${SEED:-42}"
 BATCH_SIZE="${BATCH_SIZE:-24}"
-GPU_MEMORY="${GPU_MEMORY:-0.6}"
+GPU_MEMORY="${GPU_MEMORY:-0.9}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-18432}"
 MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-32768}"
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-24}"
 RESUME="${RESUME:-0}"
 DRY_RUN="${DRY_RUN:-0}"
 CONFIRM_FULL_TRAINING="${CONFIRM_FULL_TRAINING:-0}"
+EVAL_WANDB_ENABLED="${EVAL_WANDB_ENABLED:-1}"
+EVAL_WANDB_PROJECT="${EVAL_WANDB_PROJECT:-mopd-eval}"
+EVAL_WANDB_ENTITY="${EVAL_WANDB_ENTITY:-${WANDB_ENTITY:-}}"
+EVAL_WANDB_MODE="${EVAL_WANDB_MODE:-online}"
+EVAL_WANDB_UPLOAD_RAW="${EVAL_WANDB_UPLOAD_RAW:-1}"
+EVAL_WANDB_TIMEOUT_SECONDS="${EVAL_WANDB_TIMEOUT_SECONDS:-1800}"
+EVAL_WANDB_ENV_FILE="${EVAL_WANDB_ENV_FILE:-${CODE_DIR}/.env.local}"
 
-for flag in RESUME DRY_RUN CONFIRM_FULL_TRAINING; do
+for flag in RESUME DRY_RUN CONFIRM_FULL_TRAINING EVAL_WANDB_ENABLED EVAL_WANDB_UPLOAD_RAW; do
   [[ "${!flag}" == "0" || "${!flag}" == "1" ]] || {
     echo "${flag} must be 0 or 1: ${!flag}" >&2
     exit 2
@@ -49,6 +56,10 @@ if [[ -n "${MAX_SAMPLES_PER_DOMAIN}" && ! "${MAX_SAMPLES_PER_DOMAIN}" =~ ^[1-9][
 fi
 [[ "${NUM_SAMPLES}" =~ ^[1-9][0-9]*$ ]] || {
   echo "NUM_SAMPLES must be a positive integer: ${NUM_SAMPLES}" >&2
+  exit 2
+}
+[[ "${EVAL_WANDB_TIMEOUT_SECONDS}" =~ ^[0-9]+$ ]] || {
+  echo "EVAL_WANDB_TIMEOUT_SECONDS must be a non-negative integer." >&2
   exit 2
 }
 "${PYTHON_BIN}" - "${NUM_SAMPLES}" "${TEMPERATURE}" <<'PY'
@@ -105,6 +116,7 @@ DATA_FILES=(
   "${CODE_DIR}/data/G-OPD-Training-Data/Science/train.parquet"
 )
 MANIFEST_INITIALIZED=0
+WANDB_UPLOAD_DIRS=()
 
 row_count() {
   local data_file="$1"
@@ -155,6 +167,78 @@ write_suite_manifest() {
   MANIFEST_INITIALIZED=1
 }
 
+wandb_upload_is_current() {
+  local shard_dir="$1"
+  local status_file="${shard_dir}/wandb_upload_status.json"
+  [[ -f "${status_file}" ]] || return 1
+  "${PYTHON_BIN}" - "${status_file}" "${EVAL_WANDB_PROJECT}" "${EVAL_WANDB_ENTITY}" \
+    "two_model_full_training_${RUN_TAG}" "${EVAL_WANDB_MODE}" "${EVAL_WANDB_UPLOAD_RAW}" \
+    "${EVAL_WANDB_ENV_FILE}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+status = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+project, entity, group, mode, upload_raw, env_file = sys.argv[2:]
+expected_state = {"online": "uploaded", "offline": "offline_saved", "disabled": "disabled"}[mode]
+config = status.get("config", {})
+matches = (
+    status.get("state") == expected_state
+    and config.get("project") == project
+    and (config.get("entity") or "") == entity
+    and (config.get("group") or "") == group
+    and config.get("mode") == mode
+    and bool(config.get("upload_raw")) == (upload_raw == "1")
+    and (config.get("env_file") or "") == env_file
+)
+raise SystemExit(0 if matches else 1)
+PY
+}
+
+queue_wandb_upload() {
+  local shard_dir="$1"
+  [[ "${EVAL_WANDB_ENABLED}" == "1" && "${DRY_RUN}" == "0" ]] || return
+  if wandb_upload_is_current "${shard_dir}"; then
+    echo "[two-model-full-training] W&B already current: ${shard_dir}"
+    return
+  fi
+  WANDB_UPLOAD_DIRS+=("${shard_dir}")
+}
+
+run_wandb_upload_with_timeout() {
+  local shard_dir="$1"
+  local upload_command=(
+    bash "${CODE_DIR}/scripts/upload_eval_result_to_wandb.sh"
+    --python "${PYTHON_BIN}"
+    --output-dir "${shard_dir}"
+    --project "${EVAL_WANDB_PROJECT}"
+    --group "two_model_full_training_${RUN_TAG}"
+    --mode "${EVAL_WANDB_MODE}"
+    --upload-raw "${EVAL_WANDB_UPLOAD_RAW}"
+    --timeout-seconds "${EVAL_WANDB_TIMEOUT_SECONDS}"
+    --env-file "${EVAL_WANDB_ENV_FILE}"
+  )
+  [[ -z "${EVAL_WANDB_ENTITY}" ]] || upload_command+=(--entity "${EVAL_WANDB_ENTITY}")
+  "${upload_command[@]}"
+}
+
+upload_queued_wandb_results() {
+  local shard_dir
+  local failures=0
+  for shard_dir in "${WANDB_UPLOAD_DIRS[@]}"; do
+    echo "[two-model-full-training] upload W&B artifact: ${shard_dir}"
+    if run_wandb_upload_with_timeout "${shard_dir}" >"${shard_dir}/wandb_upload.log" 2>&1; then
+      echo "[two-model-full-training] W&B complete: ${shard_dir}"
+    else
+      failures=$((failures + 1))
+      echo "[two-model-full-training] W&B pending: ${shard_dir}" >&2
+    fi
+  done
+  if [[ "${failures}" -gt 0 ]]; then
+    echo "[two-model-full-training] ${failures} W&B upload(s) remain pending; local eval is complete." >&2
+  fi
+}
+
 run_shard() {
   local model_label="$1"
   local model_path="$2"
@@ -169,12 +253,25 @@ run_shard() {
 
   if [[ "${RESUME}" == "1" && -f "${shard_dir}/SUCCESS" ]]; then
     echo "[two-model-full-training] skip completed shard: ${shard_dir}"
+    queue_wandb_upload "${shard_dir}"
     return
   fi
   if [[ "${RESUME}" == "1" && -s "${shard_dir}/thinking_eval_samples.jsonl" ]]; then
     extra_args+=(--resume)
   fi
   [[ "${DRY_RUN}" == "0" ]] || extra_args+=(--dry-run)
+  if [[ "${EVAL_WANDB_ENABLED}" == "1" ]]; then
+    extra_args+=(
+      --wandb-project "${EVAL_WANDB_PROJECT}"
+      --wandb-group "two_model_full_training_${RUN_TAG}"
+      --wandb-mode "${EVAL_WANDB_MODE}"
+      --wandb-timeout-seconds "${EVAL_WANDB_TIMEOUT_SECONDS}"
+      --wandb-env-file "${EVAL_WANDB_ENV_FILE}"
+      --defer-wandb-upload
+    )
+    [[ -z "${EVAL_WANDB_ENTITY}" ]] || extra_args+=(--wandb-entity "${EVAL_WANDB_ENTITY}")
+    [[ "${EVAL_WANDB_UPLOAD_RAW}" == "0" ]] || extra_args+=(--wandb-upload-raw)
+  fi
 
   echo "[two-model-full-training] model=${model_label} domain=${domain} start=${start} count=${count}"
   local command=(
@@ -216,6 +313,7 @@ run_shard() {
   CUDA_VISIBLE_DEVICES="${GPU_ID}" "${command[@]}" 2>&1 \
     | tee "${tee_args[@]}" "${shard_dir}/run.log"
   touch "${shard_dir}/SUCCESS"
+  queue_wandb_upload "${shard_dir}"
 }
 
 run_model() {
@@ -259,6 +357,7 @@ run_model qwen3_1p7b "${STUDENT_MODEL_PATH}"
 run_model goosereason_4b "${TEACHER_MODEL_PATH}"
 if [[ "${DRY_RUN}" == "0" ]]; then
   write_suite_manifest complete
+  upload_queued_wandb_results
 fi
 
 echo "[two-model-full-training] complete: ${OUTPUT_ROOT}"

@@ -18,20 +18,31 @@ TEMPERATURE="${TEMPERATURE:-0}"
 TOP_P="${TOP_P:-1.0}"
 SEED="${SEED:-42}"
 BATCH_SIZE="${BATCH_SIZE:-24}"
-GPU_MEMORY="${GPU_MEMORY:-0.6}"
+GPU_MEMORY="${GPU_MEMORY:-0.9}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-18432}"
 MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-32768}"
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-24}"
 MAX_SAMPLES="${MAX_SAMPLES:-}"
 RESUME="${RESUME:-0}"
 DRY_RUN="${DRY_RUN:-0}"
+EVAL_WANDB_ENABLED="${EVAL_WANDB_ENABLED:-1}"
+EVAL_WANDB_PROJECT="${EVAL_WANDB_PROJECT:-mopd-eval}"
+EVAL_WANDB_ENTITY="${EVAL_WANDB_ENTITY:-${WANDB_ENTITY:-}}"
+EVAL_WANDB_MODE="${EVAL_WANDB_MODE:-online}"
+EVAL_WANDB_UPLOAD_RAW="${EVAL_WANDB_UPLOAD_RAW:-1}"
+EVAL_WANDB_TIMEOUT_SECONDS="${EVAL_WANDB_TIMEOUT_SECONDS:-1800}"
+EVAL_WANDB_ENV_FILE="${EVAL_WANDB_ENV_FILE:-${CODE_DIR}/.env.local}"
 
-for flag in RESUME DRY_RUN; do
+for flag in RESUME DRY_RUN EVAL_WANDB_ENABLED EVAL_WANDB_UPLOAD_RAW; do
   [[ "${!flag}" == "0" || "${!flag}" == "1" ]] || {
     echo "${flag} must be 0 or 1: ${!flag}" >&2
     exit 2
   }
 done
+[[ "${EVAL_WANDB_TIMEOUT_SECONDS}" =~ ^[0-9]+$ ]] || {
+  echo "EVAL_WANDB_TIMEOUT_SECONDS must be a non-negative integer." >&2
+  exit 2
+}
 
 [[ "${NUM_SAMPLES}" =~ ^[1-9][0-9]*$ ]] || {
   echo "NUM_SAMPLES must be a positive integer: ${NUM_SAMPLES}" >&2
@@ -125,6 +136,17 @@ run_model() {
   [[ -z "${MAX_SAMPLES}" ]] || extra_args+=(--max-samples "${MAX_SAMPLES}")
   [[ "${RESUME}" == "0" ]] || extra_args+=(--resume)
   [[ "${DRY_RUN}" == "0" ]] || extra_args+=(--dry-run)
+  if [[ "${EVAL_WANDB_ENABLED}" == "1" ]]; then
+    extra_args+=(
+      --wandb-project "${EVAL_WANDB_PROJECT}"
+      --wandb-group "two_model_training_ceiling_${RUN_TAG}"
+      --wandb-mode "${EVAL_WANDB_MODE}"
+      --wandb-timeout-seconds "${EVAL_WANDB_TIMEOUT_SECONDS}"
+      --wandb-env-file "${EVAL_WANDB_ENV_FILE}"
+    )
+    [[ -z "${EVAL_WANDB_ENTITY}" ]] || extra_args+=(--wandb-entity "${EVAL_WANDB_ENTITY}")
+    [[ "${EVAL_WANDB_UPLOAD_RAW}" == "0" ]] || extra_args+=(--wandb-upload-raw)
+  fi
 
   echo "[two-model-training-ceiling] model=${model_label} path=${model_path} output=${output_dir}"
   local command=(

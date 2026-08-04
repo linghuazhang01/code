@@ -160,7 +160,7 @@ for both models: `non_thinking`, `max_new_tokens=16384`, greedy `n=1`,
 `max_num_batched_tokens=32768`, `max_num_seqs=24`, eager execution, and
 chunked prefill disabled. The only deliberate topology change is `TP=1` for
 the 141 GiB single GPU. Request batching defaults to 24 and vLLM memory
-utilization to 0.6, matching the teacher rollout engine limits.
+utilization to 0.9.
 
 ```bash
 # Held-out OOD benchmark suite
@@ -204,6 +204,65 @@ For all three launchers, `DRY_RUN=1` validates and prints the plan without
 creating output directories, logs, shard markers, or manifests. A non-resume
 run refuses to reuse a non-empty output directory instead of deleting prior
 rollouts.
+
+### W&B upload
+
+The three launchers upload scalar metrics and a summary table to the
+`mopd-eval` W&B project by default. Each model run (and each full-training
+shard) also uploads an `evaluation-results` artifact containing the report,
+generation config, compact records, full prompt/response rollout JSONL, and
+summary files. Runs from the same launcher invocation share one W&B group.
+
+Evaluation reuses the training launcher's `.env.local` parser, including its
+support for `export KEY=value`. The existing legacy key name is accepted and
+mapped in memory to the standard W&B variable:
+
+```bash
+export Wandb_Key=<your-wandb-api-key>
+```
+
+`WANDB_API_KEY` is also supported and takes precedence when already present in
+the shell or `.env.local`. The key is never copied into reports, status files,
+or artifacts. Override the env-file path with `EVAL_WANDB_ENV_FILE` when
+needed; the default is `<code-root>/.env.local`.
+
+For full-training, each shard is marked `SUCCESS` and queued locally; W&B
+artifacts are uploaded sequentially only after all local generation and the
+final suite manifest are complete. A slow network therefore cannot delay the
+next generation shard. All three launchers give each upload a 1,800-second
+timeout by default; override it with `EVAL_WANDB_TIMEOUT_SECONDS` or set it to
+`0` for no timeout.
+
+Optional controls are `EVAL_WANDB_ENTITY`,
+`EVAL_WANDB_MODE=online|offline|disabled`, `EVAL_WANDB_UPLOAD_RAW=0`, and
+`EVAL_WANDB_ENABLED=0`. The project can be overridden with
+`EVAL_WANDB_PROJECT`, whose default is `mopd-eval`. Offline W&B state is stored
+below each result directory in `wandb/`, and its exact local run directory is
+recorded in `wandb_upload_status.json`.
+
+Raw artifacts contain prompts, responses, ground truth, and source metadata.
+Confirm that the target W&B project's visibility and data policy are suitable
+before launching; use `EVAL_WANDB_UPLOAD_RAW=0` when only metrics should leave
+the machine.
+
+Local evaluation files remain the source of truth. If authentication or the
+network fails, the evaluation still completes and writes
+`wandb_upload_status.json` with `upload_pending`. Retry one result directory,
+or every completed shard below an output root, with:
+
+```bash
+python -m eval.wandb_upload \
+  --output-dir data/eval_data/results/<suite>/<RUN_TAG>/<model> \
+  --project mopd-eval \
+  --group <suite>_<RUN_TAG> \
+  --env-file .env.local
+
+python -m eval.wandb_upload \
+  --output-root data/eval_data/results/two_model_full_training/<RUN_TAG> \
+  --project mopd-eval \
+  --group two_model_full_training_<RUN_TAG> \
+  --env-file .env.local
+```
 
 For example, run a bounded four-domain training ceiling evaluation with:
 

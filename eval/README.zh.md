@@ -183,7 +183,7 @@ scripts/run_local_eval.sh \
 `temperature=0`、`top_p=1`、`seed=42`、`max_model_len=18432`、
 `max_num_batched_tokens=32768`、`max_num_seqs=24`、`enforce_eager=true`，
 并关闭 chunked prefill。唯一有意调整的是按 141 GiB 单卡改为 `TP=1`；request
-batch 默认 24，vLLM memory utilization 为 0.6。
+batch 默认 24，vLLM memory utilization 为 0.9。
 
 ```bash
 # Held-out OOD benchmark suite
@@ -222,6 +222,59 @@ training parquet 与生成结果留在内存。可通过 `SHARD_SIZE` 调整；�
 比对 immutable suite signature；配置或数据身份不一致时，在跳过任何 shard 前拒绝运行。
 三个脚本的 `DRY_RUN=1` 都只做校验并打印计划，不创建输出目录、log、shard marker
 或 manifest。非 resume 运行会拒绝复用非空输出目录，不会删除已有 rollout。
+
+### W&B 上传
+
+三个入口默认把 scalar metrics 和 summary table 上传到 W&B project
+`mopd-eval`。每个 model run（full-training 中为每个 10k shard）还会上传一个
+`evaluation-results` artifact，包含 report、generation config、compact records、
+完整 prompt/response rollout JSONL 和 summary files；同一次 launcher 执行的 runs
+会放在同一个 W&B group 下。
+
+评测会复用 training launcher 的 `.env.local` parser，包括 `export KEY=value` 格式。
+原有的 legacy key 名称可以直接使用，并只在进程内映射为 W&B 标准变量：
+
+```bash
+export Wandb_Key=<your-wandb-api-key>
+```
+
+同时支持 `WANDB_API_KEY`；如果 shell 或 `.env.local` 已经提供该标准变量，则它优先。
+Key 不会被写入 report、status file 或 artifact。默认读取 `<code-root>/.env.local`，
+可用 `EVAL_WANDB_ENV_FILE` 覆盖路径。
+
+Full-training 会先为本地完成的 shard 写 `SUCCESS` 并加入本地队列；所有 generation
+和最终 suite manifest 完成后，才逐个上传 W&B artifact，因此网络慢不会延迟下一个
+generation shard。每个上传默认 timeout 为 1,800 秒；可通过
+`EVAL_WANDB_TIMEOUT_SECONDS` 修改，设为 `0` 表示不限制；该 timeout 同样适用于
+OOD 与 training-ceiling。
+
+可选环境变量包括 `EVAL_WANDB_ENTITY`、
+`EVAL_WANDB_MODE=online|offline|disabled`、`EVAL_WANDB_UPLOAD_RAW=0` 和
+`EVAL_WANDB_ENABLED=0`。project 可通过 `EVAL_WANDB_PROJECT` 覆盖，默认值为
+`mopd-eval`。Offline W&B 状态保存在每个结果目录的 `wandb/` 下，具体 local run
+directory 会记录到 `wandb_upload_status.json`。
+
+Raw artifact 含 prompt、response、ground truth 与 source metadata。启动前请确认目标
+W&B project 的 visibility 与数据策略适合这些内容；如果只允许 metrics 离开机器，设置
+`EVAL_WANDB_UPLOAD_RAW=0`。
+
+本地评测文件仍是 source of truth。认证或网络失败不会让已经完成的 generation
+失效，而是写入 `wandb_upload_status.json`，状态为 `upload_pending`。修复网络后可
+对单个结果目录或 full-training 的全部已完成 shard 重试：
+
+```bash
+python -m eval.wandb_upload \
+  --output-dir data/eval_data/results/<suite>/<RUN_TAG>/<model> \
+  --project mopd-eval \
+  --group <suite>_<RUN_TAG> \
+  --env-file .env.local
+
+python -m eval.wandb_upload \
+  --output-root data/eval_data/results/two_model_full_training/<RUN_TAG> \
+  --project mopd-eval \
+  --group two_model_full_training_<RUN_TAG> \
+  --env-file .env.local
+```
 
 三个脚本均支持 `MAX_SAMPLES`（OOD/ceiling）或
 `MAX_SAMPLES_PER_DOMAIN`（full training）做 smoke test；当

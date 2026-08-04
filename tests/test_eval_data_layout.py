@@ -67,6 +67,9 @@ class EvalDataLayoutTests(unittest.TestCase):
         self.assertIn("training_full)", launcher)
         self.assertIn("--sample-offset", launcher)
         self.assertIn("--resume", launcher)
+        self.assertIn('WANDB_TIMEOUT_SECONDS="${EVAL_WANDB_TIMEOUT_SECONDS:-1800}"', launcher)
+        self.assertIn("scripts/upload_eval_result_to_wandb.sh", launcher)
+        self.assertIn("--wandb-env-file", launcher)
         for dataset_key, relative_path in expected_routes.items():
             with self.subTest(dataset=dataset_key):
                 self.assertIn(
@@ -90,7 +93,11 @@ class EvalDataLayoutTests(unittest.TestCase):
                 self.assertIn("Nemotron-Research-GooseReason-4B-Instruct", script)
                 self.assertIn('MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-16384}"', script)
                 self.assertIn('BATCH_SIZE="${BATCH_SIZE:-24}"', script)
-                self.assertIn('GPU_MEMORY="${GPU_MEMORY:-0.6}"', script)
+                self.assertIn('GPU_MEMORY="${GPU_MEMORY:-0.9}"', script)
+                self.assertIn('EVAL_WANDB_PROJECT="${EVAL_WANDB_PROJECT:-mopd-eval}"', script)
+                self.assertIn('EVAL_WANDB_ENV_FILE="${EVAL_WANDB_ENV_FILE:-${CODE_DIR}/.env.local}"', script)
+                self.assertIn("--wandb-project", script)
+                self.assertIn("--wandb-upload-raw", script)
                 self.assertIn('MAX_MODEL_LEN="${MAX_MODEL_LEN:-18432}"', script)
                 self.assertIn(
                     'MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-32768}"',
@@ -112,6 +119,15 @@ class EvalDataLayoutTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("SHARD_SIZE", full_training)
         self.assertIn("--sample-offset", full_training)
+        self.assertIn("--defer-wandb-upload", full_training)
+        self.assertIn("queue_wandb_upload", full_training)
+        self.assertIn("upload_queued_wandb_results", full_training)
+        self.assertIn('EVAL_WANDB_TIMEOUT_SECONDS="${EVAL_WANDB_TIMEOUT_SECONDS:-1800}"', full_training)
+        success_index = full_training.index('touch "${shard_dir}/SUCCESS"')
+        self.assertLess(
+            success_index,
+            full_training.index('queue_wandb_upload "${shard_dir}"', success_index),
+        )
         self.assertIn("CONFIRM_FULL_TRAINING", full_training)
         self.assertIn("MIN_FREE_GB", full_training)
         self.assertIn("suite_manifest.json", full_manifest)
