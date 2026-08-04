@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
@@ -54,6 +55,7 @@ class EvalSample:
     messages: list[dict[str, str]]
     ground_truth: Any
     extra_info: dict[str, Any] = field(default_factory=dict)
+    sample_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -82,6 +84,7 @@ class EvalResult:
     prompt: str | None = None
     completion: str | None = None
     reward_metadata: list[dict[str, Any]] | None = None
+    sample_metadata: dict[str, Any] | None = None
 
 
 def _safe_json_loads(value: str) -> Any:
@@ -101,6 +104,24 @@ def normalize_mapping(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _json_safe(value: Any) -> Any:
+    """Convert parquet-backed metadata into values accepted by ``json.dumps``."""
+
+    if value is None or isinstance(value, (str, int, bool)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, str)):
+        return [_json_safe(item) for item in value]
+    if hasattr(value, "tolist"):
+        return _json_safe(value.tolist())
+    if hasattr(value, "item"):
+        return _json_safe(value.item())
+    return str(value)
+
+
 def normalize_messages(value: Any) -> list[dict[str, str]]:
     if isinstance(value, str):
         value = _safe_json_loads(value)
@@ -117,6 +138,40 @@ def normalize_messages(value: Any) -> list[dict[str, str]]:
         content = str(item.get("content", ""))
         messages.append({"role": role, "content": content})
     return messages
+
+
+def _iter_parquet_rows(
+    path: Path,
+    *,
+    start: int,
+    limit: int | None,
+    batch_size: int = 1_024,
+) -> Iterable[tuple[int, Mapping[str, Any]]]:
+    """Yield a stable row slice without loading the full parquet into memory."""
+
+    import pyarrow.parquet as pq
+
+    if start < 0:
+        raise ValueError("Parquet row start must be non-negative.")
+    if limit is not None and limit < 1:
+        raise ValueError("Parquet row limit must be positive when provided.")
+
+    emitted = 0
+    row_offset = 0
+    for record_batch in pq.ParquetFile(path).iter_batches(batch_size=batch_size):
+        rows = record_batch.to_pylist()
+        batch_end = row_offset + len(rows)
+        if batch_end <= start:
+            row_offset = batch_end
+            continue
+
+        local_start = max(start - row_offset, 0)
+        for local_index in range(local_start, len(rows)):
+            if limit is not None and emitted >= limit:
+                return
+            yield row_offset + local_index, rows[local_index]
+            emitted += 1
+        row_offset = batch_end
 
 
 def normalize_ability(raw_ability: str, dataset: str) -> str:
@@ -138,6 +193,7 @@ def load_eval_samples(
     data_files: Sequence[str | Path],
     max_samples_per_dataset: int | None = None,
     *,
+    sample_offset_per_dataset: int = 0,
     skip_missing: bool = False,
 ) -> list[EvalSample]:
     samples: list[EvalSample] = []
@@ -147,11 +203,11 @@ def load_eval_samples(
             if skip_missing:
                 continue
             raise FileNotFoundError(path)
-        frame = pd.read_parquet(path)
-        if max_samples_per_dataset is not None:
-            frame = frame.head(max_samples_per_dataset)
-
-        for row_index, row in frame.iterrows():
+        for row_index, row in _iter_parquet_rows(
+            path,
+            start=sample_offset_per_dataset,
+            limit=max_samples_per_dataset,
+        ):
             reward_model = normalize_mapping(row.get("reward_model"))
             extra_info = normalize_mapping(row.get("extra_info"))
             dataset = str(extra_info.get("validation_dataset") or row.get("data_source") or path.parent.name)
@@ -159,6 +215,32 @@ def load_eval_samples(
             raw_ability = str(extra_info.get("domain") or row.get("ability") or extra_info.get("source_domain") or "unknown")
             ability = normalize_ability(raw_ability, dataset)
             raw_ground_truth = reward_model.get("ground_truth", "")
+            sample_metadata = {
+                "source_file": str(path),
+                "source_row_index": _json_safe(row_index),
+                "source_row_position": row_index,
+                "source_id": _json_safe(row.get("id")),
+                "data_source": _json_safe(row.get("data_source")),
+                "source_ability": _json_safe(row.get("ability")),
+                "reward_style": _json_safe(reward_model.get("style")),
+                "reward_model": _json_safe(reward_model),
+                "extra_info": _json_safe(extra_info),
+                "additional_fields": _json_safe(
+                    {
+                        key: value
+                        for key, value in row.items()
+                        if key
+                        not in {
+                            "id",
+                            "data_source",
+                            "prompt",
+                            "ability",
+                            "reward_model",
+                            "extra_info",
+                        }
+                    }
+                ),
+            }
             samples.append(
                 EvalSample(
                     sample_id=sample_id,
@@ -167,6 +249,7 @@ def load_eval_samples(
                     messages=normalize_messages(row["prompt"]),
                     ground_truth=raw_ground_truth if ability in {"search", "tool"} else str(raw_ground_truth),
                     extra_info=extra_info,
+                    sample_metadata=sample_metadata,
                 )
             )
     return samples

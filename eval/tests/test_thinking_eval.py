@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import copy
 import json
 import tempfile
 import unittest
@@ -24,6 +25,7 @@ from eval.common import (
     remove_think_block,
     summarize_results,
 )
+from eval.full_training_manifest import resume_signature
 from eval.domains.math import extract_boxed_answer, extract_final_answer, normalize_answer, simple_score_math_answer
 from eval.domains.search import extract_search_answer, is_search_dataset
 from eval.domains.toolrl.prepare_data import toolrl_jsonl_to_verl_parquet
@@ -34,6 +36,8 @@ from eval.runner import (
     completed_samples_for_rollout,
     load_incremental_results,
     resolve_max_new_tokens,
+    validate_output_directory,
+    validate_resume_config,
     validate_resume_prefix,
 )
 from eval.domains.scoring import score_completion
@@ -117,6 +121,39 @@ class ThinkingEvalTest(unittest.TestCase):
         self.assertEqual(samples[0].messages[0]["content"], "Question?")
         self.assertEqual(samples[0].ground_truth, "42")
         self.assertEqual(samples[0].extra_info["validation_dataset"], "AIME2025")
+        self.assertEqual(samples[0].sample_metadata["source_row_position"], 0)
+        self.assertEqual(samples[0].sample_metadata["source_id"], "sample-1")
+        self.assertEqual(samples[0].sample_metadata["reward_model"]["style"], "rule")
+        self.assertEqual(
+            samples[0].sample_metadata["extra_info"]["validation_dataset"],
+            "AIME2025",
+        )
+
+    def test_load_eval_samples_streams_a_stable_row_slice(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "test.parquet"
+            pd.DataFrame(
+                [
+                    {
+                        "id": f"sample-{index}",
+                        "data_source": "AIME2025",
+                        "prompt": [{"role": "user", "content": str(index)}],
+                        "ability": "math",
+                        "reward_model": {"ground_truth": str(index)},
+                        "extra_info": {"sample_id": f"validation:AIME2025:{index}"},
+                    }
+                    for index in range(5)
+                ]
+            ).to_parquet(path, index=False)
+
+            samples = load_eval_samples(
+                [path],
+                max_samples_per_dataset=2,
+                sample_offset_per_dataset=2,
+            )
+
+        self.assertEqual([sample.sample_id for sample in samples], ["validation:AIME2025:2", "validation:AIME2025:3"])
+        self.assertEqual([sample.sample_metadata["source_row_position"] for sample in samples], [2, 3])
 
     def test_gpqa_scoring_preserves_m2rl_metadata(self) -> None:
         sample = EvalSample(
@@ -471,6 +508,67 @@ def has_close_elements(numbers: List[float], threshold: float) -> bool:
 
         self.assertEqual(loaded, [result])
 
+    def test_resume_config_rejects_changed_generation_settings(self) -> None:
+        existing = {
+            "model_path": "model-a",
+            "temperature": 0.0,
+            "sample_offset_per_dataset": 0,
+            "resume": False,
+        }
+        requested = {**existing, "resume": True}
+        validate_resume_config(existing, requested)
+
+        with self.assertRaisesRegex(ValueError, "temperature"):
+            validate_resume_config(existing, {**requested, "temperature": 1.0})
+
+    def test_non_resume_rejects_existing_evaluation_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            (output_dir / "thinking_eval_samples.jsonl").write_text(
+                "{}\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(FileExistsError, "Refusing to overwrite"):
+                validate_output_directory(output_dir, resume=False)
+            validate_output_directory(output_dir, resume=True)
+
+    def test_full_training_resume_signature_rejects_config_and_source_drift(self) -> None:
+        manifest = {
+            "schema_version": 1,
+            "suite": "full_training",
+            "run_tag": "run-a",
+            "models": {"qwen": "/models/qwen"},
+            "execution": {
+                "gpu_id": "0",
+                "minimum_free_gib_guard": 50,
+                "batch_size": 4,
+            },
+            "generation": {"temperature": 0.0, "base_seed": 42},
+            "domains": [{"domain": "math", "source_sha256": "abc"}],
+            "shards": [{"source_start": 0, "success": False}],
+        }
+        dynamic_update = copy.deepcopy(manifest)
+        dynamic_update["execution"]["gpu_id"] = "1"
+        dynamic_update["shards"][0]["success"] = True
+        self.assertEqual(
+            resume_signature(manifest),
+            resume_signature(dynamic_update),
+        )
+
+        config_drift = copy.deepcopy(manifest)
+        config_drift["generation"]["temperature"] = 1.0
+        self.assertNotEqual(
+            resume_signature(manifest),
+            resume_signature(config_drift),
+        )
+
+        source_drift = copy.deepcopy(manifest)
+        source_drift["domains"][0]["source_sha256"] = "changed"
+        self.assertNotEqual(
+            resume_signature(manifest),
+            resume_signature(source_drift),
+        )
+
     def test_resolve_max_new_tokens_prefers_ability_override(self) -> None:
         sample = EvalSample(
             sample_id="code-1",
@@ -523,6 +621,13 @@ def has_close_elements(numbers: List[float], threshold: float) -> bool:
             "messages": [{"role": "user", "content": "Write code."}],
             "prompt": "<|im_start|>user\nWrite code.",
             "completion": "<think>short</think>\ndef f(): pass",
+            "rollout_index": 2,
+            "generation_seed": 44,
+            "sample_metadata": {
+                "source_file": "data.parquet",
+                "source_row_position": 7,
+                "extra_info": {"task_id": "task-7"},
+            },
             "reward_metadata": [{"scorer": "code"}],
         }
 
@@ -536,6 +641,8 @@ def has_close_elements(numbers: List[float], threshold: float) -> bool:
         assert detail is not None
         self.assertEqual(detail["prompt"], "<|im_start|>user\nWrite code.")
         self.assertEqual(detail["response"], "<think>short</think>\ndef f(): pass")
+        self.assertEqual(detail["rollout_index"], 2)
+        self.assertEqual(detail["sample_metadata"]["extra_info"]["task_id"], "task-7")
 
     def test_search_dataset_and_answer_extraction(self) -> None:
         self.assertTrue(is_search_dataset("searchR1_nq"))

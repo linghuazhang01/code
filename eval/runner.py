@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -156,6 +157,7 @@ def generate_one(
         prompt=prompt_text if save_completion else None,
         completion=completion if save_completion else None,
         reward_metadata=reward_metadata,
+        sample_metadata=sample.sample_metadata if save_completion else None,
     )
 
 
@@ -302,6 +304,7 @@ def generate_vllm_batch(
                 prompt=prompts[index] if save_completion else None,
                 completion=completion if save_completion else None,
                 reward_metadata=reward_metadata,
+                sample_metadata=sample.sample_metadata if save_completion else None,
             )
         )
     return results
@@ -326,6 +329,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default="data/eval_data/results/qwen3_4b_thinking", help="Output directory.")
     parser.add_argument("--modes", nargs="+", default=list(THINKING_MODES), choices=THINKING_MODES)
     parser.add_argument("--max-samples-per-dataset", type=int, default=None)
+    parser.add_argument(
+        "--sample-offset-per-dataset",
+        type=int,
+        default=0,
+        help="Skip this many rows in every parquet before applying the sample limit.",
+    )
     parser.add_argument("--max-new-tokens-thinking", type=int, default=32768)
     parser.add_argument("--max-new-tokens-non-thinking", type=int, default=8192)
     parser.add_argument("--max-new-tokens-thinking-math", type=int, default=None)
@@ -374,6 +383,49 @@ def load_incremental_results(path: Path) -> list[EvalResult]:
             except (json.JSONDecodeError, TypeError) as exc:
                 raise ValueError(f"Invalid resume record at {path}:{line_number}") from exc
     return results
+
+
+def validate_resume_config(
+    existing_config: dict[str, Any],
+    requested_config: dict[str, Any],
+) -> None:
+    """Reject resume attempts that would mix incompatible run settings."""
+
+    existing = dict(existing_config)
+    requested = dict(requested_config)
+    existing.pop("resume", None)
+    requested.pop("resume", None)
+    existing.setdefault("sample_offset_per_dataset", 0)
+    requested.setdefault("sample_offset_per_dataset", 0)
+    if existing == requested:
+        return
+
+    differing_keys = sorted(
+        key
+        for key in set(existing) | set(requested)
+        if existing.get(key) != requested.get(key)
+    )
+    differences = ", ".join(
+        f"{key}={existing.get(key)!r}->{requested.get(key)!r}"
+        for key in differing_keys[:8]
+    )
+    raise ValueError(f"Resume configuration differs from the original run: {differences}")
+
+
+def validate_output_directory(output_dir: Path, *, resume: bool) -> None:
+    """Prevent accidental replacement or mixing of an existing evaluation."""
+
+    if resume or not output_dir.exists():
+        return
+    existing_entries = sorted(
+        path.name for path in output_dir.iterdir() if path.name != "run.log"
+    )
+    if existing_entries:
+        preview = ", ".join(existing_entries[:8])
+        raise FileExistsError(
+            f"Refusing to overwrite non-empty evaluation directory {output_dir}: {preview}. "
+            "Use a new output directory, or pass --resume with identical settings."
+        )
 
 
 def validate_resume_prefix(
@@ -426,25 +478,44 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args = parse_args()
     LOGGER.info("Using scoring backend: %s", SCORER_NAME)
+    if not math.isfinite(args.temperature) or args.temperature < 0:
+        raise ValueError("--temperature must be a finite non-negative number.")
+    if args.num_samples < 1:
+        raise ValueError("--num-samples must be at least 1.")
+    if args.num_samples > 1 and args.temperature <= 0:
+        raise ValueError("--num-samples > 1 requires --temperature > 0.")
+    if args.sample_offset_per_dataset < 0:
+        raise ValueError("--sample-offset-per-dataset must be non-negative.")
+
+    output_dir = Path(args.output_dir)
+    validate_output_directory(output_dir, resume=args.resume)
     samples = load_eval_samples(
         args.data_files,
         max_samples_per_dataset=args.max_samples_per_dataset,
+        sample_offset_per_dataset=args.sample_offset_per_dataset,
         skip_missing=args.skip_missing_data_files,
     )
     if not samples:
         raise ValueError("No validation samples loaded.")
-    if args.num_samples < 1:
-        raise ValueError("--num-samples must be at least 1.")
-    if args.num_samples > 1 and args.temperature <= 0:
-        LOGGER.warning("num_samples=%d with temperature=0 produces repeated greedy outputs.", args.num_samples)
 
-    output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    config_name = "eval_resume_config.json" if args.resume else "eval_run_config.json"
-    (output_dir / config_name).write_text(
-        json.dumps(vars(args), indent=2, ensure_ascii=False, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    run_config_path = output_dir / "eval_run_config.json"
+    if args.resume:
+        if not run_config_path.is_file():
+            raise FileNotFoundError(
+                f"--resume requires the original run configuration: {run_config_path}"
+            )
+        existing_config = json.loads(run_config_path.read_text(encoding="utf-8"))
+        validate_resume_config(existing_config, vars(args))
+        (output_dir / "eval_resume_config.json").write_text(
+            json.dumps(vars(args), indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    else:
+        run_config_path.write_text(
+            json.dumps(vars(args), indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
     incremental_samples_path = output_dir / "thinking_eval_samples.jsonl"
     if args.resume:
         if not incremental_samples_path.exists():

@@ -169,7 +169,63 @@ scripts/run_local_eval.sh \
 `humaneval_plus`、`mbpp_plus`、`livecodebench`、`ifeval`、`ifbench`、
 `gpqa_diamond`。Training-performance key 包括聚合四个 domain 的
 `training_ceiling`，以及单域 `training_math`、`training_code`、
-`training_if`、`training_science`。
+`training_if`、`training_science`。原始完整 training-data key 包括
+`training_full`、`training_full_math`、`training_full_code`、
+`training_full_if` 和 `training_full_science`。
+
+## 两模型三类评测脚本
+
+以下三个脚本按顺序评测 `Qwen3-1.7B` 与
+`Nemotron-Research-GooseReason-4B-Instruct`，固定使用单卡 `TP=1`：
+
+两个模型完全使用同一套 GooseReason training profile 的 validation-inference
+参数：`non_thinking`、`max_new_tokens=16384`、greedy `n=1`、
+`temperature=0`、`top_p=1`、`seed=42`、`max_model_len=18432`、
+`max_num_batched_tokens=32768`、`max_num_seqs=24`、`enforce_eager=true`，
+并关闭 chunked prefill。唯一有意调整的是按 141 GiB 单卡改为 `TP=1`；request
+batch 默认 24，vLLM memory utilization 为 0.6。
+
+```bash
+# Held-out OOD benchmark suite
+scripts/run_two_model_ood_eval.sh
+
+# 四域各 10,000 条 deterministic training ceiling
+scripts/run_two_model_training_ceiling_eval.sh
+
+# 四域全部原始 training rows；必须显式确认高成本运行
+CONFIRM_FULL_TRAINING=1 scripts/run_two_model_full_training_eval.sh
+```
+
+三个入口均启用 `--save-completions`。原始
+`thinking_eval_samples.jsonl` 和面向分析的
+`prompt_response_records.jsonl` 会保存 `prompt`、`response`、dataset、
+sample ID、model path、run ID、ground truth、rollout index、generation seed，
+以及包含源文件、原始行号、parquet `extra_info`、reward config 和额外 source
+columns 的 `sample_metadata`。
+
+OOD 脚本默认使用 9 个 held-out dataset，并统一采用每题 1 个 greedy rollout；它是
+跨 domain diagnostic，不是各 dataset 的 G-OPD paper protocol（例如 Math paper eval
+采用 sampled K=32）。LiveCodeBench 的 official protocol
+要求 temperature 1.0、每题 4 个 sampled rollout 和 16,384 tokens，因此不混入默认
+greedy suite；只有在同步调整协议时才通过 `OOD_DATASETS=...` 显式加入。这里的 OOD
+表示 held-out benchmark split，并不等价于已完成对所有 training source 的 prompt-hash
+leakage audit。
+
+完整 training eval 默认以每 shard 10,000 rows 顺序运行，避免一次把全部
+training parquet 与生成结果留在内存。可通过 `SHARD_SIZE` 调整；中断后使用同一
+`RUN_TAG` 并设置 `RESUME=1 CONFIRM_FULL_TRAINING=1` 续跑。每个完成 shard
+都会写入 `SUCCESS` 标记。
+真实运行默认要求输出文件系统至少保留 50 GiB；请根据 completion 长度和 rollout 数
+调整 `MIN_FREE_GB`。
+输出根目录的 `suite_manifest.json` 会记录每个 source range、model、shard seed、
+预期 record 数、输出目录、source SHA-256 与当前 `SUCCESS` 状态。Resume 会先严格
+比对 immutable suite signature；配置或数据身份不一致时，在跳过任何 shard 前拒绝运行。
+三个脚本的 `DRY_RUN=1` 都只做校验并打印计划，不创建输出目录、log、shard marker
+或 manifest。非 resume 运行会拒绝复用非空输出目录，不会删除已有 rollout。
+
+三个脚本均支持 `MAX_SAMPLES`（OOD/ceiling）或
+`MAX_SAMPLES_PER_DOMAIN`（full training）做 smoke test；当
+`NUM_SAMPLES>1` 时必须同时设置非零 `TEMPERATURE`。
 
 例如，对四个 domain 各运行最多 100 条 training ceiling eval：
 

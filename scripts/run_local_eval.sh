@@ -19,10 +19,13 @@ Options:
                           Use training_ceiling for the overlapping four-domain
                           training-performance ceiling sample, or select
                           training_math, training_code, training_if, and
-                          training_science individually.
+                          training_science individually. Use training_full or
+                          training_full_{math,code,if,science} for raw training
+                          rows.
   --modes NAMES           Comma-separated modes: non_thinking,thinking
                           (default: non_thinking).
   --max-samples N         Maximum examples per dataset (default: all).
+  --sample-offset N       Rows to skip in every selected parquet (default: 0).
   --max-new-tokens N      Generation limit for every selected mode (default: 8192).
   --num-samples N         Rollouts per prompt (default: 1; GRPO AIME paper eval: 32).
   --temperature FLOAT     Sampling temperature (default: 0; GRPO AIME paper eval: 1).
@@ -33,6 +36,13 @@ Options:
                           vLLM tensor-parallel GPU count (default: 1).
   --batch-size N          vLLM generation batch size (default: 8).
   --gpu-memory FLOAT      vLLM GPU memory utilization (default: 0.9).
+  --max-model-len N       vLLM context length override.
+  --max-num-batched-tokens N
+                          vLLM scheduler token budget override.
+  --max-num-seqs N        vLLM concurrent sequence limit override.
+  --enforce-eager         Disable CUDA graphs in vLLM.
+  --disable-chunked-prefill
+                          Explicitly disable vLLM chunked prefill.
   --torch-dtype NAME      Model dtype (default: auto).
   --output-dir PATH       Result directory (default: data/eval_data/results/<run-id>).
   --run-id ID             Run identifier used in the report.
@@ -40,6 +50,8 @@ Options:
   --score-code            Execute generated code for Code scoring; use only in
                           an isolated environment with the full verl rewards.
   --save-completions      Save full model completions in JSONL output.
+  --resume                Resume an existing output directory from its validated
+                          incremental JSONL prefix.
   --dry-run               Validate inputs and print the command only.
   -h, --help              Show this help.
 
@@ -63,6 +75,7 @@ MODEL_PATH="${MODEL_PATH:-}"
 DATASETS="${DATASETS:-aime24,aime25,hmmt25feb,hmmt25nov,humaneval_plus,mbpp_plus}"
 MODES="${MODES:-non_thinking}"
 MAX_SAMPLES="${MAX_SAMPLES:-}"
+SAMPLE_OFFSET="${SAMPLE_OFFSET:-0}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-8192}"
 NUM_SAMPLES="${NUM_SAMPLES:-1}"
 TEMPERATURE="${TEMPERATURE:-0}"
@@ -72,12 +85,18 @@ BACKEND="${BACKEND:-transformers}"
 TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-1}"
 BATCH_SIZE="${BATCH_SIZE:-8}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.9}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-}"
+MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-}"
+MAX_NUM_SEQS="${MAX_NUM_SEQS:-}"
+ENFORCE_EAGER=0
+DISABLE_CHUNKED_PREFILL=0
 TORCH_DTYPE="${TORCH_DTYPE:-auto}"
 RUN_ID="${RUN_ID:-local_eval_$(date +%Y%m%d_%H%M%S)}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
 PYTHON_BIN="${PYTHON:-python3}"
 SCORE_CODE=0
 SAVE_COMPLETIONS=0
+RESUME=0
 DRY_RUN=0
 NEEDS_TRAINING_CODE_SCORER=0
 NEEDS_IF_SCORER=0
@@ -88,6 +107,7 @@ while [[ $# -gt 0 ]]; do
     --datasets) DATASETS="${2:?--datasets requires a value}"; shift 2 ;;
     --modes) MODES="${2:?--modes requires a value}"; shift 2 ;;
     --max-samples) MAX_SAMPLES="${2:?--max-samples requires a value}"; shift 2 ;;
+    --sample-offset) SAMPLE_OFFSET="${2:?--sample-offset requires a value}"; shift 2 ;;
     --max-new-tokens) MAX_NEW_TOKENS="${2:?--max-new-tokens requires a value}"; shift 2 ;;
     --num-samples) NUM_SAMPLES="${2:?--num-samples requires a value}"; shift 2 ;;
     --temperature) TEMPERATURE="${2:?--temperature requires a value}"; shift 2 ;;
@@ -97,12 +117,18 @@ while [[ $# -gt 0 ]]; do
     --tensor-parallel-size) TENSOR_PARALLEL_SIZE="${2:?--tensor-parallel-size requires a value}"; shift 2 ;;
     --batch-size) BATCH_SIZE="${2:?--batch-size requires a value}"; shift 2 ;;
     --gpu-memory) GPU_MEMORY_UTILIZATION="${2:?--gpu-memory requires a value}"; shift 2 ;;
+    --max-model-len) MAX_MODEL_LEN="${2:?--max-model-len requires a value}"; shift 2 ;;
+    --max-num-batched-tokens) MAX_NUM_BATCHED_TOKENS="${2:?--max-num-batched-tokens requires a value}"; shift 2 ;;
+    --max-num-seqs) MAX_NUM_SEQS="${2:?--max-num-seqs requires a value}"; shift 2 ;;
+    --enforce-eager) ENFORCE_EAGER=1; shift ;;
+    --disable-chunked-prefill) DISABLE_CHUNKED_PREFILL=1; shift ;;
     --torch-dtype) TORCH_DTYPE="${2:?--torch-dtype requires a value}"; shift 2 ;;
     --output-dir) OUTPUT_DIR="${2:?--output-dir requires a value}"; shift 2 ;;
     --run-id) RUN_ID="${2:?--run-id requires a value}"; shift 2 ;;
     --python) PYTHON_BIN="${2:?--python requires a value}"; shift 2 ;;
     --score-code) SCORE_CODE=1; shift ;;
     --save-completions) SAVE_COMPLETIONS=1; shift ;;
+    --resume) RESUME=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -125,10 +151,20 @@ done
   exit 2
 }
 [[ "${BATCH_SIZE}" =~ ^[1-9][0-9]*$ ]] || { echo "--batch-size must be a positive integer" >&2; exit 2; }
+for integer_option in MAX_MODEL_LEN MAX_NUM_BATCHED_TOKENS MAX_NUM_SEQS; do
+  if [[ -n "${!integer_option}" && ! "${!integer_option}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "${integer_option} must be a positive integer when provided" >&2
+    exit 2
+  fi
+done
 if [[ -n "${MAX_SAMPLES}" && ! "${MAX_SAMPLES}" =~ ^[1-9][0-9]*$ ]]; then
   echo "--max-samples must be a positive integer" >&2
   exit 2
 fi
+[[ "${SAMPLE_OFFSET}" =~ ^[0-9]+$ ]] || {
+  echo "--sample-offset must be a non-negative integer" >&2
+  exit 2
+}
 
 IFS=',' read -r -a DATASET_NAMES <<< "${DATASETS}"
 DATA_FILES=()
@@ -158,15 +194,32 @@ for name in "${DATASET_NAMES[@]}"; do
     training_code) relative_paths=("data/eval_training_data/code/test.parquet") ;;
     training_if) relative_paths=("data/eval_training_data/if/test.parquet") ;;
     training_science) relative_paths=("data/eval_training_data/science/test.parquet") ;;
+    training_full)
+      relative_paths=(
+        "data/G-OPD-Training-Data/DeepMath-103K/train_filtered_level6.parquet"
+        "data/G-OPD-Training-Data/Eurus/code_train.parquet"
+        "data/G-OPD-Training-Data/IF/train.parquet"
+        "data/G-OPD-Training-Data/Science/train.parquet"
+      )
+      ;;
+    training_full_math) relative_paths=("data/G-OPD-Training-Data/DeepMath-103K/train_filtered_level6.parquet") ;;
+    training_full_code) relative_paths=("data/G-OPD-Training-Data/Eurus/code_train.parquet") ;;
+    training_full_if) relative_paths=("data/G-OPD-Training-Data/IF/train.parquet") ;;
+    training_full_science) relative_paths=("data/G-OPD-Training-Data/Science/train.parquet") ;;
     *)
       echo "Unknown dataset '${name}'." >&2
-      echo "Valid names: aime24 aime25 hmmt25feb hmmt25nov humaneval_plus mbpp_plus livecodebench ifeval ifbench gpqa_diamond training_ceiling training_math training_code training_if training_science" >&2
+      echo "Valid names: aime24 aime25 hmmt25feb hmmt25nov humaneval_plus mbpp_plus livecodebench ifeval ifbench gpqa_diamond training_ceiling training_math training_code training_if training_science training_full training_full_math training_full_code training_full_if training_full_science" >&2
       exit 2
       ;;
   esac
   for relative_path in "${relative_paths[@]}"; do
-    [[ "${relative_path}" != data/eval_training_data/code/* ]] || NEEDS_TRAINING_CODE_SCORER=1
-    if [[ "${relative_path}" == data/eval_training_data/if/* || "${relative_path}" == data/eval_data/if/* ]]; then
+    if [[ "${relative_path}" == data/eval_training_data/code/* \
+      || "${relative_path}" == data/G-OPD-Training-Data/Eurus/* ]]; then
+      NEEDS_TRAINING_CODE_SCORER=1
+    fi
+    if [[ "${relative_path}" == data/eval_training_data/if/* \
+      || "${relative_path}" == data/eval_data/if/* \
+      || "${relative_path}" == data/G-OPD-Training-Data/IF/* ]]; then
       NEEDS_IF_SCORER=1
     fi
     data_file="${CODE_DIR}/${relative_path}"
@@ -174,6 +227,8 @@ for name in "${DATASET_NAMES[@]}"; do
       echo "Missing eval data: ${data_file}" >&2
       if [[ "${relative_path}" == data/eval_training_data/* ]]; then
         echo "Run: python scripts/split_domain_eval_training_data.py --eval-size 10000 --seed 42 --overwrite" >&2
+      elif [[ "${relative_path}" == data/G-OPD-Training-Data/* ]]; then
+        echo "Run: DOWNLOAD_LCB=1 bash scripts/download_qwen1p7b_goosereason_data.sh" >&2
       else
         echo "Run eval/scripts/prepare_paper_eval_data.sh first." >&2
       fi
@@ -212,6 +267,7 @@ CMD=(
   --temperature "${TEMPERATURE}"
   --top-p "${TOP_P}"
   --seed "${SEED}"
+  --sample-offset-per-dataset "${SAMPLE_OFFSET}"
 )
 if [[ "${BACKEND}" == "vllm" ]]; then
   CMD+=(
@@ -219,12 +275,20 @@ if [[ "${BACKEND}" == "vllm" ]]; then
     --batch-size "${BATCH_SIZE}"
     --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}"
   )
+  [[ -z "${MAX_MODEL_LEN}" ]] || CMD+=(--max-model-len "${MAX_MODEL_LEN}")
+  [[ -z "${MAX_NUM_BATCHED_TOKENS}" ]] || {
+    CMD+=(--max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS}")
+  }
+  [[ -z "${MAX_NUM_SEQS}" ]] || CMD+=(--max-num-seqs "${MAX_NUM_SEQS}")
+  [[ "${ENFORCE_EAGER}" == "0" ]] || CMD+=(--enforce-eager)
+  [[ "${DISABLE_CHUNKED_PREFILL}" == "0" ]] || CMD+=(--no-enable-chunked-prefill)
 else
   CMD+=(--device-map auto)
 fi
 [[ -z "${MAX_SAMPLES}" ]] || CMD+=(--max-samples-per-dataset "${MAX_SAMPLES}")
 [[ "${SCORE_CODE}" == "0" ]] || CMD+=(--score-code)
 [[ "${SAVE_COMPLETIONS}" == "0" ]] || CMD+=(--save-completions)
+[[ "${RESUME}" == "0" ]] || CMD+=(--resume)
 
 printf '[local-eval] model: %s\n' "${MODEL_PATH}"
 printf '[local-eval] datasets: %s\n' "${DATASETS}"

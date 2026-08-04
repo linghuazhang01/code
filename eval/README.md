@@ -144,7 +144,66 @@ Supported dataset keys are `aime24`, `aime25`, `hmmt25feb`, `hmmt25nov`,
 `humaneval_plus`, `mbpp_plus`, `livecodebench`, `ifeval`, `ifbench`, and
 `gpqa_diamond`. The training-performance keys are `training_ceiling` for all
 four domains, plus `training_math`, `training_code`, `training_if`, and
-`training_science` for individual domains.
+`training_science` for individual domains. Raw full-training routes are
+`training_full`, `training_full_math`, `training_full_code`, `training_full_if`,
+and `training_full_science`.
+
+## Two-model evaluation launchers
+
+These launchers evaluate `Qwen3-1.7B` and
+`Nemotron-Research-GooseReason-4B-Instruct` sequentially on one GPU with
+`TP=1`:
+
+All three use the GooseReason training profile's validation-inference settings
+for both models: `non_thinking`, `max_new_tokens=16384`, greedy `n=1`,
+`temperature=0`, `top_p=1`, `seed=42`, `max_model_len=18432`,
+`max_num_batched_tokens=32768`, `max_num_seqs=24`, eager execution, and
+chunked prefill disabled. The only deliberate topology change is `TP=1` for
+the 141 GiB single GPU. Request batching defaults to 24 and vLLM memory
+utilization to 0.6, matching the teacher rollout engine limits.
+
+```bash
+# Held-out OOD benchmark suite
+scripts/run_two_model_ood_eval.sh
+
+# Deterministic 10,000-row-per-domain training ceiling
+scripts/run_two_model_training_ceiling_eval.sh
+
+# Every row in the four raw training parquets
+CONFIRM_FULL_TRAINING=1 scripts/run_two_model_full_training_eval.sh
+```
+
+All three launchers enable `--save-completions`. Both the raw
+`thinking_eval_samples.jsonl` and analysis-facing
+`prompt_response_records.jsonl` retain the prompt, response, dataset, sample
+ID, model path, run ID, ground truth, rollout index, generation seed, and
+`sample_metadata` with the source file, original row position, parquet
+`extra_info`, reward config, and any additional source columns.
+
+The OOD launcher defaults to nine held-out datasets and uses one greedy
+rollout per prompt as a uniform diagnostic. It is not the dataset-specific
+G-OPD paper protocol (for example, Math paper evaluation uses sampled K=32).
+LiveCodeBench is excluded
+because its official protocol uses four sampled rollouts at temperature 1.0
+and a 16,384-token limit; opt in with `OOD_DATASETS=...` only when matching
+that protocol. “OOD” here means the held-out benchmark split, not a formal
+prompt-hash leakage audit against every training source.
+
+The full-training launcher processes stable 10,000-row shards by default so it
+does not hold every training prompt and completion in one process. Override
+`SHARD_SIZE` when needed. To continue an interrupted run, reuse `RUN_TAG` and
+set `RESUME=1 CONFIRM_FULL_TRAINING=1`; completed shards have a `SUCCESS`
+marker and are skipped.
+Real runs require at least 50 GiB free in the output filesystem by default;
+adjust `MIN_FREE_GB` after estimating completion length and rollout count.
+The root `suite_manifest.json` records every source range, model, shard seed,
+expected record count, output directory, source SHA-256, and current `SUCCESS`
+status. Resume is rejected before any shard is skipped when this immutable
+suite signature differs from the original run.
+For all three launchers, `DRY_RUN=1` validates and prints the plan without
+creating output directories, logs, shard markers, or manifests. A non-resume
+run refuses to reuse a non-empty output directory instead of deleting prior
+rollouts.
 
 For example, run a bounded four-domain training ceiling evaluation with:
 

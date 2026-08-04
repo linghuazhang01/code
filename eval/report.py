@@ -126,6 +126,13 @@ def _detail_record(record: dict[str, Any]) -> dict[str, Any] | None:
         "prompt": record.get("prompt"),
         "response": record.get("completion"),
         "response_preview": record.get("completion_preview"),
+        "rollout_index": record.get("rollout_index"),
+        "generation_seed": record.get("generation_seed"),
+        "max_new_tokens": record.get("max_new_tokens"),
+        "prompt_tokens": record.get("prompt_tokens"),
+        "generated_tokens": record.get("generated_tokens"),
+        "latency_seconds": record.get("latency_seconds"),
+        "sample_metadata": record.get("sample_metadata"),
         "reward_metadata": record.get("reward_metadata"),
     }
     return {key: value for key, value in detail.items() if value is not None}
@@ -308,7 +315,11 @@ def main() -> None:
         raw_records = _read_log_records(Path(args.log_file))
         record_source = "run.log"
     records = [_compact_record(record) for record in raw_records]
-    detail_records = [record for record in (_detail_record(record) for record in raw_records) if record is not None]
+    detail_records = [
+        {"run_id": run_id, "model_path": args.model_path, **record}
+        for record in (_detail_record(record) for record in raw_records)
+        if record is not None
+    ]
     expected_total = args.expected_total if args.expected_total is not None else len(records)
     run_config_path = output_dir / "eval_run_config.json"
     run_config = json.loads(run_config_path.read_text(encoding="utf-8")) if run_config_path.exists() else {}
