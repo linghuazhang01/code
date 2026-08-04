@@ -1,10 +1,10 @@
-# Eight-GPU math+code+IF+science Top-32 training profile for distilling
-# NVIDIA Nemotron-Research-GooseReason-4B-Instruct into Qwen3-1.7B-Base.
-# The historical filename is retained for launcher compatibility; runtime
-# output names below identify the four-domain, no-token-gradient policy.
+# Eight-GPU science-only Top-32 training profile for distilling
+# NVIDIA Nemotron-Research-GooseReason-4B-Instruct into Qwen3-1.7B with
+# enable_thinking=false.
+# The training objective is teacher-support Top-32 renormalized forward KL.
 #
 # Physical GPU layout:
-# - one colocated 8-GPU pool for the Base student actor/rollout and the
+# - one colocated 8-GPU pool for the non-thinking student actor/rollout and the
 #   GooseReason-4B-Instruct ref/teacher;
 # - actor FSDP size 1 remains replicated, while the ref/teacher uses verl's
 #   default full-shard group across the shared worker world;
@@ -13,23 +13,23 @@
 # Compatibility gate:
 # - both checkpoints use the Qwen3 151,936-entry model vocabulary and the same
 #   token-ID mapping required by token-ID Top-32 distillation;
-# - Qwen3-1.7B-Base terminates on EOS 151643, while GooseReason's model EOS is
-#   151645 and its generation config accepts [151645, 151643];
-# - keep return_raw_chat=true so the ref worker can re-tokenize prompts with the
-#   teacher template. The local Base checkpoint must also provide the expected
-#   prompt-format path.
+# - Qwen3-1.7B and GooseReason use model EOS 151645; the model download wrapper
+#   enforces exact model-EOS equality before token-ID distillation is allowed;
+# - keep return_raw_chat=true and enable_thinking=false so student rollout uses
+#   Qwen's non-thinking chat format while the ref worker re-tokenizes prompts
+#   with the teacher template.
 # Run a one-step smoke test and inspect prompt formatting, EOS termination, and
 # peak memory before the 200-step run. Full-gradient replay runs every step;
 # token-gradient replay and dynamic domain loss reweighting are disabled.
 #
 # Audit policy:
 # - all implemented observation families are enabled (sample/validation logs,
-#   full gradients, token/logp/entropy vocab vectors, and Top-32 cross entropy;
+#   full gradients, token/logp/entropy vocab vectors, and Top-32 cross entropy);
 # - sample-gradient replay and all descendants are disabled because the clean
 #   domain-gradient rebuild explicitly rejects that retired mode;
 # - token-gradient replay and its selectors are disabled for this run;
 # - all occurrence-mean vocab vectors and every loss-weighting objective are
-#   disabled; domain sampling remains balanced.
+#   disabled.
 
 runtime:
   python_bin: python
@@ -41,34 +41,16 @@ runtime:
 
 data:
   domain_train_files:
-    math:
-      - data/G-OPD-Training-Data/DeepMath-103K/train_filtered_level6.parquet
-    code:
-      - data/G-OPD-Training-Data/Eurus/code_train.parquet
-    if:
-      - data/G-OPD-Training-Data/IF/train.parquet
     science:
       - data/G-OPD-Training-Data/Science/train.parquet
   domain_sampling_weights:
-    math: 1
-    code: 1
-    if: 1
     science: 1
   domain_sampling_replacement: true
   load_parquet_direct: true
   val_files:
-    - data/eval_data/math/AIME24/test.parquet
-    - data/eval_data/math/AIME25/test.parquet
-    - data/eval_data/math/HMMT25Feb/test.parquet
-    - data/eval_data/math/HMMT25Nov/test.parquet
-    - data/eval_data/code/HumanEvalPlus/test.parquet
-    - data/eval_data/code/MBPPPlus/test.parquet
-    # Prepare with scripts/prepare_m2rl_eval_data.sh.
-    - data/eval_data/if/IFBench/test.parquet
     - data/eval_data/science/GPQA/test.parquet
-    # - data/eval_data/code/LiveCodeBench/test.parquet
-  # 1024 = 8 actor GPUs x 4 domains x 32 samples.
-  train_batch_size: 1024
+  # 256 = 8 actor GPUs x 32 samples.
+  train_batch_size: 256
   max_prompt_length: 2048
   max_response_length: 16384
   val_batch_size: 1024
@@ -81,15 +63,11 @@ data:
   enable_thinking: false
 
 model:
-  student_path: ../models/Qwen3-1.7B-Base
+  student_path: ../models/Qwen3-1.7B
   student_base_path: null
   math_teacher_path: ../models/Nemotron-Research-GooseReason-4B-Instruct
   code_teacher_path: ../models/Nemotron-Research-GooseReason-4B-Instruct
-  if_teacher_path: ../models/Nemotron-Research-GooseReason-4B-Instruct
   domain_teacher_paths:
-    math: ../models/Nemotron-Research-GooseReason-4B-Instruct
-    code: ../models/Nemotron-Research-GooseReason-4B-Instruct
-    if: ../models/Nemotron-Research-GooseReason-4B-Instruct
     science: ../models/Nemotron-Research-GooseReason-4B-Instruct
   teacher_model_device: gpu
   attn_implementation: flash_attention_2
@@ -101,9 +79,9 @@ actor:
   lambda_vals: 1.0
   multi_teacher_distill: true
   distill_loss_builder: topk_kl
-  distill_mode: topk_renormalized_reverse_kl
+  distill_mode: topk_renormalized_forward_kl
   topk_distill_enabled: true
-  topk_distill_kl_direction: reverse
+  topk_distill_kl_direction: forward
   topk_distill_k: 32
   topk_distill_support_source: teacher
   topk_distill_tail_bucket: false
@@ -111,7 +89,7 @@ actor:
   topk_distill_loss_weight: 1.0
   topk_distill_logprob_chunk_size: 16
   topk_distill_logprob_mode: sparse
-  ppo_mini_batch_size: 1024
+  ppo_mini_batch_size: 256
   ppo_micro_batch_size_per_gpu: 1
   use_kl_loss: true
   kl_loss_coef: 0
@@ -166,11 +144,8 @@ worker_placement:
 
 audit:
   enabled: true
-  output_dir: audit/qwen1p7b_base_goosereason4b_instruct_8gpu_math_code_if_science_topk32_noreweight_fullgrad_nosamplegrad_notokengrad
+  output_dir: audit/qwen1p7b_base_goosereason4b_instruct_8gpu_science_topk32_renorm_forward_noreweight_fullgrad_nosamplegrad_notokengrad_b256
   domains:
-    - math
-    - code
-    - if
     - science
   tensorboard_prefix: mopd
   tensorboard_layout: domain_category
@@ -275,15 +250,8 @@ paper_eval:
   enabled: false
   script_path: eval/scripts/run_paper_eval_suite.sh
   model_path: null
-  output_dir: eval_outputs/paper_suite/qwen1p7b_base_goosereason4b_instruct_8gpu_math_code_if_science_topk32_noreweight_fullgrad_nosamplegrad_notokengrad
-  datasets:
-    - aime24
-    - aime25
-    - hmmt25_feb
-    - hmmt25_nov
-    - humaneval_plus
-    - mbpp_plus
-    - lcb
+  output_dir: eval_outputs/paper_suite/qwen1p7b_nonthinking_goosereason4b_instruct_8gpu_science_topk32_renorm_forward_noreweight_fullgrad_nosamplegrad_notokengrad_b256
+  datasets: []
   run_on_initial_validation: true
   evaluate_current_checkpoint: true
   fail_on_error: false
@@ -291,7 +259,7 @@ paper_eval:
 
 trainer:
   project_name: MOPD
-  experiment_name: qwen1p7b-base-from-goosereason4b-instruct-8gpu-math-code-if-science-topk32-noreweight-fullgrad-nosamplegrad-notokengrad
+  experiment_name: qwen1p7b-nonthinking-from-goosereason4b-instruct-8gpu-science-topk32-renorm-forward-noreweight-fullgrad-nosamplegrad-notokengrad-b256
   seed: 42
   logger: '["console","tensorboard","wandb"]'
   n_gpus_per_node: 8
@@ -300,7 +268,7 @@ trainer:
   test_freq: -1
   total_epochs: 3
   total_training_steps: 200
-  default_local_dir: checkpoints/MOPD/qwen1p7b-base-from-goosereason4b-instruct-8gpu-math-code-if-science-topk32-noreweight-fullgrad-nosamplegrad-notokengrad
+  default_local_dir: checkpoints/MOPD/qwen1p7b-nonthinking-from-goosereason4b-instruct-8gpu-science-topk32-renorm-forward-noreweight-fullgrad-nosamplegrad-notokengrad-b256
   critic_warmup: 0
   # Execute validation audit once without adding periodic full-suite runs.
   val_before_train: true

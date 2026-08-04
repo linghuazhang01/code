@@ -7,7 +7,7 @@ Usage:
   scripts/download_qwen1p7b_goosereason_data.sh
 
 Download or validate the math, code, IF, and science parquet assets referenced by
-the Qwen3-1.7B-Base to GooseReason-4B-Instruct distillation configs.
+the Qwen3-1.7B non-thinking to GooseReason-4B-Instruct distillation configs.
 
 Environment knobs:
   DATA_DIR=$CODE_DIR/data/G-OPD-Training-Data

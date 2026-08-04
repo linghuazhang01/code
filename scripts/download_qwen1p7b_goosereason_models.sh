@@ -6,8 +6,9 @@ usage() {
 Usage:
   scripts/download_qwen1p7b_goosereason_models.sh
 
-Download or validate the model pair used by the Qwen3-1.7B-Base to
-Nemotron-Research-GooseReason-4B-Instruct distillation configs.
+Download or validate the model pair used by the Qwen3-1.7B non-thinking to
+Nemotron-Research-GooseReason-4B-Instruct distillation configs. Non-thinking
+behavior is selected by setting data.enable_thinking=false in the YAML config.
 
 Environment knobs:
   MODEL_ROOT=<parent of OPD-code>/models
@@ -15,8 +16,8 @@ Environment knobs:
   MODEL_BACKEND=huggingface
   DOWNLOAD_MODELS=1
   REQUIRE_MODELS=1
-  STUDENT_MODEL_ID=Qwen/Qwen3-1.7B-Base
-  STUDENT_DIR_NAME=Qwen3-1.7B-Base
+  STUDENT_MODEL_ID=Qwen/Qwen3-1.7B
+  STUDENT_DIR_NAME=Qwen3-1.7B
   GOOSE_MODEL_ID=nvidia/Nemotron-Research-GooseReason-4B-Instruct
   GOOSE_DIR_NAME=Nemotron-Research-GooseReason-4B-Instruct
 
@@ -43,8 +44,8 @@ PYTHON_BIN="${PYTHON_BIN:-}"
 MODEL_BACKEND="${MODEL_BACKEND:-huggingface}"
 DOWNLOAD_MODELS="${DOWNLOAD_MODELS:-1}"
 REQUIRE_MODELS="${REQUIRE_MODELS:-1}"
-STUDENT_MODEL_ID="${STUDENT_MODEL_ID:-Qwen/Qwen3-1.7B-Base}"
-STUDENT_DIR_NAME="${STUDENT_DIR_NAME:-Qwen3-1.7B-Base}"
+STUDENT_MODEL_ID="${STUDENT_MODEL_ID:-Qwen/Qwen3-1.7B}"
+STUDENT_DIR_NAME="${STUDENT_DIR_NAME:-Qwen3-1.7B}"
 GOOSE_MODEL_ID="${GOOSE_MODEL_ID:-nvidia/Nemotron-Research-GooseReason-4B-Instruct}"
 GOOSE_DIR_NAME="${GOOSE_DIR_NAME:-Nemotron-Research-GooseReason-4B-Instruct}"
 
@@ -213,6 +214,12 @@ goose_generation_eos = goose_generation.get("eos_token_id")
 for label, eos_token_id in (("student", student_eos), ("teacher", goose_eos)):
     if isinstance(eos_token_id, bool) or not isinstance(eos_token_id, int):
         raise SystemExit(f"Invalid {label} model EOS token id: {eos_token_id!r}")
+if student_eos != goose_eos:
+    raise SystemExit(
+        "Student and teacher model EOS token ids differ; use Qwen3-1.7B "
+        "with enable_thinking=false instead of Qwen3-1.7B-Base: "
+        f"student={student_eos}, teacher={goose_eos}"
+    )
 if isinstance(goose_generation_eos, int) and not isinstance(goose_generation_eos, bool):
     accepted_eos = [goose_generation_eos]
 elif isinstance(goose_generation_eos, list) and goose_generation_eos and all(

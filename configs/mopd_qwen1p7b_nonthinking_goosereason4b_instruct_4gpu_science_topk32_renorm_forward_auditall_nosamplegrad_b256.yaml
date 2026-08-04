@@ -1,9 +1,10 @@
 # Four-GPU science-only Top-32 training profile for distilling
-# NVIDIA Nemotron-Research-GooseReason-4B-Instruct into Qwen3-1.7B-Base.
+# NVIDIA Nemotron-Research-GooseReason-4B-Instruct into Qwen3-1.7B with
+# enable_thinking=false.
 # The training objective is teacher-support Top-32 renormalized forward KL.
 #
 # Physical GPU layout:
-# - one colocated 4-GPU pool for the Base student actor/rollout and the
+# - one colocated 4-GPU pool for the non-thinking student actor/rollout and the
 #   GooseReason-4B-Instruct ref/teacher;
 # - actor FSDP size 1 remains replicated, while the ref/teacher uses verl's
 #   default full-shard group across the shared worker world;
@@ -12,11 +13,11 @@
 # Compatibility gate:
 # - both checkpoints use the Qwen3 151,936-entry model vocabulary and the same
 #   token-ID mapping required by token-ID Top-32 distillation;
-# - Qwen3-1.7B-Base terminates on EOS 151643, while GooseReason's model EOS is
-#   151645 and its generation config accepts [151645, 151643];
-# - keep return_raw_chat=true so the ref worker can re-tokenize prompts with the
-#   teacher template. The local Base checkpoint must also provide the expected
-#   prompt-format path.
+# - Qwen3-1.7B and GooseReason use model EOS 151645; the model download wrapper
+#   enforces exact model-EOS equality before token-ID distillation is allowed;
+# - keep return_raw_chat=true and enable_thinking=false so student rollout uses
+#   Qwen's non-thinking chat format while the ref worker re-tokenizes prompts
+#   with the teacher template.
 # Run a one-step smoke test and inspect prompt formatting, EOS termination, and
 # peak memory before the 200-step run. Full-gradient replay runs every step;
 # token-gradient replay and dynamic domain loss reweighting are disabled.
@@ -62,7 +63,7 @@ data:
   enable_thinking: false
 
 model:
-  student_path: ../models/Qwen3-1.7B-Base
+  student_path: ../models/Qwen3-1.7B
   student_base_path: null
   math_teacher_path: ../models/Nemotron-Research-GooseReason-4B-Instruct
   code_teacher_path: ../models/Nemotron-Research-GooseReason-4B-Instruct
@@ -143,7 +144,7 @@ worker_placement:
 
 audit:
   enabled: true
-  output_dir: audit/qwen1p7b_base_goosereason4b_instruct_4gpu_science_topk32_renorm_forward_noreweight_fullgrad_nosamplegrad_notokengrad_b256
+  output_dir: audit/qwen1p7b_nonthinking_goosereason4b_instruct_4gpu_science_topk32_renorm_forward_noreweight_fullgrad_nosamplegrad_notokengrad_b256
   domains:
     - science
   tensorboard_prefix: mopd
@@ -249,7 +250,7 @@ paper_eval:
   enabled: false
   script_path: eval/scripts/run_paper_eval_suite.sh
   model_path: null
-  output_dir: eval_outputs/paper_suite/qwen1p7b_base_goosereason4b_instruct_4gpu_science_topk32_renorm_forward_noreweight_fullgrad_nosamplegrad_notokengrad_b256
+  output_dir: eval_outputs/paper_suite/qwen1p7b_nonthinking_goosereason4b_instruct_4gpu_science_topk32_renorm_forward_noreweight_fullgrad_nosamplegrad_notokengrad_b256
   datasets: []
   run_on_initial_validation: true
   evaluate_current_checkpoint: true
@@ -258,7 +259,7 @@ paper_eval:
 
 trainer:
   project_name: MOPD
-  experiment_name: qwen1p7b-base-from-goosereason4b-instruct-4gpu-science-topk32-renorm-forward-noreweight-fullgrad-nosamplegrad-notokengrad-b256
+  experiment_name: qwen1p7b-nonthinking-from-goosereason4b-instruct-4gpu-science-topk32-renorm-forward-noreweight-fullgrad-nosamplegrad-notokengrad-b256
   seed: 42
   logger: '["console","tensorboard","wandb"]'
   n_gpus_per_node: 4
@@ -267,7 +268,7 @@ trainer:
   test_freq: -1
   total_epochs: 3
   total_training_steps: 200
-  default_local_dir: checkpoints/MOPD/qwen1p7b-base-from-goosereason4b-instruct-4gpu-science-topk32-renorm-forward-noreweight-fullgrad-nosamplegrad-notokengrad-b256
+  default_local_dir: checkpoints/MOPD/qwen1p7b-nonthinking-from-goosereason4b-instruct-4gpu-science-topk32-renorm-forward-noreweight-fullgrad-nosamplegrad-notokengrad-b256
   critic_warmup: 0
   # Execute validation audit once without adding periodic full-suite runs.
   val_before_train: true

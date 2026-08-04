@@ -123,6 +123,59 @@ class TrainingSetupAssetScriptTests(unittest.TestCase):
         self.assertIn('"IF/train.parquet"', source)
         self.assertIn('"Science/train.parquet"', source)
 
+    def test_qwen1p7b_goosereason_model_wrapper_defaults_to_non_thinking(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        script_path = (
+            root / "scripts" / "download_qwen1p7b_goosereason_models.sh"
+        )
+        source = script_path.read_text(encoding="utf-8")
+
+        self.assertIn(
+            'STUDENT_MODEL_ID="${STUDENT_MODEL_ID:-Qwen/Qwen3-1.7B}"',
+            source,
+        )
+        self.assertIn(
+            'STUDENT_DIR_NAME="${STUDENT_DIR_NAME:-Qwen3-1.7B}"',
+            source,
+        )
+        self.assertNotIn("STUDENT_MODEL_ID=Qwen/Qwen3-1.7B-Base", source)
+        self.assertNotIn("STUDENT_DIR_NAME=Qwen3-1.7B-Base", source)
+        self.assertIn("if student_eos != goose_eos:", source)
+        self.assertIn("with enable_thinking=false", source)
+
+    def test_qwen1p7b_goosereason_configs_use_non_thinking_student(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        config_names = (
+            "mopd_qwen1p7b_nonthinking_goosereason4b_instruct_4gpu_"
+            "science_topk32_renorm_forward_auditall_nosamplegrad_b256.yaml",
+            "mopd_qwen1p7b_nonthinking_goosereason4b_instruct_6gpu_"
+            "math_code_science_topk32_reweight_auditall_nosamplegrad.yaml",
+            "mopd_qwen1p7b_nonthinking_goosereason4b_instruct_8gpu_"
+            "math_code_science_topk32_reweight_auditall_nosamplegrad.yaml",
+            "mopd_qwen1p7b_nonthinking_goosereason4b_instruct_8gpu_"
+            "science_topk32_renorm_forward_auditall_nosamplegrad_b256.yaml",
+        )
+
+        for config_name in config_names:
+            config = load_raw_config(root / "configs" / config_name)
+            self.assertEqual(
+                config["model"]["student_path"],
+                "../models/Qwen3-1.7B",
+            )
+            self.assertFalse(config["data"]["enable_thinking"])
+            self.assertIn(
+                "qwen1p7b-nonthinking",
+                config["trainer"]["experiment_name"],
+            )
+            self.assertIn(
+                "qwen1p7b-nonthinking",
+                config["trainer"]["default_local_dir"],
+            )
+            self.assertNotIn(
+                "qwen1p7b-base",
+                config["trainer"]["experiment_name"],
+            )
+
     def test_qwen1p7b_goosereason_data_wrapper_requires_four_domains(self) -> None:
         root = Path(__file__).resolve().parents[1]
         script_path = (
@@ -136,9 +189,9 @@ class TrainingSetupAssetScriptTests(unittest.TestCase):
             re.findall(r'eval_root / "([^"]+)"', source)
         )
         config_names = (
-            "mopd_qwen1p7b_base_goosereason4b_instruct_6gpu_"
+            "mopd_qwen1p7b_nonthinking_goosereason4b_instruct_6gpu_"
             "math_code_science_topk32_reweight_auditall_nosamplegrad.yaml",
-            "mopd_qwen1p7b_base_goosereason4b_instruct_8gpu_"
+            "mopd_qwen1p7b_nonthinking_goosereason4b_instruct_8gpu_"
             "math_code_science_topk32_reweight_auditall_nosamplegrad.yaml",
         )
 

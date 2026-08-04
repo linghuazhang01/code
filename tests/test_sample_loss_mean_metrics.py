@@ -15,9 +15,9 @@ from mopd_verl.verl_audit import MOPDAuditLogger
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_NAMES = (
-    "mopd_qwen1p7b_base_goosereason4b_instruct_6gpu_"
+    "mopd_qwen1p7b_nonthinking_goosereason4b_instruct_6gpu_"
     "math_code_science_topk32_reweight_auditall_nosamplegrad.yaml",
-    "mopd_qwen1p7b_base_goosereason4b_instruct_8gpu_"
+    "mopd_qwen1p7b_nonthinking_goosereason4b_instruct_8gpu_"
     "math_code_science_topk32_reweight_auditall_nosamplegrad.yaml",
 )
 
