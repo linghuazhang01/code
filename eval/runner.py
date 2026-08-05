@@ -190,7 +190,7 @@ def load_vllm_model(
         max_num_batched_tokens=max_num_batched_tokens,
         max_num_seqs=max_num_seqs,
     ):
-        return LLM(
+        llm = LLM(
             model=model_path,
             dtype=torch_dtype,
             tensor_parallel_size=tensor_parallel_size,
@@ -199,6 +199,30 @@ def load_vllm_model(
             enforce_eager=enforce_eager,
             **optional_kwargs,
         )
+    if enable_chunked_prefill is False:
+        _verify_vllm_chunked_prefill_disabled(llm)
+    return llm
+
+
+# Private EngineArgs methods that resolve chunked-prefill defaults. Older
+# vLLM V1 releases re-enabled chunked prefill inside these hooks even when the
+# caller passed ``enable_chunked_prefill=False`` explicitly, so we wrap them to
+# force the setting back off. The hook names changed across releases; only
+# hooks that actually exist are patched, and when none do we fall back to the
+# explicit kwarg plus a post-construction check in ``load_vllm_model``.
+_VLLM_CHUNKED_PREFILL_DEFAULT_HOOKS = ("_set_default_args",)
+
+
+def _resolve_vllm_chunked_prefill_hook(engine_args_cls: Any) -> str | None:
+    """Return the EngineArgs default-setter hook to patch, or None if absent.
+
+    Only methods that exist on ``engine_args_cls`` are returned, so this is a
+    no-op on vLLM versions that renamed or removed the private hook.
+    """
+    for name in _VLLM_CHUNKED_PREFILL_DEFAULT_HOOKS:
+        if callable(getattr(engine_args_cls, name, None)):
+            return name
+    return None
 
 
 @contextmanager
@@ -209,7 +233,14 @@ def _temporary_vllm_v1_chunked_prefill_setting(
     max_num_seqs: int | None,
     engine_args_cls: Any | None = None,
 ) -> Iterator[None]:
-    """Make vLLM V1 honor an explicit disabled chunked-prefill setting."""
+    """Make vLLM V1 honor an explicit disabled chunked-prefill setting.
+
+    Older vLLM V1 releases overrode an explicit ``enable_chunked_prefill=False``
+    inside ``EngineArgs._set_default_args``. That private method was later
+    renamed/removed, and the explicit kwarg is honored again. We patch whichever
+    default-setter is present and no-op otherwise, so the helper works across
+    vLLM versions; ``load_vllm_model`` verifies the setting took effect.
+    """
     if enable_chunked_prefill is not False:
         yield
         return
@@ -223,21 +254,58 @@ def _temporary_vllm_v1_chunked_prefill_setting(
 
         engine_args_cls = EngineArgs
 
-    original = engine_args_cls._set_default_args
+    hook_name = _resolve_vllm_chunked_prefill_hook(engine_args_cls)
+    if hook_name is None:
+        # Nothing to patch on this vLLM version; rely on the explicit kwarg
+        # passed to LLM(...) plus the post-construction verification.
+        yield
+        return
 
-    def _set_default_args_and_disable(
-        self: Any,
-        usage_context: Any,
-        model_config: Any,
-    ) -> None:
-        original(self, usage_context, model_config)
+    original = getattr(engine_args_cls, hook_name)
+
+    def _force_chunked_prefill_disabled(self: Any, *args: Any, **kwargs: Any) -> Any:
+        result = original(self, *args, **kwargs)
         self.enable_chunked_prefill = False
+        return result
 
-    engine_args_cls._set_default_args = _set_default_args_and_disable
+    setattr(engine_args_cls, hook_name, _force_chunked_prefill_disabled)
     try:
         yield
     finally:
-        engine_args_cls._set_default_args = original
+        setattr(engine_args_cls, hook_name, original)
+
+
+def _vllm_scheduler_config(llm: Any) -> Any | None:
+    """Best-effort lookup of a vLLM scheduler config across versions."""
+    engine = getattr(llm, "llm_engine", None)
+    if engine is None:
+        return None
+    sched = getattr(engine, "scheduler_config", None)
+    if sched is not None:
+        return sched
+    engine_config = getattr(engine, "engine_config", None)
+    return getattr(engine_config, "scheduler_config", None)
+
+
+def _verify_vllm_chunked_prefill_disabled(llm: Any) -> None:
+    """Warn if vLLM did not actually disable chunked prefill.
+
+    Best-effort and version-tolerant: if the scheduler config cannot be located
+    we stay silent, but when we can definitively see chunked prefill is still
+    enabled we surface it so a determinism regression is not silent.
+    """
+    sched = _vllm_scheduler_config(llm)
+    if sched is None:
+        LOGGER.debug("Could not locate vLLM scheduler_config; skipping chunked-prefill verification.")
+        return
+    actual = getattr(sched, "enable_chunked_prefill", getattr(sched, "chunked_prefill_enabled", None))
+    if actual is True:
+        LOGGER.warning(
+            "vLLM did not honor enable_chunked_prefill=False "
+            "(scheduler_config.enable_chunked_prefill=%r). Greedy decoding is "
+            "usually unaffected, but exact determinism is not guaranteed.",
+            actual,
+        )
 
 
 def generate_vllm_batch(

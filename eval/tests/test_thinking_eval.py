@@ -73,6 +73,17 @@ class ThinkingEvalTest(unittest.TestCase):
             ):
                 pass
 
+    def test_vllm_v1_no_default_hook_is_noop(self) -> None:
+        # vLLM versions that removed _set_default_args: the patch is a no-op
+        # and we rely on the explicit kwarg + post-construction check instead.
+        with _temporary_vllm_v1_chunked_prefill_setting(
+            False,
+            max_num_batched_tokens=32768,
+            max_num_seqs=24,
+            engine_args_cls=object,
+        ):
+            pass
+
     def test_default_data_files_include_small_code_validation(self) -> None:
         self.assertIn("data/eval_data/code/HumanEvalPlus/test.parquet", DEFAULT_DATA_FILES)
         self.assertIn("data/eval_data/code/MBPPPlus/test.parquet", DEFAULT_DATA_FILES)
