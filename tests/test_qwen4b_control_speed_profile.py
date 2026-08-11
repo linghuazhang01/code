@@ -54,14 +54,17 @@ class Qwen4bControlSpeedProfileTests(unittest.TestCase):
         self.assertEqual(config.data.seed, 42)
         self.assertEqual(config.rollout.seed, 42)
 
-    def test_smoke_only_changes_batch_size_and_runtime_namespace(self) -> None:
+    def test_smoke_changes_batch_runtime_namespace_and_rollout_memory(self) -> None:
         full = asdict(load_config(CONFIG_PATH))
         smoke = asdict(load_config(SMOKE_CONFIG_PATH))
 
         self.assertEqual(smoke["data"]["train_batch_size"], 24)
         self.assertEqual(smoke["actor"]["ppo_mini_batch_size"], 24)
+        self.assertEqual(full["rollout"]["gpu_memory_utilization"], 0.8)
+        self.assertEqual(smoke["rollout"]["gpu_memory_utilization"], 0.6)
         full["data"]["train_batch_size"] = 24
         full["actor"]["ppo_mini_batch_size"] = 24
+        full["rollout"]["gpu_memory_utilization"] = 0.6
         for section, field in (
             ("runtime", "wandb_run_id"),
             ("audit", "output_dir"),
