@@ -57,6 +57,9 @@ class PolicyLossConfig(BaseConfig):
     multi_teacher_distill: bool = False
     distill_loss_builder: str = "auto"
     distill_mode: str = "chosen_token_reverse_kl"
+    eopd_entropy_threshold: float = 0.8
+    eopd_forward_kl_weight: float = 1.0
+    eopd_topk_k: int = 16
     topk_distill_enabled: bool = False
     topk_distill_kl_direction: str = "reverse"
     topk_distill_k: int = 8

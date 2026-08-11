@@ -1,31 +1,50 @@
-# Task Plan: Audit-only loss vectors
+# Task Plan: Dynamic Domain Budgeting for MOPD
 
 ## Goal
-Support top-k teacher-student cross-entropy vocabulary vectors and explicit
-absolute log-probability-difference vectors independently of the training loss
-builder.
+
+Implement a config-driven MOPD domain-budget controller that uses a
+time-series-normalized teacher-student capability gap to define target domain
+contributions and a smoothed sequence-level OPD-loss variance to split those
+contributions into sampling probabilities and per-domain loss scales.
 
 ## Phases
-- [x] Phase 1: Inspect current routing and output formats
-- [x] Phase 2: Define configuration and compatibility semantics
-- [x] Phase 3: Implement settings, trainer routing, logger output, and target config
-- [x] Phase 4: Add and run focused tests
-- [x] Phase 5: Review compatibility matrix and deliver
+
+- [x] Phase 1: Create an isolated working copy without ignored secrets or artifacts
+- [x] Phase 2: Audit existing config, sampler, validation, loss, and logging paths
+- [x] Phase 3: Freeze the controller state, update equations, and runtime interfaces
+- [x] Phase 4: Implement configuration, controller, dynamic sampling, and loss scaling
+- [x] Phase 5: Add a runnable training profile, documentation, and focused tests
+- [x] Phase 6: Run verification, code review, and cleanup
 
 ## Key Questions
-1. How can audit-only top-k tensors be requested without activating top-k training?
-2. Which vectors can be generated under each loss builder without changing its objective?
-3. How should `logp_abs_vector` relate to the existing `gap_abs` output?
+
+1. Where can a runtime-updatable domain probability vector be applied without
+   recreating the full trainer or dataloader?
+2. Where can per-domain sequence-level OPD loss mean and variance be collected
+   without changing the production objective?
+3. Which existing validation metrics can supply current student scores, and how
+   should fixed teacher and initial-gap values enter through configuration?
+4. Does the production loss reduction preserve the invariant
+   `target_contribution = sample_share * loss_scale`?
 
 ## Decisions Made
-- Cross-entropy collection must be controlled by audit config, not inferred from the training loss builder.
-- Audit-only top-k collection must not add a top-k term to the actor loss.
-- `logp_abs` means `abs(teacher_logp - old_student_logp)` and should retain the existing gap fields for compatibility.
+
+- Work only in `code_dynamic_domain_budgeting`; leave `code` untouched.
+- Do not modify the optimizer or introduce gradient surgery.
+- Use evaluation-window updates rather than per-step updates.
+- Use exact `loss_scale = target_contribution / actual_sample_share` after
+  floors and normalization; never add epsilon to the denominator.
+- Treat scalar OPD-loss variance as a configurable proxy, not as a proved
+  gradient-variance estimator.
+- Preserve all copied user changes and avoid unrelated cleanup.
 
 ## Errors Encountered
-- The configured Python environment is not available in the current shell; use repository-supported alternatives and focused tests where dependencies permit.
-- A dedicated profile test was initially inserted before the prior loop's final assertions; moved those assertions back into the loop before verification.
-- The bundled Python has NumPy/Pandas but no Torch; importing `verl_audit` reaches a module-level Torch import, so the lightweight frequency test could not execute.
+
+- The source repository has no session hook script; no emulation command was run.
+- The host Python lacks `torch` and `PyYAML`; final tests may require the
+  repository runtime or dependency installation.
 
 ## Status
-**Complete** - Implementation, static verification, and independent review finished.
+
+**Complete** - implementation, config profile, documentation, tests, dry-run,
+and independent read-only review are finished.

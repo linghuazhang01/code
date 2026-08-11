@@ -37,6 +37,7 @@ def local_loss_amplification_statistics(
     domain_weights: Mapping[str, float],
     dynamic_weighting_enabled: bool,
     control_token_ids: Sequence[int],
+    domain_control_token_ids: Mapping[str, Sequence[int]] | None = None,
     control_weighting_enabled: bool,
     control_weight: float,
     shared_token_ids: Sequence[int],
@@ -46,6 +47,10 @@ def local_loss_amplification_statistics(
     """Summarize raw loss mass and the exact production gradient masks."""
 
     control_ids = set(control_token_ids)
+    domain_control_ids = {
+        domain: set(token_ids)
+        for domain, token_ids in (domain_control_token_ids or {}).items()
+    }
     shared_ids = set(shared_token_ids)
     local_by_domain = {
         domain: {name: 0.0 for name in AMPLIFICATION_SUM_NAMES}
@@ -59,24 +64,32 @@ def local_loss_amplification_statistics(
         )
         for candidate in candidates_by_domain.get(domain, ()):
             token_id = candidate.token_id
-            control_match = (
-                control_weighting_enabled and token_id in control_ids
-            )
-            shared_match = (
-                shared_weighting_enabled and token_id in shared_ids
-            )
-            token_factor = (
-                control_weight if control_match else 1.0
-            ) * (
-                shared_weight if shared_match else 1.0
-            )
-            expected_effective_factor = domain_factor * token_factor
             effective_factor = float(
                 actual_masks[candidate.micro_batch_index][
                     candidate.sample_index,
                     candidate.token_index,
                 ].item()
             )
+            control_match = (
+                control_weighting_enabled
+                and (
+                    token_id in control_ids
+                    or token_id in domain_control_ids.get(domain, set())
+                )
+            )
+            shared_match = (
+                shared_weighting_enabled and token_id in shared_ids
+            )
+            if domain_control_ids:
+                token_factor = effective_factor / max(domain_factor, 1e-12)
+                expected_effective_factor = effective_factor
+            else:
+                token_factor = (
+                    control_weight if control_match else 1.0
+                ) * (
+                    shared_weight if shared_match else 1.0
+                )
+                expected_effective_factor = domain_factor * token_factor
             stats = local_by_domain[domain]
             stats["occurrence_count"] += 1.0
             stats["amplified_occurrence_count"] += float(

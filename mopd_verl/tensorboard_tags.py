@@ -73,7 +73,9 @@ def _is_domain_token_gap_metric(key: str) -> bool:
 
 def _is_domain_entropy_metric(key: str) -> bool:
     return (
-        key.startswith("student_entropy_")
+        key.startswith("eopd_entropy_")
+        or key.startswith("eopd_high_entropy_")
+        or key.startswith("student_entropy_")
         or key.startswith("teacher_entropy_")
         or key.startswith("teacher_student_cross_entropy_")
         or key in {

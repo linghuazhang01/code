@@ -6,12 +6,12 @@ import heapq
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import torch
 from verl.utils.device import get_device_id
 
+from mopd_verl.audit_io import step_jsonl_dir
 from mopd_verl.domain_gradient.token_logging import LocalTokenCandidate
 from mopd_verl.domain_gradient.token_weighting_state import (
     CUMULATIVE_ABS_LOSS_SELECTION,
@@ -50,8 +50,7 @@ def append_shared_token_selection_jsonl(
         and torch.distributed.get_rank() != 0
     ):
         return
-    destination = Path(output_dir)
-    destination.mkdir(parents=True, exist_ok=True)
+    destination = step_jsonl_dir(output_dir, step, create=True)
     record = {
         "step": int(step),
         "selection_mode": selection_mode,

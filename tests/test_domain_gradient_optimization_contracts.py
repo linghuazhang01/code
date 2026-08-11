@@ -11,6 +11,8 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+from mopd_verl.audit_io import step_jsonl_dir
+
 
 class DomainGradientOptimizationContractTests(unittest.TestCase):
     def _torch(self) -> Any:
@@ -248,7 +250,8 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
                 )
                 record = json.loads(
                     (
-                        Path(temp_dir) / "shared_token_weighting.jsonl"
+                        step_jsonl_dir(temp_dir, 7)
+                        / "shared_token_weighting.jsonl"
                     ).read_text(encoding="utf-8")
                 )
 
@@ -1022,6 +1025,150 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
             1.0,
         )
 
+    def test_gradient_partition_projection_shares_close_to_one(self) -> None:
+        torch = self._torch()
+        with self._stubbed_verl(torch):
+            from mopd_verl.domain_gradient.geometry import (
+                gradient_partition_metrics_from_gram,
+            )
+
+            metrics = gradient_partition_metrics_from_gram(
+                prefix="top_p",
+                domain_sq=25.0,
+                subset_sq=9.0,
+                subset_domain_dot=12.0,
+            )
+
+        self.assertEqual(
+            metrics["top_p_grad_signed_projection_share"],
+            12.0 / 25.0,
+        )
+        self.assertEqual(
+            metrics[
+                "top_p_complement_grad_signed_projection_share"
+            ],
+            13.0 / 25.0,
+        )
+        self.assertEqual(
+            metrics["top_p_partition_projection_share_sum"],
+            1.0,
+        )
+        self.assertEqual(
+            metrics["top_p_partition_projection_share_abs_error"],
+            0.0,
+        )
+
+    def test_token_gradient_selection_and_replay_use_production_weights(
+        self,
+    ) -> None:
+        torch = self._torch()
+        with self._stubbed_verl(torch):
+            from mopd_verl.domain_gradient.audit import DomainGradientAudit
+            from mopd_verl.domain_gradient.token_logging import (
+                LocalTokenCandidate,
+            )
+
+            audit = DomainGradientAudit(
+                SimpleNamespace(),
+                {
+                    "enabled": True,
+                    "domain_gradient_enabled": True,
+                    "domains": ["math"],
+                    "token_gradient_enabled": True,
+                    "token_gradient_tail_enabled": False,
+                    "token_gradient_top_p_enabled": True,
+                    "token_gradient_top_p": 0.5,
+                    "token_gradient_loss_abs_selection_enabled": True,
+                    "token_gradient_log_tokens_jsonl_enabled": False,
+                    "control_token_loss_weighting_enabled": True,
+                    "control_token_loss_weight": 3.0,
+                    "control_token_ids": [10],
+                },
+            )
+            micro_batch = SimpleNamespace(
+                batch={
+                    "response_mask": torch.ones(1, 3),
+                    "responses": torch.tensor([[20, 10, 30]]),
+                },
+                non_tensor_batch={"domain": ["math"]},
+            )
+
+            def candidate(
+                token_index: int,
+                token_id: int,
+                loss_abs: float,
+            ) -> LocalTokenCandidate:
+                return LocalTokenCandidate(
+                    micro_batch_index=0,
+                    sample_index=0,
+                    token_index=token_index,
+                    token_id=token_id,
+                    configured_loss=loss_abs,
+                    loss_abs=loss_abs,
+                )
+
+            raw_candidate_data = (
+                {
+                    "math": (
+                        candidate(0, 20, 2.0),
+                        candidate(1, 10, 1.0),
+                        candidate(2, 30, 0.5),
+                    )
+                },
+                (torch.zeros(1, 3),),
+            )
+            production_masks = audit._production_gradient_masks(
+                (micro_batch,)
+            )
+            weighted_candidate_data = audit._reweighted_candidate_data(
+                raw_candidate_data,
+                production_masks,
+            )
+            selections = audit._loss_ranked_token_selections(
+                (micro_batch,),
+                (1.0,),
+                on_policy=True,
+                temperature=1.0,
+                candidate_data=weighted_candidate_data,
+            )
+            weighted_replay_masks = (
+                audit._apply_production_gradient_masks(
+                    selections["math"]["top_p"].masks,
+                    production_masks,
+                )
+            )
+            weighted_domain_masks = (
+                audit._domain_production_gradient_masks(
+                    (micro_batch,),
+                    production_masks,
+                    "math",
+                )
+            )
+
+        torch.testing.assert_close(
+            production_masks[0],
+            torch.tensor([[1.0, 3.0, 1.0]]),
+        )
+        self.assertEqual(
+            tuple(
+                token.loss_abs
+                for token in weighted_candidate_data[0]["math"]
+            ),
+            (2.0, 3.0, 0.5),
+        )
+        torch.testing.assert_close(
+            selections["math"]["top_p"].masks[0],
+            torch.tensor([[0.0, 1.0, 0.0]]),
+        )
+        torch.testing.assert_close(
+            weighted_replay_masks[0],
+            torch.tensor([[0.0, 3.0, 0.0]]),
+        )
+        torch.testing.assert_close(
+            weighted_domain_masks[0],
+            torch.tensor([[1.0, 3.0, 1.0]]),
+        )
+
     def test_inverse_gradient_norm_controller_uses_bounded_weight_ema(
         self,
     ) -> None:
@@ -1499,6 +1646,41 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
         )
         torch.testing.assert_close(repeated_mask, mask)
 
+    def test_domain_specific_control_tokens_route_through_audit_mask(self) -> None:
+        torch = self._torch()
+        with self._stubbed_verl(torch):
+            from mopd_verl.domain_gradient.audit import DomainGradientAudit
+
+            audit = DomainGradientAudit(
+                SimpleNamespace(),
+                {
+                    "domains": ["math", "code"],
+                    "control_token_loss_weighting_enabled": True,
+                    "control_token_loss_weight": 2.0,
+                    "domain_control_token_ids": {
+                        "math": [10],
+                        "code": [20],
+                    },
+                    "control_token_normalize_per_domain": False,
+                },
+            )
+            micro_batch = SimpleNamespace(
+                batch={
+                    "response_mask": torch.ones(2, 3),
+                    "responses": torch.tensor(
+                        [[10, 20, 30], [10, 20, 30]]
+                    ),
+                },
+                non_tensor_batch={"domain": ["math", "code"]},
+            )
+
+            mask = audit.training_gradient_mask(micro_batch)
+
+        torch.testing.assert_close(
+            mask,
+            torch.tensor([[2.0, 1.0, 1.0], [1.0, 2.0, 1.0]]),
+        )
+
     def test_loss_amplification_metrics_compare_raw_and_weighted_mass(
         self,
     ) -> None:
@@ -1849,6 +2031,57 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
             )
 
         self.assertEqual(restored._weight_state, first_audit._weight_state)
+
+    def test_control_speed_state_round_trips_optimizer_state(self) -> None:
+        torch = self._torch()
+        with self._stubbed_verl(torch):
+            from mopd_verl.domain_gradient.audit import DomainGradientAudit
+            from mopd_verl.domain_gradient.control_speed import (
+                ControlGapObservation,
+                update_control_speed_state,
+            )
+
+            config = {
+                "domains": ["math", "code"],
+                "control_token_loss_weighting_enabled": True,
+                "domain_control_token_ids": {
+                    "math": [10],
+                    "code": [20],
+                },
+                "control_token_speed_weighting_enabled": True,
+            }
+            first_optimizer = SimpleNamespace(param_groups=[{}])
+            first_actor = SimpleNamespace(actor_optimizer=first_optimizer)
+            first_audit = DomainGradientAudit(first_actor, config)
+            first_audit._control_speed_state = update_control_speed_state(
+                first_audit._control_speed_state,
+                {
+                    "math": ControlGapObservation(0.2, 256, 1.0),
+                    "code": ControlGapObservation(0.3, 256, 1.0),
+                },
+                window_steps=5,
+                ema_beta=0.8,
+                update_interval_steps=2,
+                minimum_occurrences=128,
+                step=1,
+            )
+            first_audit._persist_control_speed_state()
+
+            second_actor = SimpleNamespace(
+                actor_optimizer=SimpleNamespace(
+                    param_groups=[dict(first_optimizer.param_groups[0])]
+                )
+            )
+            restored = DomainGradientAudit(second_actor, config)
+
+        self.assertEqual(
+            restored._control_speed_state,
+            first_audit._control_speed_state,
+        )
+        self.assertEqual(
+            restored._applied_control_speed_weights,
+            first_audit._control_speed_state.weight_map(),
+        )
 
     def test_cumulative_token_loss_state_round_trips_optimizer_state(
         self,

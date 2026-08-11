@@ -652,6 +652,7 @@ class DataParallelPPOActor(BasePPOActor):
             "teacher_prefix_mask",
             "student_suffix_mask",
             "student_topk_ids",
+            "mopd_domain_loss_scale",
         ):
             append_batch_key(key)
         for key in sorted(batch_keys):
@@ -661,6 +662,7 @@ class DataParallelPPOActor(BasePPOActor):
                     "_teacher_topk_ids",
                     "_teacher_topk_logprobs",
                     "_teacher_student_topk_logprobs",
+                    "_teacher_entropy",
                 )
             ):
                 append_batch_key(key)
@@ -710,6 +712,14 @@ class DataParallelPPOActor(BasePPOActor):
                 "All-domain shared-token loss weighting requires exactly "
                 "one optimizer mini-batch and one PPO epoch per actor update "
                 "so each Top-K intersection covers the complete global step."
+            )
+        if audit.config.control_token_speed_weighting_enabled and (
+            len(mini_batches) != 1 or self.config.ppo_epochs != 1
+        ):
+            raise ValueError(
+                "Control-token speed weighting requires exactly one optimizer "
+                "mini-batch and one PPO epoch per actor update so each speed "
+                "observation covers the complete global step."
             )
         for _ in range(self.config.ppo_epochs):
             if return_configured_token_loss:

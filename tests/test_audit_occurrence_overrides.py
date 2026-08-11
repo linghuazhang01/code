@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from mopd_verl.launch import build_command, format_command
+from mopd_verl.audit_io import step_jsonl_dir
 from mopd_verl.settings import load_config
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -82,7 +83,7 @@ class AuditOccurrenceOverrideTests(unittest.TestCase):
                 }
             )
             metrics = logger.log_training_step(_synthetic_batch(torch), step=1, lr=0.01)
-            output_path = Path(output_dir)
+            output_path = step_jsonl_dir(output_dir, 1)
             token_gap_row = _read_domain_row(output_path, "token_gap_vocab_vectors.jsonl")
             logp_row = _read_domain_row(output_path, "logp_vocab_vectors.jsonl")
             logp_abs_row = _read_domain_row(output_path, "logp_abs_vocab_vectors.jsonl")

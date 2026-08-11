@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import tempfile
 import unittest
+
+from mopd_verl.audit_io import step_jsonl_dir
 
 
 class AuditVocabCosineTests(unittest.TestCase):
@@ -64,7 +65,7 @@ class AuditVocabCosineTests(unittest.TestCase):
             )
             inactive_metrics = logger.log_training_step(SyntheticBatch(), step=1, lr=0.01)
             metrics = logger.log_training_step(SyntheticBatch(), step=2, lr=0.01)
-            output_path = Path(output_dir)
+            output_path = step_jsonl_dir(output_dir, 2)
             logp_rows = [
                 json.loads(line)
                 for line in (output_path / "logp_vocab_vectors.jsonl").read_text().splitlines()
@@ -100,9 +101,10 @@ class AuditVocabCosineTests(unittest.TestCase):
         self.assertFalse(any("/entropy/" in key for key in metrics))
 
         math_logp = next(row for row in logp_rows if row["domain"] == "math")
-        self.assertEqual(math_logp["token_count_vector_vocab"], [0, 2, 0, 0])
-        self.assertEqual(math_logp["logp_sum_vector_vocab"], [0.0, 3.0, 0.0, 0.0])
-        self.assertEqual(math_logp["logp_mean_vector_vocab"], [0.0, 1.5, 0.0, 0.0])
+        self.assertEqual(math_logp["vector_storage"], "sparse_token_id_dict")
+        self.assertEqual(math_logp["token_count_vector_vocab"], {"1": 2})
+        self.assertEqual(math_logp["logp_sum_vector_vocab"], {"1": 3.0})
+        self.assertEqual(math_logp["logp_mean_vector_vocab"], {"1": 1.5})
         self.assertNotIn("logp_abs_sum_vector_vocab", math_logp)
         self.assertNotIn("gap_signed_sum_vector_vocab", math_logp)
         math_occurrence = next(row for row in logp_occurrence_rows if row["domain"] == "math")
@@ -111,7 +113,7 @@ class AuditVocabCosineTests(unittest.TestCase):
         self.assertNotIn("gap_signed_vector_domain", math_occurrence)
 
         math_logp_abs = next(row for row in logp_abs_rows if row["domain"] == "math")
-        self.assertEqual(math_logp_abs["logp_abs_sum_vector_vocab"], [0.0, 3.0, 0.0, 0.0])
+        self.assertEqual(math_logp_abs["logp_abs_sum_vector_vocab"], {"1": 3.0})
         self.assertNotIn("logp_sum_vector_vocab", math_logp_abs)
         self.assertNotIn("gap_signed_sum_vector_vocab", math_logp_abs)
         math_abs_occurrence = next(
@@ -123,11 +125,11 @@ class AuditVocabCosineTests(unittest.TestCase):
         math_entropy = next(row for row in entropy_rows if row["domain"] == "math")
         self.assertEqual(
             math_entropy["student_entropy_sum_vector_vocab"],
-            [0.0, 2.0, 0.0, 0.0],
+            {"1": 2.0},
         )
         self.assertEqual(
             math_entropy["student_entropy_mean_vector_vocab"],
-            [0.0, 1.0, 0.0, 0.0],
+            {"1": 1.0},
         )
 
     def test_occurrence_normalized_vectors_can_be_disabled(self) -> None:
@@ -183,14 +185,15 @@ class AuditVocabCosineTests(unittest.TestCase):
                 }
             )
             metrics = logger.log_training_step(SyntheticBatch(), step=1, lr=0.01)
+            output_path = step_jsonl_dir(output_dir, 1)
             row = json.loads(
-                (Path(output_dir) / "logp_vocab_vectors.jsonl").read_text().splitlines()[0]
+                (output_path / "logp_vocab_vectors.jsonl").read_text().splitlines()[0]
             )
             token_gap_row = json.loads(
-                (Path(output_dir) / "token_gap_vocab_vectors.jsonl").read_text().splitlines()[0]
+                (output_path / "token_gap_vocab_vectors.jsonl").read_text().splitlines()[0]
             )
             entropy_row = json.loads(
-                (Path(output_dir) / "entropy_vocab_vectors.jsonl").read_text().splitlines()[0]
+                (output_path / "entropy_vocab_vectors.jsonl").read_text().splitlines()[0]
             )
 
         self.assertIn("logp_sum_vector_vocab", row)

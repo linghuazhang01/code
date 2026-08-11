@@ -84,6 +84,15 @@ policy_loss:
   # Distillation objective mode
   distill_mode: chosen_token_reverse_kl
 
+  # Full-vocabulary teacher entropy threshold for EOPD, measured in nats
+  eopd_entropy_threshold: 0.8
+
+  # Weight applied to EOPD's entropy-gated truncated forward KL
+  eopd_forward_kl_weight: 1.0
+
+  # Number of teacher-selected tokens retained by EOPD
+  eopd_topk_k: 16
+
   # Whether to enable sparse top-k teacher distillation
   topk_distill_enabled: false
 

@@ -401,7 +401,8 @@ class TrainingSetupAssetScriptTests(unittest.TestCase):
 
         self.assertIn("#SBATCH --job-name=mopd_slurm_override", source)
         self.assertIn("#SBATCH --gpus=6", source)
-        self.assertIn("#SBATCH --cpus-per-task=37", source)
+        # The Slurm launcher reserves 2x CPU headroom for small Ray pools.
+        self.assertIn("#SBATCH --cpus-per-task=74", source)
         self.assertIn("export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5", source)
         self.assertIn("::aw2_fsdp2_audit_on", source)
 
@@ -421,7 +422,10 @@ class TrainingSetupAssetScriptTests(unittest.TestCase):
         selected_config = (
             root
             / "test_grad_configs"
-            / "mopd_domain_weighting_qwen0p6b_8b_matrix.yaml"
+            / (
+                "mopd_dynamic_budget_qwen0p6b_8b_aw2_fsdp2_"
+                "b16_4step_3gpu_smoke.yaml"
+            )
         )
         default_config = (
             root
@@ -444,16 +448,17 @@ class TrainingSetupAssetScriptTests(unittest.TestCase):
             fake_bash.chmod(0o755)
             env = os.environ.copy()
             env.pop("MOPD_CONFIG", None)
+            env["MOPD_LAUNCH_MODE"] = "local"
             env["PATH"] = f"{bin_dir}:{env['PATH']}"
 
             cases = (
                 (
-                    ["--config", f"{selected_config}::gradnorm", "--dry-run"],
-                    f"{selected_config}::gradnorm",
+                    ["--config", str(selected_config), "--dry-run"],
+                    str(selected_config),
                 ),
                 (
-                    [f"{selected_config}::projection", "--dry-run"],
-                    f"{selected_config}::projection",
+                    [str(selected_config), "--dry-run"],
+                    str(selected_config),
                 ),
                 (["--dry-run"], str(default_config)),
             )
@@ -470,11 +475,11 @@ class TrainingSetupAssetScriptTests(unittest.TestCase):
 
                     self.assertEqual(result.returncode, 0, result.stderr)
                     forwarded = result.stdout.splitlines()
-                    self.assertEqual(
-                        forwarded[0],
+                    self.assertIn(
                         str(root / "scripts" / "run_local_mopd_training.sh"),
+                        forwarded,
                     )
-                    self.assertEqual(forwarded[1], expected_config)
+                    self.assertIn(expected_config, forwarded)
                     self.assertIn("--dry-run", forwarded)
 
     def test_root_start_script_rejects_missing_config(self) -> None:

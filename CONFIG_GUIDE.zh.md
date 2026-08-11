@@ -33,9 +33,10 @@
 | `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code.yaml` | 8 卡双域训练 | 6 actor + 2 teacher，actor `fsdp_size=1`，batch 504，math/code 等权采样 |
 | `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code_science.yaml` | 8 卡三域训练 | 6 actor + 2 teacher，actor `fsdp_size=1`，batch 504，math/code/science 等权采样 |
 | `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code_science_topk32.yaml` | 8 卡 Top-32 三域训练 | 6 actor + 2 teacher，actor `fsdp_size=1`，batch 504，Top-32 reverse-KL distillation |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code_science_if_topk32_dynamic_budget.yaml` | 8 卡动态四域训练 | math/code/science/IF；capability gap 决定 `q`，sequence OPD-loss variance 决定 sampling `p`，实际 batch 比例决定 `lambda=q/p` |
 
-五个 FSDP/domain-gradient 回归配置统一位于 `test_grad_configs/`，不再在
-`configs/` 下保留副本。
+GPU integration configs 已收敛到 `test_grad_configs/`：一个 FSDP reliability
+matrix，以及一个四领域 dynamic data ratio / loss-scale smoke profile。
 
 卡数 scaling：
 
@@ -60,6 +61,69 @@ model:
   code_teacher_path: ../models/Qwen3-4B-Non-Thinking-RL-Code-Step300
 ```
 
+## Dynamic Domain Budgeting
+
+动态 profile 的训练入口为：
+
+```bash
+bash scripts/run_mopd.sh \
+  configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code_science_if_topk32_dynamic_budget.yaml \
+  --dry-run
+
+# 确认 teacher score、模型路径和数据路径后，移除 --dry-run 启动训练。
+```
+
+每个 validation window 先计算 domain-level capability gap，并做 causal
+time-series normalization：
+
+```text
+gap[d] = max(teacher_score[d] - student_score[d], 0)
+g[d]   = clip(EMA(gap[d]) / max(initial_gap[d], gap_floor, eps), 0, gap_max)
+q[d]   ∝ prior[d] * (g[d] + eps)^alpha
+```
+
+每个 actor step 从未加权的 configured token loss 计算每条 sequence 的
+token mean，再估计 domain 方差。controller 使用
+`p[d] ∝ q[d] * sqrt(EMA_variance[d])` 更新下一个 batch 的 sampler。当前
+batch 的整数计数可能和连续 `p` 略有差异，所以真正施加的是
+`lambda[d] = q[d] / p_active[d]`。这里 `p_active` 是 optimizer 的
+`seq-mean-token-mean` 实际纳入聚合的非空 sequence 比例；通常它等于当前
+batch 的 `p_observed`，出现 fully masked response 时则以 `p_active` 为准。
+
+必须满足以下 runtime contract：
+
+- `actor.loss_agg_mode: seq-mean-token-mean`；
+- 必须使用正权重的 top-k OPD objective，且首版不支持 teacher-prefix training；
+- `actor.ppo_epochs: 1`，且一个 actor batch 只对应一个 optimizer mini-batch；
+- `actor.entropy_coeff: 0` 且 `actor.kl_loss_coef: 0`；当前 scale 施加在 actor gradient 上，首版只允许纯 OPD objective；
+- `data.domain_sampling_replacement: true`；
+- `data.dataloader_num_workers: 0`；
+- `min_samples_per_domain >= variance_min_samples`，确保每个 step 都能更新每个 domain 的方差；
+- `trainer.val_before_train: true` 且 `trainer.test_freq > 0`；
+- 不能同时开启 `audit.dynamic_domain_loss_weighting_enabled`；
+- `teacher_scores` 必须是在同一固定 probe set、同一 score scale 上预先测得的 teacher 结果。
+- 正式启动前必须显式设置 `teacher_scores_calibrated: true`；占位分数只允许 dry-run。
+
+四域示例中的 `teacher_scores: 1.0` 只是用于 config validation 和 dry-run
+的占位值（相当于把 task ceiling 当作临时 reference），不能当作正式的
+teacher probe score。正式训练前必须用 Qwen3-30B 在上述每组
+`validation_metric_keys` 上、按同一 reducer 得到的实测值替换，并将
+`teacher_scores_calibrated` 改为 `true`。`gap_normalization_floor` 防止初始
+gap 为 0 时，微小回退被 `epsilon` 放大并直接撞上 normalization cap。
+
+`loss variance` 在这里是 stochastic-gradient noise 的低成本 proxy，不是
+gradient variance 的等价量。controller 不修改 optimizer；它只改变未来
+batch 的 domain 配额，并给当前 batch 的每条 sequence 施加 domain scale。
+`mopd_audit.loss_variance_signal: opd_loss_token` 是兼容模式；若填写具体名称
+（例如 `topk_renormalized_reverse_kl`），audit 会校验 production forward
+返回的 configured token loss 名称完全一致，不一致时立即失败，避免指标名
+与实际训练 loss 静默错配。
+状态同时写入 `domain_budgeting.output_dir/state.json` 和训练 checkpoint 的
+`domain_budgeting_state.json`。恢复训练时以 trainer checkpoint 内的状态为
+唯一恢复源，避免 model、dataloader 和 controller step 不一致。sampler
+checkpoint 同时保存 RNG、整数配额和 allocation version，恢复后不会重播
+已经消费过的 batch；controller checkpoint 会校验全部训练语义参数。
+
 ```yaml
 data:
   domain_train_files:
@@ -67,10 +131,25 @@ data:
       - data/G-OPD-Training-Data/DeepMath-103K/train_filtered_level6.parquet
     code:
       - data/G-OPD-Training-Data/Eurus/code_train.parquet
+    science:
+      - data/G-OPD-Training-Data/Science/train.parquet
+    if:
+      - data/G-OPD-Training-Data/IF/train.parquet
   domain_sampling_weights:
-    math: 0.5
-    code: 0.5
+    math: 1
+    code: 1
+    science: 1
+    if: 1
 ```
+
+IF 训练样本的 `data_source` 为 `m2rl_ifbench`。dataset loader 会按
+`domain_train_files.if` 强制写入 `domain/opd_teacher/source_domain=if`，从而
+选择 `if_teacher_path`；`mopd_verl/mixed_reward.py` 会把该批样本路由到
+IFBench instruction-following reward。运行前需保证
+`verifiable_instructions` 可导入，或按 `scripts/prepare_ifbench_runtime.sh`
+准备 official IFBench evaluator。该脚本会同时检查 Python dependencies、
+下载所需 NLTK resources 并验证 `evaluation_lib` 能实际 import；应在已激活的
+training environment 中运行。
 
 ## 蒸馏目标
 
@@ -322,3 +401,22 @@ GPU_IDS=0,1 bash scripts/run_local_mopd_training.sh \
 ```
 
 详细 metric 口径见 [metrics_zh.md](metrics_zh.md)。
+
+## EOPD baseline 切换
+
+EOPD 作为独立的可选 loss builder 接入，不会替换现有 OPD 或 Top-k KL。
+配对配置保证两种 baseline 共用相同的数据、模型、optimizer、rollout 和
+evaluation 设置：
+
+```bash
+# OPD
+bash scripts/run_mopd.sh --dry-run \
+  'configs/matrices/eopd_baseline_matrix.yaml::opd'
+
+# EOPD: tau=0.8, alpha=1.0, teacher top-k=16
+bash scripts/run_mopd.sh --dry-run \
+  'configs/matrices/eopd_baseline_matrix.yaml::eopd'
+```
+
+EOPD 的公式语义、论文参数与本项目参数差异见
+[docs/eopd-baseline.md](docs/eopd-baseline.md)。

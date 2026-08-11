@@ -34,6 +34,7 @@ class ActorMicroBatchLossResult:
 
 ACTOR_LOSS_CONTRIBUTION_METRICS: Final[frozenset[str]] = frozenset(
     {
+        "actor/eopd_forward_kl_loss",
         "actor/kl_loss",
         "actor/pg_loss",
         "actor/student_suffix_token_count",
@@ -134,9 +135,18 @@ def selected_topk_support(
         return model_inputs["student_topk_ids"], teacher_values
     if support_source != TOPK_SUPPORT_SOURCE_TEACHER:
         raise ValueError(f"Unsupported top-k support source: {support_source!r}.")
+    return selected_teacher_topk_support(model_inputs, policy_loss_cfg)
+
+
+def selected_teacher_topk_support(
+    model_inputs: dict[str, Any],
+    policy_loss_cfg: Any,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Select teacher top-k ids/log-probabilities for each domain sample."""
+
     for key in ("math_teacher_topk_ids", "math_teacher_topk_logprobs"):
         if key not in model_inputs:
-            raise ValueError(f"Top-k distillation requires {key}.")
+            raise ValueError(f"Teacher top-k support requires {key}.")
     return (
         select_teacher_tensor_by_domain(
             model_inputs,
@@ -148,6 +158,24 @@ def selected_topk_support(
             policy_loss_cfg,
             suffix="topk_logprobs",
         ),
+    )
+
+
+def selected_teacher_entropy(
+    model_inputs: dict[str, Any],
+    policy_loss_cfg: Any,
+) -> torch.Tensor:
+    """Select the full-vocabulary teacher entropy for each domain sample."""
+
+    if "math_teacher_entropy" not in model_inputs:
+        raise ValueError(
+            "EOPD requires math_teacher_entropy in model_inputs. Ensure the "
+            "teacher worker computes full-vocabulary entropy."
+        )
+    return select_teacher_tensor_by_domain(
+        model_inputs,
+        policy_loss_cfg,
+        suffix="entropy",
     )
 
 
@@ -230,6 +258,37 @@ def gate_tensor_gradient(
     # This keeps the forward tensor bitwise identical even in BF16 while the
     # derivative with respect to ``value`` is scaled by ``gate``.
     return value.detach() + (value - value.detach()) * gate
+
+
+def domain_loss_gradient_mask(
+    domain_loss_scale: torch.Tensor,
+    response_mask: torch.Tensor,
+    base_mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Expand per-sequence loss scales and compose them with an audit mask."""
+
+    if domain_loss_scale.ndim == 1:
+        domain_loss_scale = domain_loss_scale.unsqueeze(-1)
+    if domain_loss_scale.shape != (response_mask.shape[0], 1):
+        raise ValueError(
+            "mopd_domain_loss_scale must have shape [batch] or [batch, 1], "
+            f"got {tuple(domain_loss_scale.shape)}."
+        )
+    row_scale = domain_loss_scale.to(
+        device=response_mask.device,
+        dtype=torch.float32,
+    )
+    if not torch.isfinite(row_scale).all() or not (row_scale > 0).all():
+        raise ValueError("mopd_domain_loss_scale values must be positive and finite.")
+    expanded = row_scale.expand_as(response_mask)
+    if base_mask is None:
+        return expanded
+    if base_mask.shape != response_mask.shape:
+        raise ValueError(
+            "Gradient mask must have the same shape as response_mask: "
+            f"{tuple(base_mask.shape)} != {tuple(response_mask.shape)}."
+        )
+    return base_mask.to(device=response_mask.device, dtype=torch.float32) * expanded
 
 
 def floating_response_gradient_mask(

@@ -9,17 +9,34 @@ from typing import Any, Sequence
 import torch
 from verl.utils.device import get_device_id
 
+from mopd_verl.domain_gradient.control_speed import (
+    ControlGapObservation,
+    ControlSpeedState,
+    control_gap_and_weight_totals,
+    domain_control_token_weights,
+    initial_control_speed_state,
+    piecewise_linear_weight,
+    update_control_speed_state,
+)
 from mopd_verl.domain_gradient.config import DomainGradientConfig
 from mopd_verl.domain_gradient.geometry import (
     GradientVector,
     actor_group_sum,
     domain_metrics_from_gram,
-    gradient_subset_metrics_from_gram,
+    gradient_partition_metrics_from_gram,
     snapshot_gradients,
     training_parity_metrics,
     vector_dot,
     vector_nbytes,
     vector_squared_norm,
+)
+from mopd_verl.domain_gradient.phase_control import (
+    PhaseControlState,
+    PhaseGapObservation,
+    gap_observations,
+    initial_phase_control_state,
+    phase_token_weights,
+    update_phase_control_state,
 )
 from mopd_verl.domain_gradient.state import AuditState
 from mopd_verl.domain_gradient.token_logging import (
@@ -60,7 +77,9 @@ from mopd_verl.domain_gradient.weighting import (
     update_domain_weight_state,
 )
 from mopd_verl.full_gradient.actor_loss import build_actor_micro_batch_loss
+from mopd_verl.full_gradient.config import _cfg_get
 from mopd_verl.full_gradient.labels import _labels_from_mapping
+from mopd_verl.full_gradient.loss_support import selected_teacher_log_prob
 
 
 @dataclass(frozen=True)
@@ -119,6 +138,63 @@ class DomainGradientAudit:
                 signal_source=self.config.dynamic_weighting_signal_source,
             )
         self._weight_state = weight_state
+        phase_state = getattr(actor, "_mopd_phase_control_state", None)
+        serialized_phase_state = (
+            optimizer_groups[0].get("mopd_phase_control_state")
+            if optimizer_groups
+            else None
+        )
+        if not isinstance(phase_state, PhaseControlState) and isinstance(
+            serialized_phase_state,
+            dict,
+        ):
+            phase_state = PhaseControlState.from_mapping(
+                serialized_phase_state
+            )
+        if (
+            not isinstance(phase_state, PhaseControlState)
+            or phase_state.domains != self.config.domains
+        ):
+            phase_state = initial_phase_control_state(
+                self.config.domains,
+                initial_gate=self.config.control_token_phase_gate_initial,
+            )
+        self._phase_control_state = phase_state
+        self._phase_gap_observations: dict[str, PhaseGapObservation] = {}
+        speed_state = getattr(actor, "_mopd_control_speed_state", None)
+        serialized_speed_state = (
+            optimizer_groups[0].get("mopd_control_speed_state")
+            if optimizer_groups
+            else None
+        )
+        if not isinstance(speed_state, ControlSpeedState) and isinstance(
+            serialized_speed_state,
+            dict,
+        ):
+            speed_state = ControlSpeedState.from_mapping(
+                serialized_speed_state
+            )
+        if (
+            not isinstance(speed_state, ControlSpeedState)
+            or speed_state.domains != self.config.domains
+            or speed_state.weight_knots
+            != self.config.control_token_speed_weight_knots
+        ):
+            speed_state = initial_control_speed_state(
+                self.config.domains,
+                initial_weight=(
+                    self.config.control_token_speed_initial_weight
+                ),
+                weight_knots=(
+                    self.config.control_token_speed_weight_knots
+                ),
+            )
+        self._control_speed_state = speed_state
+        self._applied_control_speed_weights = speed_state.weight_map()
+        self._control_speed_observations: dict[
+            str,
+            ControlGapObservation,
+        ] = {}
         self._shared_token_selection = SharedTokenSelection(
             token_ids=tuple(),
             domain_top_token_ids=tuple(
@@ -197,6 +273,30 @@ class DomainGradientAudit:
                 self._weight_state.as_dict()
             )
 
+    def _persist_phase_control_state(self) -> None:
+        self.actor._mopd_phase_control_state = self._phase_control_state
+        optimizer_groups = getattr(
+            getattr(self.actor, "actor_optimizer", None),
+            "param_groups",
+            (),
+        )
+        if optimizer_groups:
+            optimizer_groups[0]["mopd_phase_control_state"] = (
+                self._phase_control_state.as_dict()
+            )
+
+    def _persist_control_speed_state(self) -> None:
+        self.actor._mopd_control_speed_state = self._control_speed_state
+        optimizer_groups = getattr(
+            getattr(self.actor, "actor_optimizer", None),
+            "param_groups",
+            (),
+        )
+        if optimizer_groups:
+            optimizer_groups[0]["mopd_control_speed_state"] = (
+                self._control_speed_state.as_dict()
+            )
+
     def _persist_cumulative_token_loss_state(self) -> None:
         state = self._cumulative_token_loss_state
         if state is None:
@@ -265,6 +365,19 @@ class DomainGradientAudit:
             self._token_id_tensor_cache[key] = cached
         return cached
 
+    def _domain_control_token_tensor_map(
+        self,
+        reference: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        return {
+            domain: self._cached_token_id_tensor(
+                f"domain_control:{domain}",
+                token_ids,
+                reference,
+            )
+            for domain, token_ids in self.config.domain_control_token_ids
+        }
+
     def training_gradient_mask(
         self,
         micro_batch: Any,
@@ -308,6 +421,53 @@ class DomainGradientAudit:
                     "Token loss weighting requires response-aligned token "
                     "IDs in responses, response_ids, or input_ids."
                 )
+            labels = _labels_from_mapping(
+                model_inputs,
+                int(response_mask.shape[0]),
+            )
+            if (
+                self.config.control_token_weighting_enabled
+                and self.config.domain_control_token_ids
+            ):
+                domain_token_ids = self._domain_control_token_tensor_map(
+                    token_ids
+                )
+                if self.config.control_token_speed_weighting_enabled:
+                    token_weights = domain_control_token_weights(
+                        token_ids,
+                        response_mask,
+                        labels,
+                        domain_token_ids=domain_token_ids,
+                        domain_weights=(
+                            self._applied_control_speed_weights
+                        ),
+                        normalize_per_domain=(
+                            self.config.control_token_normalize_per_domain
+                        ),
+                    )
+                else:
+                    token_weights = phase_token_weights(
+                        token_ids,
+                        response_mask,
+                        labels,
+                        domain_token_ids=domain_token_ids,
+                        control_weight=self.config.control_token_weight,
+                        phase_enabled=(
+                            self.config.control_token_phase_gate_enabled
+                        ),
+                        span_enabled=(
+                            self.config.control_token_span_weighting_enabled
+                        ),
+                        phase_gates=self._phase_control_state.gate_map(),
+                        span_length=self.config.control_token_span_length,
+                        span_decay_tau=(
+                            self.config.control_token_span_decay_tau
+                        ),
+                        normalize_per_domain=(
+                            self.config.control_token_normalize_per_domain
+                        ),
+                    )
+                gradient_weights = gradient_weights * token_weights
             gradient_weights = gradient_weights * token_gradient_weights(
                 token_ids,
                 control_token_ids=(
@@ -316,7 +476,10 @@ class DomainGradientAudit:
                         self.config.control_token_ids,
                         token_ids,
                     )
-                    if self.config.control_token_weighting_enabled
+                    if (
+                        self.config.control_token_weighting_enabled
+                        and self.config.control_token_ids
+                    )
                     else ()
                 ),
                 control_token_weight=self.config.control_token_weight,
@@ -334,6 +497,120 @@ class DomainGradientAudit:
                 ),
             )
         return gradient_weights
+
+    def _production_gradient_masks(
+        self,
+        micro_batches: Sequence[Any],
+    ) -> tuple[torch.Tensor, ...]:
+        """Snapshot the exact token multipliers used by production backward."""
+
+        optional_masks = tuple(
+            self.training_gradient_mask(micro_batch)
+            for micro_batch in micro_batches
+        )
+        if any(mask is None for mask in optional_masks):
+            raise RuntimeError(
+                "Production-weighted token gradients require training "
+                "gradient masks."
+            )
+        return tuple(
+            mask for mask in optional_masks if mask is not None
+        )
+
+    def _domain_production_gradient_masks(
+        self,
+        micro_batches: Sequence[Any],
+        production_masks: Sequence[torch.Tensor],
+        domain: str,
+    ) -> tuple[torch.Tensor, ...]:
+        """Restrict production token multipliers to one configured domain."""
+
+        if len(micro_batches) != len(production_masks):
+            raise ValueError(
+                "Production masks must align one-to-one with micro-batches."
+            )
+        return tuple(
+            production_mask
+            * self._domain_gradient_mask(micro_batch, domain).to(
+                device=production_mask.device,
+                dtype=production_mask.dtype,
+            )
+            for micro_batch, production_mask in zip(
+                micro_batches,
+                production_masks,
+                strict=True,
+            )
+        )
+
+    @staticmethod
+    def _apply_production_gradient_masks(
+        selection_masks: Sequence[torch.Tensor],
+        production_masks: Sequence[torch.Tensor],
+    ) -> tuple[torch.Tensor, ...]:
+        """Compose a binary audit selection with production reweighting."""
+
+        if len(selection_masks) != len(production_masks):
+            raise ValueError(
+                "Selection and production masks must have the same length."
+            )
+        return tuple(
+            selection_mask
+            * production_mask.to(
+                device=selection_mask.device,
+                dtype=selection_mask.dtype,
+            )
+            for selection_mask, production_mask in zip(
+                selection_masks,
+                production_masks,
+                strict=True,
+            )
+        )
+
+    def _reweighted_candidate_data(
+        self,
+        candidate_data: _CandidateData,
+        production_masks: Sequence[torch.Tensor],
+    ) -> _CandidateData:
+        """Rank tokens by post-reweight absolute gradient-loss mass."""
+
+        candidates_by_domain, mask_templates = candidate_data
+        if len(mask_templates) != len(production_masks):
+            raise ValueError(
+                "Candidate templates and production masks must align."
+            )
+        masks_cpu = tuple(
+            mask.detach().float().cpu() for mask in production_masks
+        )
+        reweighted: dict[str, tuple[LocalTokenCandidate, ...]] = {}
+        for domain, candidates in candidates_by_domain.items():
+            weighted_candidates: list[LocalTokenCandidate] = []
+            for candidate in candidates:
+                multiplier = float(
+                    masks_cpu[candidate.micro_batch_index][
+                        candidate.sample_index,
+                        candidate.token_index,
+                    ].item()
+                )
+                if not math.isfinite(multiplier):
+                    raise ValueError(
+                        "Production gradient masks must contain finite values."
+                    )
+                weighted_candidates.append(
+                    LocalTokenCandidate(
+                        micro_batch_index=candidate.micro_batch_index,
+                        sample_index=candidate.sample_index,
+                        token_index=candidate.token_index,
+                        token_id=candidate.token_id,
+                        configured_loss=(
+                            candidate.configured_loss * multiplier
+                        ),
+                        loss_abs=(
+                            candidate.loss_abs * abs(multiplier)
+                        ),
+                    )
+                )
+            reweighted[domain] = tuple(weighted_candidates)
+        return reweighted, mask_templates
 
     def _backward_replay(
         self,
@@ -415,17 +692,7 @@ class DomainGradientAudit:
     ) -> GradientVector:
         """Replay the exact dynamic-weighted production gradient for parity."""
 
-        optional_masks = tuple(
-            self.training_gradient_mask(micro_batch)
-            for micro_batch in micro_batches
-        )
-        if any(mask is None for mask in optional_masks):
-            raise RuntimeError(
-                "Weighted parity replay requires a training gradient mask."
-            )
-        gradient_masks = tuple(
-            mask for mask in optional_masks if mask is not None
-        )
+        gradient_masks = self._production_gradient_masks(micro_batches)
         self._backward_replay(
             state,
             micro_batches,
@@ -677,6 +944,7 @@ class DomainGradientAudit:
             tuple[torch.Tensor, ...],
         ]
         | None = None,
+        candidate_loss_basis: str = "configured_loss_abs",
     ) -> dict[str, dict[str, _TokenSelection]]:
         local_by_domain, mask_templates = (
             candidate_data
@@ -742,6 +1010,7 @@ class DomainGradientAudit:
                     }
                     for domain, domain_selections in selections.items()
                 },
+                loss_mass_basis=candidate_loss_basis,
             )
         return selections
 
@@ -833,6 +1102,22 @@ class DomainGradientAudit:
                     ),
                 }
             )
+            if self.config.domain_control_token_ids:
+                metrics[
+                    "global/token_weight/domain_control_token_id_count"
+                ] = float(
+                    sum(
+                        len(token_ids)
+                        for _, token_ids
+                        in self.config.domain_control_token_ids
+                    )
+                )
+                for domain, token_ids in (
+                    self.config.domain_control_token_ids
+                ):
+                    metrics[
+                        f"{domain}/token_weight/control_token_id_count"
+                    ] = float(len(token_ids))
         if self.config.all_domain_shared_token_weighting_enabled:
             metrics.update(
                 {
@@ -846,6 +1131,334 @@ class DomainGradientAudit:
                 }
             )
         return metrics
+
+    def _collect_control_speed_observations(
+        self,
+        micro_batches: Sequence[Any],
+    ) -> dict[str, ControlGapObservation]:
+        domains = tuple(
+            domain for domain, _ in self.config.domain_control_token_ids
+        )
+        totals = {domain: [0.0, 0.0, 0.0] for domain in domains}
+        policy_loss_cfg = _cfg_get(self.actor.config, "policy_loss", {})
+        for micro_batch in micro_batches:
+            model_inputs = {
+                **micro_batch.batch,
+                **micro_batch.non_tensor_batch,
+            }
+            response_mask = model_inputs["response_mask"]
+            token_ids = aligned_response_token_ids(
+                model_inputs,
+                response_mask,
+            )
+            if token_ids is None:
+                raise ValueError(
+                    "Control-speed weighting requires response-aligned token "
+                    "IDs."
+                )
+            teacher_log_prob = selected_teacher_log_prob(
+                model_inputs,
+                policy_loss_cfg,
+            )
+            student_log_prob = model_inputs["old_log_probs"]
+            if teacher_log_prob.shape != student_log_prob.shape:
+                raise ValueError(
+                    "Control-speed teacher and student log-probability "
+                    "shapes must match."
+                )
+            labels = _labels_from_mapping(
+                model_inputs,
+                int(response_mask.shape[0]),
+            )
+            local = control_gap_and_weight_totals(
+                token_ids,
+                response_mask,
+                labels,
+                (teacher_log_prob - student_log_prob).detach().float().abs(),
+                domain_token_ids=(
+                    self._domain_control_token_tensor_map(token_ids)
+                ),
+                applied_domain_weights=(
+                    self._applied_control_speed_weights
+                ),
+                normalize_per_domain=(
+                    self.config.control_token_normalize_per_domain
+                ),
+            )
+            for domain, values in local.items():
+                for index, value in enumerate(values):
+                    totals[domain][index] += float(value)
+
+        flattened = [value for domain in domains for value in totals[domain]]
+        if not flattened:
+            return {}
+        reduced = torch.tensor(
+            flattened,
+            device=get_device_id(),
+            dtype=torch.float64,
+        )
+        if (
+            torch.distributed.is_available()
+            and torch.distributed.is_initialized()
+        ):
+            torch.distributed.all_reduce(
+                reduced,
+                op=torch.distributed.ReduceOp.SUM,
+            )
+        values = iter(float(value) for value in reduced.tolist())
+        observations: dict[str, ControlGapObservation] = {}
+        for domain in domains:
+            gap_sum = next(values)
+            count = round(next(values))
+            normalized_weight_sum = next(values)
+            if count <= 0:
+                continue
+            observations[domain] = ControlGapObservation(
+                gap=gap_sum / count,
+                count=count,
+                applied_normalized_weight=(
+                    normalized_weight_sum / count
+                ),
+            )
+        return observations
+
+    def _control_speed_metrics(self) -> dict[str, float]:
+        if not self.config.control_token_speed_weighting_enabled:
+            return {}
+        metrics = {
+            "global/control_speed/enabled": 1.0,
+            "global/control_speed/window_steps": float(
+                self.config.control_token_speed_window_steps
+            ),
+            "global/control_speed/update_interval_steps": float(
+                self.config.control_token_speed_update_interval_steps
+            ),
+        }
+        for index, domain in enumerate(self._control_speed_state.domains):
+            prefix = f"{domain}/control_speed"
+            observation = self._control_speed_observations.get(domain)
+            reference_step = self._control_speed_state.reference_steps[index]
+            update_step = (
+                self._control_speed_state.last_weight_update_steps[index]
+            )
+            metrics[f"{prefix}/control_gap_ema"] = (
+                self._control_speed_state.gap_emas[index]
+            )
+            metrics[f"{prefix}/optimization_speed"] = (
+                self._control_speed_state.speeds[index]
+            )
+            if reference_step is not None:
+                metrics[f"{prefix}/control_weight_mapped_from_speed"] = (
+                    piecewise_linear_weight(
+                        self._control_speed_state.speeds[index],
+                        self._control_speed_state.weight_knots,
+                    )
+                )
+            metrics[f"{prefix}/speed_reference_step"] = float(
+                -1 if reference_step is None else reference_step
+            )
+            metrics[f"{prefix}/speed_computed_this_step"] = float(
+                reference_step
+                == self.config.step
+                - self.config.control_token_speed_window_steps
+            )
+            metrics[f"{prefix}/weight_update_triggered"] = float(
+                update_step == self.config.step
+            )
+            metrics[f"{prefix}/state_observation_count"] = float(
+                self._control_speed_state.observation_counts[index]
+            )
+            metrics[f"{prefix}/control_weight_applied_raw"] = float(
+                self._applied_control_speed_weights.get(domain, 1.0)
+            )
+            metrics[f"{prefix}/control_weight_next"] = (
+                self._control_speed_state.weights[index]
+            )
+            if observation is not None:
+                metrics[f"{prefix}/observation_available"] = 1.0
+                metrics[f"{prefix}/minimum_occurrences_met"] = float(
+                    observation.count
+                    >= self.config.control_token_speed_min_occurrences
+                )
+                metrics[f"{prefix}/control_gap_raw"] = observation.gap
+                metrics[f"{prefix}/control_occurrence_count"] = float(
+                    observation.count
+                )
+                metrics[
+                    f"{prefix}/control_weight_applied_normalized"
+                ] = observation.applied_normalized_weight
+            else:
+                metrics[f"{prefix}/observation_available"] = 0.0
+                metrics[f"{prefix}/minimum_occurrences_met"] = 0.0
+                metrics[f"{prefix}/control_occurrence_count"] = 0.0
+        return metrics
+
+    def _update_control_speed(
+        self,
+        micro_batches: Sequence[Any],
+    ) -> dict[str, float]:
+        if not self.config.control_token_speed_weighting_enabled:
+            return {}
+        self._control_speed_observations = (
+            self._collect_control_speed_observations(micro_batches)
+        )
+        self._control_speed_state = update_control_speed_state(
+            self._control_speed_state,
+            self._control_speed_observations,
+            window_steps=self.config.control_token_speed_window_steps,
+            ema_beta=self.config.control_token_speed_ema_beta,
+            update_interval_steps=(
+                self.config.control_token_speed_update_interval_steps
+            ),
+            minimum_occurrences=(
+                self.config.control_token_speed_min_occurrences
+            ),
+            step=self.config.step,
+        )
+        self._persist_control_speed_state()
+        return self._control_speed_metrics()
+
+    def _collect_phase_gap_observations(
+        self,
+        micro_batches: Sequence[Any],
+    ) -> dict[str, PhaseGapObservation]:
+        domains = tuple(
+            domain for domain, _ in self.config.domain_control_token_ids
+        )
+        totals = {
+            domain: [0.0, 0.0, 0.0, 0.0]
+            for domain in domains
+        }
+        policy_loss_cfg = _cfg_get(self.actor.config, "policy_loss", {})
+        for micro_batch in micro_batches:
+            model_inputs = {
+                **micro_batch.batch,
+                **micro_batch.non_tensor_batch,
+            }
+            response_mask = model_inputs["response_mask"]
+            token_ids = aligned_response_token_ids(
+                model_inputs,
+                response_mask,
+            )
+            if token_ids is None:
+                raise ValueError(
+                    "Phase control requires response-aligned token IDs."
+                )
+            teacher_log_prob = selected_teacher_log_prob(
+                model_inputs,
+                policy_loss_cfg,
+            )
+            old_log_prob = model_inputs["old_log_probs"]
+            if teacher_log_prob.shape != old_log_prob.shape:
+                raise ValueError(
+                    "Phase-control teacher and student log-probability "
+                    "shapes must match."
+                )
+            labels = _labels_from_mapping(
+                model_inputs,
+                int(response_mask.shape[0]),
+            )
+            local = gap_observations(
+                token_ids,
+                response_mask,
+                labels,
+                (teacher_log_prob - old_log_prob).detach().float().abs(),
+                domain_token_ids=(
+                    self._domain_control_token_tensor_map(token_ids)
+                ),
+                span_length=self.config.control_token_span_length,
+                span_decay_tau=self.config.control_token_span_decay_tau,
+            )
+            for domain, values in local.items():
+                for index, value in enumerate(values):
+                    totals[domain][index] += float(value)
+
+        flattened = [
+            value
+            for domain in domains
+            for value in totals[domain]
+        ]
+        if not flattened:
+            return {}
+        reduced = torch.tensor(
+            flattened,
+            device=get_device_id(),
+            dtype=torch.float64,
+        )
+        if (
+            torch.distributed.is_available()
+            and torch.distributed.is_initialized()
+        ):
+            torch.distributed.all_reduce(
+                reduced,
+                op=torch.distributed.ReduceOp.SUM,
+            )
+        values = iter(float(value) for value in reduced.tolist())
+        observations: dict[str, PhaseGapObservation] = {}
+        for domain in domains:
+            control_sum = next(values)
+            span_sum = next(values)
+            control_count = round(next(values))
+            span_count = round(next(values))
+            if control_count <= 0 or span_count <= 0:
+                continue
+            observations[domain] = PhaseGapObservation(
+                control_gap=control_sum / control_count,
+                span_gap=span_sum / span_count,
+                control_count=control_count,
+                span_count=span_count,
+            )
+        return observations
+
+    def _phase_control_metrics(self) -> dict[str, float]:
+        if not self.config.control_token_phase_gate_enabled:
+            return {}
+        metrics = {
+            "global/phase_control/enabled": 1.0,
+            "global/phase_control/span_weighting_enabled": float(
+                self.config.control_token_span_weighting_enabled
+            ),
+        }
+        for index, domain in enumerate(self._phase_control_state.domains):
+            prefix = f"{domain}/phase_control"
+            observation = self._phase_gap_observations.get(domain)
+            metrics[f"{prefix}/gate"] = self._phase_control_state.gates[index]
+            metrics[f"{prefix}/control_gap_ema"] = (
+                self._phase_control_state.control_gap_ema[index]
+            )
+            metrics[f"{prefix}/span_gap_ema"] = (
+                self._phase_control_state.span_gap_ema[index]
+            )
+            if observation is not None:
+                metrics[f"{prefix}/control_gap"] = observation.control_gap
+                metrics[f"{prefix}/span_gap"] = observation.span_gap
+                metrics[f"{prefix}/control_occurrence_count"] = float(
+                    observation.control_count
+                )
+                metrics[f"{prefix}/span_occurrence_count"] = float(
+                    observation.span_count
+                )
+        return metrics
+
+    def _update_phase_control(
+        self,
+        micro_batches: Sequence[Any],
+    ) -> dict[str, float]:
+        if not self.config.control_token_phase_gate_enabled:
+            return self._phase_control_metrics()
+        self._phase_gap_observations = (
+            self._collect_phase_gap_observations(micro_batches)
+        )
+        self._phase_control_state = update_phase_control_state(
+            self._phase_control_state,
+            self._phase_gap_observations,
+            window_steps=self.config.control_token_phase_gate_window_steps,
+            ema_beta=self.config.control_token_phase_gate_ema_beta,
+            temperature=self.config.control_token_phase_gate_temperature,
+            step=self.config.step,
+        )
+        self._persist_phase_control_state()
+        return self._phase_control_metrics()
 
     def _loss_amplification_metrics(
         self,
@@ -873,6 +1486,9 @@ class DomainGradientAudit:
             domain_weights=self._weight_state.weight_map(),
             dynamic_weighting_enabled=self.config.dynamic_weighting_enabled,
             control_token_ids=self.config.control_token_ids,
+            domain_control_token_ids=dict(
+                self.config.domain_control_token_ids
+            ),
             control_weighting_enabled=(
                 self.config.control_token_weighting_enabled
             ),
@@ -901,6 +1517,13 @@ class DomainGradientAudit:
             metrics[f"{domain}/token_grad/domain_token_count"] = float(
                 candidate_count
             )
+            metrics[
+                f"{domain}/token_grad/"
+                "selection_matches_production_reweighting"
+            ] = 1.0
+            metrics[
+                f"{domain}/token_grad/selection_reweighting_active"
+            ] = float(self._production_weighting_enabled())
             metrics[
                 f"{domain}/token_grad/global_candidate_loss_abs_mass"
             ] = candidate_mass
@@ -1052,6 +1675,8 @@ class DomainGradientAudit:
             raise ValueError(
                 "Each audit micro-batch must have exactly one training loss scale."
             )
+        phase_control_metrics = self._update_phase_control(micro_batches)
+        control_speed_metrics = self._update_control_speed(micro_batches)
         token_weighting_active = (
             self.config.control_token_weighting_enabled
             or self.config.all_domain_shared_token_weighting_enabled
@@ -1070,11 +1695,17 @@ class DomainGradientAudit:
             return {
                 **self._dynamic_weight_metrics(),
                 **self._token_weighting_metrics(),
+                **phase_control_metrics,
+                **control_speed_metrics,
             }
 
         state = AuditState.capture(self.actor)
         try:
-            metrics = self._token_weighting_metrics()
+            metrics = {
+                **self._token_weighting_metrics(),
+                **phase_control_metrics,
+                **control_speed_metrics,
+            }
             candidate_data = None
             if shared_token_active and not self.enabled:
                 candidate_data = self._collect_loss_abs_candidates(
@@ -1186,19 +1817,54 @@ class DomainGradientAudit:
                     domain_total_dot=domain_total_dot,
                 )
             )
-            token_vector_peak_bytes = 0
-            if token_gradient_active:
-                state.restore_runtime()
-                state.clear_gradients()
-                token_selections = self._loss_ranked_token_selections(
-                    micro_batches,
-                    loss_scales,
-                    on_policy=on_policy,
-                    temperature=temperature,
-                    candidate_data=candidate_data,
+            if self._should_update_dynamic_weighting():
+                self._weight_state = update_domain_weight_state(
+                    self._weight_state,
+                    source_signals,
+                    ema_beta=self.config.dynamic_weighting_ema_beta,
+                    weight_ema_beta=(
+                        self.config.dynamic_weighting_weight_ema_beta
+                    ),
+                    alpha=self.config.dynamic_weighting_alpha,
+                    minimum=self.config.dynamic_weighting_min,
+                    maximum=self.config.dynamic_weighting_max,
+                    step=self.config.step,
                 )
-                for domain, domain_selections in token_selections.items():
-                    for selection_name, selection in domain_selections.items():
+                self._persist_weight_state()
+
+            token_vector_peak_bytes = 0
+            token_reference_vector_bytes = 0
+            effective_domain_replay_count = 0
+            if token_gradient_active:
+                if candidate_data is None:
+                    raise RuntimeError(
+                        "Token-gradient replay requires loss candidates."
+                    )
+                production_masks: tuple[torch.Tensor, ...] | None = None
+                token_candidate_data = candidate_data
+                candidate_loss_basis = "configured_loss_abs"
+                token_domain_vectors = domain_vectors
+                token_domain_sq = domain_sq
+                if self._production_weighting_enabled():
+                    production_masks = self._production_gradient_masks(
+                        micro_batches
+                    )
+                    token_candidate_data = self._reweighted_candidate_data(
+                        candidate_data,
+                        production_masks,
+                    )
+                    candidate_loss_basis = (
+                        "production_reweighted_configured_loss_abs"
+                    )
+                    token_domain_vectors = {}
+                    for domain in self.config.domains:
+                        domain_masks = (
+                            self._domain_production_gradient_masks(
+                                micro_batches,
+                                production_masks,
+                                domain,
+                            )
+                        )
                         self._backward_replay(
                             state,
                             micro_batches,
@@ -1206,7 +1872,55 @@ class DomainGradientAudit:
                             on_policy=on_policy,
                             temperature=temperature,
                             domain=None,
-                            gradient_masks=selection.masks,
+                            gradient_masks=domain_masks,
+                        )
+                        token_domain_vectors[domain] = snapshot_gradients(
+                            self.actor,
+                            self.config.storage_dtype,
+                        )
+                    token_domain_sq = {
+                        domain: vector_squared_norm(self.actor, vector)
+                        for domain, vector in token_domain_vectors.items()
+                    }
+                    effective_domain_replay_count = len(
+                        self.config.domains
+                    )
+                    token_reference_vector_bytes = sum(
+                        vector_nbytes(vector)
+                        for vector in token_domain_vectors.values()
+                    )
+                state.restore_runtime()
+                state.clear_gradients()
+                token_selections = self._loss_ranked_token_selections(
+                    micro_batches,
+                    loss_scales,
+                    on_policy=on_policy,
+                    temperature=temperature,
+                    candidate_data=token_candidate_data,
+                    candidate_loss_basis=candidate_loss_basis,
+                )
+                for domain, domain_selections in token_selections.items():
+                    metrics[
+                        f"{domain}/token_grad/"
+                        "domain_grad_norm_after_reweight"
+                    ] = max(token_domain_sq[domain], 0.0) ** 0.5
+                    for selection_name, selection in domain_selections.items():
+                        selection_masks = (
+                            self._apply_production_gradient_masks(
+                                selection.masks,
+                                production_masks,
+                            )
+                            if production_masks is not None
+                            else selection.masks
+                        )
+                        self._backward_replay(
+                            state,
+                            micro_batches,
+                            loss_scales,
+                            on_policy=on_policy,
+                            temperature=temperature,
+                            domain=None,
+                            gradient_masks=selection_masks,
                         )
                         selection_vector = snapshot_gradients(
                             self.actor,
@@ -1223,7 +1937,7 @@ class DomainGradientAudit:
                         selection_domain_dot = vector_dot(
                             self.actor,
                             selection_vector,
-                            domain_vectors[domain],
+                            token_domain_vectors[domain],
                         )
                         metric_prefix = (
                             "top_p1"
@@ -1234,11 +1948,13 @@ class DomainGradientAudit:
                             )
                             else selection_name
                         )
-                        selection_metrics = gradient_subset_metrics_from_gram(
-                            prefix=metric_prefix,
-                            domain_sq=domain_sq[domain],
-                            subset_sq=selection_sq,
-                            subset_domain_dot=selection_domain_dot,
+                        selection_metrics = (
+                            gradient_partition_metrics_from_gram(
+                                prefix=metric_prefix,
+                                domain_sq=token_domain_sq[domain],
+                                subset_sq=selection_sq,
+                                subset_domain_dot=selection_domain_dot,
+                            )
                         )
                         metrics.update(
                             {
@@ -1248,21 +1964,13 @@ class DomainGradientAudit:
                         )
                         del selection_vector
                 metrics.update(self._token_selection_metrics(token_selections))
-
-            if self._should_update_dynamic_weighting():
-                self._weight_state = update_domain_weight_state(
-                    self._weight_state,
-                    source_signals,
-                    ema_beta=self.config.dynamic_weighting_ema_beta,
-                    weight_ema_beta=(
-                        self.config.dynamic_weighting_weight_ema_beta
-                    ),
-                    alpha=self.config.dynamic_weighting_alpha,
-                    minimum=self.config.dynamic_weighting_min,
-                    maximum=self.config.dynamic_weighting_max,
-                    step=self.config.step,
-                )
-                self._persist_weight_state()
+                metrics[
+                    "global/audit/"
+                    "token_gradient_matches_production_reweighting"
+                ] = 1.0
+                metrics[
+                    "global/audit/token_gradient_reweighting_active"
+                ] = float(production_masks is not None)
             if candidate_data is not None:
                 metrics.update(
                     self._loss_amplification_metrics(
@@ -1305,6 +2013,7 @@ class DomainGradientAudit:
             metrics["global/audit/domain_gradient_backward_replay_count"] = float(
                 1
                 + domain_count
+                + effective_domain_replay_count
                 + domain_count * token_selection_count
                 + dynamic_parity_replay_count
             )
@@ -1313,7 +2022,7 @@ class DomainGradientAudit:
             )
             base_vector_bytes = vector_nbytes(audit_total) + sum(
                 vector_nbytes(vector) for vector in domain_vectors.values()
-            )
+            ) + token_reference_vector_bytes
             dynamic_vector_bytes = (
                 vector_nbytes(parity_total)
                 if dynamic_parity_replay_count

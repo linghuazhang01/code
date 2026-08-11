@@ -225,6 +225,52 @@ def gradient_subset_metrics_from_gram(
     }
 
 
+def gradient_partition_metrics_from_gram(
+    *,
+    prefix: str,
+    domain_sq: float,
+    subset_sq: float,
+    subset_domain_dot: float,
+) -> dict[str, float]:
+    """Describe a selected/complement partition of one domain gradient."""
+
+    metrics = gradient_subset_metrics_from_gram(
+        prefix=prefix,
+        domain_sq=domain_sq,
+        subset_sq=subset_sq,
+        subset_domain_dot=subset_domain_dot,
+    )
+    complement_sq = max(
+        domain_sq + subset_sq - 2.0 * subset_domain_dot,
+        0.0,
+    )
+    complement_domain_dot = domain_sq - subset_domain_dot
+    metrics.update(
+        gradient_subset_metrics_from_gram(
+            prefix=f"{prefix}_complement",
+            domain_sq=domain_sq,
+            subset_sq=complement_sq,
+            subset_domain_dot=complement_domain_dot,
+        )
+    )
+    selected_share = metrics[f"{prefix}_grad_signed_projection_share"]
+    complement_share = metrics[
+        f"{prefix}_complement_grad_signed_projection_share"
+    ]
+    share_sum = selected_share + complement_share
+    expected_share_sum = 1.0 if domain_sq > 0.0 else 0.0
+    metrics.update(
+        {
+            f"{prefix}_partition_projection_share_sum": share_sum,
+            f"{prefix}_partition_projection_share_abs_error": abs(
+                share_sum - expected_share_sum
+            ),
+            f"{prefix}_partition_complement_is_derived": 1.0,
+        }
+    )
+    return metrics
+
+
 def top_p1_gradient_metrics_from_domain_sq(
     domain_sq: float,
 ) -> dict[str, float]:

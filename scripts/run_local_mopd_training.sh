@@ -12,7 +12,7 @@ Examples:
   scripts/run_local_mopd_training.sh configs/mopd_formal_audit_all_2gpu.yaml
 
   scripts/run_local_mopd_training.sh \
-    test_grad_configs/mopd_domain_weighting_qwen0p6b_8b_matrix.yaml::gradnorm
+    test_grad_configs/mopd_dynamic_budget_qwen0p6b_8b_aw2_fsdp2_b16_4step_3gpu_smoke.yaml
 
   scripts/run_local_mopd_training.sh configs/mopd_formal_audit_all_4gpu.yaml \
     --run-id mopd_manual_test

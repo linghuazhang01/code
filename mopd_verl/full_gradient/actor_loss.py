@@ -11,19 +11,29 @@ from mopd_verl.full_gradient.loss_support import (
     ActorMicroBatchLossResult,
     active_kl_loss,
     actor_advantages,
+    domain_loss_gradient_mask,
     gate_tensor_gradient as _gate_tensor_gradient,
     masked_mean,
     policy_gradient_rewards,
+    selected_teacher_entropy,
     selected_teacher_log_prob,
+    selected_teacher_topk_support,
     selected_topk_support,
     topk_runtime_config,
 )
 from mopd_verl.topk_distill import (
+    DISTILL_LOSS_BUILDER_EOPD,
     DISTILL_LOSS_BUILDER_POLICY_GRADIENT,
+    TOPK_LOGPROB_MODE_FULL_VOCAB,
     TOPK_RENORMALIZED_FORWARD_KL,
     TOPK_SUPPORT_SOURCE_STUDENT,
     chosen_token_forward_kl_matrix,
     distill_loss_builder,
+    eopd_entropy_threshold,
+    eopd_forward_kl_matrix,
+    eopd_forward_kl_weight,
+    eopd_teacher_student_cross_entropy_matrix,
+    eopd_topk_k,
     resolved_topk_distill_mode,
     select_teacher_log_prob_tensor,
     teacher_prefix_forward_weight,
@@ -36,6 +46,7 @@ from mopd_verl.topk_distill import (
     topk_distill_temperature,
     topk_distill_weight,
     topk_teacher_student_cross_entropy_matrix,
+    uses_eopd_loss,
     uses_topk_distill_loss,
 )
 from verl import DataProto
@@ -71,28 +82,46 @@ def build_actor_micro_batch_loss(
     policy_loss_cfg = _cfg_get(actor.config, "policy_loss", {})
     builder_name = distill_loss_builder(policy_loss_cfg)
     topk_distill_active = uses_topk_distill_loss(policy_loss_cfg)
+    eopd_active = uses_eopd_loss(policy_loss_cfg)
+    teacher_topk_active = topk_distill_active or eopd_active
     use_renormalized_support, effective_topk_logprob_mode = topk_runtime_config(
         policy_loss_cfg
     )
     use_renormalized_support = topk_distill_active and use_renormalized_support
+    if eopd_active:
+        effective_topk_logprob_mode = TOPK_LOGPROB_MODE_FULL_VOCAB
     kl_loss_active, kl_coef = active_kl_loss(actor.config)
     needs_log_probs = not topk_distill_active or kl_loss_active
     forward_kwargs["calculate_log_probs"] = needs_log_probs
     topk_support_ids = None
     teacher_support_log_probs = None
-    topk_support_source_value = topk_distill_support_source(policy_loss_cfg)
-    if topk_distill_active:
-        topk_support_ids, teacher_support_log_probs = selected_topk_support(
-            model_inputs,
-            policy_loss_cfg,
-        )
+    topk_support_source_value = (
+        topk_distill_support_source(policy_loss_cfg)
+        if topk_distill_active
+        else "teacher"
+    )
+    if teacher_topk_active:
+        if eopd_active:
+            topk_support_ids, teacher_support_log_probs = (
+                selected_teacher_topk_support(
+                    model_inputs,
+                    policy_loss_cfg,
+                )
+            )
+        else:
+            topk_support_ids, teacher_support_log_probs = selected_topk_support(
+                model_inputs,
+                policy_loss_cfg,
+            )
         forward_kwargs["gather_topk_ids"] = topk_support_ids
-        forward_kwargs["normalize_gathered_topk"] = not use_renormalized_support
+        forward_kwargs["normalize_gathered_topk"] = (
+            True if eopd_active else not use_renormalized_support
+        )
         forward_kwargs["topk_logprob_chunk_size"] = topk_distill_logprob_chunk_size(policy_loss_cfg)
         forward_kwargs["topk_logprob_mode"] = effective_topk_logprob_mode
         forward_kwargs["return_extra"] = True
     forward_output = actor._forward_micro_batch(model_inputs, **forward_kwargs)
-    if topk_distill_active:
+    if teacher_topk_active:
         entropy, log_prob, _topk_ids, _topk_log_probs, student_topk_log_probs = forward_output
     else:
         entropy, log_prob = forward_output
@@ -100,19 +129,34 @@ def build_actor_micro_batch_loss(
     configured_distill_loss_mat = None
     prefix_configured_loss_mat = None
     if return_teacher_student_cross_entropy:
-        if not topk_distill_active:
+        if not teacher_topk_active:
             raise ValueError(
                 "Teacher-student cross entropy reuse requires an active top-k "
                 "distillation loss."
             )
         # Record the exact train-mode distribution used by this optimizer step.
-        teacher_student_cross_entropy = (
-            topk_teacher_student_cross_entropy_matrix(
-                student_topk_log_probs=student_topk_log_probs.detach(),
-                teacher_topk_log_probs=teacher_support_log_probs.detach(),
-                include_tail=topk_distill_include_tail(policy_loss_cfg),
-                temperature=topk_distill_temperature(policy_loss_cfg),
-            ).detach()
+        if eopd_active:
+            teacher_student_cross_entropy = (
+                eopd_teacher_student_cross_entropy_matrix(
+                    student_full_vocab_log_probs=student_topk_log_probs.detach(),
+                    teacher_topk_log_probs=teacher_support_log_probs.detach(),
+                ).detach()
+            )
+        else:
+            teacher_student_cross_entropy = (
+                topk_teacher_student_cross_entropy_matrix(
+                    student_topk_log_probs=student_topk_log_probs.detach(),
+                    teacher_topk_log_probs=teacher_support_log_probs.detach(),
+                    include_tail=topk_distill_include_tail(policy_loss_cfg),
+                    temperature=topk_distill_temperature(policy_loss_cfg),
+                ).detach()
+            )
+    domain_loss_scale = model_inputs.get("mopd_domain_loss_scale")
+    if domain_loss_scale is not None:
+        gradient_mask_override = domain_loss_gradient_mask(
+            domain_loss_scale,
+            response_mask,
+            gradient_mask_override,
         )
     if gradient_mask_override is not None:
         if gradient_mask_override.shape != response_mask.shape:
@@ -127,7 +171,7 @@ def build_actor_micro_batch_loss(
         )
         entropy = _gate_tensor_gradient(entropy, gradient_mask)
         log_prob = _gate_tensor_gradient(log_prob, gradient_mask)
-        if topk_distill_active:
+        if teacher_topk_active:
             student_topk_log_probs = _gate_tensor_gradient(
                 student_topk_log_probs,
                 gradient_mask,
@@ -154,7 +198,10 @@ def build_actor_micro_batch_loss(
         policy_loss = log_prob.new_zeros(())
         pg_loss = policy_loss
     else:
-        if builder_name == DISTILL_LOSS_BUILDER_POLICY_GRADIENT:
+        if builder_name in {
+            DISTILL_LOSS_BUILDER_POLICY_GRADIENT,
+            DISTILL_LOSS_BUILDER_EOPD,
+        }:
             advantages = policy_gradient_rewards(
                 model_inputs,
                 policy_loss_cfg,
@@ -178,7 +225,10 @@ def build_actor_micro_batch_loss(
         policy_loss = pg_loss
         if include_metrics:
             metrics.update(pg_metrics)
-            if builder_name == DISTILL_LOSS_BUILDER_POLICY_GRADIENT:
+            if builder_name in {
+                DISTILL_LOSS_BUILDER_POLICY_GRADIENT,
+                DISTILL_LOSS_BUILDER_EOPD,
+            }:
                 metrics["actor/chosen_token_pg_reward_mean"] = masked_mean(
                     advantages,
                     distill_response_mask,
@@ -246,6 +296,72 @@ def build_actor_micro_batch_loss(
                 support_source=topk_support_source_value,
             ).items():
                 metrics[f"actor/{key}"] = value
+    if eopd_active:
+        teacher_entropy = selected_teacher_entropy(
+            model_inputs,
+            policy_loss_cfg,
+        ).detach().to(device=response_mask.device, dtype=torch.float32)
+        if teacher_entropy.shape != response_mask.shape:
+            raise ValueError(
+                "EOPD teacher entropy must match response_mask, "
+                f"got {tuple(teacher_entropy.shape)} and "
+                f"{tuple(response_mask.shape)}."
+            )
+        threshold = eopd_entropy_threshold(policy_loss_cfg)
+        forward_kl_weight = eopd_forward_kl_weight(policy_loss_cfg)
+        high_entropy_mask = (teacher_entropy >= threshold).to(
+            dtype=response_mask.dtype
+        )
+        eopd_loss_mat = eopd_forward_kl_matrix(
+            student_full_vocab_log_probs=student_topk_log_probs,
+            teacher_topk_log_probs=teacher_support_log_probs,
+        )
+        gated_eopd_loss_mat = eopd_loss_mat * high_entropy_mask
+        eopd_forward_loss = agg_loss(
+            loss_mat=gated_eopd_loss_mat,
+            loss_mask=distill_response_mask,
+            loss_agg_mode=str(
+                _cfg_get(actor.config, "loss_agg_mode", "token-mean")
+            ),
+        )
+        policy_loss = policy_loss + eopd_forward_loss * forward_kl_weight
+        if return_configured_token_loss:
+            eopd_configured_loss_mat = (
+                gated_eopd_loss_mat.detach().float() * forward_kl_weight
+            )
+            if configured_distill_loss_mat is None:
+                configured_distill_loss_mat = eopd_configured_loss_mat
+            else:
+                configured_distill_loss_mat = (
+                    configured_distill_loss_mat + eopd_configured_loss_mat
+                )
+        if include_metrics:
+            high_entropy_response_mask = (
+                high_entropy_mask * distill_response_mask
+            )
+            metrics["actor/eopd_forward_kl_loss"] = (
+                eopd_forward_loss.detach().item()
+                * forward_kl_weight
+                * float(loss_scale_factor)
+            )
+            metrics["actor/eopd_forward_kl_unweighted"] = (
+                eopd_forward_loss.detach().item()
+            )
+            metrics["actor/eopd_forward_kl_weight"] = forward_kl_weight
+            metrics["actor/eopd_entropy_threshold"] = threshold
+            metrics["actor/eopd_topk_k"] = eopd_topk_k(policy_loss_cfg)
+            metrics["actor/eopd_high_entropy_ratio"] = masked_mean(
+                high_entropy_mask,
+                distill_response_mask,
+            )
+            metrics["actor/eopd_teacher_entropy_mean"] = masked_mean(
+                teacher_entropy,
+                distill_response_mask,
+            )
+            metrics["actor/eopd_high_entropy_mean"] = masked_mean(
+                teacher_entropy,
+                high_entropy_response_mask,
+            )
     if teacher_prefix_active:
         prefix_weight = teacher_prefix_forward_weight(policy_loss_cfg)
         if topk_distill_active:

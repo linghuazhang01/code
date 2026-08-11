@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,6 +14,15 @@ from mopd_verl.domain_gradient.token_weighting_state import (
 from mopd_verl.domain_gradient.weighting import DYNAMIC_WEIGHT_SIGNALS
 
 
+DEFAULT_CONTROL_SPEED_WEIGHT_KNOTS = (
+    (-0.0025, 0.0),
+    (0.0, 0.2),
+    (0.005, 2.0),
+    (0.010, 3.0),
+    (0.015, 4.0),
+)
+
+
 def _get(config: Any, key: str, default: Any = None) -> Any:
     if isinstance(config, dict):
         return config.get(key, default)
@@ -19,6 +30,38 @@ def _get(config: Any, key: str, default: Any = None) -> Any:
     if callable(getter):
         return getter(key, default)
     return getattr(config, key, default)
+
+
+def _domain_token_ids(
+    value: Any,
+) -> tuple[tuple[str, tuple[int, ...]], ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, Mapping):
+        raise TypeError("domain_control_token_ids must be a mapping.")
+    return tuple(
+        (
+            str(domain),
+            tuple(dict.fromkeys(int(token_id) for token_id in token_ids)),
+        )
+        for domain, token_ids in value.items()
+    )
+
+
+def _speed_weight_knots(value: Any) -> tuple[tuple[float, float], ...]:
+    if value is None:
+        return DEFAULT_CONTROL_SPEED_WEIGHT_KNOTS
+    if isinstance(value, (str, bytes)):
+        raise TypeError("control_token_speed_weight_knots must be a sequence.")
+    knots: list[tuple[float, float]] = []
+    for item in value:
+        if isinstance(item, (str, bytes)) or len(item) != 2:
+            raise ValueError(
+                "Each control_token_speed_weight_knots entry must contain "
+                "exactly [speed, weight]."
+            )
+        knots.append((float(item[0]), float(item[1])))
+    return tuple(knots)
 
 
 @dataclass(frozen=True)
@@ -54,6 +97,23 @@ class DomainGradientConfig:
     control_token_weighting_enabled: bool
     control_token_weight: float
     control_token_ids: tuple[int, ...]
+    domain_control_token_ids: tuple[tuple[str, tuple[int, ...]], ...]
+    control_token_normalize_per_domain: bool
+    control_token_phase_gate_enabled: bool
+    control_token_span_weighting_enabled: bool
+    control_token_phase_gate_window_steps: int
+    control_token_phase_gate_ema_beta: float
+    control_token_phase_gate_temperature: float
+    control_token_phase_gate_initial: float
+    control_token_span_length: int
+    control_token_span_decay_tau: float
+    control_token_speed_weighting_enabled: bool
+    control_token_speed_window_steps: int
+    control_token_speed_ema_beta: float
+    control_token_speed_update_interval_steps: int
+    control_token_speed_initial_weight: float
+    control_token_speed_min_occurrences: int
+    control_token_speed_weight_knots: tuple[tuple[float, float], ...]
     all_domain_shared_token_weighting_enabled: bool
     all_domain_shared_token_weight: float
     all_domain_shared_token_selection_mode: str
@@ -184,6 +244,68 @@ class DomainGradientConfig:
                     for token_id in _get(meta, "control_token_ids", ())
                 )
             ),
+            domain_control_token_ids=_domain_token_ids(
+                _get(meta, "domain_control_token_ids", {})
+            ),
+            control_token_normalize_per_domain=bool(
+                _get(meta, "control_token_normalize_per_domain", False)
+            ),
+            control_token_phase_gate_enabled=bool(
+                _get(meta, "control_token_phase_gate_enabled", False)
+            ),
+            control_token_span_weighting_enabled=bool(
+                _get(meta, "control_token_span_weighting_enabled", False)
+            ),
+            control_token_phase_gate_window_steps=max(
+                1,
+                int(_get(meta, "control_token_phase_gate_window_steps", 5)),
+            ),
+            control_token_phase_gate_ema_beta=float(
+                _get(meta, "control_token_phase_gate_ema_beta", 0.90)
+            ),
+            control_token_phase_gate_temperature=float(
+                _get(meta, "control_token_phase_gate_temperature", 0.10)
+            ),
+            control_token_phase_gate_initial=float(
+                _get(meta, "control_token_phase_gate_initial", 0.80)
+            ),
+            control_token_span_length=max(
+                0,
+                int(_get(meta, "control_token_span_length", 16)),
+            ),
+            control_token_span_decay_tau=float(
+                _get(meta, "control_token_span_decay_tau", 8.0)
+            ),
+            control_token_speed_weighting_enabled=bool(
+                _get(meta, "control_token_speed_weighting_enabled", False)
+            ),
+            control_token_speed_window_steps=max(
+                1,
+                int(_get(meta, "control_token_speed_window_steps", 5)),
+            ),
+            control_token_speed_ema_beta=float(
+                _get(meta, "control_token_speed_ema_beta", 0.8)
+            ),
+            control_token_speed_update_interval_steps=max(
+                1,
+                int(
+                    _get(
+                        meta,
+                        "control_token_speed_update_interval_steps",
+                        2,
+                    )
+                ),
+            ),
+            control_token_speed_initial_weight=float(
+                _get(meta, "control_token_speed_initial_weight", 3.0)
+            ),
+            control_token_speed_min_occurrences=max(
+                1,
+                int(_get(meta, "control_token_speed_min_occurrences", 128)),
+            ),
+            control_token_speed_weight_knots=_speed_weight_knots(
+                _get(meta, "control_token_speed_weight_knots", None)
+            ),
             all_domain_shared_token_weighting_enabled=bool(
                 _get(
                     meta,
@@ -262,16 +384,124 @@ class DomainGradientConfig:
                 "Dynamic domain loss weight bounds must be positive and "
                 "contain 1.0."
             )
-        if self.control_token_weight < 1.0:
+        if (
+            not math.isfinite(self.control_token_weight)
+            or self.control_token_weight < 0.0
+        ):
             raise ValueError(
-                "control_token_loss_weight must be at least 1.0."
+                "control_token_loss_weight must be finite and non-negative."
             )
         if (
             self.control_token_weighting_enabled
             and not self.control_token_ids
+            and not self.domain_control_token_ids
         ):
             raise ValueError(
-                "Control-token loss weighting requires control_token_ids."
+                "Control-token loss weighting requires control_token_ids or "
+                "domain_control_token_ids."
+            )
+        if self.control_token_ids and self.domain_control_token_ids:
+            raise ValueError(
+                "Configure either control_token_ids or "
+                "domain_control_token_ids, not both."
+            )
+        unknown_domains = {
+            domain for domain, _ in self.domain_control_token_ids
+        } - set(self.domains)
+        if unknown_domains:
+            raise ValueError(
+                "domain_control_token_ids contains unknown domains: "
+                + ", ".join(sorted(unknown_domains))
+            )
+        empty_domains = [
+            domain
+            for domain, token_ids in self.domain_control_token_ids
+            if not token_ids
+        ]
+        if empty_domains:
+            raise ValueError(
+                "domain_control_token_ids entries must be non-empty: "
+                + ", ".join(empty_domains)
+            )
+        if not 0.0 <= self.control_token_phase_gate_ema_beta < 1.0:
+            raise ValueError(
+                "control_token_phase_gate_ema_beta must be in [0, 1)."
+            )
+        if self.control_token_phase_gate_temperature <= 0.0:
+            raise ValueError(
+                "control_token_phase_gate_temperature must be positive."
+            )
+        if not 0.0 <= self.control_token_phase_gate_initial <= 1.0:
+            raise ValueError(
+                "control_token_phase_gate_initial must be in [0, 1]."
+            )
+        if self.control_token_span_decay_tau <= 0.0:
+            raise ValueError(
+                "control_token_span_decay_tau must be positive."
+            )
+        if not 0.0 <= self.control_token_speed_ema_beta < 1.0:
+            raise ValueError(
+                "control_token_speed_ema_beta must be in [0, 1)."
+            )
+        if self.control_token_speed_initial_weight < 0.0:
+            raise ValueError(
+                "control_token_speed_initial_weight must be non-negative."
+            )
+        if len(self.control_token_speed_weight_knots) < 2:
+            raise ValueError(
+                "control_token_speed_weight_knots requires at least two knots."
+            )
+        for index, (speed, weight) in enumerate(
+            self.control_token_speed_weight_knots
+        ):
+            if not math.isfinite(speed) or not math.isfinite(weight):
+                raise ValueError(
+                    "control_token_speed_weight_knots must be finite."
+                )
+            if weight < 0.0:
+                raise ValueError(
+                    "control_token_speed_weight_knots weights must be "
+                    "non-negative."
+                )
+            if index > 0 and speed <= self.control_token_speed_weight_knots[
+                index - 1
+            ][0]:
+                raise ValueError(
+                    "control_token_speed_weight_knots speeds must be strictly "
+                    "increasing."
+                )
+        if self.control_token_speed_weighting_enabled and (
+            not self.control_token_weighting_enabled
+            or not self.domain_control_token_ids
+        ):
+            raise ValueError(
+                "Control-token speed weighting requires enabled "
+                "domain-specific control-token loss weighting."
+            )
+        if (
+            self.control_token_speed_weighting_enabled
+            and self.control_token_phase_gate_enabled
+        ):
+            raise ValueError(
+                "Control-token speed weighting and phase gating are mutually "
+                "exclusive."
+            )
+        if self.control_token_phase_gate_enabled and (
+            not self.control_token_weighting_enabled
+            or not self.domain_control_token_ids
+            or self.control_token_span_length < 1
+        ):
+            raise ValueError(
+                "Control-token phase gating requires enabled domain-specific "
+                "control weighting and a positive span length."
+            )
+        if (
+            self.control_token_span_weighting_enabled
+            and not self.control_token_phase_gate_enabled
+        ):
+            raise ValueError(
+                "Successor-span weighting requires control-token phase "
+                "gating."
             )
         if self.all_domain_shared_token_weight < 1.0:
             raise ValueError(

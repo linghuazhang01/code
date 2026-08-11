@@ -9,6 +9,13 @@ from typing import Any, Mapping, Sequence
 
 import torch
 
+from mopd_verl.audit_io import step_jsonl_dir
+from mopd_verl.vocab_vector_io import (
+    SPARSE_TOKEN_ID_DICT,
+    tensor_to_sparse_float_dict,
+    tensor_to_sparse_int_dict,
+)
+
 from mopd_verl.domain_gradient.token_selection import RankedToken
 
 
@@ -191,6 +198,7 @@ def _vocab_vector_row(
     loss_sum: torch.Tensor,
     loss_abs_sum: torch.Tensor,
     dropped_count: int,
+    loss_mass_basis: str,
 ) -> dict[str, Any]:
     nonzero_token_ids = torch.nonzero(
         counts > 0,
@@ -201,19 +209,21 @@ def _vocab_vector_row(
         "step": step,
         "domain": domain,
         "selection": selection_name,
+        "loss_mass_basis": loss_mass_basis,
         "vector_value": "cumulative_occurrence_count",
+        "vector_storage": SPARSE_TOKEN_ID_DICT,
         "vocab_size": int(counts.numel()),
         "selected_token_count": observed_token_count + dropped_count,
         "observed_token_count": observed_token_count,
         "dropped_token_count": dropped_count,
         "nonzero_token_id_count": int(nonzero_token_ids.numel()),
         "nonzero_token_ids": nonzero_token_ids.tolist(),
-        "token_count_vector_vocab": counts.tolist(),
-        "configured_token_loss_sum_vector_vocab": (
-            loss_sum.float().tolist()
+        "token_count_vector_vocab": tensor_to_sparse_int_dict(counts),
+        "configured_token_loss_sum_vector_vocab": tensor_to_sparse_float_dict(
+            loss_sum
         ),
-        "configured_token_loss_abs_sum_vector_vocab": (
-            loss_abs_sum.float().tolist()
+        "configured_token_loss_abs_sum_vector_vocab": tensor_to_sparse_float_dict(
+            loss_abs_sum
         ),
     }
 
@@ -228,6 +238,7 @@ def append_token_vocab_vectors_jsonl(
         str,
         Mapping[str, Sequence[RankedToken]],
     ],
+    loss_mass_basis: str = "configured_loss_abs",
 ) -> None:
     """Append one deduplicated cumulative vocab-vector row per selection."""
 
@@ -267,15 +278,17 @@ def append_token_vocab_vectors_jsonl(
                         loss_sum=global_vectors[1],
                         loss_abs_sum=global_vectors[2],
                         dropped_count=global_vectors[3],
+                        loss_mass_basis=loss_mass_basis,
                     )
                 )
     if rank != 0 or not rows:
         return
-    directory = Path(output_dir)
-    directory.mkdir(parents=True, exist_ok=True)
+    directory = step_jsonl_dir(output_dir, step, create=True)
     output_path = directory / "token_gradient_vocab_vectors.jsonl"
-    with output_path.open("a", encoding="utf-8") as handle:
+    temporary_path = output_path.with_name(f".{output_path.name}.tmp")
+    with temporary_path.open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(
                 json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n"
             )
+    temporary_path.replace(output_path)

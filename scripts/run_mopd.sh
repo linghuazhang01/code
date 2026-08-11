@@ -39,6 +39,7 @@ VERL_RUNTIME_DIR="${VERL_RUNTIME_DIR:-${CODE_DIR}/third_party/verl}"
 DRY_RUN_FLAG=0
 SLURM_FLAG=0
 SLURM_EXTRA_DIRECTIVES=()
+CONFIG_ARG_SEEN=0
 # Parse SLURM_EXTRA from env var, if set (space-separated sbatch directives)
 if [[ -n "${SLURM_EXTRA_ENV:-}" ]]; then
   read -r -a SLURM_EXTRA_DIRECTIVES <<< "${SLURM_EXTRA_ENV}"
@@ -78,20 +79,54 @@ while [[ $# -gt 0 ]]; do
       exit 2
       ;;
     *)
-      if [[ "${CONFIG_PATH}" != "${MOPD_CONFIG:-${DEFAULT_CONFIG}}" ]]; then
+      if [[ "${CONFIG_ARG_SEEN}" == "1" ]]; then
         echo "Only one config path is allowed." >&2
         exit 2
       fi
       CONFIG_PATH="$1"
+      CONFIG_ARG_SEEN=1
       shift
       ;;
   esac
 done
 
+if [[ "${#SLURM_EXTRA_DIRECTIVES[@]}" -gt 0 ]]; then
+  if [[ "${SLURM_FLAG}" != "1" ]]; then
+    echo "--slurm-args requires --slurm." >&2
+    exit 2
+  fi
+  for slurm_directive in "${SLURM_EXTRA_DIRECTIVES[@]}"; do
+    if [[ "${slurm_directive}" != --* || "${slurm_directive}" == *$'\n'* || "${slurm_directive}" == *$'\r'* ]]; then
+      echo "Invalid Slurm directive: ${slurm_directive}" >&2
+      echo "Each --slurm-args value must be one single-line --option." >&2
+      exit 2
+    fi
+    slurm_option="${slurm_directive%%=*}"
+    slurm_option="${slurm_option%%[[:space:]]*}"
+    case "${slurm_option}" in
+      --nodes|--ntasks*|--gpus*|--gres*|--cpus-per-*|--job-name|--output|--error|--export|--export-file)
+        echo "${slurm_option} is derived by run_mopd.sh and cannot be overridden." >&2
+        exit 2
+        ;;
+    esac
+  done
+fi
+
+if [[ "${SLURM_FLAG}" == "1" && "${DRY_RUN:-0}" != "1" && "${DRY_RUN_FLAG}" != "1" ]]; then
+  if ! command -v sbatch >/dev/null 2>&1; then
+    echo "Slurm submission requested, but sbatch is not available on PATH." >&2
+    exit 2
+  fi
+fi
+
 CONFIG_PROFILE=""
 if [[ "${CONFIG_PATH}" == *::* ]]; then
   CONFIG_PROFILE="${CONFIG_PATH##*::}"
   CONFIG_PATH="${CONFIG_PATH%::*}"
+  if [[ -z "${CONFIG_PROFILE}" ]]; then
+    echo "Config profile cannot be empty." >&2
+    exit 2
+  fi
 fi
 
 if [[ "${CONFIG_PATH}" != /* ]]; then
@@ -131,6 +166,8 @@ if [[ "${SLURM_FLAG}" == "1" ]]; then
   SLURM_RESOURCE_LINE="$(
     "${MOPD_LAUNCH_PYTHON:-python3}" - \
       "${CONFIG_REFERENCE}" "${EXTRA_ARGS[@]}" <<'PY'
+import os
+import re
 import sys
 
 from mopd_verl.config_profiles import load_raw_config
@@ -176,11 +213,22 @@ def parse_process_on_nodes(value, key):
 
 
 def pool_gpus(pool, default, key):
+    pool_nnodes = parse_int(pool.get("nnodes", 1), f"{key}.nnodes")
+    if pool_nnodes != 1:
+        raise SystemExit(
+            f"{key}.nnodes must be 1; the Slurm launcher currently "
+            "supports exactly one node"
+        )
     process_on_nodes = parse_process_on_nodes(
         pool.get("process_on_nodes"),
         f"{key}.process_on_nodes",
     )
     if process_on_nodes is not None:
+        if len(process_on_nodes) != 1:
+            raise SystemExit(
+                f"{key}.process_on_nodes has {len(process_on_nodes)} nodes; "
+                "the Slurm launcher currently supports exactly one node"
+            )
         return process_on_nodes[0]
     return parse_int(
         pool.get("n_gpus_per_node", default),
@@ -207,6 +255,7 @@ for override in sys.argv[2:]:
     key = key.lstrip("+")
     if key in {
         "trainer.n_gpus_per_node",
+        "trainer.nnodes",
         "trainer.experiment_name",
         "ray_kwargs.ray_init.num_cpus",
     }:
@@ -221,6 +270,12 @@ for override in sys.argv[2:]:
         )
 
 trainer = config.get("trainer") or {}
+trainer_nnodes = parse_int(trainer.get("nnodes", 1), "trainer.nnodes")
+if trainer_nnodes != 1:
+    raise SystemExit(
+        "trainer.nnodes must be 1; the Slurm launcher currently supports "
+        "exactly one node"
+    )
 actor_pool = placement.get("actor_rollout") or {}
 ref_pool = placement.get("ref_policy") or {}
 trainer_gpus = parse_int(
@@ -247,13 +302,31 @@ required_cpus = parse_int(
 # double it (minimum 64) so Ray and vLLM have enough headroom.
 if required_cpus < 72:
     required_cpus = max(64, required_cpus * 2)
-experiment_name = trainer.get("experiment_name", "mopd_training")
+raw_experiment_name = str(trainer.get("experiment_name", "mopd_training"))
+experiment_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw_experiment_name)
+experiment_name = experiment_name.strip("-.")[:100] or "mopd_training"
 gpu_ids = ",".join(str(index) for index in range(required_gpus))
-print(experiment_name, required_gpus, required_cpus, gpu_ids, sep="\t")
+runtime_python = str(
+    (config.get("runtime") or {}).get("python_bin") or "python"
+).strip()
+runtime_bin_dir = (
+    os.path.dirname(runtime_python)
+    if os.path.sep in runtime_python
+    else "-"
+)
+print(
+    experiment_name,
+    required_gpus,
+    required_cpus,
+    gpu_ids,
+    runtime_bin_dir,
+    sep="\t",
+)
 PY
   )"
   IFS=$'\t' read -r \
     EXPERIMENT_NAME SLURM_GPUS SLURM_CPUS SLURM_GPU_IDS \
+    SLURM_RUNTIME_BIN_DIR \
     <<< "${SLURM_RESOURCE_LINE}"
   JOB_NAME="mopd_${EXPERIMENT_NAME}"
   SLURM_LOG_DIR="${SLURM_LOG_DIR:-${CODE_DIR}/logs/slurm}"
@@ -265,6 +338,10 @@ PY
   for _arg in "${ARGS[@]}"; do
     LAUNCH_ARGS+=("$(printf '%q' "${_arg}")")
   done
+  SLURM_RUNTIME_PATH_EXPORT=""
+  if [[ "${SLURM_RUNTIME_BIN_DIR}" != "-" ]]; then
+    SLURM_RUNTIME_PATH_EXPORT="export PATH=$(printf '%q' "${SLURM_RUNTIME_BIN_DIR}"):\${PATH:-}"
+  fi
 
   SBATCH_SCRIPT="${SLURM_LOG_DIR}/${JOB_NAME}_$$.sbatch"
   cat > "${SBATCH_SCRIPT}" <<SBATCH
@@ -281,7 +358,10 @@ $(for _arg in "${SLURM_EXTRA_DIRECTIVES[@]}"; do echo "#SBATCH ${_arg}"; done)
 cd "${CODE_DIR}"
 export PYTHONPATH="${CODE_DIR}:${VERL_RUNTIME_DIR}:\${PYTHONPATH:-}"
 export PYTHONINTMAXSTRDIGITS="${PYTHONINTMAXSTRDIGITS:-0}"
-export CUDA_VISIBLE_DEVICES=${SLURM_GPU_IDS}
+${SLURM_RUNTIME_PATH_EXPORT}
+if [[ -z "\${CUDA_VISIBLE_DEVICES:-}" ]]; then
+  export CUDA_VISIBLE_DEVICES=${SLURM_GPU_IDS}
+fi
 # Unset ROCR_VISIBLE_DEVICES to avoid conflict with CUDA_VISIBLE_DEVICES.
 unset ROCR_VISIBLE_DEVICES
 
@@ -293,10 +373,19 @@ SBATCH
   echo "Config: ${CONFIG_REFERENCE}"
   echo "Slurm script: ${SBATCH_SCRIPT}"
 
+  if [[ "${DRY_RUN:-0}" == "1" || "${DRY_RUN_FLAG}" == "1" ]]; then
+    echo "Slurm dry-run complete; sbatch was not called."
+    exit 0
+  fi
+
   SBATCH_OUTPUT="$(sbatch "${SBATCH_SCRIPT}")"
   echo "${SBATCH_OUTPUT}"
 
-  JOB_ID="$(echo "${SBATCH_OUTPUT}" | grep -oE '[0-9]+' | head -1)"
+  JOB_ID="$(echo "${SBATCH_OUTPUT}" | grep -oE '[0-9]+' | head -1 || true)"
+  if [[ -z "${JOB_ID}" ]]; then
+    echo "sbatch returned success but no job ID: ${SBATCH_OUTPUT}" >&2
+    exit 1
+  fi
   echo ""
   echo "============================================"
   echo "Job submitted!"

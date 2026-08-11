@@ -1,4 +1,4 @@
-# Multi-Teacher OPD Math + Code Training
+# Multi-Domain OPD Training
 
 本目录是当前 OPD/MOPD 训练入口。训练 runtime 从本仓库的 `third_party/verl` 导入，不再依赖远端额外的独立 `G-OPD` checkout。
 
@@ -22,8 +22,14 @@
 | 只下载或校验训练数据 | `scripts/download_mopd_data.sh` |
 | 只下载或校验模型 | `scripts/download_mopd_models.sh`、`scripts/download_qwen30b_teacher.sh` |
 | 下载并校验当前训练所需的数据 + 模型 | `scripts/download_training_assets.sh` |
+| 通过统一 local/Slurm 入口启动训练 | `bash start.sh` |
 | 启动本地训练 | `scripts/run_local_mopd_training.sh` |
 | 只渲染/检查 config，不启动训练 | `scripts/run_mopd.sh --dry-run` |
+
+当前动态四域 profile 是
+`configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code_science_if_topk32_dynamic_budget.yaml`，
+覆盖 math、code、science 与 instruction following（`if`）。其 capability
+gap、variance-aware sampling 和训练命令见 `CONFIG_GUIDE.zh.md`。
 
 在本地 checkout 中先安装训练环境：
 
@@ -185,7 +191,7 @@ REQUIRE_M2RL_EVAL_DATA=1 \
 | `configs/mopd_formal_audit_off_8gpu.yaml` | 8 卡 audit-off 训练。 |
 | `configs/mopd_formal_audit_all_smoke.yaml` | 2 卡 one-step 指标 smoke，打开全部 audit 输出和 full-vocab vectors。 |
 | `configs/mopd_formal_audit_loss_only_smoke.yaml` | 2 卡 one-step domain-gradient 与 loss-metric smoke。 |
-| `test_grad_configs/mopd_dynamic_weight_qwen0p6b_8b_aw2_fsdpsize2_tail_topp1_b16_4step_smoke.yaml` | Canonical 3 卡 `[1/3, 3]` bounded applied-weight EMA，以及按 domain 和 configured token loss 排序的 tail、Top-p=1 gradient smoke；Top-k replay 已关闭，入选 token ID 会写入 JSONL。 |
+| `test_grad_configs/mopd_dynamic_budget_qwen0p6b_8b_aw2_fsdp2_b16_4step_3gpu_smoke.yaml` | Canonical 3 卡四领域 smoke：capability gap 分配 objective contribution、loss variance 调整数据比例，并用 `lambda=q/p_active` 调整 OPD loss scale。 |
 | `configs/mopd_formal_audit_grad_consistency_2gpu_b32_2step_smoke.yaml` | 2 卡 batch size 32、2 step 的 gradient consistency smoke。 |
 | `configs/mopd_formal_audit_grad_consistency_2gpu_b64_3step_smoke.yaml` | 2 卡 batch size 64、3 step 的 gradient consistency smoke。 |
 | `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math.yaml` | 原始 Math-only：4 张 actor/rollout GPU + 2 张 teacher/ref GPU。 |
@@ -201,6 +207,7 @@ REQUIRE_M2RL_EVAL_DATA=1 \
 | `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code.yaml` | Math+code 等权训练，使用相同 topology 与 audit surface。 |
 | `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code_science.yaml` | Math+code+science 等权训练，使用相同 topology 与 batch 504。 |
 | `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code_science_topk32.yaml` | Top-32 Math+code+science distillation，使用相同 8-GPU topology、`fsdp_size=1` 与 batch 504。 |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code_science_if_topk32_dynamic_budget.yaml` | 动态 Top-32 四域训练；IF 使用共享 teacher 与 IFBench reward/validation。 |
 
 正式 2/4/6/8 卡配置共同使用：
 
@@ -300,6 +307,22 @@ GPU_IDS=0,1,2 bash scripts/run_local_mopd_training.sh \
 `NO_SHARD` replication；启动前仍需确认每个 actor GPU 能容纳完整 student、
 gradient 和 optimizer state。
 
+为保持向后兼容，根目录 `start.sh` 默认仍走 local；使用 `--slurm` 提交，
+或设置 `MOPD_LAUNCH_MODE=auto`，在 `PATH` 中存在 `sbatch` 时自动选择
+Slurm。提交前应先激活训练环境，或把 `MOPD_LAUNCH_PYTHON` 设为该环境
+Python 的绝对路径。先生成并检查单节点 sbatch 脚本、但不提交任务：
+
+```bash
+bash start.sh \
+  --config configs/mopd_formal_audit_all_2gpu.yaml \
+  --slurm --dry-run \
+  --slurm-args "--partition=gpu"
+```
+
+确认后移除 `--dry-run` 即可提交。`SLURM_MEM` 与 `SLURM_TIME` 默认分别为
+`700G` 和 `72:00:00`，应按目标 partition 调整。当前资源推导与 sbatch
+生成只支持单节点。
+
 本地 dry-run：
 
 ```bash
@@ -335,6 +358,15 @@ MIN_FREE_GB=300 \
 - `training_cost.jsonl`
 - `audit_errors.jsonl`
 
-full-vocab vector 文件使用 token-id 坐标：第 `v` 维对应 tokenizer token id `v`。`token_gap_vocab_vectors.jsonl` 保存 signed/absolute log-prob gap 的 sum 和 mean vector；`token_gradient_vocab_vectors.jsonl` 按 selected token ID 去重，并为每个 step/domain/selection 保存累计 occurrence count 和 configured-loss sum vectors；`entropy_vocab_vectors.jsonl` 保存 `student_entropy` 与 `teacher_student_cross_entropy` 的 sum 和 mean vector。
+full-vocab vector 文件仍使用 token-id 坐标，但落盘时改为稀疏 JSON dict：
+`{"token_id": value}`。缺失 token ID 表示 0，`vocab_size` 保留原始 dense shape，
+每行用 `vector_storage: "sparse_token_id_dict"` 标记格式；内置 SOPC-lite reader
+仍兼容历史 dense-list JSONL。`token_gap_vocab_vectors.jsonl` 保存
+signed/absolute log-prob gap 的 sum 和 mean vector；
+`token_gradient_vocab_vectors.jsonl` 按 selected token ID 去重，并为每个
+step/domain/selection 保存累计 occurrence count 和 configured-loss sum vectors；
+`entropy_vocab_vectors.jsonl` 保存 `student_entropy` 与
+`teacher_student_cross_entropy` 的 sum 和 mean vector。按 occurrence 排序的
+`token_gap_vectors.jsonl` 等文件仍保留 JSON list。
 
 详细 metric 定义见 [metrics_zh.md](metrics_zh.md)。配置字段和常用 override 见 [CONFIG_GUIDE.zh.md](CONFIG_GUIDE.zh.md)。

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import torch
@@ -13,15 +14,19 @@ CHOSEN_TOKEN_REVERSE_KL = "chosen_token_reverse_kl"
 CHOSEN_TOKEN_POLICY_GRADIENT = "chosen_token_policy_gradient"
 DISTILL_LOSS_BUILDER_AUTO = "auto"
 DISTILL_LOSS_BUILDER_CHOSEN_TOKEN_REVERSE_KL = "chosen_token_reverse_kl"
+DISTILL_LOSS_BUILDER_EOPD = "eopd"
 DISTILL_LOSS_BUILDER_POLICY_GRADIENT = "policy_gradient"
 DISTILL_LOSS_BUILDER_TOPK_KL = "topk_kl"
 DISTILL_LOSS_BUILDERS = {
     DISTILL_LOSS_BUILDER_AUTO,
     DISTILL_LOSS_BUILDER_CHOSEN_TOKEN_REVERSE_KL,
+    DISTILL_LOSS_BUILDER_EOPD,
     DISTILL_LOSS_BUILDER_POLICY_GRADIENT,
     DISTILL_LOSS_BUILDER_TOPK_KL,
 }
 DISTILL_LOSS_BUILDER_ALIASES = {
+    "entropy_aware": DISTILL_LOSS_BUILDER_EOPD,
+    "entropy_aware_opd": DISTILL_LOSS_BUILDER_EOPD,
     "pg": DISTILL_LOSS_BUILDER_POLICY_GRADIENT,
     "chosen_token_pg": DISTILL_LOSS_BUILDER_POLICY_GRADIENT,
     CHOSEN_TOKEN_POLICY_GRADIENT: DISTILL_LOSS_BUILDER_POLICY_GRADIENT,
@@ -115,6 +120,20 @@ def uses_topk_distill_loss(policy_loss_config: Any) -> bool:
     return distill_loss_builder(policy_loss_config) == DISTILL_LOSS_BUILDER_TOPK_KL
 
 
+def uses_eopd_loss(policy_loss_config: Any) -> bool:
+    return distill_loss_builder(policy_loss_config) == DISTILL_LOSS_BUILDER_EOPD
+
+
+def uses_teacher_topk_support(policy_loss_config: Any) -> bool:
+    """Return whether training needs teacher-selected top-k tensors."""
+
+    return uses_eopd_loss(policy_loss_config) or (
+        uses_topk_distill_loss(policy_loss_config)
+        and topk_distill_support_source(policy_loss_config)
+        == TOPK_SUPPORT_SOURCE_TEACHER
+    )
+
+
 def configured_distill_loss_name(policy_loss_config: Any) -> str:
     """Return the per-token distillation loss represented by audit metrics."""
 
@@ -126,6 +145,8 @@ def configured_distill_loss_name(policy_loss_config: Any) -> str:
     )
     if builder == DISTILL_LOSS_BUILDER_POLICY_GRADIENT:
         name = "policy_gradient_distillation_signal"
+    elif builder == DISTILL_LOSS_BUILDER_EOPD:
+        name = "policy_gradient+entropy_gated_topk_forward_kl"
     if (
         bool(cfg_get(policy_loss_config, "teacher_prefix_enabled", False))
         and teacher_prefix_loss_region(policy_loss_config)
@@ -152,6 +173,34 @@ def is_topk_distill_enabled(policy_loss_config: Any) -> bool:
 
 def topk_distill_k(policy_loss_config: Any) -> int:
     return max(1, int(cfg_get(policy_loss_config, "topk_distill_k", 8) or 8))
+
+
+def eopd_topk_k(policy_loss_config: Any) -> int:
+    raw_value = cfg_get(policy_loss_config, "eopd_topk_k", 16)
+    value = int(16 if raw_value is None else raw_value)
+    if value <= 0:
+        raise ValueError(f"eopd_topk_k must be positive, got {value}.")
+    return value
+
+
+def eopd_entropy_threshold(policy_loss_config: Any) -> float:
+    value = float(cfg_get(policy_loss_config, "eopd_entropy_threshold", 0.8))
+    if not math.isfinite(value) or value < 0.0:
+        raise ValueError(
+            "eopd_entropy_threshold must be finite and non-negative, "
+            f"got {value}."
+        )
+    return value
+
+
+def eopd_forward_kl_weight(policy_loss_config: Any) -> float:
+    value = float(cfg_get(policy_loss_config, "eopd_forward_kl_weight", 1.0))
+    if not math.isfinite(value) or value < 0.0:
+        raise ValueError(
+            "eopd_forward_kl_weight must be finite and non-negative, "
+            f"got {value}."
+        )
+    return value
 
 
 def topk_distill_support_source(policy_loss_config: Any) -> str:
@@ -245,6 +294,19 @@ def teacher_tensor_key(domain: object, suffix: str) -> str:
     return f"{teacher_tensor_prefix(domain)}_teacher_{normalized_suffix}"
 
 
+def _same_tensor_view(left: torch.Tensor, right: torch.Tensor) -> bool:
+    """Return whether two tensors are the same view of the same storage."""
+
+    return left is right or (
+        left.shape == right.shape
+        and left.stride() == right.stride()
+        and left.storage_offset() == right.storage_offset()
+        and left.device == right.device
+        and left.dtype == right.dtype
+        and left.data_ptr() == right.data_ptr()
+    )
+
+
 def select_teacher_tensor_by_domain(
     model_inputs: dict[str, Any],
     policy_loss_config: Any,
@@ -265,16 +327,25 @@ def select_teacher_tensor_by_domain(
         return math_tensor
 
     opd_teacher = model_inputs["opd_teacher"]
-    selected = torch.empty_like(math_tensor)
+    selected_sources: list[torch.Tensor] = []
     for idx in range(int(math_tensor.shape[0])):
         teacher_type = teacher_type_at(opd_teacher, idx)
         dynamic_key = teacher_tensor_key(teacher_type, normalized_suffix)
         if dynamic_key in model_inputs:
-            selected[idx] = model_inputs[dynamic_key][idx]
-        elif teacher_tensor_prefix(teacher_type) == "code" and fallback_code_key in model_inputs:
-            selected[idx] = code_tensor[idx]
+            selected_sources.append(model_inputs[dynamic_key])
+        elif (
+            teacher_tensor_prefix(teacher_type) == "code"
+            and fallback_code_key in model_inputs
+        ):
+            selected_sources.append(code_tensor)
         else:
-            selected[idx] = math_tensor[idx]
+            selected_sources.append(math_tensor)
+    if all(_same_tensor_view(source, math_tensor) for source in selected_sources):
+        return math_tensor
+
+    selected = torch.empty_like(math_tensor)
+    for idx, source in enumerate(selected_sources):
+        selected[idx] = source[idx]
     return selected
 
 
@@ -625,6 +696,50 @@ def topk_distill_loss_matrix(
     if normalized_mode in TOPK_REVERSE_KL_MODES:
         return (student_q * (student_log_q - teacher_log_q)).sum(dim=-1)
     return (teacher_q * (teacher_log_q - student_log_q)).sum(dim=-1)
+
+
+def eopd_forward_kl_matrix(
+    *,
+    student_full_vocab_log_probs: torch.Tensor,
+    teacher_topk_log_probs: torch.Tensor,
+) -> torch.Tensor:
+    """Return the truncated forward-KL term from EOPD Eq. (10).
+
+    The teacher distribution is renormalized over its selected top-k support.
+    Student values must remain full-vocabulary-normalized log-probabilities
+    gathered at the same teacher token ids.
+    """
+
+    if student_full_vocab_log_probs.shape != teacher_topk_log_probs.shape:
+        raise ValueError(
+            "EOPD student and teacher top-k tensors must have identical shapes, "
+            f"got {tuple(student_full_vocab_log_probs.shape)} and "
+            f"{tuple(teacher_topk_log_probs.shape)}."
+        )
+    teacher_log_q = torch.log_softmax(
+        teacher_topk_log_probs.float(),
+        dim=-1,
+    )
+    teacher_q = torch.exp(teacher_log_q)
+    student_log_p = student_full_vocab_log_probs.float()
+    return (teacher_q * (teacher_log_q - student_log_p)).sum(dim=-1)
+
+
+def eopd_teacher_student_cross_entropy_matrix(
+    *,
+    student_full_vocab_log_probs: torch.Tensor,
+    teacher_topk_log_probs: torch.Tensor,
+) -> torch.Tensor:
+    """Return EOPD's teacher-top-k cross entropy against the full student."""
+
+    if student_full_vocab_log_probs.shape != teacher_topk_log_probs.shape:
+        raise ValueError(
+            "EOPD student and teacher top-k tensors must have identical shapes, "
+            f"got {tuple(student_full_vocab_log_probs.shape)} and "
+            f"{tuple(teacher_topk_log_probs.shape)}."
+        )
+    teacher_q = torch.softmax(teacher_topk_log_probs.float(), dim=-1)
+    return -(teacher_q * student_full_vocab_log_probs.float()).sum(dim=-1)
 
 
 def topk_teacher_student_cross_entropy_matrix(

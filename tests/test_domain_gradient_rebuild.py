@@ -10,6 +10,13 @@ from unittest.mock import patch
 from mopd_verl.domain_gradient.config import DomainGradientConfig
 
 ROOT = Path(__file__).resolve().parents[1]
+KNOTS = (
+    (-0.0025, 0.0),
+    (0.0, 0.2),
+    (0.005, 2.0),
+    (0.010, 3.0),
+    (0.015, 4.0),
+)
 
 
 class DomainGradientConfigTests(unittest.TestCase):
@@ -212,6 +219,87 @@ class DomainGradientConfigTests(unittest.TestCase):
         )
         self.assertEqual(config.all_domain_shared_token_top_k, 200)
 
+    def test_domain_phase_control_configuration_is_supported(self) -> None:
+        config = DomainGradientConfig.from_meta(
+            {
+                "domains": ["math", "code"],
+                "control_token_loss_weighting_enabled": True,
+                "control_token_loss_weight": 2.0,
+                "domain_control_token_ids": {
+                    "math": [10, 11, 10],
+                    "code": [20],
+                },
+                "control_token_normalize_per_domain": True,
+                "control_token_phase_gate_enabled": True,
+                "control_token_span_weighting_enabled": True,
+                "control_token_phase_gate_window_steps": 5,
+                "control_token_phase_gate_ema_beta": 0.9,
+                "control_token_phase_gate_temperature": 0.1,
+                "control_token_phase_gate_initial": 0.8,
+                "control_token_span_length": 16,
+                "control_token_span_decay_tau": 8.0,
+            }
+        )
+
+        self.assertEqual(
+            dict(config.domain_control_token_ids),
+            {"math": (10, 11), "code": (20,)},
+        )
+        self.assertTrue(config.control_token_phase_gate_enabled)
+        self.assertTrue(config.control_token_span_weighting_enabled)
+        self.assertTrue(config.control_token_normalize_per_domain)
+
+    def test_domain_control_speed_configuration_is_supported(self) -> None:
+        config = DomainGradientConfig.from_meta(
+            {
+                "domains": ["math", "code"],
+                "control_token_loss_weighting_enabled": True,
+                "domain_control_token_ids": {
+                    "math": [10, 11],
+                    "code": [20],
+                },
+                "control_token_speed_weighting_enabled": True,
+                "control_token_speed_window_steps": 5,
+                "control_token_speed_ema_beta": 0.8,
+                "control_token_speed_update_interval_steps": 2,
+                "control_token_speed_initial_weight": 3.0,
+                "control_token_speed_min_occurrences": 128,
+                "control_token_speed_weight_knots": KNOTS,
+            }
+        )
+
+        self.assertTrue(config.control_token_speed_weighting_enabled)
+        self.assertEqual(config.control_token_speed_window_steps, 5)
+        self.assertEqual(config.control_token_speed_update_interval_steps, 2)
+        self.assertEqual(config.control_token_speed_weight_knots, KNOTS)
+
+    def test_speed_weighting_and_phase_gate_are_mutually_exclusive(self) -> None:
+        with self.assertRaisesRegex(ValueError, "mutually exclusive"):
+            DomainGradientConfig.from_meta(
+                {
+                    "domains": ["math"],
+                    "control_token_loss_weighting_enabled": True,
+                    "domain_control_token_ids": {"math": [10]},
+                    "control_token_speed_weighting_enabled": True,
+                    "control_token_phase_gate_enabled": True,
+                }
+            )
+
+    def test_span_weighting_requires_phase_gate(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "Successor-span weighting requires",
+        ):
+            DomainGradientConfig.from_meta(
+                {
+                    "domains": ["math"],
+                    "control_token_loss_weighting_enabled": True,
+                    "domain_control_token_ids": {"math": [10]},
+                    "control_token_phase_gate_enabled": False,
+                    "control_token_span_weighting_enabled": True,
+                }
+            )
+
     def test_invalid_shared_token_selection_mode_is_rejected(self) -> None:
         with self.assertRaisesRegex(
             ValueError,
@@ -326,7 +414,7 @@ class DomainGradientSourceTests(unittest.TestCase):
 
         self.assertLess(create_index, fallback_index)
 
-    def test_split_teacher_config_has_runtime_consumers(self) -> None:
+    def test_shared_teacher_config_avoids_redundant_tensor_aliases(self) -> None:
         main_source = (
             ROOT / "third_party/verl/verl/trainer/main_ppo.py"
         ).read_text(encoding="utf-8")
@@ -336,7 +424,7 @@ class DomainGradientSourceTests(unittest.TestCase):
 
         self.assertIn("REF_POLICY_POOL_ID", main_source)
         self.assertIn("_configured_teacher_domains(config)", trainer_source)
-        self.assertIn("_alias_math_teacher_tensors(batch, self.teacher_domains)", trainer_source)
+        self.assertNotIn("_alias_math_teacher_tensors", trainer_source)
 
     def test_topk_cross_entropy_reuses_the_production_forward(self) -> None:
         trainer_source = (

@@ -118,13 +118,16 @@ global 与 per-domain 指标：
 | `<domain>/token_gap/gap_signed_*` | teacher chosen-token log-prob 与 student/old log-prob 的 signed gap 分布。 | 对该 domain 的有效 response token occurrence 计算 `gap_signed = teacher_logp - student_logp`，输出 mean/std/p05/p50/p95/max/sum；raw occurrence vector 写入 `token_gap_vectors.jsonl` 的 `gap_vector_domain`。 |
 | `<domain>/token_gap/gap_abs_*` | signed gap 的绝对值分布。 | `gap_abs = abs(teacher_logp - student_logp)`，输出同一组分布统计；raw occurrence vector 写入 `gap_abs_vector_domain`。 |
 
-如果开启 `token_gap_vocab_vector_enabled=true`，还会写 `token_gap_vocab_vectors.jsonl`。该文件是全词表 dense vector 口径：第 `v` 维对应 token id `v`，长度来自 tokenizer vocab size、`token_gap_vocab_size` 配置，或无 tokenizer 时的当前 batch 最大 token id + 1。每行包含：
+如果开启 `token_gap_vocab_vector_enabled=true`，还会写 `token_gap_vocab_vectors.jsonl`。统计和训练内 cosine 仍采用全词表 dense tensor 口径，但 JSONL 落盘采用稀疏 token-id dict：`{"token_id": value}`。缺失 key 表示该维为 0；`vocab_size` 记录原始 dense shape，`vector_storage` 固定为 `sparse_token_id_dict`。词表大小来自 tokenizer vocab size、`token_gap_vocab_size` 配置，或无 tokenizer 时的当前 batch 最大 token id + 1。每行包含：
 
 - `token_count_vector_vocab`: 当前 step/domain 中每个 token id 的 occurrence count。
 - `gap_signed_sum_vector_vocab`: 每个 token id 的 `teacher_logp - student_logp` 总和。
 - `gap_abs_sum_vector_vocab`: 每个 token id 的 `abs(teacher_logp - student_logp)` 总和。
 - `gap_signed_mean_vector_vocab` / `gap_abs_mean_vector_vocab`: 对 count 非零 token 取 mean，count 为 0 的维度为 0。
-- `nonzero_token_ids`: 当前 step/domain 中实际出现过的 token id，方便离线稀疏读取。
+- `nonzero_token_ids`: 当前 step/domain 中实际出现过的 token id；为兼容现有分析继续保留。
+
+历史文件中的 dense list 语义不变；读取时可按 `vocab_size` 把稀疏 dict 补 0
+还原。注意 JSON object key 一律是字符串，例如读取 token 42 应使用 `"42"`。
 
 `logp_vector_enabled=true` 会把同一个 signed gap 以显式 logp alias 写入
 `logp_vectors.jsonl`（`logp_vector_domain`）和 `logp_vocab_vectors.jsonl`
@@ -159,7 +162,7 @@ step/domain 内 `sum(signal[token_id=v]) / occurrence_count[v]`，count 为 0 �
 | `<domain>/entropy/student_entropy_*` | student entropy 分布。 | 对 token-level student entropy vector 输出同一组统计。 |
 | `<domain>/entropy/teacher_student_cross_entropy_*` | teacher-student cross entropy 分布。 | 对 token-level CE vector 输出同一组统计；top-k distill 下为 local support CE。 |
 
-如果开启 `entropy_vocab_vector_enabled=true`，还会写 `entropy_vocab_vectors.jsonl`，用同一套 token-id 坐标统计 student entropy 和 teacher-student cross entropy 的全词表 dense vector：
+如果开启 `entropy_vocab_vector_enabled=true`，还会写 `entropy_vocab_vectors.jsonl`，用同一套 token-id 坐标统计 student entropy 和 teacher-student cross entropy；训练内使用 dense tensor，JSONL 同样写为稀疏 token-id dict：
 
 - `student_entropy_sum_vector_vocab`: 每个 token id 的 `H(p_student)` 总和。
 - `student_entropy_mean_vector_vocab`: 每个 token id 的 `H(p_student)` 均值，count 为 0 的维度为 0。
@@ -314,7 +317,11 @@ sample grad norm 不需要额外 backward：tracker 在真实 actor backward 过
 
 随后 tracker 会根据 selection 开关，在 domain 全局分布上选择 Tail、可选的 `top{token_gradient_top_k}`，以及覆盖 `token_gradient_top_p` 比例 score mass 的最小 token 集合。`token_gradient_top_k: null` 时不会创建 Top-k 集合，也不会执行对应的额外 backward replay。当 `token_gradient_top_p=1.0` 时，Top-p 会选择全部 finite candidate tokens，用于验证全 token 梯度是否能闭合到 domain gradient。每个启用的 selection 都会对选中 token 做额外 gradient recompute。若 `token_gradient_loss_abs_selection_enabled=false`，不会额外 forward 计算 loss score。
 
-当 `token_gradient_log_tokens_jsonl_enabled: true` 时，每次命中 token-gradient audit step 都会向 `<mopd_audit.output_dir>/token_gradient_vocab_vectors.jsonl` 追加每个 domain/selection 的累计 token-id vector。第 `v` 维对应 `token_id=v`；同一个 token ID 的重复 occurrence 不再逐条写入，而是累加到 `token_count_vector_vocab[v]`。同一行还包含 `configured_token_loss_sum_vector_vocab` 和 `configured_token_loss_abs_sum_vector_vocab`，分别累计 signed configured loss 与 absolute configured loss。`nonzero_token_ids` 给出实际出现的 token ID。各 rank 先在本地按 token ID 聚合，再通过固定大小 dense tensors 做 distributed sum，最后仅由 rank 0 写入。
+当 `token_gradient_log_tokens_jsonl_enabled: true` 时，每次命中 token-gradient audit step 都会原子覆盖 `<mopd_audit.output_dir>/step_<STEP>/jsonls/token_gradient_vocab_vectors.jsonl`，写入每个 domain/selection 的累计 token-id vector。checkpoint 回滚后重跑同一步不会重复追加旧 rows。第 `v` 维对应 `token_id=v`；同一个 token ID 的重复 occurrence 不再逐条写入，而是累加到 `token_count_vector_vocab["v"]`。同一行还包含 `configured_token_loss_sum_vector_vocab` 和 `configured_token_loss_abs_sum_vector_vocab`，分别累计 signed configured loss 与 absolute configured loss。三个 vector 字段均使用稀疏 token-id dict，`vector_storage=sparse_token_id_dict`，缺失 key 表示 0。`nonzero_token_ids` 给出实际出现的 token ID。各 rank 先在本地按 token ID 聚合，再通过固定大小 dense tensors 做 distributed sum，最后仅由 rank 0 写入稀疏 JSON dict。
+
+在 rebuilt actor sidecar 中，`<domain>/token_grad/*` 始终与 production backward 使用同一套 gradient multiplier。若启用了 dynamic domain、control-token 或 all-domain-shared-token weighting，则 candidate 按 `abs(configured_loss) * abs(production_multiplier)` 排序，selected replay 使用 `selection_mask * production_multiplier`，domain reference 使用 `domain_mask * production_multiplier`。`token_gradient_vocab_vectors.jsonl.loss_mass_basis` 会明确记录 `configured_loss_abs` 或 `production_reweighted_configured_loss_abs`。
+
+每个 selection 还输出同一 domain 的 complement partition。`<selection>_grad_signed_projection_share + <selection>_complement_grad_signed_projection_share` 应由 `<selection>_partition_projection_share_sum` 闭合到 1；`<selection>_partition_projection_share_abs_error` 应接近 0。Complement 由 `g_complement = g_domain - g_selected` 的 Gram identity 推导，不增加额外 backward replay。
 
 ```text
 g_token = grad(token_loss_with_original_aggregation_scale, actor_params)
@@ -434,3 +441,27 @@ TensorBoard tag 的一级层级取决于 validation metric key 能否解析出�
 当前训练期 full-gradient audit 的“全量”是当前 step batch 级别，不是完整训练集级别。如果要计算完整训练集 gradient，需要单独实现离线全数据 dataloader backward，并明确评估频率；不建议每个训练 step 都做。
 
 普通 validation score、validation gain 和 validation gain variance 仍然保留，但 validation pass 不再执行额外 gradient backward。
+## Dynamic Domain Budgeting
+
+启用 `domain_budgeting.enabled` 后，每个 domain 记录以下 driver-side metrics：
+
+| Metric | 含义 |
+| --- | --- |
+| `domain_budgeting/<domain>/q` | capability gap 决定的目标 objective coefficient。 |
+| `domain_budgeting/<domain>/desired_p` | variance-aware sampler 的连续目标比例。 |
+| `domain_budgeting/<domain>/next_q` | validation 后供后续 actor batch 使用的新 objective coefficient。 |
+| `domain_budgeting/<domain>/next_desired_p` | validation 后供后续 batch 使用的新连续采样比例。 |
+| `domain_budgeting/<domain>/observed_p` | 当前实际 actor batch 的整数样本比例。 |
+| `domain_budgeting/<domain>/active_p` | 排除 fully masked response 后，实际参与 sequence mean 的 domain 比例。 |
+| `domain_budgeting/<domain>/empty_response_rate` | 当前 domain 中 fully masked response 的比例。 |
+| `domain_budgeting/<domain>/lambda` | 当前 batch 使用的 `q / active_p`。 |
+| `domain_budgeting/<domain>/closure_error` | `abs(active_p * lambda - q)`，应接近 0。 |
+| `domain_budgeting/<domain>/student_score` | 配置 metric keys 在当前 validation window 的均值。 |
+| `domain_budgeting/<domain>/capability_gap` | teacher-student gap 的 causal EMA。 |
+| `domain_budgeting/<domain>/normalized_gap` | 相对 `max(initial_gap, gap_normalization_floor)` 的 time-series normalization。 |
+| `domain_budgeting/<domain>/sequence_loss_variance` | 当前 step 先 token mean、再跨 sequence 计算的 sample variance。 |
+| `domain_budgeting/<domain>/smoothed_variance` | log-space EMA 后的正方差。 |
+
+这些 metric 中只有 `q` 表示预期 objective contribution；`desired_p` 表示
+采样资源，`lambda` 是为保持 contribution 而产生的补偿系数。它们都不等于
+真实 gradient norm 或 domain learnability。

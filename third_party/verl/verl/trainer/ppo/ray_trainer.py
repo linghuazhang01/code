@@ -19,6 +19,7 @@ This trainer supports model-agonistic model initialization with huggingface
 """
 
 import json
+import math
 import os
 import uuid
 from collections import defaultdict
@@ -31,6 +32,7 @@ import numpy as np
 import ray
 import torch
 
+from mopd_verl.domain_budgeting import DynamicDomainBudgetController
 from mopd_verl.reproducibility import derive_seed
 from mopd_verl.teacher_prefix import (
     build_dataset_teacher_prefix,
@@ -47,11 +49,13 @@ from mopd_verl.teacher_prefix import (
 from mopd_verl.topk_distill import (
     TOPK_SUPPORT_SOURCE_STUDENT,
     configured_distill_loss_name,
+    eopd_topk_k,
     teacher_tensor_prefix,
     topk_distill_include_tail,
     topk_distill_k,
     topk_distill_support_source,
     topk_distill_temperature,
+    uses_eopd_loss,
     uses_topk_distill_loss,
 )
 from mopd_verl.verl_audit import MOPDAuditLogger
@@ -113,21 +117,6 @@ def _configured_teacher_domains(config) -> tuple[str, ...]:
             f"{unsupported}."
         )
     return tuple(dict.fromkeys(teacher_tensor_prefix(domain) for domain in paths))
-
-
-def _alias_math_teacher_tensors(batch: DataProto, domains: tuple[str, ...]) -> None:
-    for domain in domains:
-        for suffix in (
-            "log_prob",
-            "topk_ids",
-            "topk_logprobs",
-            "student_topk_logprobs",
-            "entropy",
-        ):
-            source = f"math_teacher_{suffix}"
-            target = f"{domain}_teacher_{suffix}"
-            if source in batch.batch and target not in batch.batch:
-                batch.batch[target] = batch.batch[source]
 
 
 @dataclass
@@ -459,6 +448,111 @@ class RayPPOTrainer:
             self.kl_ctrl_in_reward = core_algos.get_kl_controller(self.config.algorithm.kl_ctrl)
 
         self._create_dataloader(train_dataset, val_dataset, collate_fn, train_sampler)
+        self.domain_budget_controller = DynamicDomainBudgetController(
+            self.config.get("mopd_domain_budgeting", {})
+        )
+        self._domain_budget_checkpoint_restored = False
+        if self.domain_budget_controller.enabled:
+            if self.train_batch_sampler is None:
+                raise ValueError(
+                    "Dynamic domain budgeting requires the exact domain batch sampler."
+                )
+            actor_config = self.config.actor_rollout_ref.actor
+            actor_strategy = str(actor_config.get("strategy", "")).lower()
+            if actor_strategy not in {"fsdp", "fsdp2"}:
+                raise ValueError(
+                    "Dynamic domain budgeting currently supports only FSDP/FSDP2 "
+                    f"actors, got strategy={actor_strategy!r}."
+                )
+            policy_loss_config = actor_config.get("policy_loss", {})
+            if not uses_topk_distill_loss(policy_loss_config):
+                raise ValueError(
+                    "Dynamic domain budgeting runtime requires a top-k OPD objective."
+                )
+            topk_loss_weight = float(
+                policy_loss_config.get("topk_distill_loss_weight", 0.0)
+            )
+            if not math.isfinite(topk_loss_weight) or topk_loss_weight <= 0.0:
+                raise ValueError(
+                    "Dynamic domain budgeting requires a positive top-k OPD loss weight."
+                )
+            if bool(policy_loss_config.get("teacher_prefix_enabled", False)) or bool(
+                self.config.actor_rollout_ref.rollout.get(
+                    "teacher_prefix_sampling_enabled", False
+                )
+            ):
+                raise ValueError(
+                    "Dynamic domain budgeting does not support teacher-prefix training."
+                )
+            rollout_count = int(self.config.actor_rollout_ref.rollout.n)
+            if rollout_count != 1:
+                raise ValueError(
+                    "Dynamic domain budgeting runtime requires rollout.n=1."
+                )
+            if str(actor_config.get("loss_agg_mode", "")) != "seq-mean-token-mean":
+                raise ValueError(
+                    "Dynamic domain budgeting runtime requires "
+                    "loss_agg_mode=seq-mean-token-mean."
+                )
+            if int(self.config.data.get("dataloader_num_workers", -1)) != 0:
+                raise ValueError(
+                    "Dynamic domain budgeting runtime requires "
+                    "data.dataloader_num_workers=0."
+                )
+            if (
+                not bool(self.config.trainer.get("val_before_train", False))
+                or int(self.config.trainer.get("test_freq", -1)) <= 0
+            ):
+                raise ValueError(
+                    "Dynamic domain budgeting runtime requires val_before_train=true "
+                    "and test_freq>0."
+                )
+            audit_config = self.config.get("mopd_audit", {})
+            if bool(audit_config.get("dynamic_domain_loss_weighting_enabled", False)):
+                raise ValueError(
+                    "Dynamic domain budgeting cannot run with audit dynamic "
+                    "domain loss weighting."
+                )
+            required_teacher_domains = {
+                teacher_tensor_prefix(domain)
+                for domain in self.domain_budget_controller.domains
+            }
+            available_teacher_domains = (
+                set(self.teacher_domains)
+                if self.teacher_domains
+                else {"math", "code"}
+            )
+            missing_teacher_domains = (
+                required_teacher_domains - available_teacher_domains
+            )
+            if missing_teacher_domains:
+                raise ValueError(
+                    "Dynamic domain budgeting runtime is missing configured teacher domains: "
+                    f"{sorted(missing_teacher_domains)}."
+                )
+            actor_batch_size = int(self.config.data.train_batch_size)
+            sampler_batch_size = int(self.train_batch_sampler.batch_size)
+            global_mini_batch_size = int(actor_config.ppo_mini_batch_size)
+            if (
+                int(actor_config.get("ppo_epochs", 1)) != 1
+                or sampler_batch_size != actor_batch_size
+                or global_mini_batch_size != actor_batch_size
+            ):
+                raise ValueError(
+                    "Dynamic domain budgeting requires one PPO epoch and one "
+                    "optimizer mini-batch per exact sampler batch; "
+                    f"sampler={sampler_batch_size}, train={actor_batch_size}, "
+                    f"mini_batch={global_mini_batch_size}."
+                )
+            if (
+                float(actor_config.get("entropy_coeff", 0.0) or 0.0) != 0.0
+                or float(actor_config.get("kl_loss_coef", 0.0) or 0.0) != 0.0
+            ):
+                raise ValueError(
+                    "Dynamic domain budgeting currently requires zero actor "
+                    "entropy and KL auxiliary coefficients."
+                )
+            self._sync_domain_budget_sampler()
 
     def _create_dataloader(self, train_dataset, val_dataset, collate_fn, train_sampler: Optional[Sampler]):
         """
@@ -496,6 +590,7 @@ class RayPPOTrainer:
             self.train_dataset,
             int(train_batch_size),
         )
+        self.train_batch_sampler = train_batch_sampler
         if train_batch_sampler is None and train_sampler is None:
             train_sampler = create_rl_sampler(self.config.data, self.train_dataset)
         if collate_fn is None:
@@ -518,6 +613,7 @@ class RayPPOTrainer:
                 collate_fn=collate_fn,
                 generator=train_dataloader_generator,
             )
+
         else:
             self.train_dataloader = StatefulDataLoader(
                 dataset=self.train_dataset,
@@ -568,6 +664,85 @@ class RayPPOTrainer:
                     self.config.critic.optim.total_training_steps = total_training_steps
         except Exception as e:
             print(f"Warning: Could not set total_training_steps in config. Structure missing? Error: {e}")
+
+    def _sync_domain_budget_sampler(self) -> dict[str, float]:
+        if not self.domain_budget_controller.enabled:
+            return {}
+        return self.train_batch_sampler.update_target_weights(
+            self.domain_budget_controller.desired_sampling,
+            min_samples_per_domain=(
+                self.domain_budget_controller.min_samples_per_domain
+            ),
+        )
+
+    @staticmethod
+    def _domain_labels(batch: DataProto) -> list[str]:
+        for key in ("domain", "opd_teacher", "source_domain", "ability"):
+            if key in batch.non_tensor_batch:
+                labels = [str(value) for value in batch.non_tensor_batch[key]]
+                if len(labels) != len(batch.batch):
+                    raise ValueError(
+                        f"Domain label field {key!r} does not match actor batch size."
+                    )
+                return labels
+        raise ValueError("Dynamic domain budgeting requires per-sample domain labels.")
+
+    def _attach_domain_loss_scales(
+        self, batch: DataProto, metrics: dict[str, float]
+    ) -> list[str]:
+        labels = self._domain_labels(batch)
+        active_mask = (
+            batch.batch["response_mask"].sum(dim=-1) > 0
+        ).detach().cpu().tolist()
+        scales, budget_metrics = self.domain_budget_controller.loss_scales_for_batch(
+            labels,
+            self.global_steps,
+            active_mask=active_mask,
+        )
+        batch.batch["mopd_domain_loss_scale"] = torch.as_tensor(
+            scales,
+            dtype=torch.float32,
+            device=batch.batch["responses"].device,
+        )
+        metrics.update(budget_metrics)
+        return labels
+
+    def _observe_domain_loss_variance(
+        self,
+        batch: DataProto,
+        labels: list[str],
+        metrics: dict[str, float],
+    ) -> None:
+        token_loss = batch.batch["configured_token_loss"].detach().float()
+        token_mask = batch.batch["configured_token_loss_mask"].detach().float()
+        token_counts = token_mask.sum(dim=-1)
+        valid_rows = token_counts > 0
+        skipped_rows = int((~valid_rows).sum().cpu().item())
+        if skipped_rows:
+            metrics["domain_budgeting/variance_skipped_empty_sequences"] = float(
+                skipped_rows
+            )
+        sequence_losses = (
+            (token_loss[valid_rows] * token_mask[valid_rows]).sum(dim=-1)
+            / token_counts[valid_rows]
+        ).cpu().tolist()
+        valid_labels = [
+            label
+            for label, is_valid in zip(
+                labels,
+                valid_rows.detach().cpu().tolist(),
+                strict=True,
+            )
+            if is_valid
+        ]
+        metrics.update(
+            self.domain_budget_controller.observe_sequence_losses(
+                valid_labels,
+                sequence_losses,
+                self.global_steps,
+            )
+        )
+        self._sync_domain_budget_sampler()
 
     def _dump_generations(self, inputs, outputs, gts, scores, reward_extra_infos_dict, dump_path):
         """Dump rollout/validation samples as JSONL."""
@@ -1082,6 +1257,17 @@ class RayPPOTrainer:
         dataloader_local_path = os.path.join(local_global_step_folder, "data.pt")
         dataloader_state_dict = self.train_dataloader.state_dict()
         torch.save(dataloader_state_dict, dataloader_local_path)
+        if self.domain_budget_controller.enabled:
+            controller_path = os.path.join(
+                local_global_step_folder, "domain_budgeting_state.json"
+            )
+            with open(controller_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    self.domain_budget_controller.state_dict(),
+                    handle,
+                    indent=2,
+                    sort_keys=True,
+                )
 
         # latest checkpointed iteration tracker (for atomic usage)
         local_latest_checkpointed_iteration = os.path.join(
@@ -1147,8 +1333,27 @@ class RayPPOTrainer:
         if os.path.exists(dataloader_local_path):
             dataloader_state_dict = torch.load(dataloader_local_path, weights_only=False)
             self.train_dataloader.load_state_dict(dataloader_state_dict)
+        elif self.domain_budget_controller.enabled:
+            raise FileNotFoundError(
+                "Dynamic domain budgeting cannot resume without dataloader state: "
+                f"{dataloader_local_path}."
+            )
         else:
             print(f"Warning: No dataloader state found at {dataloader_local_path}, will start from scratch")
+        if self.domain_budget_controller.enabled:
+            controller_path = os.path.join(
+                global_step_folder, "domain_budgeting_state.json"
+            )
+            if os.path.exists(controller_path):
+                with open(controller_path, encoding="utf-8") as handle:
+                    self.domain_budget_controller.load_state_dict(json.load(handle))
+                self._domain_budget_checkpoint_restored = True
+                self._sync_domain_budget_sampler()
+            else:
+                raise FileNotFoundError(
+                    "Dynamic domain budgeting cannot resume without controller "
+                    f"state: {controller_path}."
+                )
 
     def _start_profiling(self, do_profile: bool) -> None:
         """Start profiling for all worker groups if profiling is enabled."""
@@ -1239,9 +1444,18 @@ class RayPPOTrainer:
             val_metrics = self._validate()
             assert val_metrics, f"{val_metrics=}"
             pprint(f"Initial validation metrics: {val_metrics}")
+            budget_metrics = self.domain_budget_controller.metrics()
+            if not self._domain_budget_checkpoint_restored:
+                self.domain_budget_controller.observe_validation(
+                    val_metrics, self.global_steps
+                )
+                budget_metrics = self.domain_budget_controller.metrics()
+                if self.domain_budget_controller.enabled:
+                    self._sync_domain_budget_sampler()
             val_metrics.update(
                 self.mopd_audit_logger.log_validation_metrics(val_metrics, self.global_steps)
             )
+            val_metrics.update(budget_metrics)
             logger.log(
                 data=self.mopd_audit_logger.filter_tensorboard_metrics(val_metrics),
                 step=self.global_steps,
@@ -1354,7 +1568,13 @@ class RayPPOTrainer:
                     # compute global_valid tokens
                     batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
                     policy_loss_config = self.config.actor_rollout_ref.actor.policy_loss
-                    if uses_topk_distill_loss(policy_loss_config):
+                    if uses_eopd_loss(policy_loss_config):
+                        batch.meta_info["topk_distill_support_source"] = "teacher"
+                        batch.meta_info["teacher_topk_k"] = eopd_topk_k(
+                            policy_loss_config
+                        )
+                        batch.meta_info.pop("student_topk_k", None)
+                    elif uses_topk_distill_loss(policy_loss_config):
                         support_source = topk_distill_support_source(policy_loss_config)
                         batch.meta_info["topk_distill_support_source"] = support_source
                         if support_source == TOPK_SUPPORT_SOURCE_STUDENT:
@@ -1363,8 +1583,13 @@ class RayPPOTrainer:
                         else:
                             batch.meta_info["teacher_topk_k"] = topk_distill_k(policy_loss_config)
                             batch.meta_info.pop("student_topk_k", None)
-                    elif self.mopd_audit_logger.should_log_topk_teacher_student_cross_entropy_vocab(
-                        self.global_steps
+                    elif (
+                        self.mopd_audit_logger.should_log_topk_teacher_student_cross_entropy_vocab(
+                            self.global_steps
+                        )
+                        or self.mopd_audit_logger.should_log_response_level(
+                            self.global_steps
+                        )
                     ):
                         batch.meta_info["topk_distill_support_source"] = "teacher"
                         batch.meta_info["teacher_topk_k"] = (
@@ -1376,10 +1601,20 @@ class RayPPOTrainer:
                         batch.meta_info.pop("teacher_topk_k", None)
                         batch.meta_info.pop("student_topk_k", None)
                     batch.meta_info["mopd_compute_teacher_entropy"] = bool(
-                        self.mopd_audit_logger.should_log_entropy(self.global_steps)
+                        uses_eopd_loss(policy_loss_config)
+                        or self.mopd_audit_logger.should_log_entropy(
+                            self.global_steps
+                        )
+                        or self.mopd_audit_logger.should_log_entropy_vocab_vector(
+                            self.global_steps
+                        )
+                        or self.mopd_audit_logger.should_log_response_level(
+                            self.global_steps
+                        )
                     )
                     batch.meta_info["mopd_return_configured_token_loss"] = bool(
                         self.mopd_audit_logger.enabled
+                        or self.domain_budget_controller.enabled
                     )
                     batch.meta_info["mopd_configured_token_loss_name"] = (
                         configured_distill_loss_name(policy_loss_config)
@@ -1545,7 +1780,6 @@ class RayPPOTrainer:
 
                     if "ref_log_prob" in batch.batch:
                         batch.batch["math_teacher_log_prob"] = batch.batch["ref_log_prob"]
-                    _alias_math_teacher_tensors(batch, self.teacher_domains)
 
                     # The clean verl baseline already knows how to host a second
                     # reference model as ref.model.base_model_path. Treat it as
@@ -1600,6 +1834,9 @@ class RayPPOTrainer:
                     topk_cross_entropy_active = (
                         uses_topk_distill_loss(policy_loss_config)
                         or self.mopd_audit_logger.should_log_topk_teacher_student_cross_entropy_vocab(
+                            self.global_steps
+                        )
+                        or self.mopd_audit_logger.should_log_response_level(
                             self.global_steps
                         )
                     )
@@ -1776,10 +2013,15 @@ class RayPPOTrainer:
                     # During critic warmup there is no actor loss/backward, so an
                     # actor-loss audit row would not describe an applied loss.
                     actor_updated_this_step = False
+                    domain_budget_labels = None
                     # implement critic warmup
                     if self.config.trainer.critic_warmup <= self.global_steps:
                         # update actor
                         with marked_timer("update_actor", timing_raw, color="red"):
+                            if self.domain_budget_controller.enabled:
+                                domain_budget_labels = self._attach_domain_loss_scales(
+                                    batch, metrics
+                                )
                             batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
                             actor_output = self.actor_rollout_wg.update_actor(batch)
                         actor_updated_this_step = True
@@ -1824,6 +2066,12 @@ class RayPPOTrainer:
                             ] = actor_output.batch[
                                 configured_token_loss_mask_key
                             ]
+                            if domain_budget_labels is not None:
+                                self._observe_domain_loss_variance(
+                                    batch,
+                                    domain_budget_labels,
+                                    metrics,
+                                )
 
                     if (
                         self.mopd_audit_logger.enabled
@@ -1852,12 +2100,18 @@ class RayPPOTrainer:
                         val_metrics: dict = self._validate()
                         if is_last_step:
                             last_val_metrics = val_metrics
+                    budget_metrics = self.domain_budget_controller.observe_validation(
+                        val_metrics, self.global_steps
+                    )
+                    if self.domain_budget_controller.enabled:
+                        self._sync_domain_budget_sampler()
                     val_metrics.update(
                         self.mopd_audit_logger.log_validation_metrics(
                             val_metrics,
                             self.global_steps,
                         )
                     )
+                    val_metrics.update(budget_metrics)
                     metrics.update(val_metrics)
 
                 # Check if the ESI (Elastic Server Instance)/training plan is close to expiration.

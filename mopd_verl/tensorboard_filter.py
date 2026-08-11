@@ -41,6 +41,7 @@ DIRECT_AUDIT_CATEGORIES = {
     "token_grad_contribution",
     "token_grad_cost",
     "token_weight",
+    "control_speed",
     "calibration",
     "coverage",
 }
@@ -196,14 +197,21 @@ CORE_LOGP_VOCAB_COSINE = {
     "token_count_cosine",
 }
 CORE_ENTROPY_VOCAB_COSINE = {
+    "eopd_high_entropy_count_cosine",
     "student_entropy_mean_cosine",
     "student_entropy_sum_cosine",
+    "teacher_entropy_mean_cosine",
+    "teacher_entropy_sum_cosine",
     "teacher_student_cross_entropy_mean_cosine",
     "teacher_student_cross_entropy_sum_cosine",
     "token_count_cosine",
 }
 CORE_DOMAIN_ENTROPY = {
     "cross_entropy_available",
+    "eopd_entropy_threshold",
+    "eopd_high_entropy_distinct_token_id_count",
+    "eopd_high_entropy_occurrence_count",
+    "eopd_high_entropy_occurrence_ratio",
     "entropy_distribution_available",
     "student_entropy_mean",
     "student_entropy_p05",
@@ -290,6 +298,25 @@ CORE_TOKEN_WEIGHT = {
     "shared_selection_is_cumulative",
     "token_weighted_configured_loss_abs_mass",
     "token_weighted_to_raw_abs_loss_mass_ratio",
+}
+CORE_CONTROL_SPEED = {
+    "control_gap_ema",
+    "control_gap_raw",
+    "control_occurrence_count",
+    "control_weight_applied_normalized",
+    "control_weight_applied_raw",
+    "control_weight_mapped_from_speed",
+    "control_weight_next",
+    "enabled",
+    "minimum_occurrences_met",
+    "observation_available",
+    "optimization_speed",
+    "speed_computed_this_step",
+    "speed_reference_step",
+    "state_observation_count",
+    "update_interval_steps",
+    "weight_update_triggered",
+    "window_steps",
 }
 CORE_TOKEN_GRAD_CONFLICT = {
     "conflict_to_other_max",
@@ -419,6 +446,9 @@ CORE_GLOBAL_DATA = {"domain_mix_entropy", "total_samples", "total_tokens"}
 CORE_GLOBAL_COST = {"gpu_seconds_step", "memory_peak_step", "step_seconds", "tokens_per_second"}
 CORE_ACTOR = {
     "actor/entropy",
+    "actor/eopd_forward_kl_loss",
+    "actor/eopd_high_entropy_ratio",
+    "actor/eopd_teacher_entropy_mean",
     "actor/grad_norm",
     "actor/lr",
     "actor/pg_clipfrac",
@@ -474,6 +504,8 @@ def keep_core_metric(key: str) -> bool:
 
     if key.startswith("val-core/") or key in CORE_ACTOR:
         return True
+    if root == "domain_budgeting":
+        return True
     if root == "critic":
         return len(parts) == 3 and parts[1] in {"advantages", "returns", "rewards", "score"} and metric == "mean"
     if root == "rollout_corr":
@@ -524,6 +556,8 @@ def _keep_global(category: str, metric: str, parts: list[str]) -> bool:
         return metric in CORE_DYNAMIC_WEIGHT
     if category == "token_weight":
         return metric in CORE_TOKEN_WEIGHT
+    if category == "control_speed":
+        return metric in CORE_CONTROL_SPEED
     if category == "full_grad_cost":
         return metric in {
             "backward_seconds",
@@ -587,6 +621,8 @@ def _keep_domain(category: str, metric: str, parts: list[str]) -> bool:
         return metric in CORE_DYNAMIC_WEIGHT
     if category == "token_weight":
         return metric in CORE_TOKEN_WEIGHT
+    if category == "control_speed":
+        return metric in CORE_CONTROL_SPEED
     if category == "advantage":
         return metric in CORE_DOMAIN_ADVANTAGE
     if category == "length":

@@ -1,4 +1,4 @@
-# Multi-Teacher OPD Math + Code Training
+# Multi-Domain OPD Training
 
 Chinese version: [README.zh.md](README.zh.md)
 
@@ -24,8 +24,17 @@ Use these local scripts for a fresh machine or a new local checkout:
 | Download or validate training data only | `scripts/download_mopd_data.sh` |
 | Download or validate model assets only | `scripts/download_mopd_models.sh`, `scripts/download_qwen30b_teacher.sh` |
 | Download and validate the current data + model bundle | `scripts/download_training_assets.sh` |
+| Launch through the unified local/Slurm entrypoint | `bash start.sh` |
 | Launch a local training run | `scripts/run_local_mopd_training.sh` |
 | Render/check a config without launching training | `scripts/run_mopd.sh --dry-run` |
+
+The config-driven dynamic multi-domain profile is
+`configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code_science_if_topk32_dynamic_budget.yaml`.
+It updates capability-need objective weights from fixed-probe validation and
+uses sequence OPD-loss variance to update exact domain batch quotas across
+math, code, science, and instruction following (`if`). See
+`CONFIG_GUIDE.zh.md#dynamic-domain-budgeting` for its equations, required
+runtime contracts, and launch command.
 
 Install the training environment from this checkout:
 
@@ -190,7 +199,7 @@ Three formal MOPD variants are kept with 2/4/6/8 GPU profiles, plus metrics smok
 | `configs/mopd_formal_audit_off_8gpu.yaml` | 8-GPU audit-off run. |
 | `configs/mopd_formal_audit_all_smoke.yaml` | 2-GPU one-step metrics smoke run with all audit outputs and full-vocab vectors enabled. |
 | `configs/mopd_formal_audit_loss_only_smoke.yaml` | 2-GPU one-step domain-gradient and loss-metric smoke run. |
-| `test_grad_configs/mopd_dynamic_weight_qwen0p6b_8b_aw2_fsdpsize2_tail_topp1_b16_4step_smoke.yaml` | Canonical 3-GPU smoke for `[1/3, 3]` bounded applied-weight EMA and per-domain configured-loss-ranked tail and Top-p=1 gradients; Top-k replay is disabled and selected token IDs are written to JSONL. |
+| `test_grad_configs/mopd_dynamic_budget_qwen0p6b_8b_aw2_fsdp2_b16_4step_3gpu_smoke.yaml` | Canonical 3-GPU, four-domain smoke for capability-gap objective allocation, variance-aware data sampling, and `lambda=q/p_active` OPD loss scaling. |
 | `configs/mopd_formal_audit_grad_consistency_2gpu_b32_2step_smoke.yaml` | 2-GPU gradient consistency smoke with batch size 32 and two training steps. |
 | `configs/mopd_formal_audit_grad_consistency_2gpu_b64_3step_smoke.yaml` | 2-GPU gradient consistency smoke with batch size 64 and three training steps. |
 | `configs/mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math.yaml` | Original math-only training: 4 actor/rollout GPUs + 2 teacher/ref GPUs. |
@@ -206,6 +215,7 @@ Three formal MOPD variants are kept with 2/4/6/8 GPU profiles, plus metrics smok
 | `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code.yaml` | Equal-weight math+code training with the same topology and audit surface. |
 | `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code_science.yaml` | Equal-weight math+code+science training with the same topology and batch 504. |
 | `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code_science_topk32.yaml` | Top-32 math+code+science distillation with the same 8-GPU topology, `fsdp_size=1`, and batch 504. |
+| `configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code_science_if_topk32_dynamic_budget.yaml` | Dynamic Top-32 four-domain training; IF rows use the shared teacher and IFBench reward/validation path. |
 
 Formal 2/4/6/8 GPU profiles use:
 
@@ -311,6 +321,23 @@ Multi-rank `fsdp_size=1` in historical `mopd_formal_*` profiles now uses
 synchronized `NO_SHARD` replication. Before launch, verify that each actor GPU
 can hold the complete student, gradients, and optimizer state.
 
+The root launcher defaults to local execution for backward compatibility. Use
+`--slurm` to submit, or set `MOPD_LAUNCH_MODE=auto` to select Slurm when
+`sbatch` is on `PATH`. Activate the training environment before submission, or
+set `MOPD_LAUNCH_PYTHON` to its absolute Python path. Inspect the generated
+single-node sbatch script without submitting:
+
+```bash
+bash start.sh \
+  --config configs/mopd_formal_audit_all_2gpu.yaml \
+  --slurm --dry-run \
+  --slurm-args "--partition=gpu"
+```
+
+Remove `--dry-run` to submit. `SLURM_MEM` and `SLURM_TIME` default to `700G`
+and `72:00:00`; override them for the target partition. Current resource
+derivation and sbatch generation support one node.
+
 Local dry-run:
 
 ```bash
@@ -327,15 +354,16 @@ MIN_FREE_GB=300 \
   scripts/download_training_assets.sh
 ```
 
-The mixed profile declares the shared teacher for both domains; the IF and
-science profiles use the same model through their corresponding
-`domain_teacher_paths` entry:
+The four-domain profile declares one shared teacher path under each domain
+alias:
 
 ```yaml
 model:
   domain_teacher_paths:
     math: ../models/Qwen3-30B-A3B-Instruct-2507
     code: ../models/Qwen3-30B-A3B-Instruct-2507
+    science: ../models/Qwen3-30B-A3B-Instruct-2507
+    if: ../models/Qwen3-30B-A3B-Instruct-2507
 ```
 
 Because all domain paths resolve to the same teacher, the launcher uses one
@@ -360,6 +388,18 @@ Important files include:
 - `training_cost.jsonl`
 - `audit_errors.jsonl`
 
-Full-vocab vector files use token-id coordinates: index `v` corresponds to tokenizer token id `v`. `token_gap_vocab_vectors.jsonl` stores signed/absolute log-prob gap sum and mean vectors. `token_gradient_vocab_vectors.jsonl` deduplicates selected token IDs and stores cumulative occurrence count plus configured-loss sum vectors for each step/domain/selection. `entropy_vocab_vectors.jsonl` stores `student_entropy` and `teacher_student_cross_entropy` sum and mean vectors.
+Full-vocab vector files use token-id coordinates but serialize vectors compactly as
+JSON dictionaries: `{"token_id": value}`. Missing token IDs mean zero, and
+`vocab_size` preserves the original dense shape. Rows declare
+`vector_storage: "sparse_token_id_dict"`; legacy dense-list JSONL remains readable
+by the built-in SOPC-lite loader. `token_gap_vocab_vectors.jsonl` stores
+signed/absolute log-prob gap sum and mean vectors.
+`token_gradient_vocab_vectors.jsonl` deduplicates selected token IDs and stores
+cumulative occurrence count plus configured-loss sum vectors for each
+step/domain/selection. Its `loss_mass_basis` field records whether selection used
+raw configured-loss mass or the exact production-reweighted mass.
+`entropy_vocab_vectors.jsonl` stores `student_entropy` and
+`teacher_student_cross_entropy` sum and mean vectors. Occurrence-coordinate files
+such as `token_gap_vectors.jsonl` remain ordered JSON lists.
 
 For detailed metric definitions, see [metrics_zh.md](metrics_zh.md). For config field explanations and common overrides, see [CONFIG_GUIDE.zh.md](CONFIG_GUIDE.zh.md).

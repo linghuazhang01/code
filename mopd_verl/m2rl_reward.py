@@ -188,7 +188,9 @@ def _compute_verifiable_instruction_reward(
         return None
 
     instruction_dict = getattr(registry, "INSTRUCTION_DICT", {})
-    if not any(instruction_id in instruction_dict for instruction_id in instruction_ids):
+    if not instruction_ids or not all(
+        instruction_id in instruction_dict for instruction_id in instruction_ids
+    ):
         return None
 
     follow_list: list[bool] = []

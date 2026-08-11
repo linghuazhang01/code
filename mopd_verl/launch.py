@@ -1,4 +1,4 @@
-"""Build and run verl commands for two-domain Multi-Teacher OPD."""
+"""Build and run config-driven multi-domain OPD commands."""
 
 from __future__ import annotations
 
@@ -26,6 +26,21 @@ def _hydra_list(values: Sequence[str]) -> str:
 
 def _hydra_int_list(values: Sequence[int]) -> str:
     return "[" + ", ".join(str(int(value)) for value in values) + "]"
+
+
+def _hydra_int_list_dict(values: Mapping[str, Sequence[int]]) -> str:
+    items = ", ".join(
+        f"{key}: {_hydra_int_list(token_ids)}"
+        for key, token_ids in values.items()
+    )
+    return "{" + items + "}"
+
+
+def _hydra_float_pair_list(values: Sequence[Sequence[float]]) -> str:
+    pairs = ", ".join(
+        f"[{float(pair[0]):g}, {float(pair[1]):g}]" for pair in values
+    )
+    return "[" + pairs + "]"
 
 
 def _hydra_float_dict(values: Mapping[str, float]) -> str:
@@ -124,6 +139,9 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"+mopd_audit.high_variance_cv_threshold={audit.high_variance_cv_threshold}",
         f"+mopd_audit.log_sample_level={str(audit.log_sample_level).lower()}",
         f"+mopd_audit.log_sample_level_freq_steps={audit.log_sample_level_freq_steps}",
+        f"+mopd_audit.response_level_enabled={str(audit.response_level_enabled).lower()}",
+        f"+mopd_audit.response_level_freq_steps={audit.response_level_freq_steps}",
+        f"+mopd_audit.response_level_compression={audit.response_level_compression}",
         f"+mopd_audit.log_validation_metrics={str(audit.log_validation_metrics).lower()}",
         f"+mopd_audit.log_validation_metrics_freq_steps={audit.log_validation_metrics_freq_steps}",
         f"+mopd_audit.tier2_window_size={audit.tier2_window_size}",
@@ -240,6 +258,40 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"{audit.control_token_loss_weight}",
         "+mopd_audit.control_token_ids="
         f"{_hydra_int_list(audit.control_token_ids)}",
+        "+mopd_audit.domain_control_token_ids="
+        f"{_hydra_int_list_dict(audit.domain_control_token_ids)}",
+        "+mopd_audit.control_token_normalize_per_domain="
+        f"{str(audit.control_token_normalize_per_domain).lower()}",
+        "+mopd_audit.control_token_phase_gate_enabled="
+        f"{str(audit.control_token_phase_gate_enabled).lower()}",
+        "+mopd_audit.control_token_span_weighting_enabled="
+        f"{str(audit.control_token_span_weighting_enabled).lower()}",
+        "+mopd_audit.control_token_phase_gate_window_steps="
+        f"{audit.control_token_phase_gate_window_steps}",
+        "+mopd_audit.control_token_phase_gate_ema_beta="
+        f"{audit.control_token_phase_gate_ema_beta}",
+        "+mopd_audit.control_token_phase_gate_temperature="
+        f"{audit.control_token_phase_gate_temperature}",
+        "+mopd_audit.control_token_phase_gate_initial="
+        f"{audit.control_token_phase_gate_initial}",
+        "+mopd_audit.control_token_span_length="
+        f"{audit.control_token_span_length}",
+        "+mopd_audit.control_token_span_decay_tau="
+        f"{audit.control_token_span_decay_tau}",
+        "+mopd_audit.control_token_speed_weighting_enabled="
+        f"{str(audit.control_token_speed_weighting_enabled).lower()}",
+        "+mopd_audit.control_token_speed_window_steps="
+        f"{audit.control_token_speed_window_steps}",
+        "+mopd_audit.control_token_speed_ema_beta="
+        f"{audit.control_token_speed_ema_beta}",
+        "+mopd_audit.control_token_speed_update_interval_steps="
+        f"{audit.control_token_speed_update_interval_steps}",
+        "+mopd_audit.control_token_speed_initial_weight="
+        f"{audit.control_token_speed_initial_weight}",
+        "+mopd_audit.control_token_speed_min_occurrences="
+        f"{audit.control_token_speed_min_occurrences}",
+        "+mopd_audit.control_token_speed_weight_knots="
+        f"{_hydra_float_pair_list(audit.control_token_speed_weight_knots)}",
         "+mopd_audit.all_domain_shared_token_loss_weighting_enabled="
         f"{str(audit.all_domain_shared_token_loss_weighting_enabled).lower()}",
         "+mopd_audit.all_domain_shared_token_loss_weight="
@@ -266,6 +318,46 @@ def _paper_eval_overrides(config: MOPDConfig) -> list[str]:
         f"+paper_eval.evaluate_current_checkpoint={str(paper_eval.evaluate_current_checkpoint).lower()}",
         f"+paper_eval.fail_on_error={str(paper_eval.fail_on_error).lower()}",
         f"+paper_eval.timeout_seconds={paper_eval.timeout_seconds}",
+    ]
+
+
+def _domain_budgeting_overrides(config: MOPDConfig) -> list[str]:
+    budgeting = config.domain_budgeting
+    if not budgeting.enabled:
+        return []
+    return [
+        "+mopd_domain_budgeting.enabled=true",
+        f"+mopd_domain_budgeting.domains={_hydra_list(budgeting.domains)}",
+        "+mopd_domain_budgeting.domain_priors="
+        f"{_hydra_float_dict(budgeting.domain_priors)}",
+        "+mopd_domain_budgeting.teacher_scores="
+        f"{_hydra_float_dict(budgeting.teacher_scores)}",
+        "+mopd_domain_budgeting.teacher_scores_calibrated="
+        f"{str(budgeting.teacher_scores_calibrated).lower()}",
+        "+mopd_domain_budgeting.validation_metric_keys="
+        f"{_hydra_list_dict(budgeting.validation_metric_keys)}",
+        "+mopd_domain_budgeting.validation_reducer="
+        f"{budgeting.validation_reducer}",
+        f"+mopd_domain_budgeting.gap_ema_beta={budgeting.gap_ema_beta}",
+        f"+mopd_domain_budgeting.gap_alpha={budgeting.gap_alpha}",
+        f"+mopd_domain_budgeting.gap_epsilon={budgeting.gap_epsilon}",
+        "+mopd_domain_budgeting.gap_normalization_floor="
+        f"{budgeting.gap_normalization_floor}",
+        "+mopd_domain_budgeting.max_normalized_gap="
+        f"{budgeting.max_normalized_gap}",
+        f"+mopd_domain_budgeting.exploration_mass={budgeting.exploration_mass}",
+        "+mopd_domain_budgeting.variance_log_ema_beta="
+        f"{budgeting.variance_log_ema_beta}",
+        f"+mopd_domain_budgeting.variance_epsilon={budgeting.variance_epsilon}",
+        "+mopd_domain_budgeting.variance_min_samples="
+        f"{budgeting.variance_min_samples}",
+        "+mopd_domain_budgeting.variance_update_freq_steps="
+        f"{budgeting.variance_update_freq_steps}",
+        "+mopd_domain_budgeting.min_samples_per_domain="
+        f"{budgeting.min_samples_per_domain}",
+        "+mopd_domain_budgeting.min_sampling_probability="
+        f"{budgeting.min_sampling_probability}",
+        f"+mopd_domain_budgeting.output_dir={budgeting.output_dir}",
     ]
 
 
@@ -303,6 +395,25 @@ def build_overrides(config: MOPDConfig) -> list[str]:
         domain_sampling_overrides.append(
             f"+data.domain_sampling_weights={_hydra_float_dict(data.domain_sampling_weights)}"
         )
+    if data.dataloader_num_workers is not None:
+        domain_sampling_overrides.append(
+            f"data.dataloader_num_workers={data.dataloader_num_workers}"
+        )
+
+    eopd_overrides = []
+    if actor.distill_loss_builder.strip().lower() in {
+        "eopd",
+        "entropy_aware",
+        "entropy_aware_opd",
+    }:
+        eopd_overrides = [
+            "actor_rollout_ref.actor.policy_loss.eopd_entropy_threshold="
+            f"{actor.eopd_entropy_threshold}",
+            "actor_rollout_ref.actor.policy_loss.eopd_forward_kl_weight="
+            f"{actor.eopd_forward_kl_weight}",
+            "actor_rollout_ref.actor.policy_loss.eopd_topk_k="
+            f"{actor.eopd_topk_k}",
+        ]
 
     model_overrides = [f"actor_rollout_ref.model.path={model.student_path}"]
     if model.student_base_path is not None:
@@ -363,12 +474,14 @@ def build_overrides(config: MOPDConfig) -> list[str]:
         f"actor_rollout_ref.actor.policy_loss.teacher_prefix_forward_kl_weight={actor.teacher_prefix_forward_kl_weight}",
         f"actor_rollout_ref.actor.ppo_mini_batch_size={actor.ppo_mini_batch_size}",
         f"actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu={actor.ppo_micro_batch_size_per_gpu}",
+        f"actor_rollout_ref.actor.ppo_epochs={actor.ppo_epochs}",
         f"actor_rollout_ref.actor.use_dynamic_bsz={_bool(actor.use_dynamic_bsz)}",
         f"actor_rollout_ref.actor.use_kl_loss={_bool(actor.use_kl_loss)}",
         f"actor_rollout_ref.actor.kl_loss_coef={actor.kl_loss_coef}",
         f"actor_rollout_ref.actor.kl_loss_type={actor.kl_loss_type}",
         f"actor_rollout_ref.actor.entropy_coeff={actor.entropy_coeff}",
         f"actor_rollout_ref.actor.ppo_max_token_len_per_gpu={actor.ppo_max_token_len_per_gpu}",
+        f"actor_rollout_ref.actor.loss_agg_mode={actor.loss_agg_mode}",
         f"actor_rollout_ref.model.enable_gradient_checkpointing={_bool(actor.gradient_checkpointing)}",
         "+actor_rollout_ref.model.override_config.attn_implementation="
         f"{model.attn_implementation}",
@@ -420,15 +533,17 @@ def build_overrides(config: MOPDConfig) -> list[str]:
         f"trainer.test_freq={trainer.test_freq}",
         f"trainer.total_epochs={trainer.total_epochs}",
         f"trainer.total_training_steps={_hydra_scalar(trainer.total_training_steps)}",
-        f"+trainer.max_actor_ckpt_to_keep={_hydra_scalar(trainer.max_actor_ckpt_to_keep)}",
-        f"+trainer.max_critic_ckpt_to_keep={_hydra_scalar(trainer.max_critic_ckpt_to_keep)}",
+        f"trainer.max_actor_ckpt_to_keep={_hydra_scalar(trainer.max_actor_ckpt_to_keep)}",
+        f"trainer.max_critic_ckpt_to_keep={_hydra_scalar(trainer.max_critic_ckpt_to_keep)}",
     ]
     overrides.extend(ray_overrides)
     overrides.extend(vllm_engine_overrides)
     overrides.extend(domain_sampling_overrides)
+    overrides.extend(eopd_overrides)
     overrides.extend(_rollout_multiturn_overrides(config))
     overrides.extend(_worker_placement_overrides(config))
     overrides.extend(_audit_overrides(config))
+    overrides.extend(_domain_budgeting_overrides(config))
     overrides.extend(_paper_eval_overrides(config))
     overrides.extend(config.extra_overrides)
     return overrides
@@ -523,6 +638,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     config = load_config(args.config)
+    if (
+        not args.dry_run
+        and config.domain_budgeting.enabled
+        and not config.domain_budgeting.teacher_scores_calibrated
+    ):
+        raise ValueError(
+            "Refusing to start dynamic domain budgeting with placeholder teacher "
+            "scores. Calibrate every teacher_scores value on the configured fixed "
+            "probe metrics, then set teacher_scores_calibrated=true."
+        )
     extra_args = list(args.extra)
     if extra_args and extra_args[0] == "--":
         extra_args = extra_args[1:]

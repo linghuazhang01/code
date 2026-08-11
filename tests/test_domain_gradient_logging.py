@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import torch
 
+from mopd_verl.audit_io import step_jsonl_dir
 from mopd_verl.domain_gradient import token_logging
 from mopd_verl.domain_gradient.token_logging import (
     LocalTokenCandidate,
@@ -74,8 +75,22 @@ class TokenGradientLoggingTests(unittest.TestCase):
                     }
                 },
             )
+            # Replaying a checkpointed step must replace, not duplicate, rows.
+            append_token_vocab_vectors_jsonl(
+                output_dir=directory,
+                step=5,
+                configured_vocab_size=50,
+                candidates_by_domain={"math": candidates},
+                selections_by_domain={
+                    "math": {
+                        "tail": (selected[0],),
+                        "top_p": selected,
+                    }
+                },
+            )
             output_path = (
-                Path(directory) / "token_gradient_vocab_vectors.jsonl"
+                step_jsonl_dir(directory, 5)
+                / "token_gradient_vocab_vectors.jsonl"
             )
             rows = [
                 json.loads(line)
@@ -88,17 +103,22 @@ class TokenGradientLoggingTests(unittest.TestCase):
         top_p = next(row for row in rows if row["selection"] == "top_p")
         self.assertEqual(top_p["step"], 5)
         self.assertEqual(top_p["domain"], "math")
+        self.assertEqual(
+            top_p["loss_mass_basis"],
+            "configured_loss_abs",
+        )
         self.assertEqual(top_p["vector_value"], "cumulative_occurrence_count")
+        self.assertEqual(top_p["vector_storage"], "sparse_token_id_dict")
         self.assertEqual(top_p["selected_token_count"], 3)
         self.assertEqual(top_p["nonzero_token_ids"], [7, 42])
-        self.assertEqual(top_p["token_count_vector_vocab"][7], 1)
-        self.assertEqual(top_p["token_count_vector_vocab"][42], 2)
+        self.assertEqual(top_p["token_count_vector_vocab"]["7"], 1)
+        self.assertEqual(top_p["token_count_vector_vocab"]["42"], 2)
         self.assertAlmostEqual(
-            top_p["configured_token_loss_sum_vector_vocab"][42],
+            top_p["configured_token_loss_sum_vector_vocab"]["42"],
             0.25,
         )
         self.assertAlmostEqual(
-            top_p["configured_token_loss_abs_sum_vector_vocab"][42],
+            top_p["configured_token_loss_abs_sum_vector_vocab"]["42"],
             0.75,
         )
 
@@ -126,14 +146,15 @@ class TokenGradientLoggingTests(unittest.TestCase):
                 selections_by_domain={"code": {"top_p": (selected,)}},
             )
             output_path = (
-                Path(directory) / "token_gradient_vocab_vectors.jsonl"
+                step_jsonl_dir(directory, 1)
+                / "token_gradient_vocab_vectors.jsonl"
             )
             row = json.loads(
                 output_path.read_text(encoding="utf-8").splitlines()[0]
             )
 
         self.assertEqual(row["vocab_size"], 4)
-        self.assertEqual(row["token_count_vector_vocab"], [0, 0, 0, 1])
+        self.assertEqual(row["token_count_vector_vocab"], {"3": 1})
 
     def test_distributed_sum_aggregates_rank_local_vectors(self) -> None:
         candidate = LocalTokenCandidate(
@@ -178,20 +199,21 @@ class TokenGradientLoggingTests(unittest.TestCase):
                 },
             )
             output_path = (
-                Path(directory) / "token_gradient_vocab_vectors.jsonl"
+                step_jsonl_dir(directory, 2)
+                / "token_gradient_vocab_vectors.jsonl"
             )
             row = json.loads(
                 output_path.read_text(encoding="utf-8").splitlines()[0]
             )
 
-        self.assertEqual(row["token_count_vector_vocab"], [0, 0, 2, 0])
+        self.assertEqual(row["token_count_vector_vocab"], {"2": 2})
         self.assertEqual(
             row["configured_token_loss_sum_vector_vocab"],
-            [0.0, 0.0, -1.0, 0.0],
+            {"2": -1.0},
         )
         self.assertEqual(
             row["configured_token_loss_abs_sum_vector_vocab"],
-            [0.0, 0.0, 1.0, 0.0],
+            {"2": 1.0},
         )
 
 

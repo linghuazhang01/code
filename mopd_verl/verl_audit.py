@@ -10,11 +10,17 @@ from typing import Any
 
 import numpy as np
 
+from mopd_verl.audit_io import step_jsonl_dir
 from mopd_verl.audit_math import (
     ece,
     finite_float,
 )
 from mopd_verl.audit_proxy import extract_sample_ids, extract_teacher_domains, response_mask_from_batch
+from mopd_verl.audit_response_logging import (
+    ResponseAuditBatch,
+    normalize_response_compression,
+    write_response_audit,
+)
 from mopd_verl.audit_scalar_logging import (
     log_training_cost as _log_training_cost,
     log_validation_metrics as _log_validation_metrics,
@@ -26,10 +32,15 @@ from mopd_verl.tensorboard_filter import (
 )
 from mopd_verl.tensorboard_tags import domain_metric_category, safe_name
 from mopd_verl.topk_distill import (
+    eopd_entropy_threshold,
     select_teacher_log_prob_tensor,
     teacher_tensor_prefix,
 )
-
+from mopd_verl.vocab_vector_io import (
+    SPARSE_TOKEN_ID_DICT,
+    tensor_to_sparse_float_dict,
+    tensor_to_sparse_int_dict,
+)
 
 _DOMAIN_PARTITION_META_KEY = "mopd_domain_gradient_partition"
 
@@ -351,22 +362,29 @@ def _token_gap_vocab_json_fields(
     include_mean_vectors: bool = True,
 ) -> dict[str, Any]:
     fields = {
+        "vector_storage": SPARSE_TOKEN_ID_DICT,
         "vocab_size": int(vectors["vocab_size"]),
         "observed_token_count": int(vectors["observed_token_count"]),
         "dropped_token_count": int(vectors["dropped_token_count"]),
         "nonzero_token_id_count": int(vectors["nonzero_token_id_count"]),
         "nonzero_token_ids": _tensor_to_int_list(vectors["nonzero_token_ids"]),
-        "token_count_vector_vocab": _tensor_to_int_list(vectors["token_count_vector_vocab"]),
-        "gap_signed_sum_vector_vocab": _tensor_to_float_list(vectors["gap_signed_sum_vector_vocab"]),
-        "gap_abs_sum_vector_vocab": _tensor_to_float_list(vectors["gap_abs_sum_vector_vocab"]),
+        "token_count_vector_vocab": tensor_to_sparse_int_dict(
+            vectors["token_count_vector_vocab"]
+        ),
+        "gap_signed_sum_vector_vocab": tensor_to_sparse_float_dict(
+            vectors["gap_signed_sum_vector_vocab"]
+        ),
+        "gap_abs_sum_vector_vocab": tensor_to_sparse_float_dict(
+            vectors["gap_abs_sum_vector_vocab"]
+        ),
     }
     if include_mean_vectors:
         fields.update(
             {
-                "gap_signed_mean_vector_vocab": _tensor_to_float_list(
+                "gap_signed_mean_vector_vocab": tensor_to_sparse_float_dict(
                     vectors["gap_signed_mean_vector_vocab"]
                 ),
-                "gap_abs_mean_vector_vocab": _tensor_to_float_list(
+                "gap_abs_mean_vector_vocab": tensor_to_sparse_float_dict(
                     vectors["gap_abs_mean_vector_vocab"]
                 ),
             }
@@ -380,16 +398,21 @@ def _logp_vocab_json_fields(
     include_mean_vectors: bool = True,
 ) -> dict[str, Any]:
     fields = {
+        "vector_storage": SPARSE_TOKEN_ID_DICT,
         "vocab_size": int(vectors["vocab_size"]),
         "observed_token_count": int(vectors["observed_token_count"]),
         "dropped_token_count": int(vectors["dropped_token_count"]),
         "nonzero_token_id_count": int(vectors["nonzero_token_id_count"]),
         "nonzero_token_ids": _tensor_to_int_list(vectors["nonzero_token_ids"]),
-        "token_count_vector_vocab": _tensor_to_int_list(vectors["token_count_vector_vocab"]),
-        "logp_sum_vector_vocab": _tensor_to_float_list(vectors["gap_signed_sum_vector_vocab"]),
+        "token_count_vector_vocab": tensor_to_sparse_int_dict(
+            vectors["token_count_vector_vocab"]
+        ),
+        "logp_sum_vector_vocab": tensor_to_sparse_float_dict(
+            vectors["gap_signed_sum_vector_vocab"]
+        ),
     }
     if include_mean_vectors:
-        fields["logp_mean_vector_vocab"] = _tensor_to_float_list(
+        fields["logp_mean_vector_vocab"] = tensor_to_sparse_float_dict(
             vectors["gap_signed_mean_vector_vocab"]
         )
     return fields
@@ -401,16 +424,21 @@ def _logp_abs_vocab_json_fields(
     include_mean_vectors: bool = True,
 ) -> dict[str, Any]:
     fields = {
+        "vector_storage": SPARSE_TOKEN_ID_DICT,
         "vocab_size": int(vectors["vocab_size"]),
         "observed_token_count": int(vectors["observed_token_count"]),
         "dropped_token_count": int(vectors["dropped_token_count"]),
         "nonzero_token_id_count": int(vectors["nonzero_token_id_count"]),
         "nonzero_token_ids": _tensor_to_int_list(vectors["nonzero_token_ids"]),
-        "token_count_vector_vocab": _tensor_to_int_list(vectors["token_count_vector_vocab"]),
-        "logp_abs_sum_vector_vocab": _tensor_to_float_list(vectors["gap_abs_sum_vector_vocab"]),
+        "token_count_vector_vocab": tensor_to_sparse_int_dict(
+            vectors["token_count_vector_vocab"]
+        ),
+        "logp_abs_sum_vector_vocab": tensor_to_sparse_float_dict(
+            vectors["gap_abs_sum_vector_vocab"]
+        ),
     }
     if include_mean_vectors:
-        fields["logp_abs_mean_vector_vocab"] = _tensor_to_float_list(
+        fields["logp_abs_mean_vector_vocab"] = tensor_to_sparse_float_dict(
             vectors["gap_abs_mean_vector_vocab"]
         )
     return fields
@@ -420,9 +448,11 @@ def _entropy_vocab_tensors(
     *,
     token_ids: Any,
     response_mask: Any,
+    teacher_entropy: Any | None,
     student_entropy: Any | None,
     teacher_student_cross_entropy: Any | None,
     vocab_size: int,
+    high_entropy_threshold: float,
 ) -> dict[str, Any] | None:
     import torch
 
@@ -432,7 +462,12 @@ def _entropy_vocab_tensors(
         return None
 
     signal_values = {
-        "student_entropy": None if student_entropy is None else student_entropy.detach().float().cpu()[valid],
+        "teacher_entropy": None
+        if teacher_entropy is None
+        else teacher_entropy.detach().float().cpu()[valid],
+        "student_entropy": None
+        if student_entropy is None
+        else student_entropy.detach().float().cpu()[valid],
         "teacher_student_cross_entropy": None
         if teacher_student_cross_entropy is None
         else teacher_student_cross_entropy.detach().float().cpu()[valid],
@@ -462,6 +497,26 @@ def _entropy_vocab_tensors(
         value_sum.index_add_(0, flat_ids, flat_values)
         output[f"{name}_sum_vector_vocab"] = value_sum
         output[f"{name}_mean_vector_vocab"] = value_sum / counts.clamp(min=1.0)
+        if name == "teacher_entropy":
+            high_entropy = flat_values >= float(high_entropy_threshold)
+            high_entropy_counts = torch.bincount(
+                flat_ids[high_entropy],
+                minlength=int(vocab_size),
+            )
+            high_entropy_occurrence_count = int(high_entropy.sum().item())
+            output.update(
+                {
+                    "eopd_entropy_threshold": float(high_entropy_threshold),
+                    "eopd_high_entropy_count_vector_vocab": high_entropy_counts,
+                    "eopd_high_entropy_occurrence_count": high_entropy_occurrence_count,
+                    "eopd_high_entropy_occurrence_ratio": (
+                        high_entropy_occurrence_count / int(flat_ids.numel())
+                    ),
+                    "eopd_high_entropy_distinct_token_id_count": int(
+                        (high_entropy_counts > 0).sum().item()
+                    ),
+                }
+            )
     return output
 
 
@@ -471,20 +526,39 @@ def _entropy_vocab_json_fields(
     include_mean_vectors: bool = True,
 ) -> dict[str, Any]:
     fields = {
+        "vector_storage": SPARSE_TOKEN_ID_DICT,
         "vocab_size": int(vectors["vocab_size"]),
         "observed_token_count": int(vectors["observed_token_count"]),
         "dropped_token_count": int(vectors["dropped_token_count"]),
         "nonzero_token_id_count": int(vectors["nonzero_token_id_count"]),
         "nonzero_token_ids": _tensor_to_int_list(vectors["nonzero_token_ids"]),
-        "token_count_vector_vocab": _tensor_to_int_list(vectors["token_count_vector_vocab"]),
+        "token_count_vector_vocab": tensor_to_sparse_int_dict(
+            vectors["token_count_vector_vocab"]
+        ),
     }
-    for name in ("student_entropy", "teacher_student_cross_entropy"):
+    for name in (
+        "teacher_entropy",
+        "student_entropy",
+        "teacher_student_cross_entropy",
+    ):
         sum_key = f"{name}_sum_vector_vocab"
         mean_key = f"{name}_mean_vector_vocab"
         if sum_key in vectors:
-            fields[sum_key] = _tensor_to_float_list(vectors[sum_key])
+            fields[sum_key] = tensor_to_sparse_float_dict(vectors[sum_key])
         if include_mean_vectors and mean_key in vectors:
-            fields[mean_key] = _tensor_to_float_list(vectors[mean_key])
+            fields[mean_key] = tensor_to_sparse_float_dict(vectors[mean_key])
+    high_entropy_count_key = "eopd_high_entropy_count_vector_vocab"
+    if high_entropy_count_key in vectors:
+        fields[high_entropy_count_key] = tensor_to_sparse_int_dict(
+            vectors[high_entropy_count_key]
+        )
+        for key in (
+            "eopd_entropy_threshold",
+            "eopd_high_entropy_occurrence_count",
+            "eopd_high_entropy_occurrence_ratio",
+            "eopd_high_entropy_distinct_token_id_count",
+        ):
+            fields[key] = vectors[key]
     return fields
 
 
@@ -523,12 +597,27 @@ class MOPDAuditLogger:
         self.prefix = str(_cfg_get(audit_config, "tensorboard_prefix", "mopd"))
         self.tensorboard_layout = str(_cfg_get(audit_config, "tensorboard_layout", "domain_category"))
         self.tensorboard_prune_mode = str(_cfg_get(audit_config, "tensorboard_prune_mode", "none")).lower()
+        self.loss_variance_signal = str(
+            _cfg_get(audit_config, "loss_variance_signal", "opd_loss_token")
+        ).strip()
+        if not self.loss_variance_signal:
+            raise ValueError("loss_variance_signal must be non-empty.")
         self.max_samples_per_domain = _optional_positive_int(_cfg_get(audit_config, "max_samples_per_domain", None))
         self.high_variance_cv_threshold = float(_cfg_get(audit_config, "high_variance_cv_threshold", 1.0))
         self.log_sample_level = bool(_cfg_get(audit_config, "log_sample_level", True))
         self.log_sample_level_freq_steps = max(
             1,
             int(_cfg_get(audit_config, "log_sample_level_freq_steps", 1)),
+        )
+        self.response_level_enabled = bool(
+            _cfg_get(audit_config, "response_level_enabled", False)
+        )
+        self.response_level_freq_steps = max(
+            1,
+            int(_cfg_get(audit_config, "response_level_freq_steps", 1)),
+        )
+        self.response_level_compression = normalize_response_compression(
+            str(_cfg_get(audit_config, "response_level_compression", "gzip"))
         )
         self.log_validation = bool(_cfg_get(audit_config, "log_validation_metrics", True))
         self.log_validation_freq_steps = max(
@@ -632,6 +721,18 @@ class MOPDAuditLogger:
             self.token_gap_vocab_size = _infer_tokenizer_vocab_size(tokenizer)
             if self.token_gap_vocab_size is not None:
                 self.token_gap_vocab_size_source = "tokenizer"
+        tokenizer_name_or_path = getattr(tokenizer, "name_or_path", None)
+        if tokenizer_name_or_path is None:
+            tokenizer_name_or_path = _cfg_get(
+                _cfg_get(_cfg_get(config, "actor_rollout_ref", {}), "model", {}),
+                "path",
+                None,
+            )
+        self.response_tokenizer_name_or_path = (
+            None
+            if tokenizer_name_or_path is None
+            else str(tokenizer_name_or_path)
+        )
         self.entropy_enabled = bool(_cfg_get(audit_config, "entropy_enabled", True))
         self.entropy_freq_steps = max(1, int(_cfg_get(audit_config, "entropy_freq_steps", 1)))
         self.entropy_vocab_vector_enabled = bool(
@@ -641,6 +742,16 @@ class MOPDAuditLogger:
             1,
             int(_cfg_get(audit_config, "entropy_vocab_vector_freq_steps", 1)),
         )
+        policy_loss_config = _cfg_get(
+            _cfg_get(
+                _cfg_get(config, "actor_rollout_ref", {}),
+                "actor",
+                {},
+            ),
+            "policy_loss",
+            {},
+        )
+        self.eopd_entropy_threshold = eopd_entropy_threshold(policy_loss_config)
         self.topk_teacher_student_cross_entropy_vocab_enabled = bool(
             _cfg_get(audit_config, "topk_teacher_student_cross_entropy_vocab_enabled", False)
         )
@@ -807,6 +918,112 @@ class MOPDAuditLogger:
                 )
             )
         )
+        raw_domain_control_ids = _cfg_get(
+            audit_config,
+            "domain_control_token_ids",
+            {},
+        )
+        self.domain_control_token_ids = {
+            str(domain): tuple(
+                dict.fromkeys(int(token_id) for token_id in token_ids)
+            )
+            for domain, token_ids in raw_domain_control_ids.items()
+        }
+        self.control_token_normalize_per_domain = bool(
+            _cfg_get(
+                audit_config,
+                "control_token_normalize_per_domain",
+                False,
+            )
+        )
+        self.control_token_phase_gate_enabled = bool(
+            _cfg_get(
+                audit_config,
+                "control_token_phase_gate_enabled",
+                False,
+            )
+        )
+        self.control_token_span_weighting_enabled = bool(
+            _cfg_get(
+                audit_config,
+                "control_token_span_weighting_enabled",
+                False,
+            )
+        )
+        self.control_token_phase_gate_window_steps = int(
+            _cfg_get(
+                audit_config,
+                "control_token_phase_gate_window_steps",
+                5,
+            )
+        )
+        self.control_token_phase_gate_ema_beta = float(
+            _cfg_get(
+                audit_config,
+                "control_token_phase_gate_ema_beta",
+                0.90,
+            )
+        )
+        self.control_token_phase_gate_temperature = float(
+            _cfg_get(
+                audit_config,
+                "control_token_phase_gate_temperature",
+                0.10,
+            )
+        )
+        self.control_token_phase_gate_initial = float(
+            _cfg_get(
+                audit_config,
+                "control_token_phase_gate_initial",
+                0.80,
+            )
+        )
+        self.control_token_span_length = int(
+            _cfg_get(audit_config, "control_token_span_length", 16)
+        )
+        self.control_token_span_decay_tau = float(
+            _cfg_get(audit_config, "control_token_span_decay_tau", 8.0)
+        )
+        self.control_token_speed_weighting_enabled = bool(
+            _cfg_get(
+                audit_config,
+                "control_token_speed_weighting_enabled",
+                False,
+            )
+        )
+        self.control_token_speed_window_steps = int(
+            _cfg_get(audit_config, "control_token_speed_window_steps", 5)
+        )
+        self.control_token_speed_ema_beta = float(
+            _cfg_get(audit_config, "control_token_speed_ema_beta", 0.8)
+        )
+        self.control_token_speed_update_interval_steps = int(
+            _cfg_get(
+                audit_config,
+                "control_token_speed_update_interval_steps",
+                2,
+            )
+        )
+        self.control_token_speed_initial_weight = float(
+            _cfg_get(audit_config, "control_token_speed_initial_weight", 3.0)
+        )
+        self.control_token_speed_min_occurrences = int(
+            _cfg_get(audit_config, "control_token_speed_min_occurrences", 128)
+        )
+        self.control_token_speed_weight_knots = tuple(
+            (float(speed), float(weight))
+            for speed, weight in _cfg_get(
+                audit_config,
+                "control_token_speed_weight_knots",
+                (
+                    (-0.0025, 0.0),
+                    (0.0, 0.2),
+                    (0.005, 2.0),
+                    (0.010, 3.0),
+                    (0.015, 4.0),
+                ),
+            )
+        )
         self.all_domain_shared_token_loss_weighting_enabled = bool(
             _cfg_get(
                 audit_config,
@@ -893,6 +1110,13 @@ class MOPDAuditLogger:
 
     def should_log_sample_level(self, step: int) -> bool:
         return self._freq_active(self.log_sample_level, self.log_sample_level_freq_steps, step)
+
+    def should_log_response_level(self, step: int) -> bool:
+        return self._freq_active(
+            self.response_level_enabled,
+            self.response_level_freq_steps,
+            step,
+        )
 
     def should_log_validation_metrics(self, step: int) -> bool:
         return self._freq_active(self.log_validation, self.log_validation_freq_steps, step)
@@ -1216,6 +1440,55 @@ class MOPDAuditLogger:
                 ),
                 "control_token_loss_weight": self.control_token_loss_weight,
                 "control_token_ids": self.control_token_ids,
+                "domain_control_token_ids": self.domain_control_token_ids,
+                "control_token_normalize_per_domain": (
+                    self.control_token_normalize_per_domain
+                ),
+                "control_token_phase_gate_enabled": (
+                    self.control_token_phase_gate_enabled and mode == "train"
+                ),
+                "control_token_span_weighting_enabled": (
+                    self.control_token_span_weighting_enabled
+                    and mode == "train"
+                ),
+                "control_token_phase_gate_window_steps": (
+                    self.control_token_phase_gate_window_steps
+                ),
+                "control_token_phase_gate_ema_beta": (
+                    self.control_token_phase_gate_ema_beta
+                ),
+                "control_token_phase_gate_temperature": (
+                    self.control_token_phase_gate_temperature
+                ),
+                "control_token_phase_gate_initial": (
+                    self.control_token_phase_gate_initial
+                ),
+                "control_token_span_length": self.control_token_span_length,
+                "control_token_span_decay_tau": (
+                    self.control_token_span_decay_tau
+                ),
+                "control_token_speed_weighting_enabled": (
+                    self.control_token_speed_weighting_enabled
+                    and mode == "train"
+                ),
+                "control_token_speed_window_steps": (
+                    self.control_token_speed_window_steps
+                ),
+                "control_token_speed_ema_beta": (
+                    self.control_token_speed_ema_beta
+                ),
+                "control_token_speed_update_interval_steps": (
+                    self.control_token_speed_update_interval_steps
+                ),
+                "control_token_speed_initial_weight": (
+                    self.control_token_speed_initial_weight
+                ),
+                "control_token_speed_min_occurrences": (
+                    self.control_token_speed_min_occurrences
+                ),
+                "control_token_speed_weight_knots": (
+                    self.control_token_speed_weight_knots
+                ),
                 "all_domain_shared_token_loss_weighting_enabled": (
                     self.all_domain_shared_token_loss_weighting_enabled
                     and mode == "train"
@@ -1257,10 +1530,31 @@ class MOPDAuditLogger:
     def _write_jsonl(self, filename: str, rows: list[dict[str, Any]]) -> None:
         if not self.enabled or not rows:
             return
-        path = self.output_dir / filename
-        with path.open("a", encoding="utf-8") as handle:
-            for row in rows:
-                handle.write(json.dumps(_to_builtin(row), sort_keys=True) + "\n")
+        rows_by_step: dict[int, list[dict[str, Any]]] = {}
+        for row in rows:
+            if "step" not in row:
+                raise ValueError(
+                    f"Step-scoped audit row for {filename} is missing 'step'."
+                )
+            rows_by_step.setdefault(int(row["step"]), []).append(row)
+        for row_step, step_rows in rows_by_step.items():
+            path = step_jsonl_dir(
+                self.output_dir,
+                row_step,
+                create=True,
+            ) / filename
+            temporary_path = path.with_name(f".{path.name}.tmp")
+            with temporary_path.open("w", encoding="utf-8") as handle:
+                for row in step_rows:
+                    handle.write(
+                        json.dumps(
+                            _to_builtin(row),
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        )
+                        + "\n"
+                    )
+            temporary_path.replace(path)
 
     def log_training_step(self, batch: Any, step: int, lr: Any = None) -> dict[str, float]:
         if not self.enabled:
@@ -1277,11 +1571,14 @@ class MOPDAuditLogger:
                 token_gap_vocab_rows,
                 entropy_distribution_rows,
                 entropy_vocab_rows,
+                response_audit_batch,
             ) = self._compute_training_rows(batch, step, lr)
         except Exception as exc:  # pragma: no cover - defensive remote logging
             self._write_jsonl("audit_errors.jsonl", [{"step": step, "stage": "training", "error": repr(exc)}])
             return {self._global_tag("audit", "error"): 1.0}
 
+        error_path = step_jsonl_dir(self.output_dir, step) / "audit_errors.jsonl"
+        error_path.unlink(missing_ok=True)
         metrics[self._global_tag("audit", "wall_time_step")] = time.perf_counter() - started_at
         self._write_jsonl("domain_step_metrics.jsonl", domain_rows)
         self._write_jsonl("loss_variance_domain_step.jsonl", variance_rows)
@@ -1322,6 +1619,7 @@ class MOPDAuditLogger:
                 "step",
                 "domain",
                 "learning_rate",
+                "vector_storage",
                 "vocab_size_source",
                 "vocab_size",
                 "observed_token_count",
@@ -1375,6 +1673,7 @@ class MOPDAuditLogger:
                         "step",
                         "domain",
                         "learning_rate",
+                        "vector_storage",
                         "vocab_size_source",
                         "vocab_size",
                         "observed_token_count",
@@ -1391,6 +1690,14 @@ class MOPDAuditLogger:
                     ),
                 ),
             )
+        if response_audit_batch is not None:
+            write_response_audit(
+                output_dir=self.output_dir,
+                batch=response_audit_batch,
+                global_control_token_ids=self.control_token_ids,
+                domain_control_token_ids=self.domain_control_token_ids,
+                compression=self.response_level_compression,
+            )
         return metrics
 
     def log_validation_metrics(self, val_metrics: dict[str, Any], step: int) -> dict[str, float]:
@@ -1403,7 +1710,17 @@ class MOPDAuditLogger:
 
     def _compute_training_rows(
         self, batch: Any, step: int, lr: Any
-    ) -> tuple[dict[str, float], list, list, list, list, list, list, list]:
+    ) -> tuple[
+        dict[str, float],
+        list,
+        list,
+        list,
+        list,
+        list,
+        list,
+        list,
+        ResponseAuditBatch | None,
+    ]:
         import torch
 
         tensor_batch = batch.batch
@@ -1495,6 +1812,16 @@ class MOPDAuditLogger:
             configured_token_loss_name = "chosen_token_reverse_kl_fallback"
             configured_token_loss_epoch_reduction = "single_forward"
             configured_token_loss_epoch_count = 1
+        if (
+            self.loss_variance_signal != "opd_loss_token"
+            and configured_token_loss_name != self.loss_variance_signal
+        ):
+            raise ValueError(
+                "Configured loss-variance signal does not match the production "
+                "token loss: expected "
+                f"{self.loss_variance_signal!r}, got "
+                f"{configured_token_loss_name!r}."
+            )
 
         student_entropy = (
             tensor_batch["student_entropy"].detach().float() if "student_entropy" in batch_keys else None
@@ -1582,6 +1909,7 @@ class MOPDAuditLogger:
         )
         entropy_vocab_active = entropy_vocab_vector_active or topk_cross_entropy_vocab_active
         sample_level_active = self.should_log_sample_level(step)
+        response_level_active = self.should_log_response_level(step)
 
         opd_losses = _tensor_to_float_list(sample_opd_loss)
         sample_token_opd_loss_means = _tensor_to_float_list(sample_token_opd_loss_mean)
@@ -1606,7 +1934,11 @@ class MOPDAuditLogger:
         }
         sample_count_by_domain = {domain: len(indices) for domain, indices in indices_by_domain.items()}
         token_ids = None
-        if token_gap_vocab_compute_active or entropy_vocab_active:
+        if (
+            token_gap_vocab_compute_active
+            or entropy_vocab_active
+            or response_level_active
+        ):
             token_ids = _response_token_id_matrix(tensor_batch, batch_keys, response_mask)
         token_gap_vocab_size = self.token_gap_vocab_size
         token_gap_vocab_size_source = self.token_gap_vocab_size_source
@@ -1615,6 +1947,81 @@ class MOPDAuditLogger:
             if int(observed_valid_ids.numel()) > 0:
                 token_gap_vocab_size = int(observed_valid_ids.max().item()) + 1
                 token_gap_vocab_size_source = "observed_max_token_id"
+        response_audit_batch: ResponseAuditBatch | None = None
+        if response_level_active:
+            missing_response_metrics = [
+                name
+                for name, value in (
+                    ("response_token_ids", token_ids),
+                    ("student_entropy", student_entropy),
+                    ("teacher_entropy", teacher_entropy),
+                    (
+                        "teacher_student_cross_entropy",
+                        teacher_student_cross_entropy,
+                    ),
+                )
+                if value is None
+            ]
+            if missing_response_metrics:
+                raise ValueError(
+                    "Complete response audit requires aligned per-token "
+                    "signals; missing " + ", ".join(missing_response_metrics)
+                )
+            support_source = str(
+                batch_meta_info.get("topk_distill_support_source", "teacher")
+            )
+            support_topk_key = f"{support_source}_topk_k"
+            response_audit_batch = ResponseAuditBatch(
+                step=int(step),
+                learning_rate=float(learning_rate),
+                domains=tuple(labels),
+                sample_ids=tuple(sample_ids),
+                response_token_ids=token_ids,
+                response_mask=response_mask.detach().float().cpu(),
+                student_log_prob=old_log_probs.detach().float().cpu(),
+                teacher_log_prob=teacher_log_probs.detach().float().cpu(),
+                configured_token_loss=(
+                    configured_token_loss.detach().float().cpu()
+                ),
+                configured_token_loss_mask=(
+                    configured_token_loss_mask.detach().float().cpu()
+                ),
+                student_entropy=student_entropy.detach().float().cpu(),
+                teacher_entropy=teacher_entropy.detach().float().cpu(),
+                teacher_student_cross_entropy=(
+                    teacher_student_cross_entropy.detach().float().cpu()
+                ),
+                configured_token_loss_name=configured_token_loss_name,
+                configured_token_loss_epoch_reduction=(
+                    configured_token_loss_epoch_reduction
+                ),
+                configured_token_loss_epoch_count=(
+                    configured_token_loss_epoch_count
+                ),
+                cross_entropy_scope="topk",
+                cross_entropy_support_source=support_source,
+                cross_entropy_topk=int(
+                    batch_meta_info.get(
+                        support_topk_key,
+                        self.topk_teacher_student_cross_entropy_k,
+                    )
+                ),
+                cross_entropy_include_tail=bool(
+                    batch_meta_info.get(
+                        "topk_distill_include_tail",
+                        self.topk_teacher_student_cross_entropy_include_tail,
+                    )
+                ),
+                cross_entropy_temperature=float(
+                    batch_meta_info.get(
+                        "topk_distill_temperature",
+                        self.topk_teacher_student_cross_entropy_temperature,
+                    )
+                ),
+                signal_timing=self.execution_timing,
+                tokenizer_name_or_path=self.response_tokenizer_name_or_path,
+                tokenizer_vocab_size=self.token_gap_vocab_size,
+            )
         for domain in configured_domains:
             indices = indices_by_domain[domain]
             safe_domain = safe_name(domain)
@@ -1757,6 +2164,25 @@ class MOPDAuditLogger:
                         student_entropy_vector = student_entropy[indices][domain_valid_mask]
                     if teacher_student_cross_entropy is not None:
                         cross_entropy_vector = teacher_student_cross_entropy[indices][domain_valid_mask]
+                if teacher_entropy_vector is not None and int(teacher_entropy_vector.numel()) > 0:
+                    high_entropy_occurrence_count = int(
+                        (
+                            teacher_entropy_vector
+                            >= self.eopd_entropy_threshold
+                        ).sum().item()
+                    )
+                    entropy_metrics.update(
+                        {
+                            "eopd_entropy_threshold": self.eopd_entropy_threshold,
+                            "eopd_high_entropy_occurrence_count": (
+                                high_entropy_occurrence_count
+                            ),
+                            "eopd_high_entropy_occurrence_ratio": (
+                                high_entropy_occurrence_count
+                                / int(teacher_entropy_vector.numel())
+                            ),
+                        }
+                    )
                 if entropy_distribution_active:
                     teacher_entropy_stats = _token_distribution_stats(
                         teacher_entropy_vector,
@@ -1773,15 +2199,20 @@ class MOPDAuditLogger:
                     teacher_entropy_sum = teacher_entropy_stats["teacher_entropy_sum"]
                     student_entropy_sum = student_entropy_stats["student_entropy_sum"]
                     cross_entropy_sum = cross_entropy_stats["teacher_student_cross_entropy_sum"]
-                    entropy_metrics = {
-                        "sum_teacher_entropy": teacher_entropy_sum,
-                        "sum_student_entropy": student_entropy_sum,
-                        "sum_teacher_student_cross_entropy": cross_entropy_sum,
-                        "entropy_distribution_available": float(
-                            teacher_entropy_sum is not None or student_entropy_sum is not None
-                        ),
-                        "cross_entropy_available": float(cross_entropy_sum is not None),
-                    }
+                    entropy_metrics.update(
+                        {
+                            "sum_teacher_entropy": teacher_entropy_sum,
+                            "sum_student_entropy": student_entropy_sum,
+                            "sum_teacher_student_cross_entropy": cross_entropy_sum,
+                            "entropy_distribution_available": float(
+                                teacher_entropy_sum is not None
+                                or student_entropy_sum is not None
+                            ),
+                            "cross_entropy_available": float(
+                                cross_entropy_sum is not None
+                            ),
+                        }
+                    )
                     entropy_row: dict[str, Any] = {
                         "step": step,
                         "domain": domain,
@@ -1808,13 +2239,28 @@ class MOPDAuditLogger:
                     and indices
                     and token_gap_vocab_size is not None
                     and (
-                        (student_entropy_vector is not None and int(student_entropy_vector.numel()) > 0)
-                        or (cross_entropy_vector is not None and int(cross_entropy_vector.numel()) > 0)
+                        (
+                            teacher_entropy_vector is not None
+                            and int(teacher_entropy_vector.numel()) > 0
+                        )
+                        or (
+                            student_entropy_vector is not None
+                            and int(student_entropy_vector.numel()) > 0
+                        )
+                        or (
+                            cross_entropy_vector is not None
+                            and int(cross_entropy_vector.numel()) > 0
+                        )
                     )
                 ):
                     vocab_vectors = _entropy_vocab_tensors(
                         token_ids=token_ids[indices],
                         response_mask=response_mask[indices],
+                        teacher_entropy=(
+                            None
+                            if not entropy_vocab_vector_active or teacher_entropy is None
+                            else teacher_entropy[indices]
+                        ),
                         student_entropy=(
                             None
                             if not entropy_vocab_vector_active or student_entropy is None
@@ -1826,6 +2272,7 @@ class MOPDAuditLogger:
                             else teacher_student_cross_entropy[indices]
                         ),
                         vocab_size=int(token_gap_vocab_size),
+                        high_entropy_threshold=self.eopd_entropy_threshold,
                     )
                     if vocab_vectors is not None:
                         entropy_vocab_vectors_by_domain[domain] = vocab_vectors
@@ -1869,6 +2316,12 @@ class MOPDAuditLogger:
                                         )
                                     ),
                                 }
+                            )
+                        if "eopd_high_entropy_distinct_token_id_count" in entropy_vocab_row:
+                            entropy_metrics["eopd_high_entropy_distinct_token_id_count"] = (
+                                entropy_vocab_row[
+                                    "eopd_high_entropy_distinct_token_id_count"
+                                ]
                             )
                         entropy_vocab_rows.append(entropy_vocab_row)
             domain_sample_losses = [opd_losses[idx] for idx in indices]
@@ -2043,6 +2496,10 @@ class MOPDAuditLogger:
                 "sum_teacher_entropy",
                 "sum_student_entropy",
                 "sum_teacher_student_cross_entropy",
+                "eopd_entropy_threshold",
+                "eopd_high_entropy_occurrence_count",
+                "eopd_high_entropy_occurrence_ratio",
+                "eopd_high_entropy_distinct_token_id_count",
                 "teacher_entropy_mean",
                 "teacher_entropy_std",
                 "teacher_entropy_p05",
@@ -2130,7 +2587,12 @@ class MOPDAuditLogger:
         ]
         entropy_vector_specs = [
             ("token_count_cosine", "token_count_vector_vocab"),
+            ("teacher_entropy_sum_cosine", "teacher_entropy_sum_vector_vocab"),
             ("student_entropy_sum_cosine", "student_entropy_sum_vector_vocab"),
+            (
+                "eopd_high_entropy_count_cosine",
+                "eopd_high_entropy_count_vector_vocab",
+            ),
             (
                 "teacher_student_cross_entropy_sum_cosine",
                 "teacher_student_cross_entropy_sum_vector_vocab",
@@ -2154,6 +2616,10 @@ class MOPDAuditLogger:
         if self.entropy_vocab_per_occurrence_mean_vector_enabled:
             entropy_vector_specs.extend(
                 [
+                    (
+                        "teacher_entropy_mean_cosine",
+                        "teacher_entropy_mean_vector_vocab",
+                    ),
                     ("student_entropy_mean_cosine", "student_entropy_mean_vector_vocab"),
                     (
                         "teacher_student_cross_entropy_mean_cosine",
@@ -2263,4 +2729,5 @@ class MOPDAuditLogger:
             token_gap_vocab_rows,
             entropy_distribution_rows,
             entropy_vocab_rows,
+            response_audit_batch,
         )

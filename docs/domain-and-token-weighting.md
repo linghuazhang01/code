@@ -22,7 +22,7 @@ audit:
 两种信号都经过 signal EMA、inverse weighting、上下界裁剪和 weight EMA。
 切换信息源时，checkpoint 中旧的 controller EMA 会自动重置，避免量纲混用。
 
-## 2. 提高 Control token 的优化比重
+## 2. 调整 Control token 的优化比重
 
 ```yaml
 audit:
@@ -35,6 +35,10 @@ audit:
 `control_token_ids` 是当前 tokenizer 下的 token ID，必须由实验配置显式给出。
 上述配置把匹配 token 对 actor gradient 的贡献乘以 `2.0`。token ID 与
 tokenizer 强绑定，不能直接复用其他模型的 ID。
+
+`control_token_loss_weight` 必须是有限非负数：大于 `1.0` 表示放大，
+`0.0` 到 `1.0` 表示降权，`0.0` 会屏蔽匹配 token 的 backward gradient。
+这个 gradient gate 不改变 forward loss 数值或原有 loss metric。
 
 当前 Qwen3 Control smoke 使用 44 个 ID，严格等于之前 Rising/Stable
 Mean-Gap 六组 Top-100 类别表中实际被标为 `discourse/control` 的唯一 token
@@ -133,13 +137,8 @@ gradient gate 保持 forward loss 不变，因此它们可以同时显示 raw lo
 `gradient_multiplier_mean_abs_error` 比较 production gradient mask 与根据
 domain/control/shared 配置独立计算的期望 multiplier，正常应接近 `0`。
 
-Canonical GPU smoke profiles 统一位于：
-
-```text
-test_grad_configs/mopd_domain_weighting_qwen0p6b_8b_matrix.yaml
-```
-
-可选 profile 为 `gradnorm`、`projection`、
-`projection_control_perstep` 和 `control44_cumulative`，启动时使用
-`<matrix.yaml>::<profile>` 语法。Control-only 与 shared-only 行为继续由
+原 audit-based domain weighting GPU matrix 已退役；当前研究路径统一使用
+`test_grad_configs/mopd_dynamic_budget_qwen0p6b_8b_aw2_fsdp2_b16_4step_3gpu_smoke.yaml`。
+历史 matrix 中的 `gradnorm`、`projection`、`projection_control_perstep` 和
+`control44_cumulative` 不再作为 GPU experiment config 维护；相应算子行为继续由
 unit/contract tests 独立覆盖。

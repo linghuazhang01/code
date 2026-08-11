@@ -233,27 +233,18 @@ class ConfigProfileTests(unittest.TestCase):
                     ):
                         load_raw_config(f"{path}::valid")
 
-    def test_test_grad_directory_contains_five_yaml_files(self) -> None:
+    def test_test_grad_directory_contains_canonical_yaml_files(self) -> None:
         config_dir = (
             Path(__file__).resolve().parents[1] / "test_grad_configs"
         )
         self.assertEqual(
             {path.name for path in config_dir.glob("*.yaml")},
             {
-                "mopd_domain_weighting_qwen0p6b_8b_matrix.yaml",
                 (
-                    "mopd_dynamic_weight_qwen0p6b_8b_aw2_fsdpsize2_"
-                    "tail_topp1_b16_4step_smoke.yaml"
-                ),
-                (
-                    "mopd_feature_coverage_qwen0p6b_8b_aw2_"
-                    "fsdpsize2_top_partial_prefix_ppo2_b8_2step_smoke.yaml"
+                    "mopd_dynamic_budget_qwen0p6b_8b_aw2_fsdp2_"
+                    "b16_4step_3gpu_smoke.yaml"
                 ),
                 "mopd_grad_reliability_qwen0p6b_8b_matrix.yaml",
-                (
-                    "mopd_topk32_reweight_qwen0p6b_8b_aw4_"
-                    "fsdpsize2_topp0p1_b24_5step_5gpu_smoke.yaml"
-                ),
             },
         )
 

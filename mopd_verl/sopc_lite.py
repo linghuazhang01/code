@@ -12,6 +12,7 @@ from itertools import combinations
 from pathlib import Path
 from typing import Any
 
+from mopd_verl.vocab_vector_io import dense_vocab_vector
 
 DEFAULT_TOP_MASS_FRACTION = 0.10
 DEFAULT_RANDOM_TRIALS = 32
@@ -74,13 +75,20 @@ def read_gap_vectors(path: Path) -> list[GapVector]:
                 continue
             payload = json.loads(line)
             raw_values, source_field, coordinate_space = _select_gap_values(payload)
-            if not isinstance(raw_values, list):
-                raise ValueError(f"{path}:{line_number} has no gap vector")
+            vocab_size = (
+                int(payload["vocab_size"])
+                if coordinate_space.startswith("vocab") and "vocab_size" in payload
+                else None
+            )
+            try:
+                values = dense_vocab_vector(raw_values, vocab_size=vocab_size)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{path}:{line_number} has an invalid gap vector: {exc}") from exc
             rows.append(
                 GapVector(
                     step=int(payload.get("step", 0)),
                     domain=str(payload.get("domain", "unknown")),
-                    values=tuple(float(value) for value in raw_values),
+                    values=values,
                     token_count=_optional_float(payload.get("observed_token_count", payload.get("token_count"))),
                     coordinate_space=coordinate_space,
                     source_field=source_field,
@@ -408,7 +416,7 @@ def _select_gap_values(payload: dict[str, Any]) -> tuple[Any, str, str]:
     ]
     for field, coordinate_space in candidates:
         values = payload.get(field)
-        if isinstance(values, list):
+        if isinstance(values, (list, dict)):
             return values, field, coordinate_space
     return None, "missing", "missing"
 

@@ -1,13 +1,19 @@
-"""Typed configuration for the math+code MOPD verl launcher."""
+"""Typed configuration for the multi-domain MOPD verl launcher."""
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from mopd_verl.config_profiles import load_raw_config
+from mopd_verl.domain_budgeting_config import (
+    DomainBudgetingConfig,
+    parse_domain_budgeting_config,
+    validate_domain_budgeting_config,
+)
 
 DEFAULT_PAPER_EVAL_DATASETS = [
     "aime24",
@@ -40,6 +46,7 @@ class DataConfig:
     return_raw_chat: bool = True
     enable_thinking: bool = False
     need_tools_kwargs: bool = False
+    dataloader_num_workers: int | None = None
 
 
 @dataclass(frozen=True)
@@ -66,6 +73,9 @@ class ActorConfig:
     multi_teacher_distill: bool = True
     distill_loss_builder: str = "auto"
     distill_mode: str = "chosen_token_reverse_kl"
+    eopd_entropy_threshold: float = 0.8
+    eopd_forward_kl_weight: float = 1.0
+    eopd_topk_k: int = 16
     topk_distill_enabled: bool = False
     topk_distill_kl_direction: str = "reverse"
     topk_distill_k: int = 8
@@ -80,6 +90,7 @@ class ActorConfig:
     teacher_prefix_forward_kl_weight: float = 1.0
     ppo_mini_batch_size: int = 1024
     ppo_micro_batch_size_per_gpu: int = 1
+    ppo_epochs: int = 1
     use_dynamic_bsz: bool = False
     use_kl_loss: bool = True
     kl_loss_coef: int = 0
@@ -90,6 +101,7 @@ class ActorConfig:
     param_offload: bool = False
     optimizer_offload: bool = False
     fsdp_size: int | None = None
+    loss_agg_mode: str = "token-mean"
 
 
 @dataclass(frozen=True)
@@ -164,6 +176,9 @@ class AuditConfig:
     high_variance_cv_threshold: float = 1.0
     log_sample_level: bool = True
     log_sample_level_freq_steps: int = 1
+    response_level_enabled: bool = False
+    response_level_freq_steps: int = 1
+    response_level_compression: str = "gzip"
     log_validation_metrics: bool = True
     log_validation_metrics_freq_steps: int = 1
     tier2_window_size: int = 20
@@ -239,6 +254,31 @@ class AuditConfig:
     control_token_loss_weighting_enabled: bool = False
     control_token_loss_weight: float = 1.0
     control_token_ids: list[int] = field(default_factory=list)
+    domain_control_token_ids: dict[str, list[int]] = field(default_factory=dict)
+    control_token_normalize_per_domain: bool = False
+    control_token_phase_gate_enabled: bool = False
+    control_token_span_weighting_enabled: bool = False
+    control_token_phase_gate_window_steps: int = 5
+    control_token_phase_gate_ema_beta: float = 0.90
+    control_token_phase_gate_temperature: float = 0.10
+    control_token_phase_gate_initial: float = 0.80
+    control_token_span_length: int = 16
+    control_token_span_decay_tau: float = 8.0
+    control_token_speed_weighting_enabled: bool = False
+    control_token_speed_window_steps: int = 5
+    control_token_speed_ema_beta: float = 0.80
+    control_token_speed_update_interval_steps: int = 2
+    control_token_speed_initial_weight: float = 3.0
+    control_token_speed_min_occurrences: int = 128
+    control_token_speed_weight_knots: list[list[float]] = field(
+        default_factory=lambda: [
+            [-0.0025, 0.0],
+            [0.0, 0.2],
+            [0.005, 2.0],
+            [0.010, 3.0],
+            [0.015, 4.0],
+        ]
+    )
     all_domain_shared_token_loss_weighting_enabled: bool = False
     all_domain_shared_token_loss_weight: float = 1.0
     all_domain_shared_token_selection_mode: str = "per_step_mean_abs_loss"
@@ -331,6 +371,7 @@ class MOPDConfig:
     rollout_correction: RolloutCorrectionConfig = field(default_factory=RolloutCorrectionConfig)
     worker_placement: WorkerPlacementConfig = field(default_factory=WorkerPlacementConfig)
     audit: AuditConfig = field(default_factory=AuditConfig)
+    domain_budgeting: DomainBudgetingConfig = field(default_factory=DomainBudgetingConfig)
     paper_eval: PaperEvalConfig = field(default_factory=PaperEvalConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     ray_kwargs: RayKwargsConfig = field(default_factory=RayKwargsConfig)
@@ -453,6 +494,9 @@ def load_config(path: str | Path) -> MOPDConfig:
     data_raw = _expect_mapping(root.get("data", {}), "data")
     model_raw = _expect_mapping(root.get("model", {}), "model")
     paper_eval_raw = _expect_mapping(root.get("paper_eval", {}), "paper_eval")
+    domain_budgeting_raw = _expect_mapping(
+        root.get("domain_budgeting", {}), "domain_budgeting"
+    )
     domain_train_files = _string_list_mapping(data_raw.get("domain_train_files"), "data.domain_train_files")
     train_files = (
         _string_list(data_raw.get("train_files"), "data.train_files")
@@ -487,6 +531,11 @@ def load_config(path: str | Path) -> MOPDConfig:
         return_raw_chat=bool(data_raw.get("return_raw_chat", True)),
         enable_thinking=bool(data_raw.get("enable_thinking", False)),
         need_tools_kwargs=bool(data_raw.get("need_tools_kwargs", False)),
+        dataloader_num_workers=(
+            None
+            if data_raw.get("dataloader_num_workers") is None
+            else int(data_raw["dataloader_num_workers"])
+        ),
     )
     primary_teacher_raw = model_raw.get(
         "primary_teacher_path",
@@ -562,7 +611,29 @@ def load_config(path: str | Path) -> MOPDConfig:
         teacher_model_device=teacher_model_device,
         attn_implementation=attn_implementation,
     )
+    actor = ActorConfig(**_expect_mapping(root.get("actor", {}), "actor"))
+    rollout = RolloutConfig(**_expect_mapping(root.get("rollout", {}), "rollout"))
+    trainer = TrainerConfig(**_expect_mapping(root.get("trainer", {}), "trainer"))
     audit = AuditConfig(**_expect_mapping(root.get("audit", {}), "audit"))
+    domain_budgeting = parse_domain_budgeting_config(domain_budgeting_raw)
+    normalized_loss_builder = actor.distill_loss_builder.strip().lower()
+    if normalized_loss_builder in {"eopd", "entropy_aware", "entropy_aware_opd"}:
+        if actor.eopd_topk_k < 1:
+            raise ValueError("actor.eopd_topk_k must be positive for EOPD.")
+        if (
+            not math.isfinite(actor.eopd_entropy_threshold)
+            or actor.eopd_entropy_threshold < 0.0
+        ):
+            raise ValueError(
+                "actor.eopd_entropy_threshold must be finite and non-negative."
+            )
+        if (
+            not math.isfinite(actor.eopd_forward_kl_weight)
+            or actor.eopd_forward_kl_weight < 0.0
+        ):
+            raise ValueError(
+                "actor.eopd_forward_kl_weight must be finite and non-negative."
+            )
     if not 0.0 < audit.token_gradient_tail_fraction <= 1.0:
         raise ValueError(
             "audit.token_gradient_tail_fraction must be in (0, 1]."
@@ -613,17 +684,141 @@ def load_config(path: str | Path) -> MOPDConfig:
             "Dynamic domain loss weight bounds must be positive and contain "
             "1.0."
         )
-    if audit.control_token_loss_weight < 1.0:
+    if (
+        not math.isfinite(audit.control_token_loss_weight)
+        or audit.control_token_loss_weight < 0.0
+    ):
         raise ValueError(
-            "audit.control_token_loss_weight must be at least 1.0."
+            "audit.control_token_loss_weight must be finite and non-negative."
         )
     if (
         audit.control_token_loss_weighting_enabled
         and not audit.control_token_ids
+        and not audit.domain_control_token_ids
     ):
         raise ValueError(
-            "audit.control_token_ids must be non-empty when control-token "
-            "loss weighting is enabled."
+            "audit.control_token_ids or audit.domain_control_token_ids must "
+            "be non-empty when control-token loss weighting is enabled."
+        )
+    if audit.control_token_ids and audit.domain_control_token_ids:
+        raise ValueError(
+            "Configure either audit.control_token_ids or "
+            "audit.domain_control_token_ids, not both."
+        )
+    unknown_control_domains = set(audit.domain_control_token_ids) - set(
+        audit.domains
+    )
+    if unknown_control_domains:
+        raise ValueError(
+            "audit.domain_control_token_ids contains unknown domains: "
+            + ", ".join(sorted(unknown_control_domains))
+        )
+    if any(not token_ids for token_ids in audit.domain_control_token_ids.values()):
+        raise ValueError(
+            "audit.domain_control_token_ids entries must be non-empty."
+        )
+    if not 0.0 <= audit.control_token_phase_gate_ema_beta < 1.0:
+        raise ValueError(
+            "audit.control_token_phase_gate_ema_beta must be in [0, 1)."
+        )
+    if audit.control_token_phase_gate_window_steps < 1:
+        raise ValueError(
+            "audit.control_token_phase_gate_window_steps must be positive."
+        )
+    if audit.control_token_phase_gate_temperature <= 0.0:
+        raise ValueError(
+            "audit.control_token_phase_gate_temperature must be positive."
+        )
+    if not 0.0 <= audit.control_token_phase_gate_initial <= 1.0:
+        raise ValueError(
+            "audit.control_token_phase_gate_initial must be in [0, 1]."
+        )
+    if audit.control_token_span_length < 0:
+        raise ValueError(
+            "audit.control_token_span_length must be non-negative."
+        )
+    if audit.control_token_span_decay_tau <= 0.0:
+        raise ValueError(
+            "audit.control_token_span_decay_tau must be positive."
+        )
+    if audit.control_token_speed_window_steps < 1:
+        raise ValueError(
+            "audit.control_token_speed_window_steps must be positive."
+        )
+    if not 0.0 <= audit.control_token_speed_ema_beta < 1.0:
+        raise ValueError(
+            "audit.control_token_speed_ema_beta must be in [0, 1)."
+        )
+    if audit.control_token_speed_update_interval_steps < 1:
+        raise ValueError(
+            "audit.control_token_speed_update_interval_steps must be positive."
+        )
+    if audit.control_token_speed_initial_weight < 0.0:
+        raise ValueError(
+            "audit.control_token_speed_initial_weight must be non-negative."
+        )
+    if audit.control_token_speed_min_occurrences < 1:
+        raise ValueError(
+            "audit.control_token_speed_min_occurrences must be positive."
+        )
+    if len(audit.control_token_speed_weight_knots) < 2:
+        raise ValueError(
+            "audit.control_token_speed_weight_knots requires at least two knots."
+        )
+    prior_speed: float | None = None
+    for knot in audit.control_token_speed_weight_knots:
+        if len(knot) != 2:
+            raise ValueError(
+                "Each audit.control_token_speed_weight_knots entry must contain "
+                "exactly [speed, weight]."
+            )
+        speed, weight = float(knot[0]), float(knot[1])
+        if not math.isfinite(speed) or not math.isfinite(weight):
+            raise ValueError(
+                "audit.control_token_speed_weight_knots must be finite."
+            )
+        if weight < 0.0:
+            raise ValueError(
+                "audit.control_token_speed_weight_knots weights must be "
+                "non-negative."
+            )
+        if prior_speed is not None and speed <= prior_speed:
+            raise ValueError(
+                "audit.control_token_speed_weight_knots speeds must be "
+                "strictly increasing."
+            )
+        prior_speed = speed
+    if audit.control_token_speed_weighting_enabled and (
+        not audit.control_token_loss_weighting_enabled
+        or not audit.domain_control_token_ids
+    ):
+        raise ValueError(
+            "Control-token speed weighting requires enabled domain-specific "
+            "control-token loss weighting."
+        )
+    if (
+        audit.control_token_speed_weighting_enabled
+        and audit.control_token_phase_gate_enabled
+    ):
+        raise ValueError(
+            "Control-token speed weighting and phase gating are mutually "
+            "exclusive."
+        )
+    if audit.control_token_phase_gate_enabled and (
+        not audit.control_token_loss_weighting_enabled
+        or not audit.domain_control_token_ids
+        or audit.control_token_span_length < 1
+    ):
+        raise ValueError(
+            "Control-token phase gating requires enabled domain-specific "
+            "control weighting and a positive span length."
+        )
+    if (
+        audit.control_token_span_weighting_enabled
+        and not audit.control_token_phase_gate_enabled
+    ):
+        raise ValueError(
+            "Successor-span weighting requires control-token phase gating."
         )
     if audit.all_domain_shared_token_loss_weight < 1.0:
         raise ValueError(
@@ -665,16 +860,29 @@ def load_config(path: str | Path) -> MOPDConfig:
             f"replay. Disable: {', '.join(retired_gradient_modes)}."
         )
 
+    if data.dataloader_num_workers is not None and data.dataloader_num_workers < 0:
+        raise ValueError("data.dataloader_num_workers must be non-negative.")
+    validate_domain_budgeting_config(
+        domain_budgeting,
+        data=data,
+        model=model,
+        actor=actor,
+        rollout=rollout,
+        audit=audit,
+        trainer=trainer,
+    )
+
     return MOPDConfig(
         data=data,
         model=model,
-        actor=ActorConfig(**_expect_mapping(root.get("actor", {}), "actor")),
-        rollout=RolloutConfig(**_expect_mapping(root.get("rollout", {}), "rollout")),
+        actor=actor,
+        rollout=rollout,
         rollout_correction=RolloutCorrectionConfig(
             **_expect_mapping(root.get("rollout_correction", {}), "rollout_correction")
         ),
         worker_placement=_worker_placement(root.get("worker_placement", {})),
         audit=audit,
+        domain_budgeting=domain_budgeting,
         paper_eval=PaperEvalConfig(
             enabled=bool(paper_eval_raw.get("enabled", PaperEvalConfig.enabled)),
             script_path=_optional_string(paper_eval_raw.get("script_path"), "paper_eval.script_path"),
@@ -693,7 +901,7 @@ def load_config(path: str | Path) -> MOPDConfig:
             fail_on_error=bool(paper_eval_raw.get("fail_on_error", PaperEvalConfig.fail_on_error)),
             timeout_seconds=int(paper_eval_raw.get("timeout_seconds", PaperEvalConfig.timeout_seconds)),
         ),
-        trainer=TrainerConfig(**_expect_mapping(root.get("trainer", {}), "trainer")),
+        trainer=trainer,
         ray_kwargs=RayKwargsConfig(
             ray_init=RayInitConfig(**_expect_mapping(root.get("ray_kwargs", {}).get("ray_init", {}), "ray_init"))
         ),

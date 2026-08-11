@@ -24,6 +24,9 @@ def test_configured_loss_gap_and_entropy_are_aggregated_by_domain() -> None:
                     "token_gap_enabled": True,
                     "token_gap_freq_steps": 1,
                     "log_sample_level": False,
+                    "loss_variance_signal": (
+                        "topk_renormalized_reverse_kl"
+                    ),
                 },
                 "actor_rollout_ref": {
                     "actor": {
@@ -129,6 +132,40 @@ def test_missing_teacher_log_probs_do_not_create_synthetic_gap() -> None:
         with pytest.raises(
             ValueError,
             match="refusing to substitute synthetic zeros",
+        ):
+            logger._compute_training_rows(batch, step=1, lr=1e-5)
+
+
+def test_specific_loss_variance_signal_rejects_mismatched_loss() -> None:
+    with TemporaryDirectory() as output_dir:
+        logger = MOPDAuditLogger(
+            {
+                "mopd_audit": {
+                    "enabled": True,
+                    "output_dir": str(Path(output_dir) / "audit"),
+                    "domains": ["math"],
+                    "loss_variance_signal": (
+                        "topk_renormalized_reverse_kl"
+                    ),
+                }
+            }
+        )
+        batch = SimpleNamespace(
+            batch={
+                "old_log_probs": torch.zeros(1, 2),
+                "response_mask": torch.ones(1, 2),
+                "configured_token_loss": torch.ones(1, 2),
+                "math_teacher_log_prob": torch.zeros(1, 2),
+            },
+            non_tensor_batch={"opd_teacher": ["math"]},
+            meta_info={
+                "mopd_configured_token_loss_name": "reverse_kl",
+            },
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="does not match the production token loss",
         ):
             logger._compute_training_rows(batch, step=1, lr=1e-5)
 

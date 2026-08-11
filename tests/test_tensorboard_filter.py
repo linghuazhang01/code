@@ -90,3 +90,27 @@ def test_core_filter_keeps_token_weight_amplification_metrics() -> None:
     }
 
     assert filter_tensorboard_metrics(metrics, "core") == metrics
+
+
+def test_core_filter_keeps_control_speed_metrics() -> None:
+    metrics = {
+        "global/control_speed/enabled": 1.0,
+        "global/control_speed/window_steps": 5.0,
+        "global/control_speed/update_interval_steps": 2.0,
+        "math/control_speed/control_gap_raw": 0.12,
+        "math/control_speed/control_gap_ema": 0.10,
+        "math/control_speed/optimization_speed": 0.01,
+        "math/control_speed/speed_reference_step": 8.0,
+        "math/control_speed/speed_computed_this_step": 1.0,
+        "math/control_speed/weight_update_triggered": 1.0,
+        "math/control_speed/control_weight_applied_raw": 2.0,
+        "math/control_speed/control_weight_mapped_from_speed": 3.0,
+        "math/control_speed/control_weight_next": 3.0,
+        "math/control_speed/control_weight_applied_normalized": 1.8,
+        "math/control_speed/control_occurrence_count": 256.0,
+        "math/control_speed/observation_available": 1.0,
+        "math/control_speed/minimum_occurrences_met": 1.0,
+        "math/control_speed/state_observation_count": 9.0,
+    }
+
+    assert filter_tensorboard_metrics(metrics, "core") == metrics

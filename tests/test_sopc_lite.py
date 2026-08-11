@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+import json
 import random
+import tempfile
 import unittest
+from pathlib import Path
 
-from mopd_verl.sopc_lite import GapVector, compute_collision_result, compute_pair_collision, top_mass_support
+from mopd_verl.sopc_lite import (
+    GapVector,
+    compute_collision_result,
+    compute_pair_collision,
+    read_gap_vectors,
+    top_mass_support,
+)
 
 
 class SOPCLiteTests(unittest.TestCase):
@@ -45,7 +54,9 @@ class SOPCLiteTests(unittest.TestCase):
             source_field="gap_signed_sum_vector_vocab",
         )
 
-        result = compute_collision_result([left, right], top_mass_fraction=1.0, random_trials=0)
+        result = compute_collision_result(
+            [left, right], top_mass_fraction=1.0, random_trials=0
+        )
 
         self.assertEqual(len(result.rows), 1)
         self.assertEqual(len(result.skipped_pairs), 0)
@@ -55,10 +66,38 @@ class SOPCLiteTests(unittest.TestCase):
         left = GapVector(step=1, domain="math", values=(1.0, -2.0), token_count=2)
         right = GapVector(step=1, domain="code", values=(-1.0, 2.0, 0.5), token_count=3)
 
-        result = compute_collision_result([left, right], top_mass_fraction=1.0, random_trials=0)
+        result = compute_collision_result(
+            [left, right], top_mass_fraction=1.0, random_trials=0
+        )
 
         self.assertEqual(len(result.rows), 0)
         self.assertEqual(result.skipped_pairs[0].reason, "vector_size_mismatch")
+
+    def test_reader_accepts_sparse_and_legacy_dense_vocab_vectors(self) -> None:
+        rows = (
+            {
+                "step": 1,
+                "domain": "math",
+                "vocab_size": 4,
+                "gap_signed_sum_vector_vocab": {"1": 2.0, "3": -1.0},
+            },
+            {
+                "step": 1,
+                "domain": "code",
+                "vocab_size": 4,
+                "gap_signed_sum_vector_vocab": [0.0, -2.0, 0.0, 1.0],
+            },
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "vectors.jsonl"
+            path.write_text(
+                "".join(json.dumps(row) + "\n" for row in rows),
+                encoding="utf-8",
+            )
+            vectors = read_gap_vectors(path)
+
+        self.assertEqual(vectors[0].values, (0.0, 2.0, 0.0, -1.0))
+        self.assertEqual(vectors[1].values, (0.0, -2.0, 0.0, 1.0))
 
 
 if __name__ == "__main__":
