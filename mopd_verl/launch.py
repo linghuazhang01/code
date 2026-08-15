@@ -122,6 +122,40 @@ def _worker_placement_overrides(config: MOPDConfig) -> list[str]:
     ]
 
 
+def _region_dpo_overrides(config: MOPDConfig) -> list[str]:
+    region = config.region_dpo
+    if not region.enabled:
+        return []
+    overrides = [
+        "+mopd_region_dpo.enabled=true",
+        "+mopd_region_dpo.points_per_rollout="
+        f"{region.points_per_rollout}",
+        "+mopd_region_dpo.branches_per_point="
+        f"{region.branches_per_point}",
+        f"+mopd_region_dpo.max_new_tokens={region.max_new_tokens}",
+        f"+mopd_region_dpo.min_reward_margin={region.min_reward_margin}",
+        "+mopd_region_dpo.selection_strategy="
+        f"{region.selection_strategy}",
+        f"+mopd_region_dpo.seed={region.seed}",
+        "actor_rollout_ref.actor.policy_loss.region_dpo_enabled=true",
+        "actor_rollout_ref.actor.policy_loss.region_dpo_beta="
+        f"{region.beta}",
+        "actor_rollout_ref.actor.policy_loss.region_dpo_loss_weight="
+        f"{region.loss_weight}",
+    ]
+    if region.control_token_ids:
+        overrides.append(
+            "+mopd_region_dpo.control_token_ids="
+            f"{_hydra_int_list(region.control_token_ids)}"
+        )
+    if region.domain_control_token_ids:
+        overrides.append(
+            "+mopd_region_dpo.domain_control_token_ids="
+            f"{_hydra_int_list_dict(region.domain_control_token_ids)}"
+        )
+    return overrides
+
+
 def _audit_overrides(config: MOPDConfig) -> list[str]:
     audit = config.audit
     if not audit.enabled:
@@ -542,6 +576,7 @@ def build_overrides(config: MOPDConfig) -> list[str]:
     overrides.extend(eopd_overrides)
     overrides.extend(_rollout_multiturn_overrides(config))
     overrides.extend(_worker_placement_overrides(config))
+    overrides.extend(_region_dpo_overrides(config))
     overrides.extend(_audit_overrides(config))
     overrides.extend(_domain_budgeting_overrides(config))
     overrides.extend(_paper_eval_overrides(config))

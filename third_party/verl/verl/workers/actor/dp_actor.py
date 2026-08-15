@@ -656,6 +656,9 @@ class DataParallelPPOActor(BasePPOActor):
         ):
             append_batch_key(key)
         for key in sorted(batch_keys):
+            if key.startswith("region_dpo_"):
+                append_batch_key(key)
+                continue
             if key.endswith(
                 (
                     "_teacher_log_prob",

@@ -14,6 +14,12 @@ from mopd_verl.domain_budgeting_config import (
     parse_domain_budgeting_config,
     validate_domain_budgeting_config,
 )
+from mopd_verl.region_dpo_config import (
+    RegionDPOConfig,
+    parse_region_dpo_config,
+    validate_region_dpo_config,
+    with_control_token_fallback,
+)
 
 DEFAULT_PAPER_EVAL_DATASETS = [
     "aime24",
@@ -389,6 +395,7 @@ class MOPDConfig:
     rollout_correction: RolloutCorrectionConfig = field(default_factory=RolloutCorrectionConfig)
     worker_placement: WorkerPlacementConfig = field(default_factory=WorkerPlacementConfig)
     audit: AuditConfig = field(default_factory=AuditConfig)
+    region_dpo: RegionDPOConfig = field(default_factory=RegionDPOConfig)
     domain_budgeting: DomainBudgetingConfig = field(default_factory=DomainBudgetingConfig)
     paper_eval: PaperEvalConfig = field(default_factory=PaperEvalConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
@@ -633,6 +640,15 @@ def load_config(path: str | Path) -> MOPDConfig:
     rollout = RolloutConfig(**_expect_mapping(root.get("rollout", {}), "rollout"))
     trainer = TrainerConfig(**_expect_mapping(root.get("trainer", {}), "trainer"))
     audit = AuditConfig(**_expect_mapping(root.get("audit", {}), "audit"))
+    region_dpo = with_control_token_fallback(
+        parse_region_dpo_config(root.get("region_dpo", {})),
+        control_token_ids=audit.control_token_ids,
+        domain_control_token_ids=audit.domain_control_token_ids,
+    )
+    validate_region_dpo_config(
+        region_dpo,
+        max_response_length=data.max_response_length,
+    )
     domain_budgeting = parse_domain_budgeting_config(domain_budgeting_raw)
     normalized_loss_builder = actor.distill_loss_builder.strip().lower()
     if normalized_loss_builder in {"eopd", "entropy_aware", "entropy_aware_opd"}:
@@ -900,6 +916,7 @@ def load_config(path: str | Path) -> MOPDConfig:
         ),
         worker_placement=_worker_placement(root.get("worker_placement", {})),
         audit=audit,
+        region_dpo=region_dpo,
         domain_budgeting=domain_budgeting,
         paper_eval=PaperEvalConfig(
             enabled=bool(paper_eval_raw.get("enabled", PaperEvalConfig.enabled)),

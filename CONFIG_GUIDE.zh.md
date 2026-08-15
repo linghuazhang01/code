@@ -354,6 +354,29 @@ audit:
   token_gradient_top_p: 0.10
 ```
 
+## Control-Anchored Region-DPO
+
+Region-DPO 默认关闭。启用后，可以分别控制每条 base rollout 选择多少个
+rerollout points，以及每个 point 采样多少条 sibling branches：
+
+```yaml
+region_dpo:
+  enabled: true
+  points_per_rollout: 2
+  branches_per_point: 4
+  max_new_tokens: 256
+  beta: 0.1
+  loss_weight: 0.1
+  min_reward_margin: 0.0
+  selection_strategy: random
+  seed: 42
+```
+
+默认复用 `audit.domain_control_token_ids` 中冻结的 domain-specific control
+taxonomy，也可以在 `region_dpo.domain_control_token_ids` 中显式覆盖。完整的
+candidate construction、loss 公式、runtime constraints 与 metrics 见
+[docs/region-dpo.md](docs/region-dpo.md)。
+
 ## 常用启动
 
 ```bash

@@ -37,6 +37,8 @@ ACTOR_LOSS_CONTRIBUTION_METRICS: Final[frozenset[str]] = frozenset(
         "actor/eopd_forward_kl_loss",
         "actor/kl_loss",
         "actor/pg_loss",
+        "actor/region_dpo_loss",
+        "actor/region_dpo_weighted_loss",
         "actor/student_suffix_token_count",
         "actor/teacher_prefix_forward_kl_loss",
         "actor/teacher_prefix_token_count",

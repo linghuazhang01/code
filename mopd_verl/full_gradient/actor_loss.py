@@ -21,6 +21,10 @@ from mopd_verl.full_gradient.loss_support import (
     selected_topk_support,
     topk_runtime_config,
 )
+from mopd_verl.region_dpo_loss import (
+    build_region_dpo_actor_loss,
+    region_dpo_enabled,
+)
 from mopd_verl.topk_distill import (
     DISTILL_LOSS_BUILDER_EOPD,
     DISTILL_LOSS_BUILDER_POLICY_GRADIENT,
@@ -422,6 +426,17 @@ def build_actor_micro_batch_loss(
                 loss_scale_factor
             )
             metrics["actor/kl_coef"] = kl_coef
+    if region_dpo_enabled(policy_loss_cfg):
+        region_dpo_result = build_region_dpo_actor_loss(
+            actor=actor,
+            model_inputs=model_inputs,
+            policy_loss_config=policy_loss_cfg,
+            temperature=forward_temperature,
+            loss_scale_factor=loss_scale_factor,
+        )
+        policy_loss = policy_loss + region_dpo_result.loss
+        if include_metrics:
+            metrics.update(region_dpo_result.metrics)
     if include_metrics:
         metrics["actor/pg_loss"] = pg_loss.detach().item() * float(loss_scale_factor)
     configured_token_loss = None

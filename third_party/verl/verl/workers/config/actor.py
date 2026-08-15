@@ -72,6 +72,9 @@ class PolicyLossConfig(BaseConfig):
     teacher_prefix_enabled: bool = False
     teacher_prefix_loss_region: str = "suffix_only"
     teacher_prefix_forward_kl_weight: float = 1.0
+    region_dpo_enabled: bool = False
+    region_dpo_beta: float = 0.1
+    region_dpo_loss_weight: float = 0.1
 
 
 @dataclass

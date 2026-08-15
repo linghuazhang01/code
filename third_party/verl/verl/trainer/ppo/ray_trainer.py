@@ -34,6 +34,11 @@ import torch
 
 from mopd_verl.domain_budgeting import DynamicDomainBudgetController
 from mopd_verl.reproducibility import derive_seed
+from mopd_verl.region_dpo import RegionDPOController
+from mopd_verl.region_dpo_pairs import (
+    attach_region_dpo_preference_pairs,
+    build_region_dpo_reward_batch,
+)
 from mopd_verl.teacher_prefix import (
     build_dataset_teacher_prefix,
     build_student_suffix_prompts,
@@ -451,6 +456,57 @@ class RayPPOTrainer:
         self.domain_budget_controller = DynamicDomainBudgetController(
             self.config.get("mopd_domain_budgeting", {})
         )
+        region_dpo_config = self.config.get("mopd_region_dpo", {})
+        region_dpo_enabled = bool(region_dpo_config.get("enabled", False))
+        pad_token_id = self.tokenizer.pad_token_id
+        if pad_token_id is None:
+            pad_token_id = self.tokenizer.eos_token_id
+        if pad_token_id is None and region_dpo_enabled:
+            raise ValueError("Region-DPO requires a tokenizer pad or EOS token.")
+        self.region_dpo_controller = RegionDPOController(
+            region_dpo_config,
+            pad_token_id=int(pad_token_id or 0),
+        )
+        if self.region_dpo_controller.enabled:
+            rollout_config = self.config.actor_rollout_ref.rollout
+            policy_loss_config = self.config.actor_rollout_ref.actor.policy_loss
+            if not bool(policy_loss_config.get("region_dpo_enabled", False)):
+                raise ValueError(
+                    "mopd_region_dpo.enabled requires the Region-DPO actor loss."
+                )
+            if self.reward_fn is None:
+                raise ValueError(
+                    "Region-DPO requires a synchronous exact reward function."
+                )
+            if self.use_rm:
+                raise ValueError(
+                    "Region-DPO currently supports rule-based reward_fn scoring, "
+                    "not a learned reward-model worker."
+                )
+            if str(rollout_config.get("name", "")).lower() != "vllm":
+                raise ValueError("Region-DPO currently requires vLLM rollout.")
+            if str(rollout_config.get("mode", "sync")).lower() != "sync":
+                raise ValueError(
+                    "Region-DPO currently requires synchronous rollout."
+                )
+            if not bool(rollout_config.get("calculate_log_probs", False)):
+                raise ValueError(
+                    "Region-DPO requires rollout.calculate_log_probs=true."
+                )
+            multi_turn_config = rollout_config.get("multi_turn", None)
+            if multi_turn_config and multi_turn_config.get("enable", False):
+                raise ValueError(
+                    "Region-DPO currently supports single-turn rollout only."
+                )
+            if bool(policy_loss_config.get("teacher_prefix_enabled", False)):
+                raise ValueError(
+                    "Region-DPO does not yet support teacher-prefix roll-in."
+                )
+            if self.domain_budget_controller.enabled:
+                raise ValueError(
+                    "Region-DPO and dynamic domain budgeting cannot be enabled "
+                    "in the same run."
+                )
         self._domain_budget_checkpoint_restored = False
         if self.domain_budget_controller.enabled:
             if self.train_batch_sampler is None:
@@ -956,6 +1012,74 @@ class RayPPOTrainer:
             ),
         )
         return merged_output, metrics
+
+    def _attach_region_dpo_pairs(
+        self,
+        batch: DataProto,
+    ) -> dict[str, float]:
+        """Generate, score, and pack natural sibling regions for one step."""
+
+        prompts, plan, metrics = (
+            self.region_dpo_controller.build_rerollout_prompts(
+                batch,
+                global_step=self.global_steps,
+            )
+        )
+        if prompts is None:
+            metrics.update(
+                {
+                    "region_dpo/confirmed_pair_count": 0.0,
+                    "region_dpo/confirmed_pair_fraction": 0.0,
+                    "region_dpo/reward_margin_mean": 0.0,
+                    "region_dpo/credit_token_count": 0.0,
+                }
+            )
+            return metrics
+
+        rerollout_output = self.actor_rollout_wg.generate_sequences(prompts)
+        rerollout_timing = rerollout_output.meta_info.pop("timing", {})
+        for key, value in rerollout_timing.items():
+            metrics[f"region_dpo/{key}"] = float(value)
+        reward_batch = build_region_dpo_reward_batch(
+            batch,
+            rerollout_output,
+            plan,
+            pad_token_id=self.region_dpo_controller.pad_token_id,
+        )
+        reward_tensor, _reward_extra = compute_reward(
+            reward_batch,
+            self.reward_fn,
+        )
+        rewards = (
+            reward_tensor
+            if reward_tensor.ndim == 1
+            else reward_tensor.sum(dim=-1)
+        ).detach().cpu()
+        metrics.update(
+            attach_region_dpo_preference_pairs(
+                batch,
+                rerollout_output,
+                plan,
+                rewards,
+                points_per_rollout=(
+                    self.region_dpo_controller.points_per_rollout
+                ),
+                pad_token_id=self.region_dpo_controller.pad_token_id,
+                min_reward_margin=(
+                    self.region_dpo_controller.min_reward_margin
+                ),
+            )
+        )
+        response_length = int(
+            rerollout_output.batch["responses"].shape[-1]
+        )
+        generated_mask = rerollout_output.batch["attention_mask"][
+            :, -response_length:
+        ]
+        metrics["region_dpo/generated_token_count"] = float(
+            generated_mask.detach().sum().item()
+        )
+        return metrics
 
     def _validate(self):
         data_source_lst = []
@@ -1558,6 +1682,13 @@ class RayPPOTrainer:
 
                     if "response_mask" not in batch.batch.keys():
                         batch.batch["response_mask"] = compute_response_mask(batch)
+                    if self.region_dpo_controller.enabled:
+                        with marked_timer(
+                            "region_dpo_rerollout",
+                            timing_raw,
+                            color="magenta",
+                        ):
+                            metrics.update(self._attach_region_dpo_pairs(batch))
                     # Balance the number of valid tokens across DP ranks.
                     # NOTE: This usually changes the order of data in the `batch`,
                     # which won't affect the advantage calculation (since it's based on uid),

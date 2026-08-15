@@ -129,6 +129,11 @@ policy_loss:
   # Forward-KL weight for the teacher prefix region
   teacher_prefix_forward_kl_weight: 1.0
 
+  # Optional control-anchored Region-DPO auxiliary objective.
+  region_dpo_enabled: false
+  region_dpo_beta: 0.1
+  region_dpo_loss_weight: 0.1
+
 # Constant C in Dual-clip PPO; clips when advantage < 0 and ratio > C
 clip_ratio_c: 3.0
 
