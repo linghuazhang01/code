@@ -157,7 +157,7 @@ ARGS=(--config "${CONFIG_REFERENCE}")
 if [[ "${DRY_RUN:-0}" == "1" || "${DRY_RUN_FLAG}" == "1" ]]; then
   ARGS+=(--dry-run)
 fi
-if [[ "${#EXTRA_ARGS[@]}" -gt 0 ]]; then
+if [[ -n "${EXTRA_ARGS[*]-}" ]]; then
   ARGS+=(-- "${EXTRA_ARGS[@]}")
 fi
 
@@ -165,7 +165,7 @@ if [[ "${SLURM_FLAG}" == "1" ]]; then
   # Derive the Slurm resources from the selected config's worker pools.
   SLURM_RESOURCE_LINE="$(
     "${MOPD_LAUNCH_PYTHON:-python3}" - \
-      "${CONFIG_REFERENCE}" "${EXTRA_ARGS[@]}" <<'PY'
+      "${CONFIG_REFERENCE}" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} <<'PY'
 import os
 import re
 import sys
@@ -293,6 +293,42 @@ if parse_bool(placement.get("separate_ref_policy", False)):
         trainer_gpus,
         "worker_placement.ref_policy",
     )
+runtime = config.get("runtime") or {}
+allocation_gpus = parse_int(
+    runtime.get("slurm_allocation_gpus", required_gpus),
+    "runtime.slurm_allocation_gpus",
+)
+if allocation_gpus < required_gpus:
+    raise SystemExit(
+        "runtime.slurm_allocation_gpus must be at least the logical worker GPU "
+        f"count ({required_gpus})"
+    )
+raw_gpu_ids = runtime.get("cuda_visible_devices")
+force_gpu_ids = raw_gpu_ids is not None
+if raw_gpu_ids is None:
+    selected_gpu_ids = list(range(required_gpus))
+else:
+    selected_gpu_ids = []
+    for raw_gpu_id in str(raw_gpu_ids).split(","):
+        raw_gpu_id = raw_gpu_id.strip()
+        if not raw_gpu_id.isdigit():
+            raise SystemExit(
+                "runtime.cuda_visible_devices must be comma-separated "
+                "non-negative integer GPU IDs"
+            )
+        selected_gpu_ids.append(int(raw_gpu_id))
+    if len(selected_gpu_ids) != required_gpus:
+        raise SystemExit(
+            "runtime.cuda_visible_devices must list exactly the logical worker "
+            f"GPU count ({required_gpus})"
+        )
+    if len(set(selected_gpu_ids)) != len(selected_gpu_ids):
+        raise SystemExit("runtime.cuda_visible_devices contains duplicate GPU IDs")
+    if any(gpu_id >= allocation_gpus for gpu_id in selected_gpu_ids):
+        raise SystemExit(
+            "runtime.cuda_visible_devices contains a GPU ID outside the Slurm "
+            f"allocation range 0..{allocation_gpus - 1}"
+        )
 ray_init = (config.get("ray_kwargs") or {}).get("ray_init") or {}
 required_cpus = parse_int(
     ray_init.get("num_cpus", max(8, required_gpus * 4)),
@@ -305,10 +341,8 @@ if required_cpus < 72:
 raw_experiment_name = str(trainer.get("experiment_name", "mopd_training"))
 experiment_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw_experiment_name)
 experiment_name = experiment_name.strip("-.")[:100] or "mopd_training"
-gpu_ids = ",".join(str(index) for index in range(required_gpus))
-runtime_python = str(
-    (config.get("runtime") or {}).get("python_bin") or "python"
-).strip()
+gpu_ids = ",".join(str(gpu_id) for gpu_id in selected_gpu_ids)
+runtime_python = str(runtime.get("python_bin") or "python").strip()
 runtime_bin_dir = (
     os.path.dirname(runtime_python)
     if os.path.sep in runtime_python
@@ -316,9 +350,10 @@ runtime_bin_dir = (
 )
 print(
     experiment_name,
-    required_gpus,
+    allocation_gpus,
     required_cpus,
     gpu_ids,
+    int(force_gpu_ids),
     runtime_bin_dir,
     sep="\t",
 )
@@ -326,7 +361,7 @@ PY
   )"
   IFS=$'\t' read -r \
     EXPERIMENT_NAME SLURM_GPUS SLURM_CPUS SLURM_GPU_IDS \
-    SLURM_RUNTIME_BIN_DIR \
+    SLURM_FORCE_GPU_IDS SLURM_RUNTIME_BIN_DIR \
     <<< "${SLURM_RESOURCE_LINE}"
   JOB_NAME="mopd_${EXPERIMENT_NAME}"
   SLURM_LOG_DIR="${SLURM_LOG_DIR:-${CODE_DIR}/logs/slurm}"
@@ -335,7 +370,7 @@ PY
 
   # Build safely-quoted command args for the sbatch script
   LAUNCH_ARGS=()
-  for _arg in "${ARGS[@]}"; do
+  for _arg in ${ARGS[@]+"${ARGS[@]}"}; do
     LAUNCH_ARGS+=("$(printf '%q' "${_arg}")")
   done
   SLURM_RUNTIME_PATH_EXPORT=""
@@ -359,7 +394,10 @@ cd "${CODE_DIR}"
 export PYTHONPATH="${CODE_DIR}:${VERL_RUNTIME_DIR}:\${PYTHONPATH:-}"
 export PYTHONINTMAXSTRDIGITS="${PYTHONINTMAXSTRDIGITS:-0}"
 ${SLURM_RUNTIME_PATH_EXPORT}
-if [[ -z "\${CUDA_VISIBLE_DEVICES:-}" ]]; then
+export CUDA_DEVICE_ORDER=PCI_BUS_ID
+if [[ "${SLURM_FORCE_GPU_IDS}" == "1" ]]; then
+  export CUDA_VISIBLE_DEVICES=${SLURM_GPU_IDS}
+elif [[ -z "\${CUDA_VISIBLE_DEVICES:-}" ]]; then
   export CUDA_VISIBLE_DEVICES=${SLURM_GPU_IDS}
 fi
 # Unset ROCR_VISIBLE_DEVICES to avoid conflict with CUDA_VISIBLE_DEVICES.

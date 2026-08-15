@@ -406,6 +406,61 @@ class TrainingSetupAssetScriptTests(unittest.TestCase):
         self.assertIn("export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5", source)
         self.assertIn("::aw2_fsdp2_audit_on", source)
 
+    def test_slurm_resources_request_exact_five_logical_gpus(
+        self,
+    ) -> None:
+        root = Path(__file__).resolve().parents[1]
+        script_path = root / "scripts" / "run_mopd.sh"
+        config_path = root / "configs" / (
+            "mopd_qwen4b_30b_a3b_instruct_2507_5gpu_math_code_science_"
+            "topk32_control_fixed_w4_b528.yaml"
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            bin_dir = temp_path / "bin"
+            log_dir = temp_path / "slurm"
+            bin_dir.mkdir()
+            fake_sbatch = bin_dir / "sbatch"
+            fake_sbatch.write_text(
+                "#!/usr/bin/env bash\n"
+                "echo 'Submitted batch job 12346'\n",
+                encoding="utf-8",
+            )
+            fake_sbatch.chmod(0o755)
+            env = os.environ.copy()
+            env.update(
+                {
+                    "MOPD_LAUNCH_PYTHON": sys.executable,
+                    "PATH": f"{bin_dir}:{env['PATH']}",
+                    "SLURM_LOG_DIR": str(log_dir),
+                }
+            )
+            result = subprocess.run(
+                [
+                    "/bin/bash",
+                    str(script_path),
+                    str(config_path),
+                    "--slurm",
+                ],
+                cwd=root,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            generated_scripts = list(log_dir.glob("*.sbatch"))
+            self.assertEqual(len(generated_scripts), 1)
+            source = generated_scripts[0].read_text(encoding="utf-8")
+
+        self.assertIn("#SBATCH --gpus=5", source)
+        self.assertIn("export CUDA_DEVICE_ORDER=PCI_BUS_ID", source)
+        self.assertIn('if [[ "0" == "1" ]]; then', source)
+        self.assertIn('elif [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then', source)
+        self.assertIn("export CUDA_VISIBLE_DEVICES=0,1,2,3,4", source)
+        self.assertNotIn("export CUDA_VISIBLE_DEVICES=1,2,3,5,0", source)
+
     def test_grad_config_start_script_preserves_profile_selector(self) -> None:
         root = Path(__file__).resolve().parents[1]
         script_path = root / "test_grad_configs" / "start.sh"

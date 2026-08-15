@@ -40,7 +40,7 @@ from eval.runner import (
     validate_resume_config,
     validate_resume_prefix,
 )
-from eval.domains.scoring import score_completion
+from eval.domains.scoring import score_completion, score_with_project_reward
 
 
 class ThinkingEvalTest(unittest.TestCase):
@@ -104,6 +104,31 @@ class ThinkingEvalTest(unittest.TestCase):
         self.assertEqual(prediction, "1,024")
         self.assertEqual(score, 1.0)
         self.assertEqual(normalize_answer(r"\text{A}"), "a")
+
+    @patch("eval.domains.scoring._load_default_compute_score")
+    def test_hmmt_uses_boxed_math_project_reward(self, mock_load_scorer) -> None:
+        captured_sources: list[str] = []
+
+        def fake_score(
+            data_source: str,
+            _completion: str,
+            _ground_truth: str,
+            **_kwargs: object,
+        ) -> float:
+            captured_sources.append(data_source)
+            return 1.0
+
+        mock_load_scorer.return_value = fake_score
+
+        for data_source in ("HMMT25Feb", "HMMT25Nov"):
+            score, _ = score_with_project_reward(
+                data_source,
+                r"Therefore, \boxed{42}.",
+                "42",
+            )
+            self.assertEqual(score, 1.0)
+
+        self.assertEqual(captured_sources, ["AIME2025", "AIME2025"])
 
     def test_remove_think_block_for_scoring(self) -> None:
         self.assertEqual(remove_think_block("<think>reason</think>\nanswer"), "answer")

@@ -568,6 +568,7 @@ def main() -> None:
 
     output_dir.mkdir(parents=True, exist_ok=True)
     run_config_path = output_dir / "eval_run_config.json"
+    incremental_samples_path = output_dir / "thinking_eval_samples.jsonl"
     if args.resume:
         if not run_config_path.is_file():
             raise FileNotFoundError(
@@ -584,7 +585,7 @@ def main() -> None:
             json.dumps(vars(args), indent=2, ensure_ascii=False, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-    incremental_samples_path = output_dir / "thinking_eval_samples.jsonl"
+        incremental_samples_path.write_text("", encoding="utf-8")
     if args.resume:
         if not incremental_samples_path.exists():
             raise FileNotFoundError(
@@ -599,8 +600,6 @@ def main() -> None:
         )
     else:
         results = []
-    if incremental_samples_path.exists() and not args.resume:
-        incremental_samples_path.unlink()
     mode_token_limits = {
         "thinking": args.max_new_tokens_thinking,
         "non_thinking": args.max_new_tokens_non_thinking,

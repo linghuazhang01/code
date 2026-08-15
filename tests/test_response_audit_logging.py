@@ -11,6 +11,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from mopd_verl.audit_io import step_jsonl_dir
+from mopd_verl import audit_response_logging
 from mopd_verl.verl_audit import MOPDAuditLogger
 
 
@@ -141,6 +142,21 @@ def test_complete_response_records_are_step_scoped_and_aligned() -> None:
     assert manifest["configured_token_loss"]["name"] == (
         "topk_renormalized_reverse_kl"
     )
+    assert manifest["identity"] == {
+        "primary_key": "response_uid",
+        "primary_key_scope": "experiment",
+        "primary_key_unique": True,
+        "source_sample_key": "sample_id",
+        "source_sample_key_unique": False,
+        "token_key": ["response_uid", "response_position"],
+        "token_array_unnest": {
+            "response_position": "response_positions",
+            "alignment": (
+                "Unnest response_positions and every per-token array by "
+                "the same array index."
+            ),
+        },
+    }
 
 
 def test_response_records_support_gzip_without_losing_json_schema() -> None:
@@ -154,9 +170,51 @@ def test_response_records_support_gzip_without_losing_json_schema() -> None:
         with gzip.open(path, mode="rt", encoding="utf-8") as handle:
             row = json.loads(handle.readline())
 
-    assert row["schema_version"] == 1
+    assert row["schema_version"] == 2
     assert row["step"] == 3
     assert row["sample_id"] == "math-sample"
+
+
+def test_duplicate_sample_ids_have_unique_response_uids() -> None:
+    with TemporaryDirectory() as output_dir:
+        logger = _logger(output_dir, compression="none")
+        batch = _response_batch()
+        batch.non_tensor_batch["opd_teacher"] = ["math", "math"]
+        batch.non_tensor_batch["sample_id"] = ["repeated-sample", "repeated-sample"]
+
+        logger.log_training_step(batch, step=5, lr=1e-5)
+        path = step_jsonl_dir(output_dir, 5) / "response_records_math.jsonl"
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+
+    assert [row["sample_id"] for row in rows] == [
+        "repeated-sample",
+        "repeated-sample",
+    ]
+    assert len({row["response_uid"] for row in rows}) == 2
+    assert rows[0]["response_uid"] != rows[1]["response_uid"]
+    assert [row["response_uid"] for row in rows] == [
+        "step=5:batch_index=0",
+        "step=5:batch_index=1",
+    ]
+
+
+def test_duplicate_response_uid_is_rejected_before_writing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        audit_response_logging,
+        "_response_uid",
+        lambda _batch, _index: "duplicate-response-uid",
+    )
+    with TemporaryDirectory() as output_dir:
+        logger = _logger(output_dir, compression="none")
+        with pytest.raises(ValueError, match="response_uid must be unique"):
+            logger.log_training_step(_response_batch(), step=6, lr=1e-5)
+        directory = step_jsonl_dir(output_dir, 6)
+
+        assert not (directory / "response_records_math.jsonl").exists()
+        assert not (directory / "response_records_code.jsonl").exists()
+        assert not (directory / "response_manifest.json").exists()
 
 
 def test_missing_required_response_metric_is_reported_without_partial_file() -> None:

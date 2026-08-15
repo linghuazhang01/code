@@ -211,7 +211,7 @@ class StartScriptTests(unittest.TestCase):
             fake_python.write_text(
                 "#!/bin/sh\n"
                 "if [ \"${1:-}\" = \"-\" ]; then\n"
-                "  printf 'dry_run\\t2\\t8\\t0,1\\t/opt/mopd-env/bin\\n'\n"
+                "  printf 'dry_run\\t2\\t8\\t0,1\\t0\\t/opt/mopd-env/bin\\n'\n"
                 "  exit 0\n"
                 "fi\n"
                 "exit 1\n",

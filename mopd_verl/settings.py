@@ -341,6 +341,8 @@ class RuntimeConfig:
     wandb_resume: str | None = None
     env_file: str | None = None
     used_model: str = "no_api"
+    slurm_allocation_gpus: int | None = None
+    cuda_visible_devices: str | None = None
 
     def __post_init__(self) -> None:
         if self.wandb_run_id is not None:
@@ -360,6 +362,22 @@ class RuntimeConfig:
                 "runtime.wandb_run_id is required when "
                 "runtime.wandb_resume=must."
             )
+        if (
+            self.slurm_allocation_gpus is not None
+            and self.slurm_allocation_gpus <= 0
+        ):
+            raise ValueError("runtime.slurm_allocation_gpus must be positive.")
+        if self.cuda_visible_devices is not None:
+            gpu_ids = [part.strip() for part in self.cuda_visible_devices.split(",")]
+            if not gpu_ids or any(not part.isdigit() for part in gpu_ids):
+                raise ValueError(
+                    "runtime.cuda_visible_devices must be comma-separated "
+                    "non-negative integer GPU IDs."
+                )
+            if len(gpu_ids) != len(set(gpu_ids)):
+                raise ValueError(
+                    "runtime.cuda_visible_devices must not contain duplicate GPU IDs."
+                )
 
 
 @dataclass(frozen=True)

@@ -14,7 +14,7 @@ from mopd_verl.audit_io import step_jsonl_dir
 from mopd_verl.tensorboard_tags import safe_name
 
 
-RESPONSE_AUDIT_SCHEMA_VERSION = 1
+RESPONSE_AUDIT_SCHEMA_VERSION = 2
 SUPPORTED_COMPRESSIONS = {"gzip", "none"}
 
 
@@ -86,15 +86,26 @@ def _masked_float_list(matrix: Any | None, index: int, valid: Any) -> list[float
 
 
 def _response_uid(batch: ResponseAuditBatch, index: int) -> str:
-    return (
-        f"step{batch.step}:domain={batch.domains[index]}:"
-        f"row={index}:sample={batch.sample_ids[index]}"
+    """Return the experiment-scoped primary key for one response occurrence."""
+
+    return f"step={batch.step}:batch_index={index}"
+
+
+def _response_uids(batch: ResponseAuditBatch) -> tuple[str, ...]:
+    """Build and validate the response-occurrence primary keys."""
+
+    response_uids = tuple(
+        _response_uid(batch, index) for index in range(len(batch.domains))
     )
+    if len(set(response_uids)) != len(response_uids):
+        raise ValueError("response_uid must be unique within an experiment step.")
+    return response_uids
 
 
 def _response_row(
     batch: ResponseAuditBatch,
     index: int,
+    response_uid: str,
     control_token_ids: frozenset[int],
 ) -> dict[str, Any]:
     import torch
@@ -115,7 +126,7 @@ def _response_row(
         "schema_version": RESPONSE_AUDIT_SCHEMA_VERSION,
         "step": batch.step,
         "domain": batch.domains[index],
-        "response_uid": _response_uid(batch, index),
+        "response_uid": response_uid,
         "sample_id": batch.sample_ids[index],
         "batch_index": index,
         "learning_rate": batch.learning_rate,
@@ -200,6 +211,21 @@ def _manifest(
         "signal_timing": batch.signal_timing,
         "response_count": len(batch.domains),
         "domains": sorted(set(batch.domains)),
+        "identity": {
+            "primary_key": "response_uid",
+            "primary_key_scope": "experiment",
+            "primary_key_unique": True,
+            "source_sample_key": "sample_id",
+            "source_sample_key_unique": False,
+            "token_key": ["response_uid", "response_position"],
+            "token_array_unnest": {
+                "response_position": "response_positions",
+                "alignment": (
+                    "Unnest response_positions and every per-token array by "
+                    "the same array index."
+                ),
+            },
+        },
         "tokenizer": {
             "name_or_path": batch.tokenizer_name_or_path,
             "vocab_size": batch.tokenizer_vocab_size,
@@ -251,6 +277,7 @@ def write_response_audit(
         raise ValueError("domains must contain one entry per response.")
     if len(batch.sample_ids) != int(reference.shape[0]):
         raise ValueError("sample_ids must contain one entry per response.")
+    response_uids = _response_uids(batch)
     for name, matrix in (
         ("response_token_ids", batch.response_token_ids),
         ("student_log_prob", batch.student_log_prob),
@@ -279,7 +306,7 @@ def write_response_audit(
             control_ids = frozenset(
                 (*global_control_token_ids, *domain_control_token_ids.get(domain, ()))
             )
-            row = _response_row(batch, index, control_ids)
+            row = _response_row(batch, index, response_uids[index], control_ids)
             handles[safe_domain].write(
                 json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n"
             )

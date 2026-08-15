@@ -11,6 +11,15 @@ from eval.domains.math import extract_final_answer, simple_score_math_answer
 from eval.domains.search import extract_search_answer
 
 SCORER_NAME = "verl.utils.reward_score.default_compute_score"
+_PROJECT_REWARD_SOURCE_ALIASES = {
+    "hmmt25feb": "AIME2025",
+    "hmmt25nov": "AIME2025",
+}
+
+
+def _project_reward_data_source(data_source: str) -> str:
+    """Return a verl dispatcher alias with the same scoring protocol."""
+    return _PROJECT_REWARD_SOURCE_ALIASES.get(data_source.strip().lower(), data_source)
 
 
 def _load_default_compute_score() -> Any:
@@ -56,14 +65,15 @@ def score_with_project_reward(
         score, _ = simple_score_math_answer(completion, ground_truth)
         return score, [{"scorer": "simple_math_fallback"}]
 
+    project_data_source = _project_reward_data_source(data_source)
     signature = inspect.signature(compute_score)
     supports_extra_info = "extra_info" in signature.parameters or any(
         parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()
     )
     if supports_extra_info:
-        result = compute_score(data_source, completion, ground_truth, extra_info=extra_info)
+        result = compute_score(project_data_source, completion, ground_truth, extra_info=extra_info)
     else:
-        result = compute_score(data_source, completion, ground_truth)
+        result = compute_score(project_data_source, completion, ground_truth)
     if isinstance(result, dict):
         score_value = result.get("score", result.get("reward", result.get("accuracy", 0.0)))
         return float(score_value), [result]
