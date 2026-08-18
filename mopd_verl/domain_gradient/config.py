@@ -48,6 +48,22 @@ def _domain_token_ids(
     )
 
 
+def _domain_candidate_token_ids(
+    value: Any,
+) -> tuple[tuple[str, tuple[int, ...]], ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, Mapping):
+        raise TypeError("domain_control_token_candidate_ids must be a mapping.")
+    return tuple(
+        (
+            str(domain),
+            tuple(sorted({int(token_id) for token_id in token_ids})),
+        )
+        for domain, token_ids in value.items()
+    )
+
+
 def _speed_weight_knots(value: Any) -> tuple[tuple[float, float], ...]:
     if value is None:
         return DEFAULT_CONTROL_SPEED_WEIGHT_KNOTS
@@ -98,7 +114,14 @@ class DomainGradientConfig:
     control_token_weight: float
     control_token_ids: tuple[int, ...]
     domain_control_token_ids: tuple[tuple[str, tuple[int, ...]], ...]
+    control_token_candidate_ids: tuple[int, ...]
+    domain_control_token_candidate_ids: tuple[tuple[str, tuple[int, ...]], ...]
     control_token_normalize_per_domain: bool
+    control_token_online_selection_enabled: bool
+    control_token_online_audit_interval_steps: int
+    control_token_online_window_steps: int
+    control_token_online_min_mean_occurrences_per_step: float
+    control_token_online_top_k: int
     control_token_phase_gate_enabled: bool
     control_token_span_weighting_enabled: bool
     control_token_phase_gate_window_steps: int
@@ -120,9 +143,19 @@ class DomainGradientConfig:
     all_domain_shared_token_top_k: int | None
     unsupported_modes: tuple[str, ...]
 
+    def effective_domain_candidate_map(self) -> dict[str, tuple[int, ...]]:
+        """Return one canonical candidate whitelist for every domain."""
+
+        domain_candidates = dict(self.domain_control_token_candidate_ids)
+        if domain_candidates:
+            return domain_candidates
+        return {domain: self.control_token_candidate_ids for domain in self.domains}
+
     @classmethod
     def from_meta(cls, meta: Any) -> "DomainGradientConfig":
-        domains = tuple(dict.fromkeys(str(value) for value in _get(meta, "domains", ())))
+        domains = tuple(
+            dict.fromkeys(str(value) for value in _get(meta, "domains", ()))
+        )
         parity_frequency = int(_get(meta, "full_grad_training_parity_freq_steps", 1))
         step = int(_get(meta, "step", 0))
         raw_top_k = _get(meta, "token_gradient_top_k", 100)
@@ -139,8 +172,7 @@ class DomainGradientConfig:
             domains=domains,
             storage_dtype=str(_get(meta, "storage_dtype", "float32")),
             parity_enabled=(
-                parity_frequency >= 0
-                and step % max(1, parity_frequency) == 0
+                parity_frequency >= 0 and step % max(1, parity_frequency) == 0
             ),
             parity_rel_l2_threshold=float(
                 _get(meta, "full_grad_training_parity_rel_l2_threshold", 1e-5)
@@ -148,9 +180,7 @@ class DomainGradientConfig:
             closure_rel_l2_threshold=float(
                 _get(meta, "sequence_masked_target_closure_rel_l2_threshold", 0.02)
             ),
-            token_gradient_enabled=bool(
-                _get(meta, "token_gradient_enabled", False)
-            ),
+            token_gradient_enabled=bool(_get(meta, "token_gradient_enabled", False)),
             token_gradient_tail_enabled=bool(
                 _get(meta, "token_gradient_tail_enabled", True)
             ),
@@ -208,7 +238,9 @@ class DomainGradientConfig:
                     "dynamic_domain_loss_weighting_signal_source",
                     "gradient_norm",
                 )
-            ).strip().lower(),
+            )
+            .strip()
+            .lower(),
             dynamic_weighting_ema_beta=float(
                 _get(meta, "dynamic_domain_loss_weighting_ema_beta", 0.90)
             ),
@@ -235,20 +267,59 @@ class DomainGradientConfig:
             control_token_weighting_enabled=bool(
                 _get(meta, "control_token_loss_weighting_enabled", False)
             ),
-            control_token_weight=float(
-                _get(meta, "control_token_loss_weight", 1.0)
-            ),
+            control_token_weight=float(_get(meta, "control_token_loss_weight", 1.0)),
             control_token_ids=tuple(
                 dict.fromkeys(
-                    int(token_id)
-                    for token_id in _get(meta, "control_token_ids", ())
+                    int(token_id) for token_id in _get(meta, "control_token_ids", ())
                 )
             ),
             domain_control_token_ids=_domain_token_ids(
                 _get(meta, "domain_control_token_ids", {})
             ),
+            control_token_candidate_ids=tuple(
+                sorted(
+                    {
+                        int(token_id)
+                        for token_id in _get(
+                            meta,
+                            "control_token_candidate_ids",
+                            (),
+                        )
+                    }
+                )
+            ),
+            domain_control_token_candidate_ids=_domain_candidate_token_ids(
+                _get(meta, "domain_control_token_candidate_ids", {})
+            ),
             control_token_normalize_per_domain=bool(
                 _get(meta, "control_token_normalize_per_domain", False)
+            ),
+            control_token_online_selection_enabled=bool(
+                _get(
+                    meta,
+                    "control_token_online_selection_enabled",
+                    False,
+                )
+            ),
+            control_token_online_audit_interval_steps=int(
+                _get(
+                    meta,
+                    "control_token_online_audit_interval_steps",
+                    3,
+                )
+            ),
+            control_token_online_window_steps=int(
+                _get(meta, "control_token_online_window_steps", 3)
+            ),
+            control_token_online_min_mean_occurrences_per_step=float(
+                _get(
+                    meta,
+                    ("control_token_online_" "min_mean_occurrences_per_step"),
+                    20.0,
+                )
+            ),
+            control_token_online_top_k=int(
+                _get(meta, "control_token_online_top_k", 30)
             ),
             control_token_phase_gate_enabled=bool(
                 _get(meta, "control_token_phase_gate_enabled", False)
@@ -322,11 +393,11 @@ class DomainGradientConfig:
                     "all_domain_shared_token_selection_mode",
                     PER_STEP_MEAN_ABS_LOSS_SELECTION,
                 )
-            ).strip().lower(),
+            )
+            .strip()
+            .lower(),
             all_domain_shared_token_top_k=(
-                None
-                if raw_shared_top_k is None
-                else int(raw_shared_top_k)
+                None if raw_shared_top_k is None else int(raw_shared_top_k)
             ),
             unsupported_modes=tuple(
                 name
@@ -348,10 +419,11 @@ class DomainGradientConfig:
             raise ValueError("token_gradient_tail_fraction must be in (0, 1].")
         if not 0.0 <= self.token_gradient_top_p <= 1.0:
             raise ValueError("token_gradient_top_p must be in [0, 1].")
-        if self.token_gradient_enabled and (
-            self.token_gradient_tail_enabled
-            or self.token_gradient_top_p_enabled
-        ) and not self.token_gradient_loss_abs_selection_enabled:
+        if (
+            self.token_gradient_enabled
+            and (self.token_gradient_tail_enabled or self.token_gradient_top_p_enabled)
+            and not self.token_gradient_loss_abs_selection_enabled
+        ):
             raise ValueError(
                 "Loss-ranked token-gradient statistics require "
                 "token_gradient_loss_abs_selection_enabled=true."
@@ -362,8 +434,7 @@ class DomainGradientConfig:
             )
         if not 0.0 <= self.dynamic_weighting_weight_ema_beta < 1.0:
             raise ValueError(
-                "dynamic_domain_loss_weighting_weight_ema_beta must be "
-                "in [0, 1)."
+                "dynamic_domain_loss_weighting_weight_ema_beta must be " "in [0, 1)."
             )
         if self.dynamic_weighting_signal_source not in DYNAMIC_WEIGHT_SIGNALS:
             allowed = ", ".join(sorted(DYNAMIC_WEIGHT_SIGNALS))
@@ -381,8 +452,7 @@ class DomainGradientConfig:
             or self.dynamic_weighting_max < 1.0
         ):
             raise ValueError(
-                "Dynamic domain loss weight bounds must be positive and "
-                "contain 1.0."
+                "Dynamic domain loss weight bounds must be positive and " "contain 1.0."
             )
         if (
             not math.isfinite(self.control_token_weight)
@@ -395,19 +465,26 @@ class DomainGradientConfig:
             self.control_token_weighting_enabled
             and not self.control_token_ids
             and not self.domain_control_token_ids
+            and not (
+                self.control_token_online_selection_enabled
+                and (
+                    self.control_token_candidate_ids
+                    or self.domain_control_token_candidate_ids
+                )
+            )
         ):
             raise ValueError(
-                "Control-token loss weighting requires control_token_ids or "
-                "domain_control_token_ids."
+                "Control-token loss weighting requires fixed token IDs or "
+                "online candidate token IDs."
             )
         if self.control_token_ids and self.domain_control_token_ids:
             raise ValueError(
                 "Configure either control_token_ids or "
                 "domain_control_token_ids, not both."
             )
-        unknown_domains = {
-            domain for domain, _ in self.domain_control_token_ids
-        } - set(self.domains)
+        unknown_domains = {domain for domain, _ in self.domain_control_token_ids} - set(
+            self.domains
+        )
         if unknown_domains:
             raise ValueError(
                 "domain_control_token_ids contains unknown domains: "
@@ -423,49 +500,99 @@ class DomainGradientConfig:
                 "domain_control_token_ids entries must be non-empty: "
                 + ", ".join(empty_domains)
             )
+        if any(token_id < 0 for token_id in self.control_token_candidate_ids):
+            raise ValueError("control_token_candidate_ids must be non-negative.")
+        domain_candidates = dict(self.domain_control_token_candidate_ids)
+        if self.control_token_candidate_ids and domain_candidates:
+            raise ValueError(
+                "Configure either global or domain Control-token candidate "
+                "IDs, not both."
+            )
+        if domain_candidates and set(domain_candidates) != set(self.domains):
+            raise ValueError(
+                "domain_control_token_candidate_ids keys must exactly match " "domains."
+            )
+        if any(not token_ids for token_ids in domain_candidates.values()):
+            raise ValueError(
+                "domain_control_token_candidate_ids entries must be non-empty."
+            )
+        if any(
+            token_id < 0
+            for token_ids in domain_candidates.values()
+            for token_id in token_ids
+        ):
+            raise ValueError("domain_control_token_candidate_ids must be non-negative.")
+        if (
+            self.control_token_online_audit_interval_steps < 1
+            or self.control_token_online_window_steps < 1
+            or self.control_token_online_top_k < 1
+        ):
+            raise ValueError(
+                "Online Control audit interval, window, and Top-K must be " "positive."
+            )
+        if (
+            not math.isfinite(self.control_token_online_min_mean_occurrences_per_step)
+            or self.control_token_online_min_mean_occurrences_per_step < 0.0
+        ):
+            raise ValueError(
+                "Online Control minimum mean occurrences must be finite and "
+                "non-negative."
+            )
+        if self.control_token_online_selection_enabled:
+            if not self.control_token_weighting_enabled:
+                raise ValueError(
+                    "Online Control selection requires Control-token loss "
+                    "weighting to be enabled."
+                )
+            if not (
+                self.control_token_candidate_ids
+                or self.domain_control_token_candidate_ids
+            ):
+                raise ValueError(
+                    "Online Control selection requires "
+                    "global or domain candidate token IDs."
+                )
+            if self.control_token_ids or self.domain_control_token_ids:
+                raise ValueError(
+                    "Online Control selection cannot be combined with fixed "
+                    "Control-token IDs."
+                )
+            if (
+                self.control_token_speed_weighting_enabled
+                or self.control_token_phase_gate_enabled
+                or self.control_token_span_weighting_enabled
+            ):
+                raise ValueError(
+                    "Online Control selection is mutually exclusive with "
+                    "speed, phase-gate, and successor-span weighting."
+                )
         if not 0.0 <= self.control_token_phase_gate_ema_beta < 1.0:
-            raise ValueError(
-                "control_token_phase_gate_ema_beta must be in [0, 1)."
-            )
+            raise ValueError("control_token_phase_gate_ema_beta must be in [0, 1).")
         if self.control_token_phase_gate_temperature <= 0.0:
-            raise ValueError(
-                "control_token_phase_gate_temperature must be positive."
-            )
+            raise ValueError("control_token_phase_gate_temperature must be positive.")
         if not 0.0 <= self.control_token_phase_gate_initial <= 1.0:
-            raise ValueError(
-                "control_token_phase_gate_initial must be in [0, 1]."
-            )
+            raise ValueError("control_token_phase_gate_initial must be in [0, 1].")
         if self.control_token_span_decay_tau <= 0.0:
-            raise ValueError(
-                "control_token_span_decay_tau must be positive."
-            )
+            raise ValueError("control_token_span_decay_tau must be positive.")
         if not 0.0 <= self.control_token_speed_ema_beta < 1.0:
-            raise ValueError(
-                "control_token_speed_ema_beta must be in [0, 1)."
-            )
+            raise ValueError("control_token_speed_ema_beta must be in [0, 1).")
         if self.control_token_speed_initial_weight < 0.0:
-            raise ValueError(
-                "control_token_speed_initial_weight must be non-negative."
-            )
+            raise ValueError("control_token_speed_initial_weight must be non-negative.")
         if len(self.control_token_speed_weight_knots) < 2:
             raise ValueError(
                 "control_token_speed_weight_knots requires at least two knots."
             )
-        for index, (speed, weight) in enumerate(
-            self.control_token_speed_weight_knots
-        ):
+        for index, (speed, weight) in enumerate(self.control_token_speed_weight_knots):
             if not math.isfinite(speed) or not math.isfinite(weight):
-                raise ValueError(
-                    "control_token_speed_weight_knots must be finite."
-                )
+                raise ValueError("control_token_speed_weight_knots must be finite.")
             if weight < 0.0:
                 raise ValueError(
-                    "control_token_speed_weight_knots weights must be "
-                    "non-negative."
+                    "control_token_speed_weight_knots weights must be " "non-negative."
                 )
-            if index > 0 and speed <= self.control_token_speed_weight_knots[
-                index - 1
-            ][0]:
+            if (
+                index > 0
+                and speed <= self.control_token_speed_weight_knots[index - 1][0]
+            ):
                 raise ValueError(
                     "control_token_speed_weight_knots speeds must be strictly "
                     "increasing."
@@ -500,8 +627,7 @@ class DomainGradientConfig:
             and not self.control_token_phase_gate_enabled
         ):
             raise ValueError(
-                "Successor-span weighting requires control-token phase "
-                "gating."
+                "Successor-span weighting requires control-token phase " "gating."
             )
         if self.all_domain_shared_token_weight < 1.0:
             raise ValueError(
@@ -513,8 +639,7 @@ class DomainGradientConfig:
         ):
             allowed = ", ".join(sorted(SHARED_TOKEN_SELECTION_MODES))
             raise ValueError(
-                "all_domain_shared_token_selection_mode must be one of: "
-                f"{allowed}."
+                "all_domain_shared_token_selection_mode must be one of: " f"{allowed}."
             )
         if (
             self.all_domain_shared_token_top_k is not None
@@ -523,10 +648,7 @@ class DomainGradientConfig:
             raise ValueError(
                 "all_domain_shared_token_top_k must be null or at least 1."
             )
-        if (
-            self.all_domain_shared_token_weighting_enabled
-            and len(self.domains) < 2
-        ):
+        if self.all_domain_shared_token_weighting_enabled and len(self.domains) < 2:
             raise ValueError(
                 "All-domain shared-token weighting requires at least two "
                 "configured domains."
@@ -534,7 +656,9 @@ class DomainGradientConfig:
         if not self.enabled:
             return
         if not self.domains:
-            raise ValueError("Domain-gradient audit requires at least one configured domain.")
+            raise ValueError(
+                "Domain-gradient audit requires at least one configured domain."
+            )
         if self.storage_dtype.lower() not in {
             "float32",
             "fp32",
@@ -544,4 +668,6 @@ class DomainGradientConfig:
             "bfloat16",
             "bf16",
         }:
-            raise ValueError(f"Unsupported domain-gradient storage dtype: {self.storage_dtype!r}")
+            raise ValueError(
+                f"Unsupported domain-gradient storage dtype: {self.storage_dtype!r}"
+            )

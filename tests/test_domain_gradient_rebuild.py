@@ -48,8 +48,12 @@ class DomainGradientConfigTests(unittest.TestCase):
             "full_grad_training_parity_freq_steps": 3,
         }
 
-        self.assertFalse(DomainGradientConfig.from_meta({**common, "step": 4}).parity_enabled)
-        self.assertTrue(DomainGradientConfig.from_meta({**common, "step": 6}).parity_enabled)
+        self.assertFalse(
+            DomainGradientConfig.from_meta({**common, "step": 4}).parity_enabled
+        )
+        self.assertTrue(
+            DomainGradientConfig.from_meta({**common, "step": 6}).parity_enabled
+        )
 
     def test_legacy_nested_gradient_replay_fails_fast(self) -> None:
         with self.assertRaisesRegex(ValueError, "sample_gradient_enabled"):
@@ -134,9 +138,7 @@ class DomainGradientConfigTests(unittest.TestCase):
         )
         configs = [
             DomainGradientConfig.from_meta(
-                logger.full_gradient_meta("train", step)[
-                    "mopd_full_gradient"
-                ]
+                logger.full_gradient_meta("train", step)["mopd_full_gradient"]
             )
             for step in range(1, 5)
         ]
@@ -163,12 +165,8 @@ class DomainGradientConfigTests(unittest.TestCase):
             }
         )
 
-        step_one_meta = logger.full_gradient_meta("train", 1)[
-            "mopd_full_gradient"
-        ]
-        step_four_meta = logger.full_gradient_meta("train", 4)[
-            "mopd_full_gradient"
-        ]
+        step_one_meta = logger.full_gradient_meta("train", 1)["mopd_full_gradient"]
+        step_four_meta = logger.full_gradient_meta("train", 4)["mopd_full_gradient"]
         step_one = DomainGradientConfig.from_meta(step_one_meta)
         step_four = DomainGradientConfig.from_meta(step_four_meta)
 
@@ -204,9 +202,7 @@ class DomainGradientConfigTests(unittest.TestCase):
                 "control_token_ids": [11, 22, 11],
                 "all_domain_shared_token_loss_weighting_enabled": True,
                 "all_domain_shared_token_loss_weight": 1.5,
-                "all_domain_shared_token_selection_mode": (
-                    "cumulative_abs_loss"
-                ),
+                "all_domain_shared_token_selection_mode": ("cumulative_abs_loss"),
                 "all_domain_shared_token_top_k": 200,
             }
         )
@@ -218,6 +214,100 @@ class DomainGradientConfigTests(unittest.TestCase):
             "cumulative_abs_loss",
         )
         self.assertEqual(config.all_domain_shared_token_top_k, 200)
+
+    def test_online_control_selection_configuration_is_supported(self) -> None:
+        config = DomainGradientConfig.from_meta(
+            {
+                "domains": ["math", "code", "science"],
+                "control_token_loss_weighting_enabled": True,
+                "control_token_loss_weight": 4.0,
+                "control_token_candidate_ids": [30, 10, 30, 20],
+                "control_token_normalize_per_domain": True,
+                "control_token_online_selection_enabled": True,
+                "control_token_online_audit_interval_steps": 3,
+                "control_token_online_window_steps": 3,
+                "control_token_online_min_mean_occurrences_per_step": 20.0,
+                "control_token_online_top_k": 30,
+            }
+        )
+
+        self.assertTrue(config.control_token_online_selection_enabled)
+        self.assertEqual(config.control_token_candidate_ids, (10, 20, 30))
+        self.assertEqual(config.control_token_online_audit_interval_steps, 3)
+        self.assertEqual(config.control_token_online_window_steps, 3)
+        self.assertEqual(
+            config.control_token_online_min_mean_occurrences_per_step,
+            20.0,
+        )
+        self.assertEqual(config.control_token_online_top_k, 30)
+
+    def test_domain_online_control_candidates_are_canonicalized(self) -> None:
+        config = DomainGradientConfig.from_meta(
+            {
+                "domains": ["math", "code", "science"],
+                "control_token_loss_weighting_enabled": True,
+                "domain_control_token_candidate_ids": {
+                    "math": [30, 10, 30],
+                    "code": [20, 10],
+                    "science": [40],
+                },
+                "control_token_online_selection_enabled": True,
+            }
+        )
+
+        self.assertEqual(config.control_token_candidate_ids, ())
+        self.assertEqual(
+            config.effective_domain_candidate_map(),
+            {
+                "math": (10, 30),
+                "code": (10, 20),
+                "science": (40,),
+            },
+        )
+
+    def test_domain_online_control_candidates_require_exact_domains(self) -> None:
+        base = {
+            "domains": ["math", "code"],
+            "control_token_loss_weighting_enabled": True,
+            "control_token_online_selection_enabled": True,
+        }
+        for candidates in (
+            {"math": [10]},
+            {"math": [10], "code": [20], "science": [30]},
+            {"math": [10], "code": []},
+        ):
+            with self.subTest(candidates=candidates):
+                with self.assertRaises((TypeError, ValueError)):
+                    DomainGradientConfig.from_meta(
+                        {
+                            **base,
+                            "domain_control_token_candidate_ids": candidates,
+                        }
+                    )
+
+    def test_online_control_candidates_reject_both_sources(self) -> None:
+        with self.assertRaisesRegex(ValueError, "either.*candidate"):
+            DomainGradientConfig.from_meta(
+                {
+                    "domains": ["math"],
+                    "control_token_loss_weighting_enabled": True,
+                    "control_token_candidate_ids": [10],
+                    "domain_control_token_candidate_ids": {"math": [10]},
+                    "control_token_online_selection_enabled": True,
+                }
+            )
+
+    def test_online_control_selection_rejects_fixed_ids(self) -> None:
+        with self.assertRaisesRegex(ValueError, "fixed Control-token IDs"):
+            DomainGradientConfig.from_meta(
+                {
+                    "domains": ["math"],
+                    "control_token_loss_weighting_enabled": True,
+                    "control_token_ids": [10],
+                    "control_token_candidate_ids": [10, 20],
+                    "control_token_online_selection_enabled": True,
+                }
+            )
 
     def test_domain_phase_control_configuration_is_supported(self) -> None:
         config = DomainGradientConfig.from_meta(
@@ -332,9 +422,7 @@ class DomainGradientConfigTests(unittest.TestCase):
         )
 
         self.assertTrue(logger.should_compute_full_gradient(1))
-        meta = logger.full_gradient_meta("train", 1)[
-            "mopd_full_gradient"
-        ]
+        meta = logger.full_gradient_meta("train", 1)["mopd_full_gradient"]
         config = DomainGradientConfig.from_meta(meta)
         self.assertFalse(config.enabled)
         self.assertTrue(config.control_token_weighting_enabled)
@@ -346,9 +434,9 @@ class DomainGradientSourceTests(unittest.TestCase):
         actor_source = (
             ROOT / "third_party/verl/verl/workers/actor/dp_actor.py"
         ).read_text(encoding="utf-8")
-        audit_source = (
-            ROOT / "mopd_verl/domain_gradient/audit.py"
-        ).read_text(encoding="utf-8")
+        audit_source = (ROOT / "mopd_verl/domain_gradient/audit.py").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn("build_actor_micro_batch_loss(", actor_source)
         self.assertIn("build_actor_micro_batch_loss(", audit_source)
@@ -361,9 +449,9 @@ class DomainGradientSourceTests(unittest.TestCase):
         self.assertIn("+ domain_count", audit_source)
 
     def test_audit_total_uses_configured_storage_dtype(self) -> None:
-        audit_source = (
-            ROOT / "mopd_verl/domain_gradient/audit.py"
-        ).read_text(encoding="utf-8")
+        audit_source = (ROOT / "mopd_verl/domain_gradient/audit.py").read_text(
+            encoding="utf-8"
+        )
 
         self.assertNotIn('"float32" if self.config.parity_enabled', audit_source)
         self.assertIn(
@@ -374,9 +462,9 @@ class DomainGradientSourceTests(unittest.TestCase):
         )
 
     def test_gradient_override_is_a_pure_domain_selector(self) -> None:
-        actor_loss_source = (
-            ROOT / "mopd_verl/full_gradient/actor_loss.py"
-        ).read_text(encoding="utf-8")
+        actor_loss_source = (ROOT / "mopd_verl/full_gradient/actor_loss.py").read_text(
+            encoding="utf-8"
+        )
 
         self.assertNotIn("floating_response_gradient_mask(", actor_loss_source)
         self.assertIn("gradient_mask_override.to(", actor_loss_source)
@@ -398,16 +486,20 @@ class DomainGradientSourceTests(unittest.TestCase):
         )
 
     def test_old_tracker_is_only_a_compatibility_shim(self) -> None:
-        source = (ROOT / "mopd_verl/full_gradient/tracker.py").read_text(encoding="utf-8")
+        source = (ROOT / "mopd_verl/full_gradient/tracker.py").read_text(
+            encoding="utf-8"
+        )
 
         self.assertLess(len(source.splitlines()), 30)
         self.assertIn("DomainGradientAudit", source)
 
     def test_domain_batch_sampler_takes_precedence_over_plain_sampler(self) -> None:
-        source = (
-            ROOT / "third_party/verl/verl/trainer/ppo/ray_trainer.py"
-        ).read_text(encoding="utf-8")
-        create_index = source.index("train_batch_sampler = create_domain_batch_sampler(")
+        source = (ROOT / "third_party/verl/verl/trainer/ppo/ray_trainer.py").read_text(
+            encoding="utf-8"
+        )
+        create_index = source.index(
+            "train_batch_sampler = create_domain_batch_sampler("
+        )
         fallback_index = source.index(
             "if train_batch_sampler is None and train_sampler is None:"
         )
@@ -415,9 +507,9 @@ class DomainGradientSourceTests(unittest.TestCase):
         self.assertLess(create_index, fallback_index)
 
     def test_shared_teacher_config_avoids_redundant_tensor_aliases(self) -> None:
-        main_source = (
-            ROOT / "third_party/verl/verl/trainer/main_ppo.py"
-        ).read_text(encoding="utf-8")
+        main_source = (ROOT / "third_party/verl/verl/trainer/main_ppo.py").read_text(
+            encoding="utf-8"
+        )
         trainer_source = (
             ROOT / "third_party/verl/verl/trainer/ppo/ray_trainer.py"
         ).read_text(encoding="utf-8")
@@ -488,9 +580,7 @@ class DomainGradientSourceTests(unittest.TestCase):
         copy_index = trainer_source.index(
             'configured_token_loss_key = "configured_token_loss"'
         )
-        audit_index = trainer_source.index(
-            "self.mopd_audit_logger.log_training_step("
-        )
+        audit_index = trainer_source.index("self.mopd_audit_logger.log_training_step(")
 
         self.assertLess(update_index, copy_index)
         self.assertLess(copy_index, audit_index)
@@ -518,8 +608,7 @@ class DomainGradientSourceTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn(
-            "audit.config.dynamic_weighting_enabled "
-            "and len(mini_batches) != 1",
+            "audit.config.dynamic_weighting_enabled " "and len(mini_batches) != 1",
             actor_source,
         )
         self.assertIn(
@@ -562,9 +651,9 @@ class DomainGradientSourceTests(unittest.TestCase):
         self.assertEqual(after, before)
 
     def test_standalone_ref_worker_uses_ref_fsdp_mesh(self) -> None:
-        source = (
-            ROOT / "third_party/verl/verl/workers/fsdp_workers.py"
-        ).read_text(encoding="utf-8")
+        source = (ROOT / "third_party/verl/verl/workers/fsdp_workers.py").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn(
             'self.config.ref.fsdp_config if self.role == "ref"',
@@ -665,8 +754,8 @@ class GradientGateTorchTests(unittest.TestCase):
 
         self.assertTrue(torch.equal(gated_values, values))
         gated_values.float().sum().backward()
-        expected_gradient = gate.to(dtype=torch.bfloat16).unsqueeze(-1).expand_as(
-            values
+        expected_gradient = (
+            gate.to(dtype=torch.bfloat16).unsqueeze(-1).expand_as(values)
         )
         self.assertTrue(torch.equal(values.grad, expected_gradient))
 
@@ -740,7 +829,9 @@ class GradientGateTorchTests(unittest.TestCase):
         state.restore()
 
         self.assertTrue(module.training)
-        torch.testing.assert_close(module.running_mean, torch.zeros_like(module.running_mean))
+        torch.testing.assert_close(
+            module.running_mean, torch.zeros_like(module.running_mean)
+        )
         torch.testing.assert_close(parameter.grad, torch.ones_like(parameter))
         torch.testing.assert_close(torch.rand(4), expected_random)
 

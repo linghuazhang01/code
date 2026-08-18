@@ -52,6 +52,46 @@ Top-100 Control ID，包括 `as`、`In`、`This`、`As`、`For`、`Then`、
 并集，而不是将 heuristic 词典中从未进入 Top-100 的所有大小写/空格变体
 无限扩张。
 
+### 2.1 在线候选审计与动态激活
+
+固定 Control weighting 也可以切换为 online selection submode：
+
+```yaml
+audit:
+  control_token_loss_weighting_enabled: true
+  control_token_loss_weight: 4.0
+  control_token_ids: []
+  domain_control_token_ids: {}
+  control_token_candidate_ids: []
+  domain_control_token_candidate_ids:
+    math: [123, 456]
+    code: [456, 789]
+    science: [123, 789]
+  control_token_normalize_per_domain: true
+  control_token_online_selection_enabled: true
+  control_token_online_audit_interval_steps: 3
+  control_token_online_window_steps: 3
+  control_token_online_min_mean_occurrences_per_step: 20.0
+  control_token_online_top_k: 30
+```
+
+`domain_control_token_candidate_ids` 是按 domain 冻结的 whitelist，本身不会被
+直接加权；其 keys 必须与 `audit.domains` 完全一致。旧的
+`control_token_candidate_ids` 仍可作为 global fallback：它会展开到所有 domain，
+但两个 candidate 字段不能同时配置。每个
+完成的 optimizer step 使用 production forward 已返回的 raw configured
+token loss，按 domain 和候选 ID 累加 absolute-loss sum 与 occurrence count。
+当 rolling window 已填满且 step 命中 audit interval 时，token 先通过
+`window occurrence count / window_steps >= threshold` 的频次门槛，再按
+`window absolute-loss sum / window occurrence count` 排名，各 domain 独立激活
+Top-K。step `t` 的审计结果从 step `t+1` 生效，避免 same-batch feedback。
+
+rolling window、当前 active IDs 和 audit step 随 optimizer checkpoint 保存；
+resume 时配置签名必须一致。step gap 会清空窗口和 stale active set。该模式要求
+`ppo_epochs: 1` 且整个 actor update 只有一个 optimizer mini-batch，并与 fixed
+IDs、speed controller、phase gate 和 successor-span weighting 互斥。完整记录写入
+`<audit.output_dir>/step_XXXXXX/jsonls/online_control_selection.jsonl`。
+
 ## 3. 提高所有 domain 共同高 loss token 的优化比重
 
 ```yaml

@@ -18,6 +18,15 @@ from mopd_verl.domain_gradient.control_speed import (
     piecewise_linear_weight,
     update_control_speed_state,
 )
+from mopd_verl.domain_gradient.control_top_loss import (
+    OnlineControlSelectionState,
+    initial_online_control_selection_state,
+    update_online_control_selection,
+)
+from mopd_verl.domain_gradient.control_top_loss_runtime import (
+    append_online_control_selection_jsonl,
+    global_candidate_loss_statistics,
+)
 from mopd_verl.domain_gradient.config import DomainGradientConfig
 from mopd_verl.domain_gradient.geometry import (
     GradientVector,
@@ -148,9 +157,7 @@ class DomainGradientAudit:
             serialized_phase_state,
             dict,
         ):
-            phase_state = PhaseControlState.from_mapping(
-                serialized_phase_state
-            )
+            phase_state = PhaseControlState.from_mapping(serialized_phase_state)
         if (
             not isinstance(phase_state, PhaseControlState)
             or phase_state.domains != self.config.domains
@@ -171,23 +178,16 @@ class DomainGradientAudit:
             serialized_speed_state,
             dict,
         ):
-            speed_state = ControlSpeedState.from_mapping(
-                serialized_speed_state
-            )
+            speed_state = ControlSpeedState.from_mapping(serialized_speed_state)
         if (
             not isinstance(speed_state, ControlSpeedState)
             or speed_state.domains != self.config.domains
-            or speed_state.weight_knots
-            != self.config.control_token_speed_weight_knots
+            or speed_state.weight_knots != self.config.control_token_speed_weight_knots
         ):
             speed_state = initial_control_speed_state(
                 self.config.domains,
-                initial_weight=(
-                    self.config.control_token_speed_initial_weight
-                ),
-                weight_knots=(
-                    self.config.control_token_speed_weight_knots
-                ),
+                initial_weight=(self.config.control_token_speed_initial_weight),
+                weight_knots=(self.config.control_token_speed_weight_knots),
             )
         self._control_speed_state = speed_state
         self._applied_control_speed_weights = speed_state.weight_map()
@@ -195,6 +195,67 @@ class DomainGradientAudit:
             str,
             ControlGapObservation,
         ] = {}
+        self._online_control_selection_state: OnlineControlSelectionState | None = None
+        self._applied_online_control_token_ids: dict[
+            str,
+            tuple[int, ...],
+        ] = {}
+        if self.config.control_token_online_selection_enabled:
+            online_state = getattr(
+                actor,
+                "_mopd_online_control_selection_state",
+                None,
+            )
+            serialized_online_state = (
+                optimizer_groups[0].get("mopd_online_control_selection_state")
+                if optimizer_groups
+                else None
+            )
+            if not isinstance(online_state, OnlineControlSelectionState) and isinstance(
+                serialized_online_state, dict
+            ):
+                online_state = OnlineControlSelectionState.from_mapping(
+                    serialized_online_state
+                )
+            expected_state = initial_online_control_selection_state(
+                self.config.domains,
+                self.config.effective_domain_candidate_map(),
+                audit_interval_steps=(
+                    self.config.control_token_online_audit_interval_steps
+                ),
+                window_steps=(self.config.control_token_online_window_steps),
+                min_mean_occurrences_per_step=(
+                    self.config.control_token_online_min_mean_occurrences_per_step
+                ),
+                top_k=self.config.control_token_online_top_k,
+            )
+            if online_state is None:
+                online_state = expected_state
+            elif (
+                online_state.domains != expected_state.domains
+                or online_state.domain_candidate_token_ids
+                != expected_state.domain_candidate_token_ids
+                or online_state.audit_interval_steps
+                != expected_state.audit_interval_steps
+                or online_state.window_steps != expected_state.window_steps
+                or online_state.min_mean_occurrences_per_step
+                != expected_state.min_mean_occurrences_per_step
+                or online_state.top_k != expected_state.top_k
+            ):
+                raise ValueError(
+                    "Checkpointed online Control selection state does not "
+                    "match the current configuration."
+                )
+            self._online_control_selection_state = online_state
+            has_step_gap = (
+                online_state.last_observed_step is not None
+                and self.config.step > online_state.last_observed_step + 1
+            )
+            self._applied_online_control_token_ids = (
+                {domain: () for domain in self.config.domains}
+                if has_step_gap
+                else online_state.active_map()
+            )
         self._shared_token_selection = SharedTokenSelection(
             token_ids=tuple(),
             domain_top_token_ids=tuple(
@@ -205,9 +266,7 @@ class DomainGradientAudit:
             tuple[str, torch.device, torch.dtype],
             torch.Tensor,
         ] = {}
-        self._cumulative_token_loss_state: (
-            CumulativeTokenLossState | None
-        ) = None
+        self._cumulative_token_loss_state: CumulativeTokenLossState | None = None
         if (
             self.config.all_domain_shared_token_weighting_enabled
             and self.config.all_domain_shared_token_selection_mode
@@ -219,19 +278,14 @@ class DomainGradientAudit:
                 None,
             )
             serialized_cumulative_state = (
-                optimizer_groups[0].get(
-                    "mopd_cumulative_token_loss_state"
-                )
+                optimizer_groups[0].get("mopd_cumulative_token_loss_state")
                 if optimizer_groups
                 else None
             )
-            if (
-                not isinstance(
-                    cumulative_state,
-                    CumulativeTokenLossState,
-                )
-                and isinstance(serialized_cumulative_state, dict)
-            ):
+            if not isinstance(
+                cumulative_state,
+                CumulativeTokenLossState,
+            ) and isinstance(serialized_cumulative_state, dict):
                 cumulative_state = CumulativeTokenLossState.from_mapping(
                     serialized_cumulative_state
                 )
@@ -243,9 +297,7 @@ class DomainGradientAudit:
                 cumulative_state,
                 CumulativeTokenLossState,
             ):
-                raise ValueError(
-                    "Cumulative token-loss state has an unsupported type."
-                )
+                raise ValueError("Cumulative token-loss state has an unsupported type.")
             if cumulative_state.domains != self.config.domains:
                 raise ValueError(
                     "Cumulative token-loss state domains do not match "
@@ -269,9 +321,9 @@ class DomainGradientAudit:
             (),
         )
         if optimizer_groups:
-            optimizer_groups[0]["mopd_domain_weight_state"] = (
-                self._weight_state.as_dict()
-            )
+            optimizer_groups[0][
+                "mopd_domain_weight_state"
+            ] = self._weight_state.as_dict()
 
     def _persist_phase_control_state(self) -> None:
         self.actor._mopd_phase_control_state = self._phase_control_state
@@ -281,9 +333,9 @@ class DomainGradientAudit:
             (),
         )
         if optimizer_groups:
-            optimizer_groups[0]["mopd_phase_control_state"] = (
-                self._phase_control_state.as_dict()
-            )
+            optimizer_groups[0][
+                "mopd_phase_control_state"
+            ] = self._phase_control_state.as_dict()
 
     def _persist_control_speed_state(self) -> None:
         self.actor._mopd_control_speed_state = self._control_speed_state
@@ -293,9 +345,9 @@ class DomainGradientAudit:
             (),
         )
         if optimizer_groups:
-            optimizer_groups[0]["mopd_control_speed_state"] = (
-                self._control_speed_state.as_dict()
-            )
+            optimizer_groups[0][
+                "mopd_control_speed_state"
+            ] = self._control_speed_state.as_dict()
 
     def _persist_cumulative_token_loss_state(self) -> None:
         state = self._cumulative_token_loss_state
@@ -308,9 +360,20 @@ class DomainGradientAudit:
             (),
         )
         if optimizer_groups:
-            optimizer_groups[0]["mopd_cumulative_token_loss_state"] = (
-                state.as_dict()
-            )
+            optimizer_groups[0]["mopd_cumulative_token_loss_state"] = state.as_dict()
+
+    def _persist_online_control_selection_state(self) -> None:
+        state = self._online_control_selection_state
+        if state is None:
+            return
+        self.actor._mopd_online_control_selection_state = state
+        optimizer_groups = getattr(
+            getattr(self.actor, "actor_optimizer", None),
+            "param_groups",
+            (),
+        )
+        if optimizer_groups:
+            optimizer_groups[0]["mopd_online_control_selection_state"] = state.as_dict()
 
     def _should_update_dynamic_weighting(self) -> bool:
         return (
@@ -365,6 +428,13 @@ class DomainGradientAudit:
             self._token_id_tensor_cache[key] = cached
         return cached
 
+    def _active_domain_control_token_ids(
+        self,
+    ) -> dict[str, tuple[int, ...]]:
+        if self.config.control_token_online_selection_enabled:
+            return dict(self._applied_online_control_token_ids)
+        return dict(self.config.domain_control_token_ids)
+
     def _domain_control_token_tensor_map(
         self,
         reference: torch.Tensor,
@@ -375,7 +445,7 @@ class DomainGradientAudit:
                 token_ids,
                 reference,
             )
-            for domain, token_ids in self.config.domain_control_token_ids
+            for domain, token_ids in (self._active_domain_control_token_ids().items())
         }
 
     def training_gradient_mask(
@@ -388,10 +458,7 @@ class DomainGradientAudit:
             self.config.control_token_weighting_enabled
             or self.config.all_domain_shared_token_weighting_enabled
         )
-        if (
-            not self.config.dynamic_weighting_enabled
-            and not token_weighting_enabled
-        ):
+        if not self.config.dynamic_weighting_enabled and not token_weighting_enabled:
             return None
         model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
         response_mask = model_inputs["response_mask"]
@@ -425,22 +492,18 @@ class DomainGradientAudit:
                 model_inputs,
                 int(response_mask.shape[0]),
             )
-            if (
-                self.config.control_token_weighting_enabled
-                and self.config.domain_control_token_ids
+            if self.config.control_token_weighting_enabled and (
+                self.config.domain_control_token_ids
+                or self._applied_online_control_token_ids
             ):
-                domain_token_ids = self._domain_control_token_tensor_map(
-                    token_ids
-                )
+                domain_token_ids = self._domain_control_token_tensor_map(token_ids)
                 if self.config.control_token_speed_weighting_enabled:
                     token_weights = domain_control_token_weights(
                         token_ids,
                         response_mask,
                         labels,
                         domain_token_ids=domain_token_ids,
-                        domain_weights=(
-                            self._applied_control_speed_weights
-                        ),
+                        domain_weights=(self._applied_control_speed_weights),
                         normalize_per_domain=(
                             self.config.control_token_normalize_per_domain
                         ),
@@ -452,17 +515,11 @@ class DomainGradientAudit:
                         labels,
                         domain_token_ids=domain_token_ids,
                         control_weight=self.config.control_token_weight,
-                        phase_enabled=(
-                            self.config.control_token_phase_gate_enabled
-                        ),
-                        span_enabled=(
-                            self.config.control_token_span_weighting_enabled
-                        ),
+                        phase_enabled=(self.config.control_token_phase_gate_enabled),
+                        span_enabled=(self.config.control_token_span_weighting_enabled),
                         phase_gates=self._phase_control_state.gate_map(),
                         span_length=self.config.control_token_span_length,
-                        span_decay_tau=(
-                            self.config.control_token_span_decay_tau
-                        ),
+                        span_decay_tau=(self.config.control_token_span_decay_tau),
                         normalize_per_domain=(
                             self.config.control_token_normalize_per_domain
                         ),
@@ -492,9 +549,7 @@ class DomainGradientAudit:
                     if self.config.all_domain_shared_token_weighting_enabled
                     else ()
                 ),
-                shared_token_weight=(
-                    self.config.all_domain_shared_token_weight
-                ),
+                shared_token_weight=(self.config.all_domain_shared_token_weight),
             )
         return gradient_weights
 
@@ -505,17 +560,14 @@ class DomainGradientAudit:
         """Snapshot the exact token multipliers used by production backward."""
 
         optional_masks = tuple(
-            self.training_gradient_mask(micro_batch)
-            for micro_batch in micro_batches
+            self.training_gradient_mask(micro_batch) for micro_batch in micro_batches
         )
         if any(mask is None for mask in optional_masks):
             raise RuntimeError(
                 "Production-weighted token gradients require training "
                 "gradient masks."
             )
-        return tuple(
-            mask for mask in optional_masks if mask is not None
-        )
+        return tuple(mask for mask in optional_masks if mask is not None)
 
     def _domain_production_gradient_masks(
         self,
@@ -575,12 +627,8 @@ class DomainGradientAudit:
 
         candidates_by_domain, mask_templates = candidate_data
         if len(mask_templates) != len(production_masks):
-            raise ValueError(
-                "Candidate templates and production masks must align."
-            )
-        masks_cpu = tuple(
-            mask.detach().float().cpu() for mask in production_masks
-        )
+            raise ValueError("Candidate templates and production masks must align.")
+        masks_cpu = tuple(mask.detach().float().cpu() for mask in production_masks)
         reweighted: dict[str, tuple[LocalTokenCandidate, ...]] = {}
         for domain, candidates in candidates_by_domain.items():
             weighted_candidates: list[LocalTokenCandidate] = []
@@ -601,12 +649,8 @@ class DomainGradientAudit:
                         sample_index=candidate.sample_index,
                         token_index=candidate.token_index,
                         token_id=candidate.token_id,
-                        configured_loss=(
-                            candidate.configured_loss * multiplier
-                        ),
-                        loss_abs=(
-                            candidate.loss_abs * abs(multiplier)
-                        ),
+                        configured_loss=(candidate.configured_loss * multiplier),
+                        loss_abs=(candidate.loss_abs * abs(multiplier)),
                     )
                 )
             reweighted[domain] = tuple(weighted_candidates)
@@ -640,9 +684,11 @@ class DomainGradientAudit:
             gradient_mask = (
                 gradient_masks[index]
                 if gradient_masks is not None
-                else self._domain_gradient_mask(micro_batch, domain)
-                if domain is not None
-                else None
+                else (
+                    self._domain_gradient_mask(micro_batch, domain)
+                    if domain is not None
+                    else None
+                )
             )
             result = build_actor_micro_batch_loss(
                 self.actor,
@@ -667,9 +713,7 @@ class DomainGradientAudit:
                     )
                 )
                 for domain_name in self.config.domains:
-                    candidates[domain_name].extend(
-                        micro_candidates[domain_name]
-                    )
+                    candidates[domain_name].extend(micro_candidates[domain_name])
                 mask_templates.append(mask_template)
         if not collect_loss_abs_candidates:
             return None
@@ -717,14 +761,14 @@ class DomainGradientAudit:
             total += float(batch_size)
             for index, domain in enumerate(self.config.domains):
                 counts[index] += float(sum(label == domain for label in labels))
-        values = torch.tensor([total, *counts], device=get_device_id(), dtype=torch.float64)
+        values = torch.tensor(
+            [total, *counts], device=get_device_id(), dtype=torch.float64
+        )
         if torch.distributed.is_available() and torch.distributed.is_initialized():
             torch.distributed.all_reduce(values, op=torch.distributed.ReduceOp.SUM)
         total_count, *domain_counts = (float(value) for value in values.tolist())
         metrics = {
-            f"{domain}/pre_reweight_full_grad/sample_count": (
-                domain_counts[index]
-            )
+            f"{domain}/pre_reweight_full_grad/sample_count": (domain_counts[index])
             for index, domain in enumerate(self.config.domains)
         }
         metrics["global/audit/domain_gradient_coverage_fraction"] = (
@@ -749,9 +793,7 @@ class DomainGradientAudit:
                 "Loss-ranked token gradients require configured token loss."
             )
         if configured_loss.shape != configured_mask.shape:
-            raise ValueError(
-                "Configured token loss and mask must have the same shape."
-            )
+            raise ValueError("Configured token loss and mask must have the same shape.")
         model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
         labels = _labels_from_mapping(
             model_inputs,
@@ -772,9 +814,7 @@ class DomainGradientAudit:
                 as_tuple=False,
             ).flatten()
             for token_index in positions.tolist():
-                loss_abs = float(
-                    loss_abs_cpu[sample_index, token_index].item()
-                )
+                loss_abs = float(loss_abs_cpu[sample_index, token_index].item())
                 if not math.isfinite(loss_abs):
                     continue
                 configured_token_loss = float(
@@ -832,17 +872,13 @@ class DomainGradientAudit:
                     return_configured_token_loss=True,
                     temperature=temperature,
                 )
-            micro_candidates, mask_template = (
-                self._loss_abs_candidates_for_micro_batch(
-                    result,
-                    micro_batch,
-                    micro_batch_index=micro_batch_index,
-                )
+            micro_candidates, mask_template = self._loss_abs_candidates_for_micro_batch(
+                result,
+                micro_batch,
+                micro_batch_index=micro_batch_index,
             )
             for domain in self.config.domains:
-                candidates[domain].extend(
-                    micro_candidates[domain]
-                )
+                candidates[domain].extend(micro_candidates[domain])
             mask_templates.append(mask_template)
         return (
             {
@@ -858,16 +894,13 @@ class DomainGradientAudit:
     ) -> tuple[RankedToken, ...]:
         local_scores = [float(candidate.loss_abs) for candidate in local_candidates]
         distributed = (
-            torch.distributed.is_available()
-            and torch.distributed.is_initialized()
+            torch.distributed.is_available() and torch.distributed.is_initialized()
         )
         gathered_scores: list[list[float] | None]
         if not distributed:
             gathered_scores = [local_scores]
         else:
-            gathered_scores = [
-                None for _ in range(torch.distributed.get_world_size())
-            ]
+            gathered_scores = [None for _ in range(torch.distributed.get_world_size())]
             torch.distributed.all_gather_object(gathered_scores, local_scores)
         return tuple(
             RankedToken(
@@ -886,8 +919,7 @@ class DomainGradientAudit:
         mask_templates: Sequence[torch.Tensor],
     ) -> tuple[torch.Tensor, ...]:
         distributed = (
-            torch.distributed.is_available()
-            and torch.distributed.is_initialized()
+            torch.distributed.is_available() and torch.distributed.is_initialized()
         )
         local_rank = torch.distributed.get_rank() if distributed else 0
         masks = [torch.zeros_like(template) for template in mask_templates]
@@ -939,11 +971,13 @@ class DomainGradientAudit:
         *,
         on_policy: bool,
         temperature: float,
-        candidate_data: tuple[
-            dict[str, tuple[LocalTokenCandidate, ...]],
-            tuple[torch.Tensor, ...],
-        ]
-        | None = None,
+        candidate_data: (
+            tuple[
+                dict[str, tuple[LocalTokenCandidate, ...]],
+                tuple[torch.Tensor, ...],
+            ]
+            | None
+        ) = None,
         candidate_loss_basis: str = "configured_loss_abs",
     ) -> dict[str, dict[str, _TokenSelection]]:
         local_by_domain, mask_templates = (
@@ -1005,8 +1039,7 @@ class DomainGradientAudit:
                 selections_by_domain={
                     domain: {
                         selection_name: selection.selected_tokens
-                        for selection_name, selection
-                        in domain_selections.items()
+                        for selection_name, selection in domain_selections.items()
                     }
                     for domain, domain_selections in selections.items()
                 },
@@ -1026,9 +1059,7 @@ class DomainGradientAudit:
             == CUMULATIVE_ABS_LOSS_SELECTION
         ):
             if self._cumulative_token_loss_state is None:
-                raise RuntimeError(
-                    "Cumulative shared-token selection requires state."
-                )
+                raise RuntimeError("Cumulative shared-token selection requires state.")
             (
                 self._shared_token_selection,
                 self._cumulative_token_loss_state,
@@ -1056,9 +1087,7 @@ class DomainGradientAudit:
             step=self.config.step,
             top_k=self.config.all_domain_shared_token_top_k,
             selection=self._shared_token_selection,
-            selection_mode=(
-                self.config.all_domain_shared_token_selection_mode
-            ),
+            selection_mode=(self.config.all_domain_shared_token_selection_mode),
             cumulative_state=self._cumulative_token_loss_state,
         )
         metrics: dict[str, float] = {
@@ -1073,20 +1102,17 @@ class DomainGradientAudit:
                 == CUMULATIVE_ABS_LOSS_SELECTION
             ),
         }
-        for domain, token_ids in (
-            self._shared_token_selection.domain_top_token_ids
-        ):
-            metrics[
-                f"{domain}/token_weight/high_loss_token_type_count"
-            ] = float(len(token_ids))
+        for domain, token_ids in self._shared_token_selection.domain_top_token_ids:
+            metrics[f"{domain}/token_weight/high_loss_token_type_count"] = float(
+                len(token_ids)
+            )
         if self._cumulative_token_loss_state is not None:
-            for domain, summary in (
-                self._cumulative_token_loss_state.domain_summaries().items()
-            ):
+            for (
+                domain,
+                summary,
+            ) in self._cumulative_token_loss_state.domain_summaries().items():
                 for name, value in summary.items():
-                    metrics[
-                        f"{domain}/token_weight/{name}"
-                    ] = value
+                    metrics[f"{domain}/token_weight/{name}"] = value
         return metrics
 
     def _token_weighting_metrics(self) -> dict[str, float]:
@@ -1102,22 +1128,35 @@ class DomainGradientAudit:
                     ),
                 }
             )
-            if self.config.domain_control_token_ids:
-                metrics[
-                    "global/token_weight/domain_control_token_id_count"
-                ] = float(
+            domain_control_token_ids = self._active_domain_control_token_ids()
+            if domain_control_token_ids:
+                metrics["global/token_weight/domain_control_token_id_count"] = float(
                     sum(
                         len(token_ids)
-                        for _, token_ids
-                        in self.config.domain_control_token_ids
+                        for token_ids in domain_control_token_ids.values()
                     )
                 )
-                for domain, token_ids in (
-                    self.config.domain_control_token_ids
-                ):
-                    metrics[
-                        f"{domain}/token_weight/control_token_id_count"
-                    ] = float(len(token_ids))
+                for domain, token_ids in domain_control_token_ids.items():
+                    metrics[f"{domain}/token_weight/control_token_id_count"] = float(
+                        len(token_ids)
+                    )
+            if self.config.control_token_online_selection_enabled:
+                metrics.update(
+                    {
+                        "global/token_weight/candidate_token_count": float(
+                            len(
+                                {
+                                    token_id
+                                    for token_ids in self.config.effective_domain_candidate_map().values()
+                                    for token_id in token_ids
+                                }
+                            )
+                        ),
+                        "global/token_weight/window_steps": float(
+                            self.config.control_token_online_window_steps
+                        ),
+                    }
+                )
         if self.config.all_domain_shared_token_weighting_enabled:
             metrics.update(
                 {
@@ -1136,9 +1175,7 @@ class DomainGradientAudit:
         self,
         micro_batches: Sequence[Any],
     ) -> dict[str, ControlGapObservation]:
-        domains = tuple(
-            domain for domain, _ in self.config.domain_control_token_ids
-        )
+        domains = tuple(domain for domain, _ in self.config.domain_control_token_ids)
         totals = {domain: [0.0, 0.0, 0.0] for domain in domains}
         policy_loss_cfg = _cfg_get(self.actor.config, "policy_loss", {})
         for micro_batch in micro_batches:
@@ -1153,8 +1190,7 @@ class DomainGradientAudit:
             )
             if token_ids is None:
                 raise ValueError(
-                    "Control-speed weighting requires response-aligned token "
-                    "IDs."
+                    "Control-speed weighting requires response-aligned token " "IDs."
                 )
             teacher_log_prob = selected_teacher_log_prob(
                 model_inputs,
@@ -1175,15 +1211,9 @@ class DomainGradientAudit:
                 response_mask,
                 labels,
                 (teacher_log_prob - student_log_prob).detach().float().abs(),
-                domain_token_ids=(
-                    self._domain_control_token_tensor_map(token_ids)
-                ),
-                applied_domain_weights=(
-                    self._applied_control_speed_weights
-                ),
-                normalize_per_domain=(
-                    self.config.control_token_normalize_per_domain
-                ),
+                domain_token_ids=(self._domain_control_token_tensor_map(token_ids)),
+                applied_domain_weights=(self._applied_control_speed_weights),
+                normalize_per_domain=(self.config.control_token_normalize_per_domain),
             )
             for domain, values in local.items():
                 for index, value in enumerate(values):
@@ -1197,10 +1227,7 @@ class DomainGradientAudit:
             device=get_device_id(),
             dtype=torch.float64,
         )
-        if (
-            torch.distributed.is_available()
-            and torch.distributed.is_initialized()
-        ):
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
             torch.distributed.all_reduce(
                 reduced,
                 op=torch.distributed.ReduceOp.SUM,
@@ -1216,9 +1243,7 @@ class DomainGradientAudit:
             observations[domain] = ControlGapObservation(
                 gap=gap_sum / count,
                 count=count,
-                applied_normalized_weight=(
-                    normalized_weight_sum / count
-                ),
+                applied_normalized_weight=(normalized_weight_sum / count),
             )
         return observations
 
@@ -1238,15 +1263,13 @@ class DomainGradientAudit:
             prefix = f"{domain}/control_speed"
             observation = self._control_speed_observations.get(domain)
             reference_step = self._control_speed_state.reference_steps[index]
-            update_step = (
-                self._control_speed_state.last_weight_update_steps[index]
-            )
-            metrics[f"{prefix}/control_gap_ema"] = (
-                self._control_speed_state.gap_emas[index]
-            )
-            metrics[f"{prefix}/optimization_speed"] = (
-                self._control_speed_state.speeds[index]
-            )
+            update_step = self._control_speed_state.last_weight_update_steps[index]
+            metrics[f"{prefix}/control_gap_ema"] = self._control_speed_state.gap_emas[
+                index
+            ]
+            metrics[f"{prefix}/optimization_speed"] = self._control_speed_state.speeds[
+                index
+            ]
             if reference_step is not None:
                 metrics[f"{prefix}/control_weight_mapped_from_speed"] = (
                     piecewise_linear_weight(
@@ -1259,8 +1282,7 @@ class DomainGradientAudit:
             )
             metrics[f"{prefix}/speed_computed_this_step"] = float(
                 reference_step
-                == self.config.step
-                - self.config.control_token_speed_window_steps
+                == self.config.step - self.config.control_token_speed_window_steps
             )
             metrics[f"{prefix}/weight_update_triggered"] = float(
                 update_step == self.config.step
@@ -1277,16 +1299,13 @@ class DomainGradientAudit:
             if observation is not None:
                 metrics[f"{prefix}/observation_available"] = 1.0
                 metrics[f"{prefix}/minimum_occurrences_met"] = float(
-                    observation.count
-                    >= self.config.control_token_speed_min_occurrences
+                    observation.count >= self.config.control_token_speed_min_occurrences
                 )
                 metrics[f"{prefix}/control_gap_raw"] = observation.gap
-                metrics[f"{prefix}/control_occurrence_count"] = float(
-                    observation.count
+                metrics[f"{prefix}/control_occurrence_count"] = float(observation.count)
+                metrics[f"{prefix}/control_weight_applied_normalized"] = (
+                    observation.applied_normalized_weight
                 )
-                metrics[
-                    f"{prefix}/control_weight_applied_normalized"
-                ] = observation.applied_normalized_weight
             else:
                 metrics[f"{prefix}/observation_available"] = 0.0
                 metrics[f"{prefix}/minimum_occurrences_met"] = 0.0
@@ -1299,8 +1318,8 @@ class DomainGradientAudit:
     ) -> dict[str, float]:
         if not self.config.control_token_speed_weighting_enabled:
             return {}
-        self._control_speed_observations = (
-            self._collect_control_speed_observations(micro_batches)
+        self._control_speed_observations = self._collect_control_speed_observations(
+            micro_batches
         )
         self._control_speed_state = update_control_speed_state(
             self._control_speed_state,
@@ -1310,9 +1329,7 @@ class DomainGradientAudit:
             update_interval_steps=(
                 self.config.control_token_speed_update_interval_steps
             ),
-            minimum_occurrences=(
-                self.config.control_token_speed_min_occurrences
-            ),
+            minimum_occurrences=(self.config.control_token_speed_min_occurrences),
             step=self.config.step,
         )
         self._persist_control_speed_state()
@@ -1322,13 +1339,8 @@ class DomainGradientAudit:
         self,
         micro_batches: Sequence[Any],
     ) -> dict[str, PhaseGapObservation]:
-        domains = tuple(
-            domain for domain, _ in self.config.domain_control_token_ids
-        )
-        totals = {
-            domain: [0.0, 0.0, 0.0, 0.0]
-            for domain in domains
-        }
+        domains = tuple(domain for domain, _ in self.config.domain_control_token_ids)
+        totals = {domain: [0.0, 0.0, 0.0, 0.0] for domain in domains}
         policy_loss_cfg = _cfg_get(self.actor.config, "policy_loss", {})
         for micro_batch in micro_batches:
             model_inputs = {
@@ -1341,9 +1353,7 @@ class DomainGradientAudit:
                 response_mask,
             )
             if token_ids is None:
-                raise ValueError(
-                    "Phase control requires response-aligned token IDs."
-                )
+                raise ValueError("Phase control requires response-aligned token IDs.")
             teacher_log_prob = selected_teacher_log_prob(
                 model_inputs,
                 policy_loss_cfg,
@@ -1363,9 +1373,7 @@ class DomainGradientAudit:
                 response_mask,
                 labels,
                 (teacher_log_prob - old_log_prob).detach().float().abs(),
-                domain_token_ids=(
-                    self._domain_control_token_tensor_map(token_ids)
-                ),
+                domain_token_ids=(self._domain_control_token_tensor_map(token_ids)),
                 span_length=self.config.control_token_span_length,
                 span_decay_tau=self.config.control_token_span_decay_tau,
             )
@@ -1373,11 +1381,7 @@ class DomainGradientAudit:
                 for index, value in enumerate(values):
                     totals[domain][index] += float(value)
 
-        flattened = [
-            value
-            for domain in domains
-            for value in totals[domain]
-        ]
+        flattened = [value for domain in domains for value in totals[domain]]
         if not flattened:
             return {}
         reduced = torch.tensor(
@@ -1385,10 +1389,7 @@ class DomainGradientAudit:
             device=get_device_id(),
             dtype=torch.float64,
         )
-        if (
-            torch.distributed.is_available()
-            and torch.distributed.is_initialized()
-        ):
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
             torch.distributed.all_reduce(
                 reduced,
                 op=torch.distributed.ReduceOp.SUM,
@@ -1426,9 +1427,9 @@ class DomainGradientAudit:
             metrics[f"{prefix}/control_gap_ema"] = (
                 self._phase_control_state.control_gap_ema[index]
             )
-            metrics[f"{prefix}/span_gap_ema"] = (
-                self._phase_control_state.span_gap_ema[index]
-            )
+            metrics[f"{prefix}/span_gap_ema"] = self._phase_control_state.span_gap_ema[
+                index
+            ]
             if observation is not None:
                 metrics[f"{prefix}/control_gap"] = observation.control_gap
                 metrics[f"{prefix}/span_gap"] = observation.span_gap
@@ -1446,8 +1447,8 @@ class DomainGradientAudit:
     ) -> dict[str, float]:
         if not self.config.control_token_phase_gate_enabled:
             return self._phase_control_metrics()
-        self._phase_gap_observations = (
-            self._collect_phase_gap_observations(micro_batches)
+        self._phase_gap_observations = self._collect_phase_gap_observations(
+            micro_batches
         )
         self._phase_control_state = update_phase_control_state(
             self._phase_control_state,
@@ -1486,12 +1487,8 @@ class DomainGradientAudit:
             domain_weights=self._weight_state.weight_map(),
             dynamic_weighting_enabled=self.config.dynamic_weighting_enabled,
             control_token_ids=self.config.control_token_ids,
-            domain_control_token_ids=dict(
-                self.config.domain_control_token_ids
-            ),
-            control_weighting_enabled=(
-                self.config.control_token_weighting_enabled
-            ),
+            domain_control_token_ids=(self._active_domain_control_token_ids()),
+            control_weighting_enabled=(self.config.control_token_weighting_enabled),
             control_weight=self.config.control_token_weight,
             shared_token_ids=self._shared_token_selection.token_ids,
             shared_weighting_enabled=(
@@ -1502,6 +1499,104 @@ class DomainGradientAudit:
         return format_loss_amplification_metrics(
             reduce_loss_amplification_statistics(local_by_domain)
         )
+
+    def observe_completed_step(
+        self,
+        micro_batches: Sequence[Any],
+        configured_loss_batches: Sequence[torch.Tensor],
+        configured_loss_mask_batches: Sequence[torch.Tensor],
+    ) -> dict[str, float]:
+        """Update the online selector after a successful optimizer step."""
+
+        if not self.config.control_token_online_selection_enabled:
+            return {}
+        state = self._online_control_selection_state
+        if state is None:
+            raise RuntimeError("Online Control selector state is unavailable.")
+        if not (
+            len(micro_batches)
+            == len(configured_loss_batches)
+            == len(configured_loss_mask_batches)
+        ):
+            raise ValueError(
+                "Online Control configured-loss outputs must align with "
+                "production micro-batches."
+            )
+
+        token_id_batches: list[torch.Tensor] = []
+        label_batches: list[Sequence[str]] = []
+        for micro_batch, configured_loss in zip(
+            micro_batches,
+            configured_loss_batches,
+            strict=True,
+        ):
+            model_inputs = {
+                **micro_batch.batch,
+                **micro_batch.non_tensor_batch,
+            }
+            token_ids = aligned_response_token_ids(
+                model_inputs,
+                configured_loss,
+            )
+            if token_ids is None:
+                raise ValueError(
+                    "Online Control selection requires response-aligned " "token IDs."
+                )
+            token_id_batches.append(token_ids)
+            label_batches.append(
+                _labels_from_mapping(
+                    model_inputs,
+                    int(configured_loss.shape[0]),
+                )
+            )
+        statistics = global_candidate_loss_statistics(
+            token_id_batches,
+            configured_loss_batches,
+            configured_loss_mask_batches,
+            label_batches,
+            domains=self.config.domains,
+            domain_candidate_token_ids=(self.config.effective_domain_candidate_map()),
+        )
+        outcome, state = update_online_control_selection(
+            state,
+            statistics,
+            step=self.config.step,
+        )
+        self._online_control_selection_state = state
+        self._persist_online_control_selection_state()
+        append_online_control_selection_jsonl(
+            output_dir=self.config.output_dir,
+            state=state,
+            outcome=outcome,
+            control_weight=self.config.control_token_weight,
+        )
+
+        metrics = {
+            "global/token_weight/audit_triggered": float(outcome.audit_triggered),
+            "global/token_weight/history_reset": float(outcome.history_reset),
+            "global/token_weight/window_fill_steps": float(outcome.window_fill_steps),
+            "global/token_weight/candidate_token_count": float(
+                len(state.candidate_token_ids)
+            ),
+        }
+        result_map = {result.domain: result for result in outcome.domain_results}
+        next_active = state.active_map()
+        for domain in self.config.domains:
+            result = result_map.get(domain)
+            metrics[f"{domain}/token_weight/candidate_token_count"] = float(
+                len(state.candidate_map()[domain])
+            )
+            metrics[f"{domain}/token_weight/active_token_count"] = float(
+                len(self._applied_online_control_token_ids.get(domain, ()))
+            )
+            metrics[f"{domain}/token_weight/next_active_token_count"] = float(
+                len(next_active.get(domain, ()))
+            )
+            if result is not None:
+                metrics[f"{domain}/token_weight/eligible_token_count"] = float(
+                    result.eligible_token_count
+                )
+        return metrics
 
     def _token_selection_metrics(
         self,
@@ -1514,65 +1609,54 @@ class DomainGradientAudit:
             first = next(iter(domain_selections.values()))
             candidate_count = first.candidate_token_count
             candidate_mass = first.candidate_loss_abs_mass
-            metrics[f"{domain}/token_grad/domain_token_count"] = float(
-                candidate_count
-            )
+            metrics[f"{domain}/token_grad/domain_token_count"] = float(candidate_count)
             metrics[
-                f"{domain}/token_grad/"
-                "selection_matches_production_reweighting"
+                f"{domain}/token_grad/" "selection_matches_production_reweighting"
             ] = 1.0
-            metrics[
-                f"{domain}/token_grad/selection_reweighting_active"
-            ] = float(self._production_weighting_enabled())
-            metrics[
-                f"{domain}/token_grad/global_candidate_loss_abs_mass"
-            ] = candidate_mass
+            metrics[f"{domain}/token_grad/selection_reweighting_active"] = float(
+                self._production_weighting_enabled()
+            )
+            metrics[f"{domain}/token_grad/global_candidate_loss_abs_mass"] = (
+                candidate_mass
+            )
             for selection_name, selection in domain_selections.items():
                 prefix = selection_name
-                metrics[
-                    f"{domain}/token_grad/{prefix}_token_count"
-                ] = float(selection.selected_token_count)
-                metrics[
-                    f"{domain}/token_grad/{prefix}_token_fraction"
-                ] = (
+                metrics[f"{domain}/token_grad/{prefix}_token_count"] = float(
+                    selection.selected_token_count
+                )
+                metrics[f"{domain}/token_grad/{prefix}_token_fraction"] = (
                     selection.selected_token_count / candidate_count
                     if candidate_count > 0
                     else 0.0
                 )
-                metrics[
-                    f"{domain}/token_grad/{prefix}_loss_abs_mass"
-                ] = selection.selected_loss_abs_mass
-                metrics[
-                    f"{domain}/token_grad/{prefix}_loss_abs_mass_frac"
-                ] = (
+                metrics[f"{domain}/token_grad/{prefix}_loss_abs_mass"] = (
+                    selection.selected_loss_abs_mass
+                )
+                metrics[f"{domain}/token_grad/{prefix}_loss_abs_mass_frac"] = (
                     selection.selected_loss_abs_mass / candidate_mass
                     if candidate_mass > 0.0
                     else 0.0
                 )
             if "tail" in domain_selections:
-                metrics[
-                    f"{domain}/token_grad/tail_fraction_configured"
-                ] = self.config.token_gradient_tail_fraction
+                metrics[f"{domain}/token_grad/tail_fraction_configured"] = (
+                    self.config.token_gradient_tail_fraction
+                )
             if "top_k" in domain_selections:
                 if self.config.token_gradient_top_k is None:
-                    raise RuntimeError(
-                        "Top-k metrics require token_gradient_top_k."
-                    )
-                metrics[
-                    f"{domain}/token_grad/top_k_configured"
-                ] = float(self.config.token_gradient_top_k)
+                    raise RuntimeError("Top-k metrics require token_gradient_top_k.")
+                metrics[f"{domain}/token_grad/top_k_configured"] = float(
+                    self.config.token_gradient_top_k
+                )
             if "top_p" in domain_selections:
-                metrics[
-                    f"{domain}/token_grad/top_p_fraction_configured"
-                ] = self.config.token_gradient_top_p
+                metrics[f"{domain}/token_grad/top_p_fraction_configured"] = (
+                    self.config.token_gradient_top_p
+                )
                 if self.config.token_gradient_top_p >= 1.0 - 1e-12:
                     top_p = domain_selections["top_p"]
-                    metrics[
-                        f"{domain}/token_grad/top_p1_token_count"
-                    ] = float(top_p.selected_token_count)
-                    metrics[
-                        f"{domain}/token_grad/top_p1_token_fraction"
-                    ] = (
+                    metrics[f"{domain}/token_grad/top_p1_token_count"] = float(
+                        top_p.selected_token_count
+                    )
+                    metrics[f"{domain}/token_grad/top_p1_token_fraction"] = (
                         top_p.selected_token_count / candidate_count
                         if candidate_count > 0
                         else 0.0
@@ -1593,38 +1677,29 @@ class DomainGradientAudit:
         metrics: dict[str, float] = {}
         for domain in self.config.domains:
             weight = weights.get(domain, 1.0)
-            metrics[
-                f"{domain}/dynamic_weight/applied_gradient_weight"
-            ] = weight
-            metrics[
-                f"{domain}/dynamic_weight/bounded_target_gradient_weight"
-            ] = target_weights.get(domain, weight)
-            metrics[f"{domain}/dynamic_weight/ema_source_signal"] = (
-                ema_signals.get(domain, 0.0)
+            metrics[f"{domain}/dynamic_weight/applied_gradient_weight"] = weight
+            metrics[f"{domain}/dynamic_weight/bounded_target_gradient_weight"] = (
+                target_weights.get(domain, weight)
             )
-            metrics[
-                f"{domain}/dynamic_weight/"
-                "source_is_projection_share"
-            ] = float(
+            metrics[f"{domain}/dynamic_weight/ema_source_signal"] = ema_signals.get(
+                domain, 0.0
+            )
+            metrics[f"{domain}/dynamic_weight/" "source_is_projection_share"] = float(
                 self.config.dynamic_weighting_signal_source
                 == DOMAIN_GRADIENT_PROJECTION_SHARE_SIGNAL
             )
-            if (
-                self.config.dynamic_weighting_signal_source
-                == GRADIENT_NORM_SIGNAL
-            ):
-                metrics[f"{domain}/dynamic_weight/ema_grad_norm"] = (
-                    ema_signals.get(domain, 0.0)
+            if self.config.dynamic_weighting_signal_source == GRADIENT_NORM_SIGNAL:
+                metrics[f"{domain}/dynamic_weight/ema_grad_norm"] = ema_signals.get(
+                    domain, 0.0
                 )
             if source_signals is not None:
-                metrics[f"{domain}/dynamic_weight/source_signal"] = (
-                    source_signals.get(domain, 0.0)
+                metrics[f"{domain}/dynamic_weight/source_signal"] = source_signals.get(
+                    domain, 0.0
                 )
             if signed_projection_shares is not None:
-                metrics[
-                    f"{domain}/dynamic_weight/"
-                    "raw_signed_projection_share"
-                ] = signed_projection_shares.get(domain, 0.0)
+                metrics[f"{domain}/dynamic_weight/" "raw_signed_projection_share"] = (
+                    signed_projection_shares.get(domain, 0.0)
+                )
             if domain_sq is not None:
                 metrics[f"{domain}/dynamic_weight/weighted_grad_norm"] = (
                     weight * max(domain_sq.get(domain, 0.0), 0.0) ** 0.5
@@ -1638,28 +1713,18 @@ class DomainGradientAudit:
         domain_sq: dict[str, float],
         domain_total_dot: dict[str, float],
     ) -> tuple[dict[str, float], dict[str, float] | None]:
-        if (
-            self.config.dynamic_weighting_signal_source
-            == GRADIENT_NORM_SIGNAL
-        ):
+        if self.config.dynamic_weighting_signal_source == GRADIENT_NORM_SIGNAL:
             return (
-                {
-                    domain: max(value, 0.0) ** 0.5
-                    for domain, value in domain_sq.items()
-                },
+                {domain: max(value, 0.0) ** 0.5 for domain, value in domain_sq.items()},
                 None,
             )
         denominator = max(float(total_sq), 1e-12)
         signed_shares = {
-            domain: float(domain_total_dot.get(domain, 0.0))
-            / denominator
+            domain: float(domain_total_dot.get(domain, 0.0)) / denominator
             for domain in self.config.domains
         }
         return (
-            {
-                domain: abs(share)
-                for domain, share in signed_shares.items()
-            },
+            {domain: abs(share) for domain, share in signed_shares.items()},
             signed_shares,
         )
 
@@ -1681,15 +1746,10 @@ class DomainGradientAudit:
             self.config.control_token_weighting_enabled
             or self.config.all_domain_shared_token_weighting_enabled
         )
-        shared_token_active = (
-            self.config.all_domain_shared_token_weighting_enabled
-        )
-        token_gradient_active = (
-            self.config.token_gradient_enabled
-            and (
-                self.config.token_gradient_tail_enabled
-                or self.config.token_gradient_top_p_enabled
-            )
+        shared_token_active = self.config.all_domain_shared_token_weighting_enabled
+        token_gradient_active = self.config.token_gradient_enabled and (
+            self.config.token_gradient_tail_enabled
+            or self.config.token_gradient_top_p_enabled
         )
         if not self.enabled and not shared_token_active:
             return {
@@ -1714,11 +1774,7 @@ class DomainGradientAudit:
                     on_policy=on_policy,
                     temperature=temperature,
                 )
-                metrics.update(
-                    self._refresh_shared_token_selection(
-                        candidate_data[0]
-                    )
-                )
+                metrics.update(self._refresh_shared_token_selection(candidate_data[0]))
             if not self.enabled:
                 metrics.update(self._dynamic_weight_metrics())
                 if candidate_data is not None:
@@ -1753,11 +1809,7 @@ class DomainGradientAudit:
                     raise RuntimeError(
                         "Shared-token weighting requires loss candidates."
                     )
-                metrics.update(
-                    self._refresh_shared_token_selection(
-                        candidate_data[0]
-                    )
-                )
+                metrics.update(self._refresh_shared_token_selection(candidate_data[0]))
             audit_total = snapshot_gradients(
                 self.actor,
                 self.config.storage_dtype,
@@ -1804,27 +1856,22 @@ class DomainGradientAudit:
                     pair_dot=pair_dot,
                     closure_threshold=self.config.closure_rel_l2_threshold,
                     all_vectors_fp32=(
-                        self.config.storage_dtype.lower()
-                        in {"float32", "fp32"}
+                        self.config.storage_dtype.lower() in {"float32", "fp32"}
                     ),
                     storage_dtype=self.config.storage_dtype,
                 )
             )
-            source_signals, signed_projection_shares = (
-                self._dynamic_weight_signals(
-                    total_sq=total_sq,
-                    domain_sq=domain_sq,
-                    domain_total_dot=domain_total_dot,
-                )
+            source_signals, signed_projection_shares = self._dynamic_weight_signals(
+                total_sq=total_sq,
+                domain_sq=domain_sq,
+                domain_total_dot=domain_total_dot,
             )
             if self._should_update_dynamic_weighting():
                 self._weight_state = update_domain_weight_state(
                     self._weight_state,
                     source_signals,
                     ema_beta=self.config.dynamic_weighting_ema_beta,
-                    weight_ema_beta=(
-                        self.config.dynamic_weighting_weight_ema_beta
-                    ),
+                    weight_ema_beta=(self.config.dynamic_weighting_weight_ema_beta),
                     alpha=self.config.dynamic_weighting_alpha,
                     minimum=self.config.dynamic_weighting_min,
                     maximum=self.config.dynamic_weighting_max,
@@ -1846,24 +1893,18 @@ class DomainGradientAudit:
                 token_domain_vectors = domain_vectors
                 token_domain_sq = domain_sq
                 if self._production_weighting_enabled():
-                    production_masks = self._production_gradient_masks(
-                        micro_batches
-                    )
+                    production_masks = self._production_gradient_masks(micro_batches)
                     token_candidate_data = self._reweighted_candidate_data(
                         candidate_data,
                         production_masks,
                     )
-                    candidate_loss_basis = (
-                        "production_reweighted_configured_loss_abs"
-                    )
+                    candidate_loss_basis = "production_reweighted_configured_loss_abs"
                     token_domain_vectors = {}
                     for domain in self.config.domains:
-                        domain_masks = (
-                            self._domain_production_gradient_masks(
-                                micro_batches,
-                                production_masks,
-                                domain,
-                            )
+                        domain_masks = self._domain_production_gradient_masks(
+                            micro_batches,
+                            production_masks,
+                            domain,
                         )
                         self._backward_replay(
                             state,
@@ -1882,9 +1923,7 @@ class DomainGradientAudit:
                         domain: vector_squared_norm(self.actor, vector)
                         for domain, vector in token_domain_vectors.items()
                     }
-                    effective_domain_replay_count = len(
-                        self.config.domains
-                    )
+                    effective_domain_replay_count = len(self.config.domains)
                     token_reference_vector_bytes = sum(
                         vector_nbytes(vector)
                         for vector in token_domain_vectors.values()
@@ -1901,9 +1940,8 @@ class DomainGradientAudit:
                 )
                 for domain, domain_selections in token_selections.items():
                     metrics[
-                        f"{domain}/token_grad/"
-                        "domain_grad_norm_after_reweight"
-                    ] = max(token_domain_sq[domain], 0.0) ** 0.5
+                        f"{domain}/token_grad/" "domain_grad_norm_after_reweight"
+                    ] = (max(token_domain_sq[domain], 0.0) ** 0.5)
                     for selection_name, selection in domain_selections.items():
                         selection_masks = (
                             self._apply_production_gradient_masks(
@@ -1943,18 +1981,15 @@ class DomainGradientAudit:
                             "top_p1"
                             if (
                                 selection_name == "top_p"
-                                and self.config.token_gradient_top_p
-                                >= 1.0 - 1e-12
+                                and self.config.token_gradient_top_p >= 1.0 - 1e-12
                             )
                             else selection_name
                         )
-                        selection_metrics = (
-                            gradient_partition_metrics_from_gram(
-                                prefix=metric_prefix,
-                                domain_sq=token_domain_sq[domain],
-                                subset_sq=selection_sq,
-                                subset_domain_dot=selection_domain_dot,
-                            )
+                        selection_metrics = gradient_partition_metrics_from_gram(
+                            prefix=metric_prefix,
+                            domain_sq=token_domain_sq[domain],
+                            subset_sq=selection_sq,
+                            subset_domain_dot=selection_domain_dot,
                         )
                         metrics.update(
                             {
@@ -1965,12 +2000,11 @@ class DomainGradientAudit:
                         del selection_vector
                 metrics.update(self._token_selection_metrics(token_selections))
                 metrics[
-                    "global/audit/"
-                    "token_gradient_matches_production_reweighting"
+                    "global/audit/" "token_gradient_matches_production_reweighting"
                 ] = 1.0
-                metrics[
-                    "global/audit/token_gradient_reweighting_active"
-                ] = float(production_masks is not None)
+                metrics["global/audit/token_gradient_reweighting_active"] = float(
+                    production_masks is not None
+                )
             if candidate_data is not None:
                 metrics.update(
                     self._loss_amplification_metrics(
@@ -1980,10 +2014,7 @@ class DomainGradientAudit:
                 )
             parity_total = audit_total
             dynamic_parity_replay_count = 0
-            if (
-                self._production_weighting_enabled()
-                and self.config.parity_enabled
-            ):
+            if self._production_weighting_enabled() and self.config.parity_enabled:
                 parity_total = self._snapshot_training_gradient_reference(
                     state,
                     micro_batches,
@@ -2003,10 +2034,7 @@ class DomainGradientAudit:
             token_selection_count = (
                 int(self.config.token_gradient_tail_enabled)
                 + int(self.config.token_gradient_top_p_enabled)
-                * (
-                    1
-                    + int(self.config.token_gradient_top_k is not None)
-                )
+                * (1 + int(self.config.token_gradient_top_k is not None))
                 if token_gradient_active
                 else 0
             )
@@ -2020,13 +2048,13 @@ class DomainGradientAudit:
             metrics["global/audit/domain_gradient_source_step"] = float(
                 self.config.step
             )
-            base_vector_bytes = vector_nbytes(audit_total) + sum(
-                vector_nbytes(vector) for vector in domain_vectors.values()
-            ) + token_reference_vector_bytes
+            base_vector_bytes = (
+                vector_nbytes(audit_total)
+                + sum(vector_nbytes(vector) for vector in domain_vectors.values())
+                + token_reference_vector_bytes
+            )
             dynamic_vector_bytes = (
-                vector_nbytes(parity_total)
-                if dynamic_parity_replay_count
-                else 0
+                vector_nbytes(parity_total) if dynamic_parity_replay_count else 0
             )
             peak_vector_bytes = base_vector_bytes + max(
                 token_vector_peak_bytes,
@@ -2035,17 +2063,15 @@ class DomainGradientAudit:
             metrics["global/audit/domain_gradient_peak_cpu_vector_bytes"] = float(
                 peak_vector_bytes
             )
-            metrics[
-                "global/audit/domain_gradient_peak_cpu_vector_bytes_per_rank"
-            ] = float(peak_vector_bytes)
+            metrics["global/audit/domain_gradient_peak_cpu_vector_bytes_per_rank"] = (
+                float(peak_vector_bytes)
+            )
             metrics[
                 "global/audit/"
                 "domain_gradient_peak_cpu_vector_bytes_actor_group_total"
             ] = actor_group_sum(self.actor, float(peak_vector_bytes))
             retained_vector_bytes = (
-                vector_nbytes(parity_total)
-                if self.config.parity_enabled
-                else 0
+                vector_nbytes(parity_total) if self.config.parity_enabled else 0
             )
             metrics[
                 "global/audit/domain_gradient_post_audit_retained_cpu_vector_bytes"

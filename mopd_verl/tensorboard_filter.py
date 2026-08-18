@@ -271,6 +271,8 @@ CORE_DYNAMIC_WEIGHT = {
     "weighted_grad_norm",
 }
 CORE_TOKEN_WEIGHT = {
+    "active_token_count",
+    "audit_triggered",
     "all_domain_shared_token_type_count",
     "all_domain_shared_token_weight",
     "amplified_occurrence_count",
@@ -279,6 +281,7 @@ CORE_TOKEN_WEIGHT = {
     "control_occurrence_count",
     "control_shared_overlap_occurrence_count",
     "control_token_id_count",
+    "candidate_token_count",
     "control_token_weight",
     "cumulative_abs_loss_mass",
     "cumulative_occurrence_count",
@@ -290,14 +293,19 @@ CORE_TOKEN_WEIGHT = {
     "high_loss_token_type_count",
     "mean_effective_gradient_multiplier",
     "mean_token_gradient_multiplier",
+    "next_active_token_count",
     "observed_token_type_count",
     "occurrence_count",
     "raw_configured_loss_abs_mass",
     "raw_configured_loss_mass",
+    "eligible_token_count",
+    "history_reset",
     "shared_occurrence_count",
     "shared_selection_is_cumulative",
     "token_weighted_configured_loss_abs_mass",
     "token_weighted_to_raw_abs_loss_mass_ratio",
+    "window_fill_steps",
+    "window_steps",
 }
 CORE_CONTROL_SPEED = {
     "control_gap_ema",

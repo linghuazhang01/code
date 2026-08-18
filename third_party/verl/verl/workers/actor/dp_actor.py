@@ -702,6 +702,10 @@ class DataParallelPPOActor(BasePPOActor):
         configured_token_loss_mask_batches = []
         configured_token_loss_epoch_batches = []
         audit = DomainGradientAudit(self, data.meta_info.get("mopd_full_gradient", {}))
+        return_configured_token_loss = (
+            return_configured_token_loss
+            or audit.config.control_token_online_selection_enabled
+        )
         if audit.config.dynamic_weighting_enabled and len(mini_batches) != 1:
             raise ValueError(
                 "Dynamic domain loss weighting requires one optimizer "
@@ -723,6 +727,14 @@ class DataParallelPPOActor(BasePPOActor):
                 "Control-token speed weighting requires exactly one optimizer "
                 "mini-batch and one PPO epoch per actor update so each speed "
                 "observation covers the complete global step."
+            )
+        if audit.config.control_token_online_selection_enabled and (
+            len(mini_batches) != 1 or self.config.ppo_epochs != 1
+        ):
+            raise ValueError(
+                "Online Control-token selection requires exactly one "
+                "optimizer mini-batch and one PPO epoch per actor update so "
+                "each observation covers one complete global step."
             )
         for _ in range(self.config.ppo_epochs):
             if return_configured_token_loss:
@@ -853,6 +865,15 @@ class DataParallelPPOActor(BasePPOActor):
                 append_to_dict(metrics, audit.compare_training_gradient())
                 grad_norm = self._optimizer_step()
                 append_to_dict(metrics, {"actor/grad_norm": grad_norm.detach().item()})
+                if torch.isfinite(grad_norm):
+                    append_to_dict(
+                        metrics,
+                        audit.observe_completed_step(
+                            micro_batches,
+                            micro_batch_configured_token_loss,
+                            micro_batch_configured_token_loss_mask,
+                        ),
+                    )
             if configured_token_loss_batches:
                 configured_token_loss_epoch_batches.append(
                     torch.cat(configured_token_loss_batches, dim=0)

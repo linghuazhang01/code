@@ -15,7 +15,11 @@ from mopd_verl.audit_math import (
     ece,
     finite_float,
 )
-from mopd_verl.audit_proxy import extract_sample_ids, extract_teacher_domains, response_mask_from_batch
+from mopd_verl.audit_proxy import (
+    extract_sample_ids,
+    extract_teacher_domains,
+    response_mask_from_batch,
+)
 from mopd_verl.audit_response_logging import (
     ResponseAuditBatch,
     normalize_response_compression,
@@ -279,13 +283,17 @@ def _infer_model_config_vocab_size(config: Any) -> int | None:
         from transformers import AutoConfig
 
         trust_remote_code = bool(_cfg_get(model_config, "trust_remote_code", False))
-        hf_config = AutoConfig.from_pretrained(model_path_text, trust_remote_code=trust_remote_code)
+        hf_config = AutoConfig.from_pretrained(
+            model_path_text, trust_remote_code=trust_remote_code
+        )
         return _optional_positive_int(getattr(hf_config, "vocab_size", None))
     except Exception:
         return None
 
 
-def _response_token_id_matrix(tensor_batch: Any, batch_keys: set[str], response_mask: Any) -> Any | None:
+def _response_token_id_matrix(
+    tensor_batch: Any, batch_keys: set[str], response_mask: Any
+) -> Any | None:
     if "responses" in batch_keys:
         token_ids = tensor_batch["responses"]
     elif "response_ids" in batch_keys:
@@ -301,7 +309,10 @@ def _response_token_id_matrix(tensor_batch: Any, batch_keys: set[str], response_
     response_len = int(response_mask.shape[-1])
     if tuple(token_ids.shape) == tuple(response_mask.shape):
         return token_ids.detach().long().cpu()
-    if int(token_ids.shape[0]) == int(response_mask.shape[0]) and int(token_ids.shape[-1]) >= response_len:
+    if (
+        int(token_ids.shape[0]) == int(response_mask.shape[0])
+        and int(token_ids.shape[-1]) >= response_len
+    ):
         return token_ids[:, -response_len:].detach().long().cpu()
     return None
 
@@ -462,15 +473,21 @@ def _entropy_vocab_tensors(
         return None
 
     signal_values = {
-        "teacher_entropy": None
-        if teacher_entropy is None
-        else teacher_entropy.detach().float().cpu()[valid],
-        "student_entropy": None
-        if student_entropy is None
-        else student_entropy.detach().float().cpu()[valid],
-        "teacher_student_cross_entropy": None
-        if teacher_student_cross_entropy is None
-        else teacher_student_cross_entropy.detach().float().cpu()[valid],
+        "teacher_entropy": (
+            None
+            if teacher_entropy is None
+            else teacher_entropy.detach().float().cpu()[valid]
+        ),
+        "student_entropy": (
+            None
+            if student_entropy is None
+            else student_entropy.detach().float().cpu()[valid]
+        ),
+        "teacher_student_cross_entropy": (
+            None
+            if teacher_student_cross_entropy is None
+            else teacher_student_cross_entropy.detach().float().cpu()[valid]
+        ),
     }
     in_vocab = (flat_ids >= 0) & (flat_ids < int(vocab_size))
     dropped = int((~in_vocab).sum().item())
@@ -562,7 +579,6 @@ def _entropy_vocab_json_fields(
     return fields
 
 
-
 def _scalar_float(value: Any) -> float | None:
     converted = _to_builtin(value)
     if isinstance(converted, dict):
@@ -595,15 +611,23 @@ class MOPDAuditLogger:
         self.output_dir = Path(str(_cfg_get(audit_config, "output_dir", "mopd_audit")))
         self.domains = list(_cfg_get(audit_config, "domains", ["math", "code"]))
         self.prefix = str(_cfg_get(audit_config, "tensorboard_prefix", "mopd"))
-        self.tensorboard_layout = str(_cfg_get(audit_config, "tensorboard_layout", "domain_category"))
-        self.tensorboard_prune_mode = str(_cfg_get(audit_config, "tensorboard_prune_mode", "none")).lower()
+        self.tensorboard_layout = str(
+            _cfg_get(audit_config, "tensorboard_layout", "domain_category")
+        )
+        self.tensorboard_prune_mode = str(
+            _cfg_get(audit_config, "tensorboard_prune_mode", "none")
+        ).lower()
         self.loss_variance_signal = str(
             _cfg_get(audit_config, "loss_variance_signal", "opd_loss_token")
         ).strip()
         if not self.loss_variance_signal:
             raise ValueError("loss_variance_signal must be non-empty.")
-        self.max_samples_per_domain = _optional_positive_int(_cfg_get(audit_config, "max_samples_per_domain", None))
-        self.high_variance_cv_threshold = float(_cfg_get(audit_config, "high_variance_cv_threshold", 1.0))
+        self.max_samples_per_domain = _optional_positive_int(
+            _cfg_get(audit_config, "max_samples_per_domain", None)
+        )
+        self.high_variance_cv_threshold = float(
+            _cfg_get(audit_config, "high_variance_cv_threshold", 1.0)
+        )
         self.log_sample_level = bool(_cfg_get(audit_config, "log_sample_level", True))
         self.log_sample_level_freq_steps = max(
             1,
@@ -619,22 +643,34 @@ class MOPDAuditLogger:
         self.response_level_compression = normalize_response_compression(
             str(_cfg_get(audit_config, "response_level_compression", "gzip"))
         )
-        self.log_validation = bool(_cfg_get(audit_config, "log_validation_metrics", True))
+        self.log_validation = bool(
+            _cfg_get(audit_config, "log_validation_metrics", True)
+        )
         self.log_validation_freq_steps = max(
             1,
             int(_cfg_get(audit_config, "log_validation_metrics_freq_steps", 1)),
         )
-        self.tier2_window_size = max(2, int(_cfg_get(audit_config, "tier2_window_size", 20)))
-        self.calibration_bins = max(1, int(_cfg_get(audit_config, "calibration_bins", 10)))
-        self.full_gradient_enabled = bool(_cfg_get(audit_config, "full_gradient_enabled", False))
-        self.full_gradient_freq_steps = max(1, int(_cfg_get(audit_config, "full_gradient_freq_steps", 1)))
+        self.tier2_window_size = max(
+            2, int(_cfg_get(audit_config, "tier2_window_size", 20))
+        )
+        self.calibration_bins = max(
+            1, int(_cfg_get(audit_config, "calibration_bins", 10))
+        )
+        self.full_gradient_enabled = bool(
+            _cfg_get(audit_config, "full_gradient_enabled", False)
+        )
+        self.full_gradient_freq_steps = max(
+            1, int(_cfg_get(audit_config, "full_gradient_freq_steps", 1))
+        )
         full_grad_training_parity_freq_steps = _cfg_get(
             audit_config,
             "full_grad_training_parity_freq_steps",
             1,
         )
         self.full_grad_training_parity_freq_steps = int(
-            1 if full_grad_training_parity_freq_steps is None else full_grad_training_parity_freq_steps
+            1
+            if full_grad_training_parity_freq_steps is None
+            else full_grad_training_parity_freq_steps
         )
         self.full_grad_training_parity_rel_l2_threshold = float(
             _cfg_get(audit_config, "full_grad_training_parity_rel_l2_threshold", 1e-5)
@@ -646,8 +682,12 @@ class MOPDAuditLogger:
             1,
             int(_cfg_get(audit_config, "full_gradient_micro_batch_size_per_gpu", 1)),
         )
-        self.full_gradient_storage_dtype = str(_cfg_get(audit_config, "full_gradient_storage_dtype", "float32"))
-        self.execution_timing = str(_cfg_get(audit_config, "execution_timing", "pre_update")).lower()
+        self.full_gradient_storage_dtype = str(
+            _cfg_get(audit_config, "full_gradient_storage_dtype", "float32")
+        )
+        self.execution_timing = str(
+            _cfg_get(audit_config, "execution_timing", "pre_update")
+        ).lower()
         self.full_gradient_direct_recompute_enabled = bool(
             _cfg_get(audit_config, "full_gradient_direct_recompute_enabled", True)
         )
@@ -661,12 +701,22 @@ class MOPDAuditLogger:
             _cfg_get(audit_config, "sequence_replay_skip_non_target_domains", False)
         )
         self.sequence_masked_target_closure_rel_l2_threshold = float(
-            _cfg_get(audit_config, "sequence_masked_target_closure_rel_l2_threshold", 0.02)
+            _cfg_get(
+                audit_config, "sequence_masked_target_closure_rel_l2_threshold", 0.02
+            )
         )
-        self.sample_gradient_enabled = bool(_cfg_get(audit_config, "sample_gradient_enabled", False))
-        self.sample_gradient_freq_steps = max(1, int(_cfg_get(audit_config, "sample_gradient_freq_steps", 1)))
-        self.sample_gradient_norm_enabled = bool(_cfg_get(audit_config, "sample_gradient_norm_enabled", True))
-        self.sample_gradient_cos_enabled = bool(_cfg_get(audit_config, "sample_gradient_cos_enabled", False))
+        self.sample_gradient_enabled = bool(
+            _cfg_get(audit_config, "sample_gradient_enabled", False)
+        )
+        self.sample_gradient_freq_steps = max(
+            1, int(_cfg_get(audit_config, "sample_gradient_freq_steps", 1))
+        )
+        self.sample_gradient_norm_enabled = bool(
+            _cfg_get(audit_config, "sample_gradient_norm_enabled", True)
+        )
+        self.sample_gradient_cos_enabled = bool(
+            _cfg_get(audit_config, "sample_gradient_cos_enabled", False)
+        )
         self.sample_gradient_cos_freq_steps = max(
             1,
             int(_cfg_get(audit_config, "sample_gradient_cos_freq_steps", 1)),
@@ -682,13 +732,17 @@ class MOPDAuditLogger:
         )
         self.sample_gradient_log_sample_level_freq_steps = max(
             1,
-            int(_cfg_get(audit_config, "sample_gradient_log_sample_level_freq_steps", 1)),
+            int(
+                _cfg_get(audit_config, "sample_gradient_log_sample_level_freq_steps", 1)
+            ),
         )
         self.full_gradient_offload_domain_gradients = bool(
             _cfg_get(audit_config, "full_gradient_offload_domain_gradients", True)
         )
         self.token_gap_enabled = bool(_cfg_get(audit_config, "token_gap_enabled", True))
-        self.token_gap_freq_steps = max(1, int(_cfg_get(audit_config, "token_gap_freq_steps", 1)))
+        self.token_gap_freq_steps = max(
+            1, int(_cfg_get(audit_config, "token_gap_freq_steps", 1))
+        )
         self.token_gap_vocab_vector_enabled = bool(
             _cfg_get(audit_config, "token_gap_vocab_vector_enabled", False)
         )
@@ -696,23 +750,43 @@ class MOPDAuditLogger:
             1,
             int(_cfg_get(audit_config, "token_gap_vocab_vector_freq_steps", 1)),
         )
-        self.token_gap_vocab_size = _optional_positive_int(_cfg_get(audit_config, "token_gap_vocab_size", None))
+        self.token_gap_vocab_size = _optional_positive_int(
+            _cfg_get(audit_config, "token_gap_vocab_size", None)
+        )
         self.vocab_per_occurrence_mean_vector_enabled = bool(
             _cfg_get(audit_config, "vocab_per_occurrence_mean_vector_enabled", True)
         )
-        self.logp_vocab_per_occurrence_mean_vector_enabled = _optional_bool_with_fallback(
-            _cfg_get(audit_config, "logp_vocab_per_occurrence_mean_vector_enabled", None),
-            self.vocab_per_occurrence_mean_vector_enabled,
+        self.logp_vocab_per_occurrence_mean_vector_enabled = (
+            _optional_bool_with_fallback(
+                _cfg_get(
+                    audit_config, "logp_vocab_per_occurrence_mean_vector_enabled", None
+                ),
+                self.vocab_per_occurrence_mean_vector_enabled,
+            )
         )
-        self.logp_abs_vocab_per_occurrence_mean_vector_enabled = _optional_bool_with_fallback(
-            _cfg_get(audit_config, "logp_abs_vocab_per_occurrence_mean_vector_enabled", None),
-            self.vocab_per_occurrence_mean_vector_enabled,
+        self.logp_abs_vocab_per_occurrence_mean_vector_enabled = (
+            _optional_bool_with_fallback(
+                _cfg_get(
+                    audit_config,
+                    "logp_abs_vocab_per_occurrence_mean_vector_enabled",
+                    None,
+                ),
+                self.vocab_per_occurrence_mean_vector_enabled,
+            )
         )
-        self.entropy_vocab_per_occurrence_mean_vector_enabled = _optional_bool_with_fallback(
-            _cfg_get(audit_config, "entropy_vocab_per_occurrence_mean_vector_enabled", None),
-            self.vocab_per_occurrence_mean_vector_enabled,
+        self.entropy_vocab_per_occurrence_mean_vector_enabled = (
+            _optional_bool_with_fallback(
+                _cfg_get(
+                    audit_config,
+                    "entropy_vocab_per_occurrence_mean_vector_enabled",
+                    None,
+                ),
+                self.vocab_per_occurrence_mean_vector_enabled,
+            )
         )
-        self.token_gap_vocab_size_source = "config" if self.token_gap_vocab_size is not None else "unavailable"
+        self.token_gap_vocab_size_source = (
+            "config" if self.token_gap_vocab_size is not None else "unavailable"
+        )
         if self.token_gap_vocab_size is None:
             self.token_gap_vocab_size = _infer_model_config_vocab_size(config)
             if self.token_gap_vocab_size is not None:
@@ -729,12 +803,12 @@ class MOPDAuditLogger:
                 None,
             )
         self.response_tokenizer_name_or_path = (
-            None
-            if tokenizer_name_or_path is None
-            else str(tokenizer_name_or_path)
+            None if tokenizer_name_or_path is None else str(tokenizer_name_or_path)
         )
         self.entropy_enabled = bool(_cfg_get(audit_config, "entropy_enabled", True))
-        self.entropy_freq_steps = max(1, int(_cfg_get(audit_config, "entropy_freq_steps", 1)))
+        self.entropy_freq_steps = max(
+            1, int(_cfg_get(audit_config, "entropy_freq_steps", 1))
+        )
         self.entropy_vocab_vector_enabled = bool(
             _cfg_get(audit_config, "entropy_vocab_vector_enabled", False)
         )
@@ -753,22 +827,36 @@ class MOPDAuditLogger:
         )
         self.eopd_entropy_threshold = eopd_entropy_threshold(policy_loss_config)
         self.topk_teacher_student_cross_entropy_vocab_enabled = bool(
-            _cfg_get(audit_config, "topk_teacher_student_cross_entropy_vocab_enabled", False)
+            _cfg_get(
+                audit_config, "topk_teacher_student_cross_entropy_vocab_enabled", False
+            )
         )
         self.topk_teacher_student_cross_entropy_vocab_freq_steps = max(
             1,
-            int(_cfg_get(audit_config, "topk_teacher_student_cross_entropy_vocab_freq_steps", 1)),
+            int(
+                _cfg_get(
+                    audit_config,
+                    "topk_teacher_student_cross_entropy_vocab_freq_steps",
+                    1,
+                )
+            ),
         )
         self.topk_teacher_student_cross_entropy_k = max(
             1,
             int(_cfg_get(audit_config, "topk_teacher_student_cross_entropy_k", 32)),
         )
         self.topk_teacher_student_cross_entropy_include_tail = bool(
-            _cfg_get(audit_config, "topk_teacher_student_cross_entropy_include_tail", False)
+            _cfg_get(
+                audit_config, "topk_teacher_student_cross_entropy_include_tail", False
+            )
         )
         self.topk_teacher_student_cross_entropy_temperature = max(
             1e-6,
-            float(_cfg_get(audit_config, "topk_teacher_student_cross_entropy_temperature", 1.0)),
+            float(
+                _cfg_get(
+                    audit_config, "topk_teacher_student_cross_entropy_temperature", 1.0
+                )
+            ),
         )
         self.logp_vector_enabled = bool(
             _cfg_get(audit_config, "logp_vector_enabled", False)
@@ -784,8 +872,12 @@ class MOPDAuditLogger:
             1,
             int(_cfg_get(audit_config, "logp_abs_vector_freq_steps", 1)),
         )
-        self.token_gradient_enabled = bool(_cfg_get(audit_config, "token_gradient_enabled", False))
-        self.token_gradient_freq_steps = max(1, int(_cfg_get(audit_config, "token_gradient_freq_steps", 10)))
+        self.token_gradient_enabled = bool(
+            _cfg_get(audit_config, "token_gradient_enabled", False)
+        )
+        self.token_gradient_freq_steps = max(
+            1, int(_cfg_get(audit_config, "token_gradient_freq_steps", 10))
+        )
         self.token_gradient_tail_enabled = bool(
             _cfg_get(audit_config, "token_gradient_tail_enabled", True)
         )
@@ -811,9 +903,7 @@ class MOPDAuditLogger:
             100,
         )
         self.token_gradient_top_k = (
-            None
-            if token_gradient_top_k is None
-            else max(1, int(token_gradient_top_k))
+            None if token_gradient_top_k is None else max(1, int(token_gradient_top_k))
         )
         self.token_gradient_top_p_enabled = bool(
             _cfg_get(audit_config, "token_gradient_top_p_enabled", False)
@@ -821,7 +911,10 @@ class MOPDAuditLogger:
         token_gradient_top_p = _cfg_get(audit_config, "token_gradient_top_p", 0.10)
         self.token_gradient_top_p = min(
             1.0,
-            max(0.0, float(0.10 if token_gradient_top_p is None else token_gradient_top_p)),
+            max(
+                0.0,
+                float(0.10 if token_gradient_top_p is None else token_gradient_top_p),
+            ),
         )
         self.token_gradient_log_tokens_jsonl_enabled = bool(
             _cfg_get(
@@ -856,13 +949,17 @@ class MOPDAuditLogger:
                 )
             ),
         )
-        self.dynamic_domain_loss_weighting_signal_source = str(
-            _cfg_get(
-                audit_config,
-                "dynamic_domain_loss_weighting_signal_source",
-                "gradient_norm",
+        self.dynamic_domain_loss_weighting_signal_source = (
+            str(
+                _cfg_get(
+                    audit_config,
+                    "dynamic_domain_loss_weighting_signal_source",
+                    "gradient_norm",
+                )
             )
-        ).strip().lower()
+            .strip()
+            .lower()
+        )
         self.dynamic_domain_loss_weighting_ema_beta = float(
             _cfg_get(
                 audit_config,
@@ -924,16 +1021,70 @@ class MOPDAuditLogger:
             {},
         )
         self.domain_control_token_ids = {
-            str(domain): tuple(
-                dict.fromkeys(int(token_id) for token_id in token_ids)
-            )
+            str(domain): tuple(dict.fromkeys(int(token_id) for token_id in token_ids))
             for domain, token_ids in raw_domain_control_ids.items()
+        }
+        self.control_token_candidate_ids = tuple(
+            sorted(
+                {
+                    int(token_id)
+                    for token_id in _cfg_get(
+                        audit_config,
+                        "control_token_candidate_ids",
+                        (),
+                    )
+                }
+            )
+        )
+        raw_domain_control_candidates = _cfg_get(
+            audit_config,
+            "domain_control_token_candidate_ids",
+            {},
+        )
+        self.domain_control_token_candidate_ids = {
+            str(domain): tuple(sorted({int(token_id) for token_id in token_ids}))
+            for domain, token_ids in raw_domain_control_candidates.items()
         }
         self.control_token_normalize_per_domain = bool(
             _cfg_get(
                 audit_config,
                 "control_token_normalize_per_domain",
                 False,
+            )
+        )
+        self.control_token_online_selection_enabled = bool(
+            _cfg_get(
+                audit_config,
+                "control_token_online_selection_enabled",
+                False,
+            )
+        )
+        self.control_token_online_audit_interval_steps = int(
+            _cfg_get(
+                audit_config,
+                "control_token_online_audit_interval_steps",
+                3,
+            )
+        )
+        self.control_token_online_window_steps = int(
+            _cfg_get(
+                audit_config,
+                "control_token_online_window_steps",
+                3,
+            )
+        )
+        self.control_token_online_min_mean_occurrences_per_step = float(
+            _cfg_get(
+                audit_config,
+                "control_token_online_min_mean_occurrences_per_step",
+                20.0,
+            )
+        )
+        self.control_token_online_top_k = int(
+            _cfg_get(
+                audit_config,
+                "control_token_online_top_k",
+                30,
             )
         )
         self.control_token_phase_gate_enabled = bool(
@@ -1038,28 +1189,36 @@ class MOPDAuditLogger:
                 1.0,
             )
         )
-        self.all_domain_shared_token_selection_mode = str(
-            _cfg_get(
-                audit_config,
-                "all_domain_shared_token_selection_mode",
-                "per_step_mean_abs_loss",
+        self.all_domain_shared_token_selection_mode = (
+            str(
+                _cfg_get(
+                    audit_config,
+                    "all_domain_shared_token_selection_mode",
+                    "per_step_mean_abs_loss",
+                )
             )
-        ).strip().lower()
+            .strip()
+            .lower()
+        )
         raw_shared_top_k = _cfg_get(
             audit_config,
             "all_domain_shared_token_top_k",
             100,
         )
         self.all_domain_shared_token_top_k = (
-            None
-            if raw_shared_top_k is None
-            else max(1, int(raw_shared_top_k))
+            None if raw_shared_top_k is None else max(1, int(raw_shared_top_k))
         )
-        policy_loss = _cfg_get(_cfg_get(_cfg_get(config, "actor_rollout_ref", {}), "actor", {}), "policy_loss", {})
+        policy_loss = _cfg_get(
+            _cfg_get(_cfg_get(config, "actor_rollout_ref", {}), "actor", {}),
+            "policy_loss",
+            {},
+        )
         self.lambda_vals = float(_cfg_get(policy_loss, "lambda_vals", 1.0))
         self._last_validation_metrics: dict[str, float] = {}
         self._validation_gain_history: dict[str, list[float]] = {}
-        self._seen_sample_ids: dict[str, set[str]] = {domain: set() for domain in self.domains}
+        self._seen_sample_ids: dict[str, set[str]] = {
+            domain: set() for domain in self.domains
+        }
         if self.enabled:
             self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1071,7 +1230,9 @@ class MOPDAuditLogger:
             parts.insert(0, safe_name(self.prefix))
         return "/".join(part for part in parts if part)
 
-    def _domain_tag(self, domain: str, category: str, metric: str, *segments: str) -> str:
+    def _domain_tag(
+        self, domain: str, category: str, metric: str, *segments: str
+    ) -> str:
         return self._tag(domain, category, metric, *segments)
 
     def _global_tag(self, category: str, metric: str, *segments: str) -> str:
@@ -1086,13 +1247,21 @@ class MOPDAuditLogger:
                 tail = [safe_name(item) for item in slash_parts[idx + 1 :]]
                 if tail:
                     return safe_domains[safe_part], "_".join(tail)
-                prefix = [safe_name(item) for item in slash_parts[:idx] if item not in {"val", "validation"}]
+                prefix = [
+                    safe_name(item)
+                    for item in slash_parts[:idx]
+                    if item not in {"val", "validation"}
+                ]
                 return safe_domains[safe_part], "_".join(prefix) or "value"
 
         safe_key = safe_name(key)
         for domain in self.domains:
             safe_domain = safe_name(domain)
-            for prefix in (f"val_{safe_domain}_", f"validation_{safe_domain}_", f"{safe_domain}_"):
+            for prefix in (
+                f"val_{safe_domain}_",
+                f"validation_{safe_domain}_",
+                f"{safe_domain}_",
+            ):
                 if safe_key.startswith(prefix):
                     return safe_domain, safe_key[len(prefix) :] or "value"
         return "global", safe_key
@@ -1109,7 +1278,9 @@ class MOPDAuditLogger:
         return self.enabled and enabled and step % max(1, int(freq_steps)) == 0
 
     def should_log_sample_level(self, step: int) -> bool:
-        return self._freq_active(self.log_sample_level, self.log_sample_level_freq_steps, step)
+        return self._freq_active(
+            self.log_sample_level, self.log_sample_level_freq_steps, step
+        )
 
     def should_log_response_level(self, step: int) -> bool:
         return self._freq_active(
@@ -1119,10 +1290,14 @@ class MOPDAuditLogger:
         )
 
     def should_log_validation_metrics(self, step: int) -> bool:
-        return self._freq_active(self.log_validation, self.log_validation_freq_steps, step)
+        return self._freq_active(
+            self.log_validation, self.log_validation_freq_steps, step
+        )
 
     def should_log_token_gap(self, step: int) -> bool:
-        return self._freq_active(self.token_gap_enabled, self.token_gap_freq_steps, step)
+        return self._freq_active(
+            self.token_gap_enabled, self.token_gap_freq_steps, step
+        )
 
     def should_log_token_gap_vocab_vector(self, step: int) -> bool:
         return self._freq_active(
@@ -1163,7 +1338,9 @@ class MOPDAuditLogger:
         )
 
     def should_compute_sample_gradient(self, step: int) -> bool:
-        return self._freq_active(self.sample_gradient_enabled, self.sample_gradient_freq_steps, step)
+        return self._freq_active(
+            self.sample_gradient_enabled, self.sample_gradient_freq_steps, step
+        )
 
     def should_log_sample_gradient_level(self, step: int) -> bool:
         return self._freq_active(
@@ -1191,7 +1368,9 @@ class MOPDAuditLogger:
         )
 
     def should_compute_domain_gradient(self, step: int) -> bool:
-        full_gradient_active = self.full_gradient_enabled and step % self.full_gradient_freq_steps == 0
+        full_gradient_active = (
+            self.full_gradient_enabled and step % self.full_gradient_freq_steps == 0
+        )
         return self.enabled and (
             full_gradient_active
             or self.should_compute_token_gradient(step)
@@ -1200,8 +1379,7 @@ class MOPDAuditLogger:
 
     def should_compute_token_gradient(self, step: int) -> bool:
         subset_enabled = (
-            self.token_gradient_tail_enabled
-            or self.token_gradient_top_p_enabled
+            self.token_gradient_tail_enabled or self.token_gradient_top_p_enabled
         )
         return self._freq_active(
             self.token_gradient_enabled and subset_enabled,
@@ -1240,7 +1418,9 @@ class MOPDAuditLogger:
             "world_size": int(world_size),
             "domains": list(self.domains),
             "domain_order": list(self.domains),
-            "micro_batch_size_per_gpu": int(self.full_gradient_micro_batch_size_per_gpu),
+            "micro_batch_size_per_gpu": int(
+                self.full_gradient_micro_batch_size_per_gpu
+            ),
             "inspection_only": True,
             "production_batch_reordered": False,
             "layout_source": "post_standard_trainer_balance",
@@ -1262,7 +1442,9 @@ class MOPDAuditLogger:
         attention_mask = batch.batch["attention_mask"]
         batch_size = int(attention_mask.shape[0])
         if batch_size == 0 or batch_size % world_size != 0:
-            partition_meta["unsupported_reason"] = "batch_size_not_divisible_by_world_size"
+            partition_meta["unsupported_reason"] = (
+                "batch_size_not_divisible_by_world_size"
+            )
             return metrics
 
         labels = extract_teacher_domains(batch.non_tensor_batch, batch_size)
@@ -1273,10 +1455,16 @@ class MOPDAuditLogger:
         micro_batch_size = self.full_gradient_micro_batch_size_per_gpu
         required_multiple = world_size * micro_batch_size
         domain_indices = {
-            domain: [idx for idx, label in enumerate(labels) if label == domain] for domain in self.domains
+            domain: [idx for idx, label in enumerate(labels) if label == domain]
+            for domain in self.domains
         }
-        if any(not indices or len(indices) % required_multiple != 0 for indices in domain_indices.values()):
-            partition_meta["unsupported_reason"] = "domain_counts_not_divisible_by_rank_micro_batch"
+        if any(
+            not indices or len(indices) % required_multiple != 0
+            for indices in domain_indices.values()
+        ):
+            partition_meta["unsupported_reason"] = (
+                "domain_counts_not_divisible_by_rank_micro_batch"
+            )
             return metrics
 
         expected_rank_size = batch_size // world_size
@@ -1301,11 +1489,11 @@ class MOPDAuditLogger:
             return metrics
 
         expected_rank_labels = [
-            domain
-            for domain in self.domains
-            for _ in range(first_rank_counts[domain])
+            domain for domain in self.domains for _ in range(first_rank_counts[domain])
         ]
-        if any(rank_labels != expected_rank_labels for rank_labels in rank_label_chunks):
+        if any(
+            rank_labels != expected_rank_labels for rank_labels in rank_label_chunks
+        ):
             partition_meta["unsupported_reason"] = "rank_domain_blocks_not_aligned"
             return metrics
 
@@ -1315,7 +1503,9 @@ class MOPDAuditLogger:
             for start in range(0, expected_rank_size, micro_batch_size)
         )
         if has_mixed_micro_batch:
-            partition_meta["unsupported_reason"] = "rank_micro_batches_contain_mixed_domains"
+            partition_meta["unsupported_reason"] = (
+                "rank_micro_batches_contain_mixed_domains"
+            )
             return metrics
 
         partition_meta.update(
@@ -1376,7 +1566,8 @@ class MOPDAuditLogger:
                     self.full_grad_training_parity_rel_l2_threshold
                 ),
                 "learning_rate": self._current_learning_rate_value(),
-                "sample_gradient_enabled": self.should_compute_sample_gradient(step) and mode == "train",
+                "sample_gradient_enabled": self.should_compute_sample_gradient(step)
+                and mode == "train",
                 "sample_gradient_freq_steps": self.sample_gradient_freq_steps,
                 "sample_gradient_norm_enabled": self.sample_gradient_norm_enabled,
                 "sample_gradient_cos_enabled": self.sample_gradient_cos_enabled
@@ -1385,10 +1576,13 @@ class MOPDAuditLogger:
                 "sample_gradient_cos_freq_steps": self.sample_gradient_cos_freq_steps,
                 "sample_gradient_backward_recompute_enabled": self.sample_gradient_backward_recompute_enabled,
                 "sample_gradient_backward_sync_enabled": self.sample_gradient_backward_sync_enabled,
-                "sample_gradient_log_sample_level": self.should_log_sample_gradient_level(step),
+                "sample_gradient_log_sample_level": self.should_log_sample_gradient_level(
+                    step
+                ),
                 "sample_gradient_log_sample_level_freq_steps": self.sample_gradient_log_sample_level_freq_steps,
                 "offload_domain_gradients": self.full_gradient_offload_domain_gradients,
-                "token_gradient_enabled": self.should_compute_token_gradient(step) and mode == "train",
+                "token_gradient_enabled": self.should_compute_token_gradient(step)
+                and mode == "train",
                 "token_gradient_freq_steps": self.token_gradient_freq_steps,
                 "token_gradient_tail_enabled": self.token_gradient_tail_enabled,
                 "token_gradient_tail_fraction": self.token_gradient_tail_fraction,
@@ -1435,21 +1629,36 @@ class MOPDAuditLogger:
                     self.dynamic_domain_loss_weighting_max
                 ),
                 "control_token_loss_weighting_enabled": (
-                    self.control_token_loss_weighting_enabled
-                    and mode == "train"
+                    self.control_token_loss_weighting_enabled and mode == "train"
                 ),
                 "control_token_loss_weight": self.control_token_loss_weight,
                 "control_token_ids": self.control_token_ids,
                 "domain_control_token_ids": self.domain_control_token_ids,
+                "control_token_candidate_ids": (self.control_token_candidate_ids),
+                "domain_control_token_candidate_ids": (
+                    self.domain_control_token_candidate_ids
+                ),
                 "control_token_normalize_per_domain": (
                     self.control_token_normalize_per_domain
                 ),
+                "control_token_online_selection_enabled": (
+                    self.control_token_online_selection_enabled and mode == "train"
+                ),
+                "control_token_online_audit_interval_steps": (
+                    self.control_token_online_audit_interval_steps
+                ),
+                "control_token_online_window_steps": (
+                    self.control_token_online_window_steps
+                ),
+                (
+                    "control_token_online_" "min_mean_occurrences_per_step"
+                ): self.control_token_online_min_mean_occurrences_per_step,
+                "control_token_online_top_k": (self.control_token_online_top_k),
                 "control_token_phase_gate_enabled": (
                     self.control_token_phase_gate_enabled and mode == "train"
                 ),
                 "control_token_span_weighting_enabled": (
-                    self.control_token_span_weighting_enabled
-                    and mode == "train"
+                    self.control_token_span_weighting_enabled and mode == "train"
                 ),
                 "control_token_phase_gate_window_steps": (
                     self.control_token_phase_gate_window_steps
@@ -1464,19 +1673,14 @@ class MOPDAuditLogger:
                     self.control_token_phase_gate_initial
                 ),
                 "control_token_span_length": self.control_token_span_length,
-                "control_token_span_decay_tau": (
-                    self.control_token_span_decay_tau
-                ),
+                "control_token_span_decay_tau": (self.control_token_span_decay_tau),
                 "control_token_speed_weighting_enabled": (
-                    self.control_token_speed_weighting_enabled
-                    and mode == "train"
+                    self.control_token_speed_weighting_enabled and mode == "train"
                 ),
                 "control_token_speed_window_steps": (
                     self.control_token_speed_window_steps
                 ),
-                "control_token_speed_ema_beta": (
-                    self.control_token_speed_ema_beta
-                ),
+                "control_token_speed_ema_beta": (self.control_token_speed_ema_beta),
                 "control_token_speed_update_interval_steps": (
                     self.control_token_speed_update_interval_steps
                 ),
@@ -1499,9 +1703,7 @@ class MOPDAuditLogger:
                 "all_domain_shared_token_selection_mode": (
                     self.all_domain_shared_token_selection_mode
                 ),
-                "all_domain_shared_token_top_k": (
-                    self.all_domain_shared_token_top_k
-                ),
+                "all_domain_shared_token_top_k": (self.all_domain_shared_token_top_k),
                 "domain_partition": domain_partition or {},
             }
         }
@@ -1538,11 +1740,14 @@ class MOPDAuditLogger:
                 )
             rows_by_step.setdefault(int(row["step"]), []).append(row)
         for row_step, step_rows in rows_by_step.items():
-            path = step_jsonl_dir(
-                self.output_dir,
-                row_step,
-                create=True,
-            ) / filename
+            path = (
+                step_jsonl_dir(
+                    self.output_dir,
+                    row_step,
+                    create=True,
+                )
+                / filename
+            )
             temporary_path = path.with_name(f".{path.name}.tmp")
             with temporary_path.open("w", encoding="utf-8") as handle:
                 for row in step_rows:
@@ -1556,7 +1761,9 @@ class MOPDAuditLogger:
                     )
             temporary_path.replace(path)
 
-    def log_training_step(self, batch: Any, step: int, lr: Any = None) -> dict[str, float]:
+    def log_training_step(
+        self, batch: Any, step: int, lr: Any = None
+    ) -> dict[str, float]:
         if not self.enabled:
             return {}
 
@@ -1574,12 +1781,17 @@ class MOPDAuditLogger:
                 response_audit_batch,
             ) = self._compute_training_rows(batch, step, lr)
         except Exception as exc:  # pragma: no cover - defensive remote logging
-            self._write_jsonl("audit_errors.jsonl", [{"step": step, "stage": "training", "error": repr(exc)}])
+            self._write_jsonl(
+                "audit_errors.jsonl",
+                [{"step": step, "stage": "training", "error": repr(exc)}],
+            )
             return {self._global_tag("audit", "error"): 1.0}
 
         error_path = step_jsonl_dir(self.output_dir, step) / "audit_errors.jsonl"
         error_path.unlink(missing_ok=True)
-        metrics[self._global_tag("audit", "wall_time_step")] = time.perf_counter() - started_at
+        metrics[self._global_tag("audit", "wall_time_step")] = (
+            time.perf_counter() - started_at
+        )
         self._write_jsonl("domain_step_metrics.jsonl", domain_rows)
         self._write_jsonl("loss_variance_domain_step.jsonl", variance_rows)
         self._write_jsonl("loss_variance_sample.jsonl", sample_rows)
@@ -1661,7 +1873,9 @@ class MOPDAuditLogger:
                 ),
             )
         if entropy_distribution_rows:
-            self._write_jsonl("entropy_distribution_vectors.jsonl", entropy_distribution_rows)
+            self._write_jsonl(
+                "entropy_distribution_vectors.jsonl", entropy_distribution_rows
+            )
         if entropy_vocab_rows:
             self._write_jsonl("entropy_vocab_vectors.jsonl", entropy_vocab_rows)
             self._write_jsonl(
@@ -1700,17 +1914,19 @@ class MOPDAuditLogger:
             )
         return metrics
 
-    def log_validation_metrics(self, val_metrics: dict[str, Any], step: int) -> dict[str, float]:
+    def log_validation_metrics(
+        self, val_metrics: dict[str, Any], step: int
+    ) -> dict[str, float]:
         if not self.should_log_validation_metrics(step):
             return {}
         return _log_validation_metrics(self, val_metrics, step)
 
-    def log_training_cost(self, metrics: dict[str, Any], step: int, n_gpus: int = 1) -> dict[str, float]:
+    def log_training_cost(
+        self, metrics: dict[str, Any], step: int, n_gpus: int = 1
+    ) -> dict[str, float]:
         return _log_training_cost(self, metrics, step, n_gpus)
 
-    def _compute_training_rows(
-        self, batch: Any, step: int, lr: Any
-    ) -> tuple[
+    def _compute_training_rows(self, batch: Any, step: int, lr: Any) -> tuple[
         dict[str, float],
         list,
         list,
@@ -1731,7 +1947,15 @@ class MOPDAuditLogger:
         old_log_probs = tensor_batch["old_log_probs"].detach().float()
         response_mask = response_mask_from_batch(tensor_batch, old_log_probs)
         batch_keys = set(tensor_batch.keys())
-        base_log_prob = (tensor_batch["base_log_prob"] if "base_log_prob" in batch_keys else old_log_probs).detach().float()
+        base_log_prob = (
+            (
+                tensor_batch["base_log_prob"]
+                if "base_log_prob" in batch_keys
+                else old_log_probs
+            )
+            .detach()
+            .float()
+        )
         batch_size = int(old_log_probs.shape[0])
 
         labels = extract_teacher_domains(non_tensor, batch_size)
@@ -1739,10 +1963,14 @@ class MOPDAuditLogger:
 
         model_inputs = {**tensor_batch, **non_tensor}
         try:
-            teacher_log_probs = select_teacher_log_prob_tensor(
-                model_inputs,
-                {"multi_teacher_distill": True},
-            ).detach().float()
+            teacher_log_probs = (
+                select_teacher_log_prob_tensor(
+                    model_inputs,
+                    {"multi_teacher_distill": True},
+                )
+                .detach()
+                .float()
+            )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(
                 "teacher_student_gap requires a valid per-domain teacher "
@@ -1752,7 +1980,8 @@ class MOPDAuditLogger:
             old_log_probs - teacher_log_probs
             if self.lambda_vals == 1.0
             else (
-                old_log_probs - base_log_prob
+                old_log_probs
+                - base_log_prob
                 - (teacher_log_probs - base_log_prob) * self.lambda_vals
             )
         )
@@ -1783,9 +2012,7 @@ class MOPDAuditLogger:
                 f"shape, got {tuple(configured_token_loss_mask.shape)} versus "
                 f"{tuple(configured_token_loss.shape)}."
             )
-        configured_token_loss_mask = (
-            configured_token_loss_mask * response_mask
-        )
+        configured_token_loss_mask = configured_token_loss_mask * response_mask
         if configured_token_loss_available:
             configured_token_loss_name = str(
                 batch_meta_info.get(
@@ -1824,7 +2051,9 @@ class MOPDAuditLogger:
             )
 
         student_entropy = (
-            tensor_batch["student_entropy"].detach().float() if "student_entropy" in batch_keys else None
+            tensor_batch["student_entropy"].detach().float()
+            if "student_entropy" in batch_keys
+            else None
         )
         teacher_entropy = _select_domain_tensor(
             tensor_batch=tensor_batch,
@@ -1846,17 +2075,17 @@ class MOPDAuditLogger:
             configured_token_loss,
             configured_token_loss_mask,
         )
-        sample_token_opd_loss_defined = configured_token_loss_mask.sum(
+        sample_token_opd_loss_defined = configured_token_loss_mask.sum(dim=-1).gt(0)
+        sample_opd_loss = (configured_token_loss * configured_token_loss_mask).sum(
             dim=-1
-        ).gt(0)
-        sample_opd_loss = (
-            configured_token_loss * configured_token_loss_mask
-        ).sum(dim=-1)
+        )
         sample_loss_sq_mean = _mask_mean(
             configured_token_loss.square(),
             configured_token_loss_mask,
         )
-        sample_loss_var = torch.clamp(sample_loss_sq_mean - sample_token_opd_loss_mean.square(), min=0.0)
+        sample_loss_var = torch.clamp(
+            sample_loss_sq_mean - sample_token_opd_loss_mean.square(), min=0.0
+        )
         sample_loss_std = torch.sqrt(sample_loss_var)
         sample_loss_cv = sample_loss_std / (sample_token_opd_loss_mean.abs() + 1e-8)
         effective_tokens = response_mask.sum(dim=-1).detach().cpu().tolist()
@@ -1869,7 +2098,11 @@ class MOPDAuditLogger:
         )
         sample_advantage_mean = _mask_mean(advantages, response_mask)
 
-        token_scores = tensor_batch["token_level_scores"].detach().float() if "token_level_scores" in batch_keys else None
+        token_scores = (
+            tensor_batch["token_level_scores"].detach().float()
+            if "token_level_scores" in batch_keys
+            else None
+        )
         sample_reward = None
         sample_correctness = None
         if token_scores is not None:
@@ -1895,8 +2128,12 @@ class MOPDAuditLogger:
         logp_active = self.should_log_logp_vector(step)
         logp_abs_active = self.should_log_logp_abs_vector(step)
         logp_vector_active = token_gap_active or logp_active or logp_abs_active
-        token_gap_vocab_active = token_gap_active and self.should_log_token_gap_vocab_vector(step)
-        token_gap_vocab_compute_active = token_gap_vocab_active or logp_active or logp_abs_active
+        token_gap_vocab_active = (
+            token_gap_active and self.should_log_token_gap_vocab_vector(step)
+        )
+        token_gap_vocab_compute_active = (
+            token_gap_vocab_active or logp_active or logp_abs_active
+        )
         topk_cross_entropy_vocab_active = (
             self.should_log_topk_teacher_student_cross_entropy_vocab(step)
         )
@@ -1907,15 +2144,16 @@ class MOPDAuditLogger:
             or entropy_vocab_vector_active
             or topk_cross_entropy_vocab_active
         )
-        entropy_vocab_active = entropy_vocab_vector_active or topk_cross_entropy_vocab_active
+        entropy_vocab_active = (
+            entropy_vocab_vector_active or topk_cross_entropy_vocab_active
+        )
         sample_level_active = self.should_log_sample_level(step)
         response_level_active = self.should_log_response_level(step)
 
         opd_losses = _tensor_to_float_list(sample_opd_loss)
         sample_token_opd_loss_means = _tensor_to_float_list(sample_token_opd_loss_mean)
         sample_token_opd_loss_defined_flags = [
-            bool(value)
-            for value in _tensor_to_int_list(sample_token_opd_loss_defined)
+            bool(value) for value in _tensor_to_int_list(sample_token_opd_loss_defined)
         ]
         sample_loss_vars = _tensor_to_float_list(sample_loss_var)
         loss_cvs = _tensor_to_float_list(sample_loss_cv)
@@ -1923,26 +2161,42 @@ class MOPDAuditLogger:
         gap_means = _tensor_to_float_list(teacher_student_gap)
         teacher_logprob_means = _tensor_to_float_list(teacher_logprob_mean)
         advantage_means = _tensor_to_float_list(sample_advantage_mean)
-        reward_values = _tensor_to_float_list(sample_reward) if sample_reward is not None else None
-        correctness_values = _tensor_to_float_list(sample_correctness) if sample_correctness is not None else None
+        reward_values = (
+            _tensor_to_float_list(sample_reward) if sample_reward is not None else None
+        )
+        correctness_values = (
+            _tensor_to_float_list(sample_correctness)
+            if sample_correctness is not None
+            else None
+        )
 
         indices_by_domain = {
-            domain: [idx for idx, label in enumerate(labels) if label == domain] for domain in configured_domains
+            domain: [idx for idx, label in enumerate(labels) if label == domain]
+            for domain in configured_domains
         }
         token_count_by_domain = {
-            domain: sum(token_counts[idx] for idx in indices) for domain, indices in indices_by_domain.items()
+            domain: sum(token_counts[idx] for idx in indices)
+            for domain, indices in indices_by_domain.items()
         }
-        sample_count_by_domain = {domain: len(indices) for domain, indices in indices_by_domain.items()}
+        sample_count_by_domain = {
+            domain: len(indices) for domain, indices in indices_by_domain.items()
+        }
         token_ids = None
         if (
             token_gap_vocab_compute_active
             or entropy_vocab_active
             or response_level_active
         ):
-            token_ids = _response_token_id_matrix(tensor_batch, batch_keys, response_mask)
+            token_ids = _response_token_id_matrix(
+                tensor_batch, batch_keys, response_mask
+            )
         token_gap_vocab_size = self.token_gap_vocab_size
         token_gap_vocab_size_source = self.token_gap_vocab_size_source
-        if (logp_vector_active or entropy_vocab_active) and token_ids is not None and token_gap_vocab_size is None:
+        if (
+            (logp_vector_active or entropy_vocab_active)
+            and token_ids is not None
+            and token_gap_vocab_size is None
+        ):
             observed_valid_ids = token_ids[response_mask.detach().bool().cpu()]
             if int(observed_valid_ids.numel()) > 0:
                 token_gap_vocab_size = int(observed_valid_ids.max().item()) + 1
@@ -1980,9 +2234,7 @@ class MOPDAuditLogger:
                 response_mask=response_mask.detach().float().cpu(),
                 student_log_prob=old_log_probs.detach().float().cpu(),
                 teacher_log_prob=teacher_log_probs.detach().float().cpu(),
-                configured_token_loss=(
-                    configured_token_loss.detach().float().cpu()
-                ),
+                configured_token_loss=(configured_token_loss.detach().float().cpu()),
                 configured_token_loss_mask=(
                     configured_token_loss_mask.detach().float().cpu()
                 ),
@@ -1995,9 +2247,7 @@ class MOPDAuditLogger:
                 configured_token_loss_epoch_reduction=(
                     configured_token_loss_epoch_reduction
                 ),
-                configured_token_loss_epoch_count=(
-                    configured_token_loss_epoch_count
-                ),
+                configured_token_loss_epoch_count=(configured_token_loss_epoch_count),
                 cross_entropy_scope="topk",
                 cross_entropy_support_source=support_source,
                 cross_entropy_topk=int(
@@ -2031,16 +2281,18 @@ class MOPDAuditLogger:
             domain_cvs = [loss_cvs[idx] for idx in indices]
             domain_teacher_logprobs = [teacher_logprob_means[idx] for idx in indices]
             domain_advantages = [advantage_means[idx] for idx in indices]
-            domain_rewards = [reward_values[idx] for idx in indices] if reward_values is not None else []
+            domain_rewards = (
+                [reward_values[idx] for idx in indices]
+                if reward_values is not None
+                else []
+            )
             domain_sample_ids = [sample_ids[idx] for idx in indices]
             domain_token_counts = [token_counts[idx] for idx in indices]
             domain_valid_mask = (
                 response_mask[indices].detach().bool() if indices else None
             )
             domain_loss_valid_mask = (
-                configured_token_loss_mask[indices].detach().bool()
-                if indices
-                else None
+                configured_token_loss_mask[indices].detach().bool() if indices else None
             )
             domain_loss_vector = (
                 configured_token_loss[indices][domain_loss_valid_mask]
@@ -2069,9 +2321,13 @@ class MOPDAuditLogger:
             abs_gap_stats: dict[str, float | None] = {}
             if logp_vector_active:
                 if token_gap_active:
-                    signed_gap_stats = _token_distribution_stats(domain_gap_vector, "gap_signed")
+                    signed_gap_stats = _token_distribution_stats(
+                        domain_gap_vector, "gap_signed"
+                    )
                 if token_gap_active or logp_abs_active:
-                    abs_gap_stats = _token_distribution_stats(domain_gap_abs_vector, "gap_abs")
+                    abs_gap_stats = _token_distribution_stats(
+                        domain_gap_abs_vector, "gap_abs"
+                    )
                 if domain_gap_vector is not None and int(domain_gap_vector.numel()) > 0:
                     token_gap_row = {
                         "step": step,
@@ -2082,9 +2338,15 @@ class MOPDAuditLogger:
                     if token_gap_active:
                         token_gap_row.update(
                             {
-                                "gap_signed_vector_domain": _tensor_to_float_list(domain_gap_vector),
-                                "gap_abs_vector_domain": _tensor_to_float_list(domain_gap_abs_vector),
-                                "gap_vector_domain": _tensor_to_float_list(domain_gap_vector),
+                                "gap_signed_vector_domain": _tensor_to_float_list(
+                                    domain_gap_vector
+                                ),
+                                "gap_abs_vector_domain": _tensor_to_float_list(
+                                    domain_gap_abs_vector
+                                ),
+                                "gap_vector_domain": _tensor_to_float_list(
+                                    domain_gap_vector
+                                ),
                             }
                         )
                     if logp_active:
@@ -2159,17 +2421,25 @@ class MOPDAuditLogger:
                     domain_response_mask = response_mask[indices]
                     domain_valid_mask = domain_response_mask.detach().bool()
                     if teacher_entropy is not None:
-                        teacher_entropy_vector = teacher_entropy[indices][domain_valid_mask]
+                        teacher_entropy_vector = teacher_entropy[indices][
+                            domain_valid_mask
+                        ]
                     if student_entropy is not None:
-                        student_entropy_vector = student_entropy[indices][domain_valid_mask]
+                        student_entropy_vector = student_entropy[indices][
+                            domain_valid_mask
+                        ]
                     if teacher_student_cross_entropy is not None:
-                        cross_entropy_vector = teacher_student_cross_entropy[indices][domain_valid_mask]
-                if teacher_entropy_vector is not None and int(teacher_entropy_vector.numel()) > 0:
+                        cross_entropy_vector = teacher_student_cross_entropy[indices][
+                            domain_valid_mask
+                        ]
+                if (
+                    teacher_entropy_vector is not None
+                    and int(teacher_entropy_vector.numel()) > 0
+                ):
                     high_entropy_occurrence_count = int(
-                        (
-                            teacher_entropy_vector
-                            >= self.eopd_entropy_threshold
-                        ).sum().item()
+                        (teacher_entropy_vector >= self.eopd_entropy_threshold)
+                        .sum()
+                        .item()
                     )
                     entropy_metrics.update(
                         {
@@ -2198,7 +2468,9 @@ class MOPDAuditLogger:
                     )
                     teacher_entropy_sum = teacher_entropy_stats["teacher_entropy_sum"]
                     student_entropy_sum = student_entropy_stats["student_entropy_sum"]
-                    cross_entropy_sum = cross_entropy_stats["teacher_student_cross_entropy_sum"]
+                    cross_entropy_sum = cross_entropy_stats[
+                        "teacher_student_cross_entropy_sum"
+                    ]
                     entropy_metrics.update(
                         {
                             "sum_teacher_entropy": teacher_entropy_sum,
@@ -2219,17 +2491,26 @@ class MOPDAuditLogger:
                         "learning_rate": learning_rate,
                         "token_count": int(domain_token_count),
                     }
-                    if teacher_entropy_vector is not None and int(teacher_entropy_vector.numel()) > 0:
-                        entropy_row["teacher_entropy_vector_domain"] = _tensor_to_float_list(
-                            teacher_entropy_vector
+                    if (
+                        teacher_entropy_vector is not None
+                        and int(teacher_entropy_vector.numel()) > 0
+                    ):
+                        entropy_row["teacher_entropy_vector_domain"] = (
+                            _tensor_to_float_list(teacher_entropy_vector)
                         )
-                    if student_entropy_vector is not None and int(student_entropy_vector.numel()) > 0:
-                        entropy_row["student_entropy_vector_domain"] = _tensor_to_float_list(
-                            student_entropy_vector
+                    if (
+                        student_entropy_vector is not None
+                        and int(student_entropy_vector.numel()) > 0
+                    ):
+                        entropy_row["student_entropy_vector_domain"] = (
+                            _tensor_to_float_list(student_entropy_vector)
                         )
-                    if cross_entropy_vector is not None and int(cross_entropy_vector.numel()) > 0:
-                        entropy_row["teacher_student_cross_entropy_vector_domain"] = _tensor_to_float_list(
-                            cross_entropy_vector
+                    if (
+                        cross_entropy_vector is not None
+                        and int(cross_entropy_vector.numel()) > 0
+                    ):
+                        entropy_row["teacher_student_cross_entropy_vector_domain"] = (
+                            _tensor_to_float_list(cross_entropy_vector)
                         )
                     if len(entropy_row) > 4:
                         entropy_distribution_rows.append(entropy_row)
@@ -2258,12 +2539,14 @@ class MOPDAuditLogger:
                         response_mask=response_mask[indices],
                         teacher_entropy=(
                             None
-                            if not entropy_vocab_vector_active or teacher_entropy is None
+                            if not entropy_vocab_vector_active
+                            or teacher_entropy is None
                             else teacher_entropy[indices]
                         ),
                         student_entropy=(
                             None
-                            if not entropy_vocab_vector_active or student_entropy is None
+                            if not entropy_vocab_vector_active
+                            or student_entropy is None
                             else student_entropy[indices]
                         ),
                         teacher_student_cross_entropy=(
@@ -2288,11 +2571,16 @@ class MOPDAuditLogger:
                                 ),
                             ),
                         }
-                        if "teacher_student_cross_entropy_sum_vector_vocab" in entropy_vocab_row:
+                        if (
+                            "teacher_student_cross_entropy_sum_vector_vocab"
+                            in entropy_vocab_row
+                        ):
                             entropy_vocab_row.update(
                                 {
                                     "topk_support_source": str(
-                                        batch_meta_info.get("topk_distill_support_source", "teacher")
+                                        batch_meta_info.get(
+                                            "topk_distill_support_source", "teacher"
+                                        )
                                     ),
                                     "topk_k": int(
                                         batch_meta_info.get(
@@ -2317,12 +2605,15 @@ class MOPDAuditLogger:
                                     ),
                                 }
                             )
-                        if "eopd_high_entropy_distinct_token_id_count" in entropy_vocab_row:
-                            entropy_metrics["eopd_high_entropy_distinct_token_id_count"] = (
-                                entropy_vocab_row[
-                                    "eopd_high_entropy_distinct_token_id_count"
-                                ]
-                            )
+                        if (
+                            "eopd_high_entropy_distinct_token_id_count"
+                            in entropy_vocab_row
+                        ):
+                            entropy_metrics[
+                                "eopd_high_entropy_distinct_token_id_count"
+                            ] = entropy_vocab_row[
+                                "eopd_high_entropy_distinct_token_id_count"
+                            ]
                         entropy_vocab_rows.append(entropy_vocab_row)
             domain_sample_losses = [opd_losses[idx] for idx in indices]
             domain_sample_stats = _sample_value_stats(domain_sample_losses)
@@ -2335,15 +2626,30 @@ class MOPDAuditLogger:
                 domain_sample_token_loss_means
             )
 
-            confidence_values = [float(np.clip(math.exp(value), 0.0, 1.0)) for value in domain_teacher_logprobs]
-            correctness_for_domain = [correctness_values[idx] for idx in indices] if correctness_values is not None else []
-            calibration_error = ece(confidence_values, correctness_for_domain, self.calibration_bins)
+            confidence_values = [
+                float(np.clip(math.exp(value), 0.0, 1.0))
+                for value in domain_teacher_logprobs
+            ]
+            correctness_for_domain = (
+                [correctness_values[idx] for idx in indices]
+                if correctness_values is not None
+                else []
+            )
+            calibration_error = ece(
+                confidence_values, correctness_for_domain, self.calibration_bins
+            )
 
             old_seen = self._seen_sample_ids.setdefault(domain, set())
-            duplicate_count = sum(1 for sample_id in domain_sample_ids if sample_id in old_seen)
+            duplicate_count = sum(
+                1 for sample_id in domain_sample_ids if sample_id in old_seen
+            )
             for sample_id in domain_sample_ids:
                 old_seen.add(sample_id)
-            duplicate_rate = None if not domain_sample_ids else duplicate_count / len(domain_sample_ids)
+            duplicate_rate = (
+                None
+                if not domain_sample_ids
+                else duplicate_count / len(domain_sample_ids)
+            )
 
             row = {
                 "step": step,
@@ -2351,31 +2657,46 @@ class MOPDAuditLogger:
                 "learning_rate": learning_rate,
                 "domain_sample_count": domain_sample_count,
                 "domain_token_count": domain_token_count,
-                "domain_token_frac": domain_token_count / total_tokens if total_tokens else 0.0,
+                "domain_token_frac": (
+                    domain_token_count / total_tokens if total_tokens else 0.0
+                ),
                 "sample_opd_loss_mean": domain_sample_stats["mean"],
                 "sample_opd_loss_std": domain_sample_stats["std"],
                 "sample_opd_loss_variance": domain_sample_stats["variance"],
-                "sample_token_opd_loss_mean": domain_sample_token_loss_stats[
-                    "mean"
-                ],
-                "sample_token_opd_loss_std": domain_sample_token_loss_stats[
-                    "std"
-                ],
+                "sample_token_opd_loss_mean": domain_sample_token_loss_stats["mean"],
+                "sample_token_opd_loss_std": domain_sample_token_loss_stats["std"],
                 "sample_token_opd_loss_variance": (
                     domain_sample_token_loss_stats["variance"]
                 ),
-                "high_variance_sample_rate": None
-                if not domain_cvs
-                else float(np.mean([cv > self.high_variance_cv_threshold for cv in domain_cvs])),
+                "high_variance_sample_rate": (
+                    None
+                    if not domain_cvs
+                    else float(
+                        np.mean(
+                            [cv > self.high_variance_cv_threshold for cv in domain_cvs]
+                        )
+                    )
+                ),
                 "advantage_mean": _mean(domain_advantages),
-                "positive_frac": None
-                if not domain_advantages
-                else float(np.mean([value > 0.0 for value in domain_advantages])),
+                "positive_frac": (
+                    None
+                    if not domain_advantages
+                    else float(np.mean([value > 0.0 for value in domain_advantages]))
+                ),
                 "response_mean": _mean(domain_token_counts),
                 "response_p95": _percentile(domain_token_counts, 95.0),
-                "response_clip_ratio": None
-                if not domain_token_counts
-                else float(np.mean([count >= response_mask.shape[-1] for count in domain_token_counts])),
+                "response_clip_ratio": (
+                    None
+                    if not domain_token_counts
+                    else float(
+                        np.mean(
+                            [
+                                count >= response_mask.shape[-1]
+                                for count in domain_token_counts
+                            ]
+                        )
+                    )
+                ),
                 "training_reward_mean": _mean(domain_rewards),
                 "training_accuracy": _mean(correctness_for_domain),
                 "teacher_confidence_mean": _mean(confidence_values),
@@ -2398,9 +2719,7 @@ class MOPDAuditLogger:
                     "learning_rate": learning_rate,
                     "metric_scope": "domain_step",
                     "loss_name": configured_token_loss_name,
-                    "loss_epoch_reduction": (
-                        configured_token_loss_epoch_reduction
-                    ),
+                    "loss_epoch_reduction": (configured_token_loss_epoch_reduction),
                     "loss_epoch_count": configured_token_loss_epoch_count,
                     "domain_sample_count": domain_sample_count,
                     "domain_token_count": domain_token_count,
@@ -2411,30 +2730,16 @@ class MOPDAuditLogger:
                     "token_opd_loss_p50": row["token_opd_loss_p50"],
                     "token_opd_loss_p95": row["token_opd_loss_p95"],
                     "token_opd_loss_sum": row["token_opd_loss_sum"],
-                    "teacher_student_gap_mean": row[
-                        "teacher_student_gap_mean"
-                    ],
-                    "teacher_student_gap_p05": row[
-                        "teacher_student_gap_p05"
-                    ],
-                    "teacher_student_gap_p50": row[
-                        "teacher_student_gap_p50"
-                    ],
-                    "teacher_student_gap_p95": row[
-                        "teacher_student_gap_p95"
-                    ],
-                    "teacher_student_gap_sum": row[
-                        "teacher_student_gap_sum"
-                    ],
+                    "teacher_student_gap_mean": row["teacher_student_gap_mean"],
+                    "teacher_student_gap_p05": row["teacher_student_gap_p05"],
+                    "teacher_student_gap_p50": row["teacher_student_gap_p50"],
+                    "teacher_student_gap_p95": row["teacher_student_gap_p95"],
+                    "teacher_student_gap_sum": row["teacher_student_gap_sum"],
                     "sample_opd_loss_mean": row["sample_opd_loss_mean"],
                     "sample_opd_loss_std": row["sample_opd_loss_std"],
                     "sample_opd_loss_variance": row["sample_opd_loss_variance"],
-                    "sample_token_opd_loss_mean": row[
-                        "sample_token_opd_loss_mean"
-                    ],
-                    "sample_token_opd_loss_std": row[
-                        "sample_token_opd_loss_std"
-                    ],
+                    "sample_token_opd_loss_mean": row["sample_token_opd_loss_mean"],
+                    "sample_token_opd_loss_std": row["sample_token_opd_loss_std"],
                     "sample_token_opd_loss_variance": row[
                         "sample_token_opd_loss_variance"
                     ],
@@ -2527,7 +2832,9 @@ class MOPDAuditLogger:
             for key in domain_metric_keys:
                 numeric = finite_float(row.get(key))
                 if numeric is not None:
-                    metrics[self._domain_tag(safe_domain, domain_metric_category(key), key)] = numeric
+                    metrics[
+                        self._domain_tag(safe_domain, domain_metric_category(key), key)
+                    ] = numeric
 
             if sample_level_active and indices:
                 sample_indices = (
@@ -2547,9 +2854,7 @@ class MOPDAuditLogger:
                             "loss_epoch_reduction": (
                                 configured_token_loss_epoch_reduction
                             ),
-                            "loss_epoch_count": (
-                                configured_token_loss_epoch_count
-                            ),
+                            "loss_epoch_count": (configured_token_loss_epoch_count),
                             "effective_tokens": token_counts[idx],
                             "opd_loss": opd_losses[idx],
                             "sample_token_opd_loss_mean": (
@@ -2558,17 +2863,18 @@ class MOPDAuditLogger:
                                 else None
                             ),
                             "sample_token_opd_loss_variance": (
-                                float(
-                                    sample_loss_var[idx]
-                                    .detach()
-                                    .cpu()
-                                    .item()
-                                )
+                                float(sample_loss_var[idx].detach().cpu().item())
                                 if sample_token_opd_loss_defined_flags[idx]
                                 else None
                             ),
-                            "training_reward": None if reward_values is None else reward_values[idx],
-                            "training_correctness": None if correctness_values is None else correctness_values[idx],
+                            "training_reward": (
+                                None if reward_values is None else reward_values[idx]
+                            ),
+                            "training_correctness": (
+                                None
+                                if correctness_values is None
+                                else correctness_values[idx]
+                            ),
                         }
                     )
 
@@ -2620,7 +2926,10 @@ class MOPDAuditLogger:
                         "teacher_entropy_mean_cosine",
                         "teacher_entropy_mean_vector_vocab",
                     ),
-                    ("student_entropy_mean_cosine", "student_entropy_mean_vector_vocab"),
+                    (
+                        "student_entropy_mean_cosine",
+                        "student_entropy_mean_vector_vocab",
+                    ),
                     (
                         "teacher_student_cross_entropy_mean_cosine",
                         "teacher_student_cross_entropy_mean_vector_vocab",
@@ -2659,7 +2968,12 @@ class MOPDAuditLogger:
         for active, category, vectors_by_domain, vector_specs in cosine_groups:
             if not active:
                 continue
-            for left_domain, right_domain, metric_name, cosine in iter_pairwise_domain_cosines(
+            for (
+                left_domain,
+                right_domain,
+                metric_name,
+                cosine,
+            ) in iter_pairwise_domain_cosines(
                 vectors_by_domain,
                 configured_domains,
                 vector_specs,
@@ -2669,9 +2983,7 @@ class MOPDAuditLogger:
 
         if total_tokens:
             global_valid_mask = response_mask.detach().bool()
-            global_loss_valid_mask = (
-                configured_token_loss_mask.detach().bool()
-            )
+            global_loss_valid_mask = configured_token_loss_mask.detach().bool()
             global_token_stats = _token_distribution_stats(
                 configured_token_loss[global_loss_valid_mask],
                 "token_opd_loss",
@@ -2696,12 +3008,8 @@ class MOPDAuditLogger:
                 "sample_opd_loss_mean": global_sample_stats["mean"],
                 "sample_opd_loss_std": global_sample_stats["std"],
                 "sample_opd_loss_variance": global_sample_stats["variance"],
-                "sample_token_opd_loss_mean": (
-                    global_sample_token_loss_stats["mean"]
-                ),
-                "sample_token_opd_loss_std": (
-                    global_sample_token_loss_stats["std"]
-                ),
+                "sample_token_opd_loss_mean": (global_sample_token_loss_stats["mean"]),
+                "sample_token_opd_loss_std": (global_sample_token_loss_stats["std"]),
                 "sample_token_opd_loss_variance": (
                     global_sample_token_loss_stats["variance"]
                 ),
@@ -2714,7 +3022,11 @@ class MOPDAuditLogger:
                 numeric = finite_float(value)
                 if numeric is not None:
                     metrics[self._global_tag("teacher", key)] = numeric
-            mix = [row["domain_token_frac"] for row in domain_rows if row["domain_token_frac"]]
+            mix = [
+                row["domain_token_frac"]
+                for row in domain_rows
+                if row["domain_token_frac"]
+            ]
             entropy = -sum(frac * math.log(frac) for frac in mix)
             metrics[self._global_tag("data", "domain_mix_entropy")] = entropy
             metrics[self._global_tag("data", "total_tokens")] = total_tokens

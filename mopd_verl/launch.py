@@ -30,16 +30,13 @@ def _hydra_int_list(values: Sequence[int]) -> str:
 
 def _hydra_int_list_dict(values: Mapping[str, Sequence[int]]) -> str:
     items = ", ".join(
-        f"{key}: {_hydra_int_list(token_ids)}"
-        for key, token_ids in values.items()
+        f"{key}: {_hydra_int_list(token_ids)}" for key, token_ids in values.items()
     )
     return "{" + items + "}"
 
 
 def _hydra_float_pair_list(values: Sequence[Sequence[float]]) -> str:
-    pairs = ", ".join(
-        f"[{float(pair[0]):g}, {float(pair[1]):g}]" for pair in values
-    )
+    pairs = ", ".join(f"[{float(pair[0]):g}, {float(pair[1]):g}]" for pair in values)
     return "[" + pairs + "]"
 
 
@@ -54,7 +51,9 @@ def _hydra_string_dict(values: Mapping[str, str]) -> str:
 
 
 def _hydra_list_dict(values: Mapping[str, Sequence[str]]) -> str:
-    items = ", ".join(f"{key}: {_hydra_list(file_paths)}" for key, file_paths in values.items())
+    items = ", ".join(
+        f"{key}: {_hydra_list(file_paths)}" for key, file_paths in values.items()
+    )
     return "{" + items + "}"
 
 
@@ -80,20 +79,26 @@ def _rollout_multiturn_overrides(config: MOPDConfig) -> list[str]:
         f"{rollout.multi_turn_tokenization_sanity_check_mode}",
     ]
     if rollout.multi_turn_tool_config_path is not None:
-        overrides.append(f"actor_rollout_ref.rollout.multi_turn.tool_config_path={rollout.multi_turn_tool_config_path}")
+        overrides.append(
+            f"actor_rollout_ref.rollout.multi_turn.tool_config_path={rollout.multi_turn_tool_config_path}"
+        )
     if rollout.multi_turn_max_assistant_turns is not None:
         overrides.append(
             f"actor_rollout_ref.rollout.multi_turn.max_assistant_turns={rollout.multi_turn_max_assistant_turns}"
         )
     if rollout.multi_turn_max_user_turns is not None:
-        overrides.append(f"actor_rollout_ref.rollout.multi_turn.max_user_turns={rollout.multi_turn_max_user_turns}")
+        overrides.append(
+            f"actor_rollout_ref.rollout.multi_turn.max_user_turns={rollout.multi_turn_max_user_turns}"
+        )
     return overrides
 
 
 def _worker_pool_overrides(prefix: str, pool: WorkerPoolPlacementConfig) -> list[str]:
     overrides = []
     if pool.process_on_nodes is not None:
-        overrides.append(f"{prefix}.process_on_nodes={_hydra_int_list(pool.process_on_nodes)}")
+        overrides.append(
+            f"{prefix}.process_on_nodes={_hydra_int_list(pool.process_on_nodes)}"
+        )
     if pool.n_gpus_per_node is not None:
         overrides.append(f"{prefix}.n_gpus_per_node={pool.n_gpus_per_node}")
     if pool.nnodes is not None:
@@ -128,18 +133,14 @@ def _region_dpo_overrides(config: MOPDConfig) -> list[str]:
         return []
     overrides = [
         "+mopd_region_dpo.enabled=true",
-        "+mopd_region_dpo.points_per_rollout="
-        f"{region.points_per_rollout}",
-        "+mopd_region_dpo.branches_per_point="
-        f"{region.branches_per_point}",
+        "+mopd_region_dpo.points_per_rollout=" f"{region.points_per_rollout}",
+        "+mopd_region_dpo.branches_per_point=" f"{region.branches_per_point}",
         f"+mopd_region_dpo.max_new_tokens={region.max_new_tokens}",
         f"+mopd_region_dpo.min_reward_margin={region.min_reward_margin}",
-        "+mopd_region_dpo.selection_strategy="
-        f"{region.selection_strategy}",
+        "+mopd_region_dpo.selection_strategy=" f"{region.selection_strategy}",
         f"+mopd_region_dpo.seed={region.seed}",
         "actor_rollout_ref.actor.policy_loss.region_dpo_enabled=true",
-        "actor_rollout_ref.actor.policy_loss.region_dpo_beta="
-        f"{region.beta}",
+        "actor_rollout_ref.actor.policy_loss.region_dpo_beta=" f"{region.beta}",
         "actor_rollout_ref.actor.policy_loss.region_dpo_loss_weight="
         f"{region.loss_weight}",
     ]
@@ -288,14 +289,26 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"{audit.dynamic_domain_loss_weighting_max}",
         "+mopd_audit.control_token_loss_weighting_enabled="
         f"{str(audit.control_token_loss_weighting_enabled).lower()}",
-        "+mopd_audit.control_token_loss_weight="
-        f"{audit.control_token_loss_weight}",
-        "+mopd_audit.control_token_ids="
-        f"{_hydra_int_list(audit.control_token_ids)}",
+        "+mopd_audit.control_token_loss_weight=" f"{audit.control_token_loss_weight}",
+        "+mopd_audit.control_token_ids=" f"{_hydra_int_list(audit.control_token_ids)}",
         "+mopd_audit.domain_control_token_ids="
         f"{_hydra_int_list_dict(audit.domain_control_token_ids)}",
+        "+mopd_audit.control_token_candidate_ids="
+        f"{_hydra_int_list(audit.control_token_candidate_ids)}",
+        "+mopd_audit.domain_control_token_candidate_ids="
+        f"{_hydra_int_list_dict(audit.domain_control_token_candidate_ids)}",
         "+mopd_audit.control_token_normalize_per_domain="
         f"{str(audit.control_token_normalize_per_domain).lower()}",
+        "+mopd_audit.control_token_online_selection_enabled="
+        f"{str(audit.control_token_online_selection_enabled).lower()}",
+        "+mopd_audit.control_token_online_audit_interval_steps="
+        f"{audit.control_token_online_audit_interval_steps}",
+        "+mopd_audit.control_token_online_window_steps="
+        f"{audit.control_token_online_window_steps}",
+        "+mopd_audit."
+        "control_token_online_min_mean_occurrences_per_step="
+        f"{audit.control_token_online_min_mean_occurrences_per_step}",
+        "+mopd_audit.control_token_online_top_k=" f"{audit.control_token_online_top_k}",
         "+mopd_audit.control_token_phase_gate_enabled="
         f"{str(audit.control_token_phase_gate_enabled).lower()}",
         "+mopd_audit.control_token_span_weighting_enabled="
@@ -308,8 +321,7 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"{audit.control_token_phase_gate_temperature}",
         "+mopd_audit.control_token_phase_gate_initial="
         f"{audit.control_token_phase_gate_initial}",
-        "+mopd_audit.control_token_span_length="
-        f"{audit.control_token_span_length}",
+        "+mopd_audit.control_token_span_length=" f"{audit.control_token_span_length}",
         "+mopd_audit.control_token_span_decay_tau="
         f"{audit.control_token_span_decay_tau}",
         "+mopd_audit.control_token_speed_weighting_enabled="
@@ -370,15 +382,13 @@ def _domain_budgeting_overrides(config: MOPDConfig) -> list[str]:
         f"{str(budgeting.teacher_scores_calibrated).lower()}",
         "+mopd_domain_budgeting.validation_metric_keys="
         f"{_hydra_list_dict(budgeting.validation_metric_keys)}",
-        "+mopd_domain_budgeting.validation_reducer="
-        f"{budgeting.validation_reducer}",
+        "+mopd_domain_budgeting.validation_reducer=" f"{budgeting.validation_reducer}",
         f"+mopd_domain_budgeting.gap_ema_beta={budgeting.gap_ema_beta}",
         f"+mopd_domain_budgeting.gap_alpha={budgeting.gap_alpha}",
         f"+mopd_domain_budgeting.gap_epsilon={budgeting.gap_epsilon}",
         "+mopd_domain_budgeting.gap_normalization_floor="
         f"{budgeting.gap_normalization_floor}",
-        "+mopd_domain_budgeting.max_normalized_gap="
-        f"{budgeting.max_normalized_gap}",
+        "+mopd_domain_budgeting.max_normalized_gap=" f"{budgeting.max_normalized_gap}",
         f"+mopd_domain_budgeting.exploration_mass={budgeting.exploration_mass}",
         "+mopd_domain_budgeting.variance_log_ema_beta="
         f"{budgeting.variance_log_ema_beta}",
@@ -406,7 +416,9 @@ def build_overrides(config: MOPDConfig) -> list[str]:
 
     ray_overrides = []
     if ray_init.include_dashboard is not None:
-        ray_overrides.append(f"+ray_kwargs.ray_init.include_dashboard={_bool(ray_init.include_dashboard)}")
+        ray_overrides.append(
+            f"+ray_kwargs.ray_init.include_dashboard={_bool(ray_init.include_dashboard)}"
+        )
     if ray_init.num_cpus is not None:
         ray_overrides.append(f"ray_kwargs.ray_init.num_cpus={ray_init.num_cpus}")
 
@@ -417,11 +429,15 @@ def build_overrides(config: MOPDConfig) -> list[str]:
             f"{rollout.num_gpu_blocks_override}"
         )
     if rollout.max_model_len is not None:
-        vllm_engine_overrides.append(f"actor_rollout_ref.rollout.max_model_len={rollout.max_model_len}")
+        vllm_engine_overrides.append(
+            f"actor_rollout_ref.rollout.max_model_len={rollout.max_model_len}"
+        )
 
     domain_sampling_overrides = []
     if data.domain_train_files:
-        domain_sampling_overrides.append(f"+data.domain_train_files={_hydra_list_dict(data.domain_train_files)}")
+        domain_sampling_overrides.append(
+            f"+data.domain_train_files={_hydra_list_dict(data.domain_train_files)}"
+        )
         domain_sampling_overrides.append(
             f"+data.domain_sampling_replacement={str(data.domain_sampling_replacement).lower()}"
         )
@@ -445,22 +461,31 @@ def build_overrides(config: MOPDConfig) -> list[str]:
             f"{actor.eopd_entropy_threshold}",
             "actor_rollout_ref.actor.policy_loss.eopd_forward_kl_weight="
             f"{actor.eopd_forward_kl_weight}",
-            "actor_rollout_ref.actor.policy_loss.eopd_topk_k="
-            f"{actor.eopd_topk_k}",
+            "actor_rollout_ref.actor.policy_loss.eopd_topk_k=" f"{actor.eopd_topk_k}",
         ]
 
     model_overrides = [f"actor_rollout_ref.model.path={model.student_path}"]
     if model.student_base_path is not None:
-        model_overrides.append(f"+actor_rollout_ref.model.base_model_path={model.student_base_path}")
-    model_overrides.append(f"+actor_rollout_ref.ref.model.path={model.primary_teacher_path}")
-    model_overrides.append(f"+actor_rollout_ref.ref.model.teacher_model_device={model.teacher_model_device}")
-    use_domain_teacher_paths = any(domain not in {"math", "code"} for domain in model.domain_teacher_paths)
+        model_overrides.append(
+            f"+actor_rollout_ref.model.base_model_path={model.student_base_path}"
+        )
+    model_overrides.append(
+        f"+actor_rollout_ref.ref.model.path={model.primary_teacher_path}"
+    )
+    model_overrides.append(
+        f"+actor_rollout_ref.ref.model.teacher_model_device={model.teacher_model_device}"
+    )
+    use_domain_teacher_paths = any(
+        domain not in {"math", "code"} for domain in model.domain_teacher_paths
+    )
     if use_domain_teacher_paths:
         model_overrides.append(
             f"+actor_rollout_ref.ref.model.teacher_paths={_hydra_string_dict(model.domain_teacher_paths)}"
         )
     elif model.secondary_teacher_path is not None:
-        model_overrides.append(f"+actor_rollout_ref.ref.model.base_model_path={model.secondary_teacher_path}")
+        model_overrides.append(
+            f"+actor_rollout_ref.ref.model.base_model_path={model.secondary_teacher_path}"
+        )
 
     overrides = [
         "algorithm.adv_estimator=grpo",
@@ -584,7 +609,9 @@ def build_overrides(config: MOPDConfig) -> list[str]:
     return overrides
 
 
-def build_command(config: MOPDConfig, extra_args: Sequence[str] | None = None) -> list[str]:
+def build_command(
+    config: MOPDConfig, extra_args: Sequence[str] | None = None
+) -> list[str]:
     command = [config.runtime.python_bin, "-m", config.runtime.verl_module]
     command.extend(build_overrides(config))
     command.extend(extra_args or [])
@@ -612,20 +639,26 @@ def _read_env_file(path: str | None) -> dict[str, str]:
         return {}
 
     values: dict[str, str] = {}
-    for line_number, raw_line in enumerate(env_path.read_text(encoding="utf-8").splitlines(), start=1):
+    for line_number, raw_line in enumerate(
+        env_path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
         if line.startswith("export "):
             line = line[len("export ") :].strip()
         if "=" not in line:
-            raise ValueError(f"Invalid env file line {line_number} in {env_path}: expected KEY=value.")
+            raise ValueError(
+                f"Invalid env file line {line_number} in {env_path}: expected KEY=value."
+            )
 
         key, value = line.split("=", 1)
         key = key.strip()
         value = value.strip()
         if not _valid_env_key(key):
-            raise ValueError(f"Invalid env key {key!r} on line {line_number} in {env_path}.")
+            raise ValueError(
+                f"Invalid env key {key!r} on line {line_number} in {env_path}."
+            )
         if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
             value = value[1:-1]
         values[key] = value
@@ -662,11 +695,21 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--config",
-        default=str(Path(__file__).resolve().parents[1] / "configs" / "mopd_formal_audit_all_2gpu.yaml"),
+        default=str(
+            Path(__file__).resolve().parents[1]
+            / "configs"
+            / "mopd_formal_audit_all_2gpu.yaml"
+        ),
         help="Path to a MOPD YAML config.",
     )
-    parser.add_argument("--dry-run", action="store_true", help="Print the verl command without executing it.")
-    parser.add_argument("extra", nargs=argparse.REMAINDER, help="Extra Hydra overrides after '--'.")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the verl command without executing it.",
+    )
+    parser.add_argument(
+        "extra", nargs=argparse.REMAINDER, help="Extra Hydra overrides after '--'."
+    )
     return parser.parse_args(argv)
 
 

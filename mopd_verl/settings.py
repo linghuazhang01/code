@@ -165,8 +165,12 @@ class WorkerPoolPlacementConfig:
 @dataclass(frozen=True)
 class WorkerPlacementConfig:
     separate_ref_policy: bool = False
-    actor_rollout: WorkerPoolPlacementConfig = field(default_factory=WorkerPoolPlacementConfig)
-    ref_policy: WorkerPoolPlacementConfig = field(default_factory=WorkerPoolPlacementConfig)
+    actor_rollout: WorkerPoolPlacementConfig = field(
+        default_factory=WorkerPoolPlacementConfig
+    )
+    ref_policy: WorkerPoolPlacementConfig = field(
+        default_factory=WorkerPoolPlacementConfig
+    )
 
 
 @dataclass(frozen=True)
@@ -261,7 +265,16 @@ class AuditConfig:
     control_token_loss_weight: float = 1.0
     control_token_ids: list[int] = field(default_factory=list)
     domain_control_token_ids: dict[str, list[int]] = field(default_factory=dict)
+    control_token_candidate_ids: list[int] = field(default_factory=list)
+    domain_control_token_candidate_ids: dict[str, list[int]] = field(
+        default_factory=dict
+    )
     control_token_normalize_per_domain: bool = False
+    control_token_online_selection_enabled: bool = False
+    control_token_online_audit_interval_steps: int = 3
+    control_token_online_window_steps: int = 3
+    control_token_online_min_mean_occurrences_per_step: float = 20.0
+    control_token_online_top_k: int = 30
     control_token_phase_gate_enabled: bool = False
     control_token_span_weighting_enabled: bool = False
     control_token_phase_gate_window_steps: int = 5
@@ -299,7 +312,9 @@ class PaperEvalConfig:
     script_path: str | None = None
     model_path: str | None = None
     output_dir: str = "paper_eval"
-    datasets: list[str] = field(default_factory=lambda: list(DEFAULT_PAPER_EVAL_DATASETS))
+    datasets: list[str] = field(
+        default_factory=lambda: list(DEFAULT_PAPER_EVAL_DATASETS)
+    )
     run_on_initial_validation: bool = True
     evaluate_current_checkpoint: bool = True
     fail_on_error: bool = False
@@ -315,7 +330,9 @@ class TrainerConfig:
     n_gpus_per_node: int = 8
     nnodes: int = 1
     save_freq: int = 50
-    default_local_dir: str = "checkpoints/Qwen3-4B-Non-Thinking-Multi-Teacher-Distill-ExOPD"
+    default_local_dir: str = (
+        "checkpoints/Qwen3-4B-Non-Thinking-Multi-Teacher-Distill-ExOPD"
+    )
     test_freq: int = 10
     total_epochs: int = 3
     total_training_steps: int | None = None
@@ -355,9 +372,7 @@ class RuntimeConfig:
             if not self.wandb_run_id.strip():
                 raise ValueError("runtime.wandb_run_id must be non-empty.")
             if len(self.wandb_run_id) > 64:
-                raise ValueError(
-                    "runtime.wandb_run_id must not exceed 64 characters."
-                )
+                raise ValueError("runtime.wandb_run_id must not exceed 64 characters.")
         if self.wandb_resume not in {None, "allow", "must", "never", "auto"}:
             raise ValueError(
                 "runtime.wandb_resume must be one of: allow, must, never, "
@@ -365,13 +380,9 @@ class RuntimeConfig:
             )
         if self.wandb_resume == "must" and self.wandb_run_id is None:
             raise ValueError(
-                "runtime.wandb_run_id is required when "
-                "runtime.wandb_resume=must."
+                "runtime.wandb_run_id is required when " "runtime.wandb_resume=must."
             )
-        if (
-            self.slurm_allocation_gpus is not None
-            and self.slurm_allocation_gpus <= 0
-        ):
+        if self.slurm_allocation_gpus is not None and self.slurm_allocation_gpus <= 0:
             raise ValueError("runtime.slurm_allocation_gpus must be positive.")
         if self.cuda_visible_devices is not None:
             gpu_ids = [part.strip() for part in self.cuda_visible_devices.split(",")]
@@ -392,11 +403,17 @@ class MOPDConfig:
     model: ModelConfig
     actor: ActorConfig = field(default_factory=ActorConfig)
     rollout: RolloutConfig = field(default_factory=RolloutConfig)
-    rollout_correction: RolloutCorrectionConfig = field(default_factory=RolloutCorrectionConfig)
-    worker_placement: WorkerPlacementConfig = field(default_factory=WorkerPlacementConfig)
+    rollout_correction: RolloutCorrectionConfig = field(
+        default_factory=RolloutCorrectionConfig
+    )
+    worker_placement: WorkerPlacementConfig = field(
+        default_factory=WorkerPlacementConfig
+    )
     audit: AuditConfig = field(default_factory=AuditConfig)
     region_dpo: RegionDPOConfig = field(default_factory=RegionDPOConfig)
-    domain_budgeting: DomainBudgetingConfig = field(default_factory=DomainBudgetingConfig)
+    domain_budgeting: DomainBudgetingConfig = field(
+        default_factory=DomainBudgetingConfig
+    )
     paper_eval: PaperEvalConfig = field(default_factory=PaperEvalConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     ray_kwargs: RayKwargsConfig = field(default_factory=RayKwargsConfig)
@@ -484,8 +501,12 @@ def _optional_positive_int_list(value: Any, key: str) -> list[int] | None:
 def _worker_pool_placement(value: Any, key: str) -> WorkerPoolPlacementConfig:
     raw = _expect_mapping(value or {}, key)
     return WorkerPoolPlacementConfig(
-        process_on_nodes=_optional_positive_int_list(raw.get("process_on_nodes"), f"{key}.process_on_nodes"),
-        n_gpus_per_node=_optional_positive_int(raw.get("n_gpus_per_node"), f"{key}.n_gpus_per_node"),
+        process_on_nodes=_optional_positive_int_list(
+            raw.get("process_on_nodes"), f"{key}.process_on_nodes"
+        ),
+        n_gpus_per_node=_optional_positive_int(
+            raw.get("n_gpus_per_node"), f"{key}.n_gpus_per_node"
+        ),
         nnodes=_optional_positive_int(raw.get("nnodes"), f"{key}.nnodes"),
     )
 
@@ -493,9 +514,15 @@ def _worker_pool_placement(value: Any, key: str) -> WorkerPoolPlacementConfig:
 def _worker_placement(value: Any) -> WorkerPlacementConfig:
     raw = _expect_mapping(value or {}, "worker_placement")
     return WorkerPlacementConfig(
-        separate_ref_policy=bool(raw.get("separate_ref_policy", WorkerPlacementConfig.separate_ref_policy)),
-        actor_rollout=_worker_pool_placement(raw.get("actor_rollout"), "worker_placement.actor_rollout"),
-        ref_policy=_worker_pool_placement(raw.get("ref_policy"), "worker_placement.ref_policy"),
+        separate_ref_policy=bool(
+            raw.get("separate_ref_policy", WorkerPlacementConfig.separate_ref_policy)
+        ),
+        actor_rollout=_worker_pool_placement(
+            raw.get("actor_rollout"), "worker_placement.actor_rollout"
+        ),
+        ref_policy=_worker_pool_placement(
+            raw.get("ref_policy"), "worker_placement.ref_policy"
+        ),
     )
 
 
@@ -510,7 +537,9 @@ def _optional_string(value: Any, key: str) -> str | None:
 def _same_model_path(left: Any, right: Any) -> bool:
     if left is None or right is None:
         return False
-    return os.path.normcase(os.path.normpath(str(left))) == os.path.normcase(os.path.normpath(str(right)))
+    return os.path.normcase(os.path.normpath(str(left))) == os.path.normcase(
+        os.path.normpath(str(right))
+    )
 
 
 def load_config(path: str | Path) -> MOPDConfig:
@@ -522,14 +551,18 @@ def load_config(path: str | Path) -> MOPDConfig:
     domain_budgeting_raw = _expect_mapping(
         root.get("domain_budgeting", {}), "domain_budgeting"
     )
-    domain_train_files = _string_list_mapping(data_raw.get("domain_train_files"), "data.domain_train_files")
+    domain_train_files = _string_list_mapping(
+        data_raw.get("domain_train_files"), "data.domain_train_files"
+    )
     train_files = (
         _string_list(data_raw.get("train_files"), "data.train_files")
         if data_raw.get("train_files") is not None
         else [file_path for files in domain_train_files.values() for file_path in files]
     )
     if not train_files:
-        raise ValueError("Expected 'data.train_files' or 'data.domain_train_files' to contain at least one file.")
+        raise ValueError(
+            "Expected 'data.train_files' or 'data.domain_train_files' to contain at least one file."
+        )
 
     data = DataConfig(
         train_files=train_files,
@@ -539,19 +572,33 @@ def load_config(path: str | Path) -> MOPDConfig:
             data_raw.get("domain_sampling_weights"), "data.domain_sampling_weights"
         ),
         domain_sampling_replacement=bool(
-            data_raw.get("domain_sampling_replacement", DataConfig.domain_sampling_replacement)
+            data_raw.get(
+                "domain_sampling_replacement", DataConfig.domain_sampling_replacement
+            )
         ),
-        load_parquet_direct=bool(data_raw.get("load_parquet_direct", DataConfig.load_parquet_direct)),
-        train_batch_size=int(data_raw.get("train_batch_size", DataConfig.train_batch_size)),
+        load_parquet_direct=bool(
+            data_raw.get("load_parquet_direct", DataConfig.load_parquet_direct)
+        ),
+        train_batch_size=int(
+            data_raw.get("train_batch_size", DataConfig.train_batch_size)
+        ),
         val_batch_size=(
-            None if data_raw.get("val_batch_size") is None else int(data_raw["val_batch_size"])
+            None
+            if data_raw.get("val_batch_size") is None
+            else int(data_raw["val_batch_size"])
         ),
-        max_prompt_length=int(data_raw.get("max_prompt_length", DataConfig.max_prompt_length)),
-        max_response_length=int(data_raw.get("max_response_length", DataConfig.max_response_length)),
+        max_prompt_length=int(
+            data_raw.get("max_prompt_length", DataConfig.max_prompt_length)
+        ),
+        max_response_length=int(
+            data_raw.get("max_response_length", DataConfig.max_response_length)
+        ),
         filter_overlong_prompts=bool(data_raw.get("filter_overlong_prompts", True)),
         truncation=str(data_raw.get("truncation", DataConfig.truncation)),
         shuffle=bool(data_raw.get("shuffle", True)),
-        validation_shuffle=bool(data_raw.get("validation_shuffle", DataConfig.validation_shuffle)),
+        validation_shuffle=bool(
+            data_raw.get("validation_shuffle", DataConfig.validation_shuffle)
+        ),
         seed=int(data_raw.get("seed", DataConfig.seed)),
         return_raw_chat=bool(data_raw.get("return_raw_chat", True)),
         enable_thinking=bool(data_raw.get("enable_thinking", False)),
@@ -577,22 +624,33 @@ def load_config(path: str | Path) -> MOPDConfig:
     )
     code_teacher_raw = model_raw.get(
         "code_teacher_path",
-        secondary_teacher_raw if secondary_teacher_raw is not None else primary_teacher_raw,
+        (
+            secondary_teacher_raw
+            if secondary_teacher_raw is not None
+            else primary_teacher_raw
+        ),
     )
     if _same_model_path(secondary_teacher_raw, primary_teacher_raw):
         secondary_teacher_raw = (
-            None if _same_model_path(code_teacher_raw, primary_teacher_raw) else code_teacher_raw
+            None
+            if _same_model_path(code_teacher_raw, primary_teacher_raw)
+            else code_teacher_raw
         )
     teacher_model_device = str(model_raw.get("teacher_model_device", "cpu")).lower()
     if teacher_model_device == "cuda":
         teacher_model_device = "gpu"
     if teacher_model_device not in {"cpu", "gpu"}:
-        raise ValueError("Expected model.teacher_model_device to be one of: 'cpu', 'gpu', or 'cuda'.")
+        raise ValueError(
+            "Expected model.teacher_model_device to be one of: 'cpu', 'gpu', or 'cuda'."
+        )
     attn_implementation_raw = model_raw.get(
         "attn_implementation",
         ModelConfig.attn_implementation,
     )
-    if not isinstance(attn_implementation_raw, str) or not attn_implementation_raw.strip():
+    if (
+        not isinstance(attn_implementation_raw, str)
+        or not attn_implementation_raw.strip()
+    ):
         raise ValueError("Expected model.attn_implementation to be a non-empty string.")
     attn_implementation = attn_implementation_raw.strip()
     math_teacher_path = str(model_raw.get("math_teacher_path", primary_teacher_raw))
@@ -632,7 +690,9 @@ def load_config(path: str | Path) -> MOPDConfig:
             else str(model_raw["reasoning_teacher_path"])
         ),
         primary_teacher_path=str(primary_teacher_raw),
-        secondary_teacher_path=(None if secondary_teacher_raw is None else str(secondary_teacher_raw)),
+        secondary_teacher_path=(
+            None if secondary_teacher_raw is None else str(secondary_teacher_raw)
+        ),
         teacher_model_device=teacher_model_device,
         attn_implementation=attn_implementation,
     )
@@ -669,21 +729,16 @@ def load_config(path: str | Path) -> MOPDConfig:
                 "actor.eopd_forward_kl_weight must be finite and non-negative."
             )
     if not 0.0 < audit.token_gradient_tail_fraction <= 1.0:
-        raise ValueError(
-            "audit.token_gradient_tail_fraction must be in (0, 1]."
-        )
+        raise ValueError("audit.token_gradient_tail_fraction must be in (0, 1].")
     if audit.token_gradient_tail_min_tokens < 1:
-        raise ValueError(
-            "audit.token_gradient_tail_min_tokens must be at least 1."
-        )
+        raise ValueError("audit.token_gradient_tail_min_tokens must be at least 1.")
     if not 0.0 <= audit.token_gradient_top_p <= 1.0:
-        raise ValueError(
-            "audit.token_gradient_top_p must be in [0, 1]."
-        )
-    if audit.token_gradient_enabled and (
-        audit.token_gradient_tail_enabled
-        or audit.token_gradient_top_p_enabled
-    ) and not audit.token_gradient_loss_abs_selection_enabled:
+        raise ValueError("audit.token_gradient_top_p must be in [0, 1].")
+    if (
+        audit.token_gradient_enabled
+        and (audit.token_gradient_tail_enabled or audit.token_gradient_top_p_enabled)
+        and not audit.token_gradient_loss_abs_selection_enabled
+    ):
         raise ValueError(
             "Loss-ranked token-gradient statistics require "
             "audit.token_gradient_loss_abs_selection_enabled=true."
@@ -694,8 +749,7 @@ def load_config(path: str | Path) -> MOPDConfig:
         )
     if not 0.0 <= audit.dynamic_domain_loss_weighting_weight_ema_beta < 1.0:
         raise ValueError(
-            "audit.dynamic_domain_loss_weighting_weight_ema_beta must be "
-            "in [0, 1)."
+            "audit.dynamic_domain_loss_weighting_weight_ema_beta must be " "in [0, 1)."
         )
     if audit.dynamic_domain_loss_weighting_signal_source not in {
         "gradient_norm",
@@ -715,8 +769,7 @@ def load_config(path: str | Path) -> MOPDConfig:
         or audit.dynamic_domain_loss_weighting_max < 1.0
     ):
         raise ValueError(
-            "Dynamic domain loss weight bounds must be positive and contain "
-            "1.0."
+            "Dynamic domain loss weight bounds must be positive and contain " "1.0."
         )
     if (
         not math.isfinite(audit.control_token_loss_weight)
@@ -729,60 +782,132 @@ def load_config(path: str | Path) -> MOPDConfig:
         audit.control_token_loss_weighting_enabled
         and not audit.control_token_ids
         and not audit.domain_control_token_ids
+        and not (
+            audit.control_token_online_selection_enabled
+            and (
+                audit.control_token_candidate_ids
+                or audit.domain_control_token_candidate_ids
+            )
+        )
     ):
         raise ValueError(
-            "audit.control_token_ids or audit.domain_control_token_ids must "
-            "be non-empty when control-token loss weighting is enabled."
+            "Fixed Control-token IDs or online candidate IDs must be "
+            "non-empty when Control-token loss weighting is enabled."
         )
     if audit.control_token_ids and audit.domain_control_token_ids:
         raise ValueError(
             "Configure either audit.control_token_ids or "
             "audit.domain_control_token_ids, not both."
         )
-    unknown_control_domains = set(audit.domain_control_token_ids) - set(
-        audit.domains
-    )
+    unknown_control_domains = set(audit.domain_control_token_ids) - set(audit.domains)
     if unknown_control_domains:
         raise ValueError(
             "audit.domain_control_token_ids contains unknown domains: "
             + ", ".join(sorted(unknown_control_domains))
         )
     if any(not token_ids for token_ids in audit.domain_control_token_ids.values()):
+        raise ValueError("audit.domain_control_token_ids entries must be non-empty.")
+    if any(token_id < 0 for token_id in audit.control_token_candidate_ids):
+        raise ValueError("audit.control_token_candidate_ids must be non-negative.")
+    if len(audit.control_token_candidate_ids) != len(
+        set(audit.control_token_candidate_ids)
+    ):
         raise ValueError(
-            "audit.domain_control_token_ids entries must be non-empty."
+            "audit.control_token_candidate_ids must not contain duplicates."
         )
+    domain_candidates = audit.domain_control_token_candidate_ids
+    if audit.control_token_candidate_ids and domain_candidates:
+        raise ValueError(
+            "Configure either audit.control_token_candidate_ids or "
+            "audit.domain_control_token_candidate_ids, not both."
+        )
+    if domain_candidates and set(domain_candidates) != set(audit.domains):
+        raise ValueError(
+            "audit.domain_control_token_candidate_ids keys must exactly "
+            "match audit.domains."
+        )
+    if any(not token_ids for token_ids in domain_candidates.values()):
+        raise ValueError(
+            "audit.domain_control_token_candidate_ids entries must be " "non-empty."
+        )
+    if any(
+        token_id < 0
+        for token_ids in domain_candidates.values()
+        for token_id in token_ids
+    ):
+        raise ValueError(
+            "audit.domain_control_token_candidate_ids must be non-negative."
+        )
+    if any(
+        len(token_ids) != len(set(token_ids))
+        for token_ids in domain_candidates.values()
+    ):
+        raise ValueError(
+            "audit.domain_control_token_candidate_ids entries must not "
+            "contain duplicates."
+        )
+    if (
+        audit.control_token_online_audit_interval_steps < 1
+        or audit.control_token_online_window_steps < 1
+        or audit.control_token_online_top_k < 1
+    ):
+        raise ValueError(
+            "Online Control audit interval, window, and Top-K must be positive."
+        )
+    if (
+        not math.isfinite(audit.control_token_online_min_mean_occurrences_per_step)
+        or audit.control_token_online_min_mean_occurrences_per_step < 0.0
+    ):
+        raise ValueError(
+            "Online Control minimum mean occurrences must be finite and "
+            "non-negative."
+        )
+    if audit.control_token_online_selection_enabled:
+        if not audit.control_token_loss_weighting_enabled:
+            raise ValueError(
+                "Online Control selection requires Control-token loss "
+                "weighting to be enabled."
+            )
+        if not (
+            audit.control_token_candidate_ids
+            or audit.domain_control_token_candidate_ids
+        ):
+            raise ValueError(
+                "Online Control selection requires "
+                "global or domain candidate token IDs."
+            )
+        if audit.control_token_ids or audit.domain_control_token_ids:
+            raise ValueError(
+                "Online Control selection cannot be combined with fixed "
+                "Control-token IDs."
+            )
+        if (
+            audit.control_token_speed_weighting_enabled
+            or audit.control_token_phase_gate_enabled
+            or audit.control_token_span_weighting_enabled
+        ):
+            raise ValueError(
+                "Online Control selection is mutually exclusive with speed, "
+                "phase-gate, and successor-span weighting."
+            )
     if not 0.0 <= audit.control_token_phase_gate_ema_beta < 1.0:
-        raise ValueError(
-            "audit.control_token_phase_gate_ema_beta must be in [0, 1)."
-        )
+        raise ValueError("audit.control_token_phase_gate_ema_beta must be in [0, 1).")
     if audit.control_token_phase_gate_window_steps < 1:
         raise ValueError(
             "audit.control_token_phase_gate_window_steps must be positive."
         )
     if audit.control_token_phase_gate_temperature <= 0.0:
-        raise ValueError(
-            "audit.control_token_phase_gate_temperature must be positive."
-        )
+        raise ValueError("audit.control_token_phase_gate_temperature must be positive.")
     if not 0.0 <= audit.control_token_phase_gate_initial <= 1.0:
-        raise ValueError(
-            "audit.control_token_phase_gate_initial must be in [0, 1]."
-        )
+        raise ValueError("audit.control_token_phase_gate_initial must be in [0, 1].")
     if audit.control_token_span_length < 0:
-        raise ValueError(
-            "audit.control_token_span_length must be non-negative."
-        )
+        raise ValueError("audit.control_token_span_length must be non-negative.")
     if audit.control_token_span_decay_tau <= 0.0:
-        raise ValueError(
-            "audit.control_token_span_decay_tau must be positive."
-        )
+        raise ValueError("audit.control_token_span_decay_tau must be positive.")
     if audit.control_token_speed_window_steps < 1:
-        raise ValueError(
-            "audit.control_token_speed_window_steps must be positive."
-        )
+        raise ValueError("audit.control_token_speed_window_steps must be positive.")
     if not 0.0 <= audit.control_token_speed_ema_beta < 1.0:
-        raise ValueError(
-            "audit.control_token_speed_ema_beta must be in [0, 1)."
-        )
+        raise ValueError("audit.control_token_speed_ema_beta must be in [0, 1).")
     if audit.control_token_speed_update_interval_steps < 1:
         raise ValueError(
             "audit.control_token_speed_update_interval_steps must be positive."
@@ -792,9 +917,7 @@ def load_config(path: str | Path) -> MOPDConfig:
             "audit.control_token_speed_initial_weight must be non-negative."
         )
     if audit.control_token_speed_min_occurrences < 1:
-        raise ValueError(
-            "audit.control_token_speed_min_occurrences must be positive."
-        )
+        raise ValueError("audit.control_token_speed_min_occurrences must be positive.")
     if len(audit.control_token_speed_weight_knots) < 2:
         raise ValueError(
             "audit.control_token_speed_weight_knots requires at least two knots."
@@ -808,9 +931,7 @@ def load_config(path: str | Path) -> MOPDConfig:
             )
         speed, weight = float(knot[0]), float(knot[1])
         if not math.isfinite(speed) or not math.isfinite(weight):
-            raise ValueError(
-                "audit.control_token_speed_weight_knots must be finite."
-            )
+            raise ValueError("audit.control_token_speed_weight_knots must be finite.")
         if weight < 0.0:
             raise ValueError(
                 "audit.control_token_speed_weight_knots weights must be "
@@ -835,8 +956,7 @@ def load_config(path: str | Path) -> MOPDConfig:
         and audit.control_token_phase_gate_enabled
     ):
         raise ValueError(
-            "Control-token speed weighting and phase gating are mutually "
-            "exclusive."
+            "Control-token speed weighting and phase gating are mutually " "exclusive."
         )
     if audit.control_token_phase_gate_enabled and (
         not audit.control_token_loss_weighting_enabled
@@ -873,10 +993,7 @@ def load_config(path: str | Path) -> MOPDConfig:
         raise ValueError(
             "audit.all_domain_shared_token_top_k must be null or at least 1."
         )
-    if (
-        audit.all_domain_shared_token_loss_weighting_enabled
-        and len(audit.domains) < 2
-    ):
+    if audit.all_domain_shared_token_loss_weighting_enabled and len(audit.domains) < 2:
         raise ValueError(
             "All-domain shared-token loss weighting requires at least two "
             "audit domains."
@@ -920,26 +1037,48 @@ def load_config(path: str | Path) -> MOPDConfig:
         domain_budgeting=domain_budgeting,
         paper_eval=PaperEvalConfig(
             enabled=bool(paper_eval_raw.get("enabled", PaperEvalConfig.enabled)),
-            script_path=_optional_string(paper_eval_raw.get("script_path"), "paper_eval.script_path"),
-            model_path=_optional_string(paper_eval_raw.get("model_path"), "paper_eval.model_path"),
-            output_dir=str(paper_eval_raw.get("output_dir", PaperEvalConfig.output_dir)),
+            script_path=_optional_string(
+                paper_eval_raw.get("script_path"), "paper_eval.script_path"
+            ),
+            model_path=_optional_string(
+                paper_eval_raw.get("model_path"), "paper_eval.model_path"
+            ),
+            output_dir=str(
+                paper_eval_raw.get("output_dir", PaperEvalConfig.output_dir)
+            ),
             datasets=_string_list(
                 paper_eval_raw.get("datasets", DEFAULT_PAPER_EVAL_DATASETS),
                 "paper_eval.datasets",
             ),
             run_on_initial_validation=bool(
-                paper_eval_raw.get("run_on_initial_validation", PaperEvalConfig.run_on_initial_validation)
+                paper_eval_raw.get(
+                    "run_on_initial_validation",
+                    PaperEvalConfig.run_on_initial_validation,
+                )
             ),
             evaluate_current_checkpoint=bool(
-                paper_eval_raw.get("evaluate_current_checkpoint", PaperEvalConfig.evaluate_current_checkpoint)
+                paper_eval_raw.get(
+                    "evaluate_current_checkpoint",
+                    PaperEvalConfig.evaluate_current_checkpoint,
+                )
             ),
-            fail_on_error=bool(paper_eval_raw.get("fail_on_error", PaperEvalConfig.fail_on_error)),
-            timeout_seconds=int(paper_eval_raw.get("timeout_seconds", PaperEvalConfig.timeout_seconds)),
+            fail_on_error=bool(
+                paper_eval_raw.get("fail_on_error", PaperEvalConfig.fail_on_error)
+            ),
+            timeout_seconds=int(
+                paper_eval_raw.get("timeout_seconds", PaperEvalConfig.timeout_seconds)
+            ),
         ),
         trainer=trainer,
         ray_kwargs=RayKwargsConfig(
-            ray_init=RayInitConfig(**_expect_mapping(root.get("ray_kwargs", {}).get("ray_init", {}), "ray_init"))
+            ray_init=RayInitConfig(
+                **_expect_mapping(
+                    root.get("ray_kwargs", {}).get("ray_init", {}), "ray_init"
+                )
+            )
         ),
         runtime=RuntimeConfig(**_expect_mapping(root.get("runtime", {}), "runtime")),
-        extra_overrides=_string_list(root.get("extra_overrides", []), "extra_overrides"),
+        extra_overrides=_string_list(
+            root.get("extra_overrides", []), "extra_overrides"
+        ),
     )
