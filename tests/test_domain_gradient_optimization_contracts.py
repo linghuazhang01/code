@@ -1722,6 +1722,7 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
             )
             legacy = state.as_dict()
             legacy.pop("domain_candidate_token_ids")
+            legacy.pop("selection_mode")
             legacy["candidate_token_ids"] = (10, 20)
             legacy["schema_version"] = 1
             optimizer = SimpleNamespace(
@@ -1757,6 +1758,48 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
                             "math": [10],
                             "code": [20],
                         },
+                    },
+                )
+
+    def test_online_control_rejects_checkpoint_selection_mode_mismatch(
+        self,
+    ) -> None:
+        torch = self._torch()
+        with self._stubbed_verl(torch):
+            from mopd_verl.domain_gradient.audit import DomainGradientAudit
+            from mopd_verl.domain_gradient.control_top_loss import (
+                initial_online_control_selection_state,
+            )
+
+            state = initial_online_control_selection_state(
+                ("math", "code"),
+                (10, 20),
+                audit_interval_steps=2,
+                window_steps=2,
+                min_mean_occurrences_per_step=1.0,
+                top_k=1,
+                selection_mode="top_loss",
+            )
+            optimizer = SimpleNamespace(
+                param_groups=[{"mopd_online_control_selection_state": state.as_dict()}]
+            )
+
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                DomainGradientAudit(
+                    SimpleNamespace(actor_optimizer=optimizer),
+                    {
+                        "domains": ["math", "code"],
+                        "control_token_loss_weighting_enabled": True,
+                        "control_token_candidate_ids": [10, 20],
+                        "control_token_online_selection_enabled": True,
+                        "control_token_online_audit_interval_steps": 2,
+                        "control_token_online_window_steps": 2,
+                        (
+                            "control_token_online_"
+                            "min_mean_occurrences_per_step"
+                        ): 1.0,
+                        "control_token_online_top_k": 1,
+                        "control_token_online_selection_mode": "top_speed",
                     },
                 )
 
@@ -1841,6 +1884,13 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
         )
         self.assertEqual(metrics["global/token_weight/audit_triggered"], 1.0)
         self.assertEqual(record["applies_from_step"], 4)
+        self.assertEqual(record["selection_mode"], "top_loss")
+        self.assertEqual(
+            record["domains"]["math"]["selected_tokens"][0][
+                "optimization_speed"
+            ],
+            0.0,
+        )
 
     def test_loss_amplification_metrics_compare_raw_and_weighted_mass(
         self,

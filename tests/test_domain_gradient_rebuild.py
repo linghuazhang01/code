@@ -228,6 +228,7 @@ class DomainGradientConfigTests(unittest.TestCase):
                 "control_token_online_window_steps": 3,
                 "control_token_online_min_mean_occurrences_per_step": 20.0,
                 "control_token_online_top_k": 30,
+                "control_token_online_selection_mode": "top_speed",
             }
         )
 
@@ -240,6 +241,44 @@ class DomainGradientConfigTests(unittest.TestCase):
             20.0,
         )
         self.assertEqual(config.control_token_online_top_k, 30)
+        self.assertEqual(config.control_token_online_selection_mode, "top_speed")
+
+    def test_online_control_selection_defaults_to_top_loss(self) -> None:
+        config = DomainGradientConfig.from_meta(
+            {
+                "domains": ["math"],
+                "control_token_loss_weighting_enabled": True,
+                "control_token_candidate_ids": [10, 20],
+                "control_token_online_selection_enabled": True,
+            }
+        )
+
+        self.assertEqual(config.control_token_online_selection_mode, "top_loss")
+
+    def test_online_control_selection_rejects_invalid_mode(self) -> None:
+        with self.assertRaisesRegex(ValueError, "selection mode"):
+            DomainGradientConfig.from_meta(
+                {
+                    "domains": ["math"],
+                    "control_token_loss_weighting_enabled": True,
+                    "control_token_candidate_ids": [10, 20],
+                    "control_token_online_selection_enabled": True,
+                    "control_token_online_selection_mode": "fastest",
+                }
+            )
+
+    def test_online_top_speed_requires_two_step_window(self) -> None:
+        with self.assertRaisesRegex(ValueError, "at least 2"):
+            DomainGradientConfig.from_meta(
+                {
+                    "domains": ["math"],
+                    "control_token_loss_weighting_enabled": True,
+                    "control_token_candidate_ids": [10, 20],
+                    "control_token_online_selection_enabled": True,
+                    "control_token_online_selection_mode": "top_speed",
+                    "control_token_online_window_steps": 1,
+                }
+            )
 
     def test_domain_online_control_candidates_are_canonicalized(self) -> None:
         config = DomainGradientConfig.from_meta(

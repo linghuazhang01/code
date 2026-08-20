@@ -377,6 +377,34 @@ taxonomy，也可以在 `region_dpo.domain_control_token_ids` 中显式覆盖。
 candidate construction、loss 公式、runtime constraints 与 metrics 见
 [docs/region-dpo.md](docs/region-dpo.md)。
 
+## Online Control-token selection
+
+Online selector 在固定的 domain candidate pools 上提供两种 ranking mode：
+
+```yaml
+audit:
+  control_token_loss_weighting_enabled: true
+  control_token_online_selection_enabled: true
+  control_token_online_selection_mode: top_speed  # top_loss | top_speed
+  control_token_online_audit_interval_steps: 3
+  control_token_online_window_steps: 3
+  control_token_online_min_mean_occurrences_per_step: 10.0
+  control_token_online_top_k: 30
+  control_token_loss_weight: 4.0
+```
+
+`top_loss` 按 rolling window 内的 occurrence-mean absolute configured loss
+降序选择。`top_speed` 对每个 `(domain, token_id)` 的 per-step
+occurrence-mean absolute configured loss 做 occurrence-count-weighted linear
+regression，并使用负 slope 作为 optimization speed；正值表示 loss 正在下降。
+Top-speed 按 signed speed 降序选择，不取绝对值，也不丢弃负 speed。
+
+两种 mode 共用 occurrence eligibility、audit cadence 和 next-step lag。Top-speed
+要求 window 至少包含两个 step，且 token 在至少两个不同 step 有 observation。
+`control_token_speed_weighting_enabled` 是另一套 domain-level speed-to-weight
+controller，不应与 online selector 同时开启。Qwen4B Top-speed profile 位于
+`configs/mopd_qwen4b_30b_a3b_instruct_2507_4gpu_math_code_science_topk32_control_online_topspeed_i3_w3_f10_k30_w4_b525.yaml`。
+
 ## 常用启动
 
 ```bash

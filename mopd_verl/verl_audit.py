@@ -1087,6 +1087,13 @@ class MOPDAuditLogger:
                 30,
             )
         )
+        self.control_token_online_selection_mode = str(
+            _cfg_get(
+                audit_config,
+                "control_token_online_selection_mode",
+                "top_loss",
+            )
+        ).strip().lower()
         self.control_token_phase_gate_enabled = bool(
             _cfg_get(
                 audit_config,
@@ -1654,6 +1661,9 @@ class MOPDAuditLogger:
                     "control_token_online_" "min_mean_occurrences_per_step"
                 ): self.control_token_online_min_mean_occurrences_per_step,
                 "control_token_online_top_k": (self.control_token_online_top_k),
+                "control_token_online_selection_mode": (
+                    self.control_token_online_selection_mode
+                ),
                 "control_token_phase_gate_enabled": (
                     self.control_token_phase_gate_enabled and mode == "train"
                 ),

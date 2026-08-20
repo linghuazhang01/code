@@ -309,6 +309,8 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         "control_token_online_min_mean_occurrences_per_step="
         f"{audit.control_token_online_min_mean_occurrences_per_step}",
         "+mopd_audit.control_token_online_top_k=" f"{audit.control_token_online_top_k}",
+        "+mopd_audit.control_token_online_selection_mode="
+        f"{audit.control_token_online_selection_mode}",
         "+mopd_audit.control_token_phase_gate_enabled="
         f"{str(audit.control_token_phase_gate_enabled).lower()}",
         "+mopd_audit.control_token_span_weighting_enabled="

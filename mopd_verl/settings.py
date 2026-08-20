@@ -9,6 +9,11 @@ from pathlib import Path
 from typing import Any
 
 from mopd_verl.config_profiles import load_raw_config
+from mopd_verl.domain_gradient.control_selection_scoring import (
+    ONLINE_CONTROL_SELECTION_MODES,
+    TOP_LOSS_SELECTION_MODE,
+    TOP_SPEED_SELECTION_MODE,
+)
 from mopd_verl.domain_budgeting_config import (
     DomainBudgetingConfig,
     parse_domain_budgeting_config,
@@ -275,6 +280,7 @@ class AuditConfig:
     control_token_online_window_steps: int = 3
     control_token_online_min_mean_occurrences_per_step: float = 20.0
     control_token_online_top_k: int = 30
+    control_token_online_selection_mode: str = TOP_LOSS_SELECTION_MODE
     control_token_phase_gate_enabled: bool = False
     control_token_span_weighting_enabled: bool = False
     control_token_phase_gate_window_steps: int = 5
@@ -853,6 +859,19 @@ def load_config(path: str | Path) -> MOPDConfig:
     ):
         raise ValueError(
             "Online Control audit interval, window, and Top-K must be positive."
+        )
+    if audit.control_token_online_selection_mode not in ONLINE_CONTROL_SELECTION_MODES:
+        allowed = ", ".join(sorted(ONLINE_CONTROL_SELECTION_MODES))
+        raise ValueError(
+            "audit.control_token_online_selection_mode must be one of: "
+            f"{allowed}."
+        )
+    if (
+        audit.control_token_online_selection_mode == TOP_SPEED_SELECTION_MODE
+        and audit.control_token_online_window_steps < 2
+    ):
+        raise ValueError(
+            "Online top-speed selection requires a window of at least 2 steps."
         )
     if (
         not math.isfinite(audit.control_token_online_min_mean_occurrences_per_step)

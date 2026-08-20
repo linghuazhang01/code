@@ -18,6 +18,9 @@ from mopd_verl.domain_gradient.control_speed import (
     piecewise_linear_weight,
     update_control_speed_state,
 )
+from mopd_verl.domain_gradient.control_selection_scoring import (
+    TOP_SPEED_SELECTION_MODE,
+)
 from mopd_verl.domain_gradient.control_top_loss import (
     OnlineControlSelectionState,
     initial_online_control_selection_state,
@@ -228,6 +231,9 @@ class DomainGradientAudit:
                     self.config.control_token_online_min_mean_occurrences_per_step
                 ),
                 top_k=self.config.control_token_online_top_k,
+                selection_mode=(
+                    self.config.control_token_online_selection_mode
+                ),
             )
             if online_state is None:
                 online_state = expected_state
@@ -241,6 +247,7 @@ class DomainGradientAudit:
                 or online_state.min_mean_occurrences_per_step
                 != expected_state.min_mean_occurrences_per_step
                 or online_state.top_k != expected_state.top_k
+                or online_state.selection_mode != expected_state.selection_mode
             ):
                 raise ValueError(
                     "Checkpointed online Control selection state does not "
@@ -1578,6 +1585,9 @@ class DomainGradientAudit:
             "global/token_weight/candidate_token_count": float(
                 len(state.candidate_token_ids)
             ),
+            "global/token_weight/top_speed_selection_enabled": float(
+                state.selection_mode == TOP_SPEED_SELECTION_MODE
+            ),
         }
         result_map = {result.domain: result for result in outcome.domain_results}
         next_active = state.active_map()
@@ -1596,6 +1606,15 @@ class DomainGradientAudit:
                 metrics[f"{domain}/token_weight/eligible_token_count"] = float(
                     result.eligible_token_count
                 )
+                selected_speeds = tuple(
+                    item.optimization_speed
+                    for item in result.selected_tokens
+                    if item.optimization_speed is not None
+                )
+                if selected_speeds:
+                    metrics[
+                        f"{domain}/token_weight/selected_optimization_speed_mean"
+                    ] = sum(selected_speeds) / len(selected_speeds)
         return metrics
 
     def _token_selection_metrics(

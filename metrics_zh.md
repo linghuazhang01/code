@@ -428,6 +428,7 @@ TensorBoard tag 的一级层级取决于 validation metric key 能否解析出�
 | `entropy_distribution_vectors.jsonl` | 每 step、每 train domain 的 teacher entropy、student entropy、teacher-student cross entropy raw token vectors。 |
 | `entropy_vocab_vectors.jsonl` | 开启 `entropy_vocab_vector_enabled` 后，每 step、每 train domain 的 student entropy 与 teacher-student cross entropy 全词表 dense token-id vectors。 |
 | `token_grad_metrics.jsonl` | 开启 `token_gradient_enabled` 后，每 step、每 train domain 的 top-k token occurrence exact gradient rows，用于定位真实 token-level gradient norm、冲突和投影贡献。 |
+| `online_control_selection.jsonl` | Online Control selector 的 window、ranking mode、candidate/eligible/selected token IDs，以及 selected token 的 occurrence-mean loss、optimization speed 和生效 step。 |
 | `sample_grad_metrics.jsonl` | 每 step、每样本的 sample grad norm、sample-to-domain cosine、projection share、recompute grad norm 和 `computed_for_cos` 标记。 |
 | `validation_probe.jsonl` | 原始 validation value、previous value、gain，用于复盘 validation gain。 |
 | `validation_gain_variance.jsonl` | validation gain history、mean、variance。 |

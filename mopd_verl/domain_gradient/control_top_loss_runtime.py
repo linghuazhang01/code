@@ -175,6 +175,7 @@ def append_online_control_selection_jsonl(
         "audit_interval_steps": state.audit_interval_steps,
         "min_mean_occurrences_per_step": (state.min_mean_occurrences_per_step),
         "top_k": state.top_k,
+        "selection_mode": state.selection_mode,
         "candidate_token_count": len(state.candidate_token_ids),
         "candidate_union_count": len(state.candidate_token_ids),
         "domain_candidate_token_counts": {
@@ -192,6 +193,8 @@ def append_online_control_selection_jsonl(
                         "occurrence_count": item.occurrence_count,
                         "mean_occurrences_per_step": (item.mean_occurrences_per_step),
                         "mean_abs_loss": item.mean_abs_loss,
+                        "optimization_speed": item.optimization_speed,
+                        "observed_step_count": item.observed_step_count,
                     }
                     for item in result.selected_tokens
                 ],

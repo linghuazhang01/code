@@ -1,47 +1,26 @@
-"""Rolling high-loss selection for online Control-token weighting."""
+"""Rolling online selection for Control-token weighting."""
 
 from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
-
-TokenStatistic = tuple[int, float, int]
-DomainStatistics = tuple[tuple[str, tuple[TokenStatistic, ...]], ...]
-StepStatistics = tuple[int, DomainStatistics]
-
-
-@dataclass(frozen=True)
-class SelectedControlToken:
-    """One selected token and its rolling-window ranking statistics."""
-
-    token_id: int
-    occurrence_count: int
-    mean_occurrences_per_step: float
-    mean_abs_loss: float
-
-
-@dataclass(frozen=True)
-class DomainSelectionResult:
-    """Selection result for one domain at an audit boundary."""
-
-    domain: str
-    eligible_token_count: int
-    selected_tokens: tuple[SelectedControlToken, ...]
-
-
-@dataclass(frozen=True)
-class OnlineControlSelectionOutcome:
-    """Observable result of ingesting one completed optimizer step."""
-
-    observed_step: int
-    audit_triggered: bool
-    duplicate_step: bool
-    history_reset: bool
-    window_fill_steps: int
-    domain_results: tuple[DomainSelectionResult, ...]
+from mopd_verl.domain_gradient.control_selection_scoring import (
+    TOP_LOSS_SELECTION_MODE,
+    TOP_SPEED_SELECTION_MODE,
+    normalize_selection_mode,
+    occurrence_weighted_optimization_speed,
+)
+from mopd_verl.domain_gradient.control_selection_types import (
+    DomainSelectionResult,
+    DomainStatistics,
+    OnlineControlSelectionOutcome,
+    SelectedControlToken,
+    StepStatistics,
+    TokenStatistic,
+)
 
 
 @dataclass(frozen=True)
@@ -54,6 +33,7 @@ class OnlineControlSelectionState:
     window_steps: int
     min_mean_occurrences_per_step: float
     top_k: int
+    selection_mode: str
     history: tuple[StepStatistics, ...]
     active_token_ids: tuple[tuple[str, tuple[int, ...]], ...]
     last_observed_step: int | None = None
@@ -82,13 +62,14 @@ class OnlineControlSelectionState:
 
     def as_dict(self) -> dict[str, object]:
         return {
-            "schema_version": 2,
+            "schema_version": 3,
             "domains": self.domains,
             "domain_candidate_token_ids": self.domain_candidate_token_ids,
             "audit_interval_steps": self.audit_interval_steps,
             "window_steps": self.window_steps,
             "min_mean_occurrences_per_step": (self.min_mean_occurrences_per_step),
             "top_k": self.top_k,
+            "selection_mode": self.selection_mode,
             "history": self.history,
             "active_token_ids": self.active_token_ids,
             "last_observed_step": self.last_observed_step,
@@ -150,6 +131,9 @@ class OnlineControlSelectionState:
                 value.get("min_mean_occurrences_per_step", 0.0)
             ),
             top_k=int(value.get("top_k", 0)),
+            selection_mode=normalize_selection_mode(
+                value.get("selection_mode", TOP_LOSS_SELECTION_MODE)
+            ),
             history=history,
             active_token_ids=active,
             last_observed_step=(None if raw_observed is None else int(raw_observed)),
@@ -166,6 +150,7 @@ def initial_online_control_selection_state(
     window_steps: int,
     min_mean_occurrences_per_step: float,
     top_k: int,
+    selection_mode: str = TOP_LOSS_SELECTION_MODE,
 ) -> OnlineControlSelectionState:
     """Create an empty selector state with a frozen configuration signature."""
 
@@ -201,6 +186,11 @@ def initial_online_control_selection_state(
         raise ValueError(
             "Online Control audit interval, window, and Top-K must be positive."
         )
+    normalized_selection_mode = normalize_selection_mode(selection_mode)
+    if normalized_selection_mode == TOP_SPEED_SELECTION_MODE and window_steps < 2:
+        raise ValueError(
+            "Online top-speed selection requires window_steps to be at least 2."
+        )
     if (
         not math.isfinite(min_mean_occurrences_per_step)
         or min_mean_occurrences_per_step < 0.0
@@ -215,6 +205,7 @@ def initial_online_control_selection_state(
         window_steps=int(window_steps),
         min_mean_occurrences_per_step=float(min_mean_occurrences_per_step),
         top_k=int(top_k),
+        selection_mode=normalized_selection_mode,
         history=(),
         active_token_ids=tuple((domain, ()) for domain in normalized_domains),
     )
@@ -262,13 +253,19 @@ def _select_from_history(
     totals: dict[str, dict[int, tuple[float, int]]] = {
         domain: {} for domain in state.domains
     }
-    for _, domain_rows in history:
+    observations: dict[str, dict[int, list[tuple[int, float, int]]]] = {
+        domain: {} for domain in state.domains
+    }
+    for step, domain_rows in history:
         for domain, statistics in domain_rows:
             for token_id, loss_sum, count in statistics:
                 prior_loss, prior_count = totals[domain].get(token_id, (0.0, 0))
                 totals[domain][token_id] = (
                     prior_loss + loss_sum,
                     prior_count + count,
+                )
+                observations[domain].setdefault(token_id, []).append(
+                    (step, loss_sum / count, count)
                 )
 
     active: list[tuple[str, tuple[int, ...]]] = []
@@ -279,18 +276,36 @@ def _select_from_history(
             frequency = count / float(state.window_steps)
             if frequency < state.min_mean_occurrences_per_step:
                 continue
+            speed = occurrence_weighted_optimization_speed(
+                observations[domain].get(token_id, ())
+            )
+            if state.selection_mode == TOP_SPEED_SELECTION_MODE and speed is None:
+                continue
             eligible.append(
                 SelectedControlToken(
                     token_id=token_id,
                     occurrence_count=count,
                     mean_occurrences_per_step=frequency,
                     mean_abs_loss=loss_sum / count,
+                    optimization_speed=(None if speed is None else speed.value),
+                    observed_step_count=(
+                        0 if speed is None else speed.observed_step_count
+                    ),
                 )
             )
-        ranked = sorted(
-            eligible,
-            key=lambda item: (-item.mean_abs_loss, item.token_id),
-        )
+        if state.selection_mode == TOP_SPEED_SELECTION_MODE:
+            ranked = sorted(
+                eligible,
+                key=lambda item: (
+                    -cast(float, item.optimization_speed),
+                    item.token_id,
+                ),
+            )
+        else:
+            ranked = sorted(
+                eligible,
+                key=lambda item: (-item.mean_abs_loss, item.token_id),
+            )
         selected = tuple(ranked[: state.top_k])
         active.append((domain, tuple(item.token_id for item in selected)))
         results.append(
@@ -357,6 +372,7 @@ def update_online_control_selection(
         window_steps=state.window_steps,
         min_mean_occurrences_per_step=(state.min_mean_occurrences_per_step),
         top_k=state.top_k,
+        selection_mode=state.selection_mode,
         history=tuple(history),
         active_token_ids=active,
         last_observed_step=step,

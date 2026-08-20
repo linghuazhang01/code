@@ -25,6 +25,22 @@ CONFIG_8GPU_PATH = (
         "topk32_control_online_toploss_i3_w3_f20_k30_w4_b528.yaml"
     )
 )
+ALL_CANDIDATES_CONFIG_8GPU_PATH = (
+    ROOT
+    / "configs"
+    / (
+        "mopd_qwen1p7b_30b_a3b_instruct_2507_8gpu_math_code_science_"
+        "topk32_control_allcand_domaincand_v2_w4_b528.yaml"
+    )
+)
+TOP_SPEED_CONFIG_8GPU_PATH = (
+    ROOT
+    / "configs"
+    / (
+        "mopd_qwen1p7b_30b_a3b_instruct_2507_8gpu_math_code_science_"
+        "topk32_control_online_topspeed_i3_w3_f20_k30_w4_b528.yaml"
+    )
+)
 EXPECTED_DOMAIN_CANDIDATE_SHA256 = {
     "math": "cdb9c4baa8770aeceda0c533a5889df8385ea1fd42739d78f29532447d040ddf",
     "code": "12f7e1a16efdd20129c11bee086fc825740c010fdda12c6a6c55b7a5cc5d69f2",
@@ -127,6 +143,7 @@ class Qwen1p7bEightGpuOnlineControlProfileTests(unittest.TestCase):
             20.0,
         )
         self.assertEqual(config.audit.control_token_online_top_k, 30)
+        self.assertEqual(config.audit.control_token_online_selection_mode, "top_loss")
         self.assertEqual(config.audit.control_token_loss_weight, 4.0)
 
     def test_uses_unique_eight_gpu_run_and_output_paths(self) -> None:
@@ -141,6 +158,79 @@ class Qwen1p7bEightGpuOnlineControlProfileTests(unittest.TestCase):
         self.assertIn(
             "+actor_rollout_ref.worker_placement.ref_policy.n_gpus_per_node=2",
             rendered,
+        )
+
+
+class Qwen1p7bEightGpuControlBaselineProfileTests(unittest.TestCase):
+    def test_all_candidates_profile_weights_the_complete_domain_pools(self) -> None:
+        reference = load_config(CONFIG_8GPU_PATH)
+        config = load_config(ALL_CANDIDATES_CONFIG_8GPU_PATH)
+        audit = config.audit
+
+        self.assertEqual(
+            audit.domain_control_token_ids,
+            reference.audit.domain_control_token_candidate_ids,
+        )
+        self.assertEqual(audit.domain_control_token_candidate_ids, {})
+        self.assertEqual(audit.control_token_ids, [])
+        self.assertEqual(audit.control_token_candidate_ids, [])
+        self.assertTrue(audit.control_token_loss_weighting_enabled)
+        self.assertFalse(audit.control_token_online_selection_enabled)
+        self.assertTrue(audit.control_token_normalize_per_domain)
+        self.assertEqual(audit.control_token_loss_weight, 4.0)
+        self.assertFalse(audit.control_token_speed_weighting_enabled)
+
+    def test_top_speed_profile_changes_only_the_online_ranking_signal(self) -> None:
+        reference = load_config(CONFIG_8GPU_PATH)
+        config = load_config(TOP_SPEED_CONFIG_8GPU_PATH)
+        audit = config.audit
+
+        self.assertEqual(
+            audit.domain_control_token_candidate_ids,
+            reference.audit.domain_control_token_candidate_ids,
+        )
+        self.assertEqual(audit.domain_control_token_ids, {})
+        self.assertTrue(audit.control_token_online_selection_enabled)
+        self.assertEqual(audit.control_token_online_selection_mode, "top_speed")
+        self.assertEqual(audit.control_token_online_audit_interval_steps, 3)
+        self.assertEqual(audit.control_token_online_window_steps, 3)
+        self.assertEqual(
+            audit.control_token_online_min_mean_occurrences_per_step,
+            20.0,
+        )
+        self.assertEqual(audit.control_token_online_top_k, 30)
+        self.assertEqual(audit.control_token_loss_weight, 4.0)
+        self.assertFalse(audit.control_token_speed_weighting_enabled)
+
+    def test_baselines_preserve_topology_and_use_isolated_outputs(self) -> None:
+        reference = load_config(CONFIG_8GPU_PATH)
+        profiles = (
+            (load_config(ALL_CANDIDATES_CONFIG_8GPU_PATH), "allcand"),
+            (load_config(TOP_SPEED_CONFIG_8GPU_PATH), "topspeed"),
+        )
+
+        for config, marker in profiles:
+            with self.subTest(marker=marker):
+                self.assertEqual(config.data.train_batch_size, 528)
+                self.assertEqual(config.actor.ppo_mini_batch_size, 528)
+                self.assertEqual(
+                    config.worker_placement,
+                    reference.worker_placement,
+                )
+                self.assertEqual(config.model, reference.model)
+                for value in (
+                    config.runtime.wandb_run_id,
+                    config.audit.output_dir,
+                    config.paper_eval.output_dir,
+                    config.trainer.experiment_name,
+                    config.trainer.default_local_dir,
+                ):
+                    self.assertIn(marker, value)
+
+        top_speed_rendered = format_command(build_command(profiles[1][0]))
+        self.assertIn(
+            "+mopd_audit.control_token_online_selection_mode=top_speed",
+            top_speed_rendered,
         )
 
 

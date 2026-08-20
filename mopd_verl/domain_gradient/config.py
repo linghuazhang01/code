@@ -7,6 +7,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from mopd_verl.domain_gradient.control_selection_scoring import (
+    ONLINE_CONTROL_SELECTION_MODES,
+    TOP_LOSS_SELECTION_MODE,
+    TOP_SPEED_SELECTION_MODE,
+)
 from mopd_verl.domain_gradient.token_weighting_state import (
     PER_STEP_MEAN_ABS_LOSS_SELECTION,
     SHARED_TOKEN_SELECTION_MODES,
@@ -122,6 +127,7 @@ class DomainGradientConfig:
     control_token_online_window_steps: int
     control_token_online_min_mean_occurrences_per_step: float
     control_token_online_top_k: int
+    control_token_online_selection_mode: str
     control_token_phase_gate_enabled: bool
     control_token_span_weighting_enabled: bool
     control_token_phase_gate_window_steps: int
@@ -321,6 +327,15 @@ class DomainGradientConfig:
             control_token_online_top_k=int(
                 _get(meta, "control_token_online_top_k", 30)
             ),
+            control_token_online_selection_mode=str(
+                _get(
+                    meta,
+                    "control_token_online_selection_mode",
+                    TOP_LOSS_SELECTION_MODE,
+                )
+            )
+            .strip()
+            .lower(),
             control_token_phase_gate_enabled=bool(
                 _get(meta, "control_token_phase_gate_enabled", False)
             ),
@@ -529,6 +544,21 @@ class DomainGradientConfig:
         ):
             raise ValueError(
                 "Online Control audit interval, window, and Top-K must be " "positive."
+            )
+        if (
+            self.control_token_online_selection_mode
+            not in ONLINE_CONTROL_SELECTION_MODES
+        ):
+            allowed = ", ".join(sorted(ONLINE_CONTROL_SELECTION_MODES))
+            raise ValueError(
+                "Online Control selection mode must be one of: " f"{allowed}."
+            )
+        if (
+            self.control_token_online_selection_mode == TOP_SPEED_SELECTION_MODE
+            and self.control_token_online_window_steps < 2
+        ):
+            raise ValueError(
+                "Online top-speed selection requires a window of at least 2 steps."
             )
         if (
             not math.isfinite(self.control_token_online_min_mean_occurrences_per_step)
