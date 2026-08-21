@@ -1608,7 +1608,11 @@ class DomainGradientAudit:
             self.config.control_token_online_selection_mode
             == TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE
         )
-        policy_loss_cfg = _cfg_get(self.actor.config, "policy_loss", {})
+        policy_loss_cfg = (
+            _cfg_get(getattr(self.actor, "config", {}), "policy_loss", {})
+            if teacher_confidence_mode
+            else {}
+        )
         for micro_batch, configured_loss in zip(
             micro_batches,
             selection_loss_batches,

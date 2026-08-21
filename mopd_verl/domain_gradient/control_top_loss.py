@@ -390,7 +390,8 @@ def _select_from_history(
                 occurrence_weighted_optimization_speed(
                     observations[domain].get(token_id, ())
                 )
-                if state.selection_mode == TOP_SPEED_SELECTION_MODE
+                if state.selection_mode
+                in {TOP_LOSS_SELECTION_MODE, TOP_SPEED_SELECTION_MODE}
                 else None
             )
             if state.selection_mode == TOP_SPEED_SELECTION_MODE and speed is None:

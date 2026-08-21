@@ -12,7 +12,7 @@ runtime:
   verl_module: verl.trainer.main_ppo
   wandb_mode: online
   wandb_entity: lz101-rice-university
-  wandb_run_id: q1p7b-8g-mcs-control-online-topklentropy-dcandv2-i3w3f20k30w4-b528
+  wandb_run_id: q1p7b-8g-topklentropy-i3w3f20k30w4-b528
   wandb_resume: allow
   env_file: ../mopd/code/.env.local
   used_model: no_api
