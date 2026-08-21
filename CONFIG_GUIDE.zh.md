@@ -379,13 +379,17 @@ candidate construction、loss 公式、runtime constraints 与 metrics 见
 
 ## Online Control-token selection
 
-Online selector 在固定的 domain candidate pools 上提供两种 ranking mode：
+Online selector 在固定的 domain candidate pools 上提供四种 ranking mode，
+并把 token-ID selection 与入选后的 weighting 独立配置：
 
 ```yaml
 audit:
   control_token_loss_weighting_enabled: true
   control_token_online_selection_enabled: true
-  control_token_online_selection_mode: top_speed  # top_loss | top_speed
+  # top_loss | top_speed | top_kl_student_entropy |
+  # top_teacher_confidence_student_entropy
+  control_token_online_selection_mode: top_kl_student_entropy
+  control_token_online_weight_mode: paired  # fixed | paired
   control_token_online_audit_interval_steps: 3
   control_token_online_window_steps: 3
   control_token_online_min_mean_occurrences_per_step: 10.0
@@ -399,7 +403,36 @@ occurrence-mean absolute configured loss 做 occurrence-count-weighted linear
 regression，并使用负 slope 作为 optimization speed；正值表示 loss 正在下降。
 Top-speed 按 signed speed 降序选择，不取绝对值，也不丢弃负 speed。
 
-两种 mode 共用 occurrence eligibility、audit cadence 和 next-step lag。Top-speed
+两个 paired-signal mode 都先在每条 valid response 内把信号归一化到
+`[0, 1]`，再按
+
+\[
+s=A+B+AB=(1+A)(1+B)-1
+\]
+
+聚合 `(domain, token_id)` 的 rolling occurrence mean，并选择 Top-K：
+
+- `top_kl_student_entropy`：`A` 是在 TIP/FiRe token weight 与 rollout-IS
+  生效前捕获的 detached raw Top-K KL loss，`B` 是 Student entropy；
+- `top_teacher_confidence_student_entropy`：`A` 是
+  `1 - normalized Teacher entropy`，`B` 是 Student entropy。
+
+`control_token_online_weight_mode=fixed` 沿用
+`control_token_loss_weight`。`paired` 则让入选 token ID 在下一 selection
+interval 使用历史窗口估计的 `1 + mean(s)`，即 mean
+`(1+A)(1+B)`；未入选 token 的 raw weight 仍为 1。若
+`control_token_normalize_per_domain=true`，最后仅做一次 domain mean-one
+normalization。`paired` 只允许搭配上述两个 paired-signal selector，因此可形成
+`2 selectors × 2 weight modes` 的四种组合。
+
+每次 selection audit boundary 都会记录实际 ranking score 的 token-ID-level
+分布。`online_control_selection.jsonl` 包含 eligible/selected 两组完整 summary；
+训练 metrics 使用
+`{domain}/token_weight/{eligible|selected}_selection_score_{count|mean|std|min|p10|p50|p90|max}`。
+这里的 score 是 rolling window 内每个 token ID 的 occurrence-mean ranking score，
+不是单个 token occurrence 的原始 score。
+
+四种 mode 共用 occurrence eligibility、audit cadence 和 next-step lag。Top-speed
 要求 window 至少包含两个 step，且 token 在至少两个不同 step 有 observation。
 `control_token_speed_weighting_enabled` 是另一套 domain-level speed-to-weight
 controller，不应与 online selector 同时开启。Qwen4B Top-speed profile 位于

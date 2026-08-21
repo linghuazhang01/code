@@ -1883,6 +1883,22 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
             (("math", (10,)), ("code", (20,))),
         )
         self.assertEqual(metrics["global/token_weight/audit_triggered"], 1.0)
+        self.assertEqual(
+            metrics["math/token_weight/eligible_selection_score_count"],
+            1.0,
+        )
+        self.assertEqual(
+            metrics["math/token_weight/selected_selection_score_count"],
+            1.0,
+        )
+        self.assertIn(
+            "eligible_selection_score_distribution",
+            record["domains"]["math"],
+        )
+        self.assertIn(
+            "selected_selection_score_distribution",
+            record["domains"]["math"],
+        )
         self.assertEqual(record["applies_from_step"], 4)
         self.assertEqual(record["selection_mode"], "top_loss")
         self.assertEqual(

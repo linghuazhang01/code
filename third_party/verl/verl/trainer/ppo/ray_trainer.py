@@ -33,6 +33,9 @@ import ray
 import torch
 
 from mopd_verl.domain_budgeting import DynamicDomainBudgetController
+from mopd_verl.domain_gradient.control_selection_scoring import (
+    TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE,
+)
 from mopd_verl.reproducibility import derive_seed
 from mopd_verl.region_dpo import RegionDPOController
 from mopd_verl.region_dpo_pairs import (
@@ -1733,6 +1736,11 @@ class RayPPOTrainer:
                         batch.meta_info.pop("student_topk_k", None)
                     batch.meta_info["mopd_compute_teacher_entropy"] = bool(
                         uses_eopd_loss(policy_loss_config)
+                        or (
+                            self.mopd_audit_logger.control_token_online_selection_enabled
+                            and self.mopd_audit_logger.control_token_online_selection_mode
+                            == TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE
+                        )
                         or self.mopd_audit_logger.should_log_entropy(
                             self.global_steps
                         )

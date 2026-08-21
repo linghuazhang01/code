@@ -87,6 +87,10 @@ def test_core_filter_keeps_token_weight_amplification_metrics() -> None:
         "global/token_weight/token_weighted_to_raw_abs_loss_mass_ratio": 2.0,
         "math/token_weight/cumulative_abs_loss_mass": 120.0,
         "math/token_weight/observed_token_type_count": 500.0,
+        "math/token_weight/eligible_selection_score_p50": 1.3,
+        "math/token_weight/eligible_selection_score_p90": 2.4,
+        "math/token_weight/selected_selection_score_mean": 2.2,
+        "math/token_weight/selected_selection_score_std": 0.3,
     }
 
     assert filter_tensorboard_metrics(metrics, "core") == metrics

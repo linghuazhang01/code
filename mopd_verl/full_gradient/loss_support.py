@@ -30,6 +30,8 @@ class ActorMicroBatchLossResult:
     teacher_student_cross_entropy: torch.Tensor | None = None
     configured_token_loss: torch.Tensor | None = None
     configured_token_loss_mask: torch.Tensor | None = None
+    selector_token_loss: torch.Tensor | None = None
+    selector_token_loss_mask: torch.Tensor | None = None
 
 
 ACTOR_LOSS_CONTRIBUTION_METRICS: Final[frozenset[str]] = frozenset(

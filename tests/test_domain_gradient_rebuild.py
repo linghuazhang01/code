@@ -254,6 +254,49 @@ class DomainGradientConfigTests(unittest.TestCase):
         )
 
         self.assertEqual(config.control_token_online_selection_mode, "top_loss")
+        self.assertEqual(config.control_token_online_weight_mode, "fixed")
+
+    def test_paired_online_selection_supports_fixed_or_paired_weight(self) -> None:
+        for selection_mode in (
+            "top_kl_student_entropy",
+            "top_teacher_confidence_student_entropy",
+        ):
+            for weight_mode in ("fixed", "paired"):
+                with self.subTest(
+                    selection_mode=selection_mode,
+                    weight_mode=weight_mode,
+                ):
+                    config = DomainGradientConfig.from_meta(
+                        {
+                            "domains": ["math"],
+                            "control_token_loss_weighting_enabled": True,
+                            "control_token_candidate_ids": [10, 20],
+                            "control_token_online_selection_enabled": True,
+                            "control_token_online_selection_mode": selection_mode,
+                            "control_token_online_weight_mode": weight_mode,
+                        }
+                    )
+                    self.assertEqual(
+                        config.control_token_online_selection_mode,
+                        selection_mode,
+                    )
+                    self.assertEqual(
+                        config.control_token_online_weight_mode,
+                        weight_mode,
+                    )
+
+    def test_paired_weight_rejects_legacy_selector(self) -> None:
+        with self.assertRaisesRegex(ValueError, "paired.*paired-signal"):
+            DomainGradientConfig.from_meta(
+                {
+                    "domains": ["math"],
+                    "control_token_loss_weighting_enabled": True,
+                    "control_token_candidate_ids": [10, 20],
+                    "control_token_online_selection_enabled": True,
+                    "control_token_online_selection_mode": "top_loss",
+                    "control_token_online_weight_mode": "paired",
+                }
+            )
 
     def test_online_control_selection_rejects_invalid_mode(self) -> None:
         with self.assertRaisesRegex(ValueError, "selection mode"):

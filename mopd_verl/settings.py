@@ -10,7 +10,12 @@ from typing import Any
 
 from mopd_verl.config_profiles import load_raw_config
 from mopd_verl.domain_gradient.control_selection_scoring import (
+    FIXED_ONLINE_WEIGHT_MODE,
     ONLINE_CONTROL_SELECTION_MODES,
+    ONLINE_CONTROL_WEIGHT_MODES,
+    PAIRED_ONLINE_WEIGHT_MODE,
+    PAIRED_SIGNAL_SELECTION_MODES,
+    TOP_KL_STUDENT_ENTROPY_SELECTION_MODE,
     TOP_LOSS_SELECTION_MODE,
     TOP_SPEED_SELECTION_MODE,
 )
@@ -25,6 +30,7 @@ from mopd_verl.region_dpo_config import (
     validate_region_dpo_config,
     with_control_token_fallback,
 )
+from mopd_verl.topk_distill import uses_topk_distill_loss
 
 DEFAULT_PAPER_EVAL_DATASETS = [
     "aime24",
@@ -281,6 +287,7 @@ class AuditConfig:
     control_token_online_min_mean_occurrences_per_step: float = 20.0
     control_token_online_top_k: int = 30
     control_token_online_selection_mode: str = TOP_LOSS_SELECTION_MODE
+    control_token_online_weight_mode: str = FIXED_ONLINE_WEIGHT_MODE
     control_token_phase_gate_enabled: bool = False
     control_token_span_weighting_enabled: bool = False
     control_token_phase_gate_window_steps: int = 5
@@ -717,6 +724,16 @@ def load_config(path: str | Path) -> MOPDConfig:
     )
     domain_budgeting = parse_domain_budgeting_config(domain_budgeting_raw)
     normalized_loss_builder = actor.distill_loss_builder.strip().lower()
+    topk_distillation_active = uses_topk_distill_loss(actor)
+    if (
+        audit.control_token_online_selection_enabled
+        and audit.control_token_online_selection_mode
+        == TOP_KL_STUDENT_ENTROPY_SELECTION_MODE
+        and not topk_distillation_active
+    ):
+        raise ValueError(
+            "top_kl_student_entropy requires an active Top-K distillation loss."
+        )
     if normalized_loss_builder in {"eopd", "entropy_aware", "entropy_aware_opd"}:
         if actor.eopd_topk_k < 1:
             raise ValueError("actor.eopd_topk_k must be positive for EOPD.")
@@ -865,6 +882,21 @@ def load_config(path: str | Path) -> MOPDConfig:
         raise ValueError(
             "audit.control_token_online_selection_mode must be one of: "
             f"{allowed}."
+        )
+    if audit.control_token_online_weight_mode not in ONLINE_CONTROL_WEIGHT_MODES:
+        allowed = ", ".join(sorted(ONLINE_CONTROL_WEIGHT_MODES))
+        raise ValueError(
+            "audit.control_token_online_weight_mode must be one of: "
+            f"{allowed}."
+        )
+    if (
+        audit.control_token_online_weight_mode == PAIRED_ONLINE_WEIGHT_MODE
+        and audit.control_token_online_selection_mode
+        not in PAIRED_SIGNAL_SELECTION_MODES
+    ):
+        raise ValueError(
+            "audit.control_token_online_weight_mode=paired requires a "
+            "paired-signal selection mode."
         )
     if (
         audit.control_token_online_selection_mode == TOP_SPEED_SELECTION_MODE

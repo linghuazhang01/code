@@ -233,6 +233,62 @@ def phase_token_weights(
     return weights
 
 
+def online_token_score_weights(
+    token_ids: torch.Tensor,
+    response_mask: torch.Tensor,
+    labels: Sequence[str],
+    *,
+    domain_token_weights: Mapping[str, Mapping[int, float]],
+    normalize_per_domain: bool,
+) -> torch.Tensor:
+    """Build lagged per-token-ID online weights with an unmodified base loss."""
+
+    if token_ids.shape != response_mask.shape:
+        raise ValueError("Online token IDs and response mask must align.")
+    if len(labels) != int(token_ids.shape[0]):
+        raise ValueError("Online token-weight labels must align with batch rows.")
+    valid = response_mask.to(device=token_ids.device, dtype=torch.bool)
+    weights = torch.ones_like(response_mask, dtype=torch.float32)
+    for row_index, label in enumerate(labels):
+        token_weights = domain_token_weights.get(str(label), {})
+        if not token_weights:
+            continue
+        for token_id, raw_weight in token_weights.items():
+            value = float(raw_weight)
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError(
+                    "Online per-token-ID weights must be finite and "
+                    "non-negative."
+                )
+            selected = (
+                token_ids[row_index].eq(int(token_id)) & valid[row_index]
+            )
+            weights[row_index] = torch.where(
+                selected,
+                value,
+                weights[row_index],
+            )
+    if not normalize_per_domain:
+        return weights
+
+    for domain in domain_token_weights:
+        domain_rows = torch.tensor(
+            [str(label) == domain for label in labels],
+            device=token_ids.device,
+            dtype=torch.bool,
+        ).unsqueeze(-1)
+        domain_valid = domain_rows & valid
+        if not bool(domain_valid.any()):
+            continue
+        mean_weight = weights[domain_valid].mean().clamp(min=1e-12)
+        weights = torch.where(
+            domain_valid,
+            weights / mean_weight,
+            weights,
+        )
+    return weights
+
+
 def gap_observations(
     token_ids: torch.Tensor,
     response_mask: torch.Tensor,

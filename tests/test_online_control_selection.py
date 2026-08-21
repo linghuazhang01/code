@@ -9,6 +9,7 @@ from mopd_verl.domain_gradient.control_top_loss import (
 )
 from mopd_verl.domain_gradient.control_selection_scoring import (
     occurrence_weighted_optimization_speed,
+    paired_selection_bonus,
 )
 
 
@@ -30,6 +31,39 @@ def _statistics(
 
 
 class OnlineControlSelectionTests(unittest.TestCase):
+    def test_paired_selection_bonus_supports_both_primary_signals(self) -> None:
+        try:
+            import torch
+        except ModuleNotFoundError as exc:
+            self.skipTest(f"torch is unavailable: {exc}")
+
+        mask = torch.ones(1, 3, dtype=torch.bool)
+        student_entropy = torch.tensor([[0.0, 2.0, 1.0]])
+        kl_loss = torch.tensor([[1.0, 2.0, 0.0]])
+        teacher_entropy = torch.tensor([[0.0, 1.0, 2.0]])
+
+        kl_bonus = paired_selection_bonus(
+            selection_mode="top_kl_student_entropy",
+            student_entropy=student_entropy,
+            response_mask=mask,
+            configured_loss=kl_loss,
+        )
+        confidence_bonus = paired_selection_bonus(
+            selection_mode="top_teacher_confidence_student_entropy",
+            student_entropy=student_entropy,
+            response_mask=mask,
+            teacher_entropy=teacher_entropy,
+        )
+
+        torch.testing.assert_close(
+            kl_bonus,
+            torch.tensor([[0.5, 3.0, 0.5]]),
+        )
+        torch.testing.assert_close(
+            confidence_bonus,
+            torch.tensor([[1.0, 2.0, 0.5]]),
+        )
+
     def test_optimization_speed_uses_occurrence_count_weights(self) -> None:
         speed = occurrence_weighted_optimization_speed(
             ((1, 10.0, 100), (2, 0.0, 1), (3, 8.0, 10))
@@ -48,6 +82,7 @@ class OnlineControlSelectionTests(unittest.TestCase):
         minimum_frequency: float = 20.0,
         top_k: int = 2,
         selection_mode: str = "top_loss",
+        weight_mode: str = "fixed",
     ) -> OnlineControlSelectionState:
         return initial_online_control_selection_state(
             DOMAINS,
@@ -57,6 +92,7 @@ class OnlineControlSelectionTests(unittest.TestCase):
             min_mean_occurrences_per_step=minimum_frequency,
             top_k=top_k,
             selection_mode=selection_mode,
+            weight_mode=weight_mode,
         )
 
     def test_first_full_window_audits_at_step_three(self) -> None:
@@ -127,6 +163,101 @@ class OnlineControlSelectionTests(unittest.TestCase):
         self.assertTrue(outcome.audit_triggered)
         self.assertEqual(state.active_map()["math"], (10,))
         self.assertEqual(state.active_map()["code"], (30,))
+
+    def test_paired_mode_ranks_mean_bonus_and_stores_raw_weights(self) -> None:
+        state = self._state(
+            window_steps=1,
+            audit_interval_steps=1,
+            minimum_frequency=1.0,
+            top_k=2,
+            selection_mode="top_kl_student_entropy",
+            weight_mode="paired",
+        )
+        outcome, state = update_online_control_selection(
+            state,
+            _statistics(
+                ("math", 10, 2.0, 2),
+                ("math", 20, 4.0, 2),
+                ("math", 30, 4.0, 4),
+            ),
+            step=1,
+        )
+
+        self.assertTrue(outcome.audit_triggered)
+        self.assertEqual(state.active_map()["math"], (20, 10))
+        self.assertEqual(
+            state.active_weight_map()["math"],
+            {20: 3.0, 10: 2.0},
+        )
+        math_result = next(
+            result for result in outcome.domain_results if result.domain == "math"
+        )
+        self.assertEqual(
+            tuple(item.mean_selection_score for item in math_result.selected_tokens),
+            (2.0, 1.0),
+        )
+        eligible_distribution = math_result.eligible_score_distribution
+        selected_distribution = math_result.selected_score_distribution
+        self.assertIsNotNone(eligible_distribution)
+        self.assertIsNotNone(selected_distribution)
+        assert eligible_distribution is not None
+        assert selected_distribution is not None
+        self.assertEqual(eligible_distribution.count, 3)
+        self.assertAlmostEqual(eligible_distribution.mean, 4.0 / 3.0)
+        self.assertAlmostEqual(eligible_distribution.p50, 1.0)
+        self.assertAlmostEqual(eligible_distribution.p90, 1.8)
+        self.assertEqual(selected_distribution.count, 2)
+        self.assertAlmostEqual(selected_distribution.mean, 1.5)
+        self.assertAlmostEqual(selected_distribution.std, 0.5)
+        self.assertAlmostEqual(selected_distribution.p10, 1.1)
+        self.assertAlmostEqual(selected_distribution.p90, 1.9)
+        self.assertEqual(
+            OnlineControlSelectionState.from_mapping(state.as_dict()),
+            state,
+        )
+
+    def test_paired_selector_can_keep_fixed_weight_mode(self) -> None:
+        state = self._state(
+            window_steps=1,
+            audit_interval_steps=1,
+            minimum_frequency=1.0,
+            top_k=1,
+            selection_mode="top_teacher_confidence_student_entropy",
+            weight_mode="fixed",
+        )
+        _, state = update_online_control_selection(
+            state,
+            _statistics(("math", 10, 3.0, 1)),
+            step=1,
+        )
+
+        self.assertEqual(state.active_map()["math"], (10,))
+        self.assertEqual(state.active_weight_map()["math"], {})
+
+    def test_step_gap_clears_paired_ids_and_weights(self) -> None:
+        state = self._state(
+            window_steps=2,
+            audit_interval_steps=2,
+            minimum_frequency=1.0,
+            top_k=1,
+            selection_mode="top_kl_student_entropy",
+            weight_mode="paired",
+        )
+        for step in (1, 2):
+            _, state = update_online_control_selection(
+                state,
+                _statistics(("math", 10, 3.0, 1)),
+                step=step,
+            )
+        outcome, state = update_online_control_selection(
+            state,
+            _statistics(("math", 20, 2.0, 1)),
+            step=4,
+        )
+
+        self.assertTrue(outcome.history_reset)
+        self.assertEqual(state.active_map(), {"math": (), "code": ()})
+        self.assertEqual(state.active_weight_map(), {"math": {}, "code": {}})
 
     def test_top_speed_ranks_occurrence_weighted_loss_slope(self) -> None:
         state = self._state(
@@ -392,6 +523,29 @@ class OnlineControlSelectionTests(unittest.TestCase):
         self.assertEqual(migrated.selection_mode, "top_loss")
         self.assertEqual(migrated.candidate_map(), DOMAIN_CANDIDATES)
 
+    def test_v3_fixed_checkpoint_preserves_active_ids(self) -> None:
+        state = self._state(
+            window_steps=1,
+            audit_interval_steps=1,
+            minimum_frequency=1.0,
+            top_k=1,
+        )
+        _, state = update_online_control_selection(
+            state,
+            _statistics(("math", 10, 2.0, 1)),
+            step=1,
+        )
+        legacy = state.as_dict()
+        legacy.pop("weight_mode")
+        legacy.pop("active_token_weights")
+        legacy["schema_version"] = 3
+
+        migrated = OnlineControlSelectionState.from_mapping(legacy)
+
+        self.assertEqual(migrated.weight_mode, "fixed")
+        self.assertEqual(migrated.active_map()["math"], (10,))
+        self.assertEqual(migrated.active_weight_map()["math"], {})
+
     def test_top_speed_rejects_single_step_window_and_unknown_mode(self) -> None:
         with self.assertRaisesRegex(ValueError, "at least 2"):
             self._state(window_steps=1, selection_mode="top_speed")
@@ -448,6 +602,32 @@ class OnlineControlSelectionTests(unittest.TestCase):
 
         self.assertEqual(statistics["math"], {10: (2.0, 1)})
         self.assertEqual(statistics["code"], {30: (3.0, 1)})
+
+    def test_runtime_aggregates_paired_selection_bonus(self) -> None:
+        try:
+            import torch
+        except ModuleNotFoundError as exc:
+            self.skipTest(f"torch is unavailable: {exc}")
+        from mopd_verl.domain_gradient.control_top_loss_runtime import (
+            global_candidate_loss_statistics,
+        )
+
+        statistics = global_candidate_loss_statistics(
+            (torch.tensor([[10, 20, 30]], dtype=torch.long),),
+            (torch.tensor([[1.0, 2.0, 0.0]]),),
+            (torch.ones(1, 3, dtype=torch.bool),),
+            (("math",),),
+            domains=DOMAINS,
+            candidate_token_ids=CANDIDATES,
+            selection_mode="top_kl_student_entropy",
+            student_entropy_batches=(torch.tensor([[0.0, 2.0, 1.0]]),),
+        )
+
+        self.assertEqual(
+            statistics["math"],
+            {10: (0.5, 1), 20: (3.0, 1), 30: (0.5, 1)},
+        )
+        self.assertEqual(statistics["code"], {})
 
 
 if __name__ == "__main__":

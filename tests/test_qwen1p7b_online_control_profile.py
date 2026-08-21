@@ -41,6 +41,22 @@ TOP_SPEED_CONFIG_8GPU_PATH = (
         "topk32_control_online_topspeed_i3_w3_f20_k30_w4_b528.yaml"
     )
 )
+TOP_TEACHER_CONFIDENCE_ENTROPY_CONFIG_8GPU_PATH = (
+    ROOT
+    / "configs"
+    / (
+        "mopd_qwen1p7b_30b_a3b_instruct_2507_8gpu_math_code_science_"
+        "topk32_control_online_topteacherconfentropy_i3_w3_f20_k30_w4_b528.yaml"
+    )
+)
+TOP_KL_ENTROPY_CONFIG_8GPU_PATH = (
+    ROOT
+    / "configs"
+    / (
+        "mopd_qwen1p7b_30b_a3b_instruct_2507_8gpu_math_code_science_"
+        "topk32_control_online_topklentropy_i3_w3_f20_k30_w4_b528.yaml"
+    )
+)
 EXPECTED_DOMAIN_CANDIDATE_SHA256 = {
     "math": "cdb9c4baa8770aeceda0c533a5889df8385ea1fd42739d78f29532447d040ddf",
     "code": "12f7e1a16efdd20129c11bee086fc825740c010fdda12c6a6c55b7a5cc5d69f2",
@@ -201,6 +217,98 @@ class Qwen1p7bEightGpuControlBaselineProfileTests(unittest.TestCase):
         self.assertEqual(audit.control_token_online_top_k, 30)
         self.assertEqual(audit.control_token_loss_weight, 4.0)
         self.assertFalse(audit.control_token_speed_weighting_enabled)
+
+    def test_teacher_confidence_entropy_profile_uses_fixed_weight_four(self) -> None:
+        reference = load_config(TOP_SPEED_CONFIG_8GPU_PATH)
+        config = load_config(TOP_TEACHER_CONFIDENCE_ENTROPY_CONFIG_8GPU_PATH)
+        audit = config.audit
+
+        self.assertEqual(
+            audit.domain_control_token_candidate_ids,
+            reference.audit.domain_control_token_candidate_ids,
+        )
+        self.assertEqual(config.data, reference.data)
+        self.assertEqual(config.model, reference.model)
+        self.assertEqual(config.actor, reference.actor)
+        self.assertEqual(config.rollout, reference.rollout)
+        self.assertEqual(config.worker_placement, reference.worker_placement)
+        self.assertTrue(audit.control_token_online_selection_enabled)
+        self.assertEqual(
+            audit.control_token_online_selection_mode,
+            "top_teacher_confidence_student_entropy",
+        )
+        self.assertEqual(audit.control_token_online_weight_mode, "fixed")
+        self.assertEqual(audit.control_token_loss_weight, 4.0)
+        self.assertEqual(audit.control_token_online_top_k, 30)
+        self.assertEqual(
+            audit.control_token_online_min_mean_occurrences_per_step,
+            20.0,
+        )
+        rendered = format_command(build_command(config))
+        self.assertIn(
+            "+mopd_audit.control_token_online_selection_mode="
+            "top_teacher_confidence_student_entropy",
+            rendered,
+        )
+        self.assertIn(
+            "+mopd_audit.control_token_online_weight_mode=fixed",
+            rendered,
+        )
+        for value in (
+            config.runtime.wandb_run_id,
+            config.audit.output_dir,
+            config.paper_eval.output_dir,
+            config.trainer.experiment_name,
+            config.trainer.default_local_dir,
+        ):
+            self.assertIn("topteacherconfentropy", value)
+
+    def test_kl_entropy_profile_uses_fixed_weight_four(self) -> None:
+        reference = load_config(
+            TOP_TEACHER_CONFIDENCE_ENTROPY_CONFIG_8GPU_PATH
+        )
+        config = load_config(TOP_KL_ENTROPY_CONFIG_8GPU_PATH)
+        audit = config.audit
+
+        self.assertEqual(
+            audit.domain_control_token_candidate_ids,
+            reference.audit.domain_control_token_candidate_ids,
+        )
+        self.assertEqual(config.data, reference.data)
+        self.assertEqual(config.model, reference.model)
+        self.assertEqual(config.actor, reference.actor)
+        self.assertEqual(config.rollout, reference.rollout)
+        self.assertEqual(config.worker_placement, reference.worker_placement)
+        self.assertTrue(audit.control_token_online_selection_enabled)
+        self.assertEqual(
+            audit.control_token_online_selection_mode,
+            "top_kl_student_entropy",
+        )
+        self.assertEqual(audit.control_token_online_weight_mode, "fixed")
+        self.assertEqual(audit.control_token_loss_weight, 4.0)
+        self.assertEqual(audit.control_token_online_top_k, 30)
+        self.assertEqual(
+            audit.control_token_online_min_mean_occurrences_per_step,
+            20.0,
+        )
+        rendered = format_command(build_command(config))
+        self.assertIn(
+            "+mopd_audit.control_token_online_selection_mode="
+            "top_kl_student_entropy",
+            rendered,
+        )
+        self.assertIn(
+            "+mopd_audit.control_token_online_weight_mode=fixed",
+            rendered,
+        )
+        for value in (
+            config.runtime.wandb_run_id,
+            config.audit.output_dir,
+            config.paper_eval.output_dir,
+            config.trainer.experiment_name,
+            config.trainer.default_local_dir,
+        ):
+            self.assertIn("topklentropy", value)
 
     def test_baselines_preserve_topology_and_use_isolated_outputs(self) -> None:
         reference = load_config(CONFIG_8GPU_PATH)

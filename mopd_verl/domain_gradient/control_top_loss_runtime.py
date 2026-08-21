@@ -13,6 +13,16 @@ from mopd_verl.domain_gradient.control_top_loss import (
     OnlineControlSelectionOutcome,
     OnlineControlSelectionState,
 )
+from mopd_verl.domain_gradient.control_selection_types import (
+    SelectionScoreDistribution,
+)
+from mopd_verl.domain_gradient.control_selection_scoring import (
+    PAIRED_SIGNAL_SELECTION_MODES,
+    TOP_LOSS_SELECTION_MODE,
+    TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE,
+    normalize_selection_mode,
+    paired_selection_bonus,
+)
 
 
 def global_candidate_loss_statistics(
@@ -24,8 +34,11 @@ def global_candidate_loss_statistics(
     domains: Sequence[str],
     candidate_token_ids: Sequence[int] = (),
     domain_candidate_token_ids: Mapping[str, Sequence[int]] | None = None,
+    selection_mode: str = TOP_LOSS_SELECTION_MODE,
+    student_entropy_batches: Sequence[torch.Tensor] | None = None,
+    teacher_entropy_batches: Sequence[torch.Tensor] | None = None,
 ) -> dict[str, dict[int, tuple[float, int]]]:
-    """Aggregate absolute configured loss and count in one dense all-reduce."""
+    """Aggregate the configured selector score and count in one all-reduce."""
 
     lengths = {
         len(token_id_batches),
@@ -36,6 +49,27 @@ def global_candidate_loss_statistics(
     if lengths != {len(token_id_batches)} or not token_id_batches:
         raise ValueError(
             "Online Control observer batches must be non-empty and aligned."
+        )
+    mode = normalize_selection_mode(selection_mode)
+    paired_mode = mode in PAIRED_SIGNAL_SELECTION_MODES
+    if paired_mode and (
+        student_entropy_batches is None
+        or len(student_entropy_batches) != len(token_id_batches)
+    ):
+        raise ValueError(
+            "Paired online Control selection requires one aligned Student "
+            "entropy matrix per token batch."
+        )
+    if (
+        mode == TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE
+        and (
+            teacher_entropy_batches is None
+            or len(teacher_entropy_batches) != len(token_id_batches)
+        )
+    ):
+        raise ValueError(
+            "Teacher-confidence online Control selection requires one aligned "
+            "Teacher entropy matrix per token batch."
         )
     normalized_domains = tuple(str(domain) for domain in domains)
     if domain_candidate_token_ids is not None:
@@ -81,12 +115,14 @@ def global_candidate_loss_statistics(
             domain_index,
             [candidate_indices[item] for item in domain_candidates[domain]],
         ] = True
-    for token_ids, losses, mask, labels in zip(
-        token_id_batches,
-        loss_batches,
-        mask_batches,
-        label_batches,
-        strict=True,
+    for batch_index, (token_ids, losses, mask, labels) in enumerate(
+        zip(
+            token_id_batches,
+            loss_batches,
+            mask_batches,
+            label_batches,
+            strict=True,
+        )
     ):
         if token_ids.shape != losses.shape or losses.shape != mask.shape:
             raise ValueError(
@@ -98,6 +134,26 @@ def global_candidate_loss_statistics(
         loss_values = losses.to(device=device, dtype=torch.float64)
         if not torch.isfinite(loss_values[valid]).all():
             raise ValueError("Online Control configured loss must be finite.")
+        if paired_mode:
+            if student_entropy_batches is None:
+                raise RuntimeError(
+                    "Validated paired selection is missing Student entropy."
+                )
+            score_values = paired_selection_bonus(
+                selection_mode=mode,
+                student_entropy=student_entropy_batches[batch_index].to(
+                    device=device
+                ),
+                response_mask=valid,
+                configured_loss=loss_values,
+                teacher_entropy=(
+                    teacher_entropy_batches[batch_index].to(device=device)
+                    if teacher_entropy_batches is not None
+                    else None
+                ),
+            ).to(dtype=torch.float64)
+        else:
+            score_values = loss_values.abs()
         ids = token_ids.to(device=device, dtype=torch.long)
         for domain_index, domain in enumerate(normalized_domains):
             rows = torch.tensor(
@@ -121,7 +177,7 @@ def global_candidate_loss_statistics(
             packed[domain_index, 0].scatter_add_(
                 0,
                 matched_positions,
-                loss_values[selected_mask][matched].abs(),
+                score_values[selected_mask][matched],
             )
             packed[domain_index, 1].scatter_add_(
                 0,
@@ -145,6 +201,25 @@ def global_candidate_loss_statistics(
             if packed_cpu[domain_index, 1, candidate_index] > 0
         }
         for domain_index, domain in enumerate(normalized_domains)
+    }
+
+
+def _score_distribution_record(
+    distribution: SelectionScoreDistribution | None,
+) -> dict[str, float | int] | None:
+    """Return a stable JSON representation for one score distribution."""
+
+    if distribution is None:
+        return None
+    return {
+        "count": distribution.count,
+        "mean": distribution.mean,
+        "std": distribution.std,
+        "min": distribution.minimum,
+        "p10": distribution.p10,
+        "p50": distribution.p50,
+        "p90": distribution.p90,
+        "max": distribution.maximum,
     }
 
 
@@ -176,6 +251,7 @@ def append_online_control_selection_jsonl(
         "min_mean_occurrences_per_step": (state.min_mean_occurrences_per_step),
         "top_k": state.top_k,
         "selection_mode": state.selection_mode,
+        "weight_mode": state.weight_mode,
         "candidate_token_count": len(state.candidate_token_ids),
         "candidate_union_count": len(state.candidate_token_ids),
         "domain_candidate_token_counts": {
@@ -184,15 +260,27 @@ def append_online_control_selection_jsonl(
         },
         "control_weight": float(control_weight),
         "next_active_token_ids": state.active_map(),
+        "next_active_token_weights": state.active_weight_map(),
         "domains": {
             result.domain: {
                 "eligible_token_count": result.eligible_token_count,
+                "eligible_selection_score_distribution": (
+                    _score_distribution_record(
+                        result.eligible_score_distribution
+                    )
+                ),
+                "selected_selection_score_distribution": (
+                    _score_distribution_record(
+                        result.selected_score_distribution
+                    )
+                ),
                 "selected_tokens": [
                     {
                         "token_id": item.token_id,
                         "occurrence_count": item.occurrence_count,
                         "mean_occurrences_per_step": (item.mean_occurrences_per_step),
                         "mean_abs_loss": item.mean_abs_loss,
+                        "mean_selection_score": item.mean_selection_score,
                         "optimization_speed": item.optimization_speed,
                         "observed_step_count": item.observed_step_count,
                     }

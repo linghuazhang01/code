@@ -8,6 +8,7 @@ from mopd_verl.domain_gradient.phase_control import (
     PhaseControlState,
     PhaseGapObservation,
     initial_phase_control_state,
+    online_token_score_weights,
     phase_token_weights,
     successor_span_scores,
     update_phase_control_state,
@@ -15,6 +16,36 @@ from mopd_verl.domain_gradient.phase_control import (
 
 
 class PhaseControlTests(unittest.TestCase):
+    def test_online_token_score_weights_support_variable_per_id_values(self) -> None:
+        weights = online_token_score_weights(
+            torch.tensor([[10, 20, 30], [10, 20, 30]]),
+            torch.ones(2, 3),
+            ["math", "code"],
+            domain_token_weights={
+                "math": {10: 2.0, 20: 3.0},
+                "code": {20: 4.0},
+            },
+            normalize_per_domain=False,
+        )
+
+        torch.testing.assert_close(
+            weights,
+            torch.tensor([[2.0, 3.0, 1.0], [1.0, 4.0, 1.0]]),
+        )
+
+        normalized = online_token_score_weights(
+            torch.tensor([[10, 20, 30], [10, 20, 30]]),
+            torch.ones(2, 3),
+            ["math", "code"],
+            domain_token_weights={
+                "math": {10: 2.0, 20: 3.0},
+                "code": {20: 4.0},
+            },
+            normalize_per_domain=True,
+        )
+        self.assertAlmostEqual(normalized[0].mean().item(), 1.0)
+        self.assertAlmostEqual(normalized[1].mean().item(), 1.0)
+
     def test_domain_lists_only_weight_matching_domain_tokens(self) -> None:
         weights = phase_token_weights(
             torch.tensor([[10, 20, 30], [10, 20, 30]]),

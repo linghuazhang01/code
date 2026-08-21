@@ -23,9 +23,15 @@ import os
 
 import torch
 from mopd_verl.domain_gradient import DomainGradientAudit
+from mopd_verl.domain_gradient.control_selection_scoring import (
+    PAIRED_SIGNAL_SELECTION_MODES,
+    TOP_KL_STUDENT_ENTROPY_SELECTION_MODE,
+    TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE,
+)
 from mopd_verl.full_gradient.actor_loss import build_actor_micro_batch_loss
 from mopd_verl.full_gradient.loss_support import (
     aggregate_actor_micro_batch_metrics,
+    selected_teacher_entropy,
 )
 from mopd_verl.topk_distill import (
     TOPK_LOGPROB_MODE_SPARSE,
@@ -34,6 +40,7 @@ from mopd_verl.topk_distill import (
     topk_distill_uses_renormalized_support,
     topk_log_probs_from_logits,
     topk_teacher_student_cross_entropy_matrix,
+    uses_topk_distill_loss,
 )
 from torch import nn
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -647,6 +654,7 @@ class DataParallelPPOActor(BasePPOActor):
             "ref_log_prob",
             "base_log_prob",
             "base_ref_log_prob",
+            "student_entropy",
             "rollout_is_weights",
             "rollout_log_probs",
             "teacher_prefix_mask",
@@ -702,6 +710,35 @@ class DataParallelPPOActor(BasePPOActor):
         configured_token_loss_mask_batches = []
         configured_token_loss_epoch_batches = []
         audit = DomainGradientAudit(self, data.meta_info.get("mopd_full_gradient", {}))
+        if (
+            audit.config.control_token_online_selection_enabled
+            and audit.config.control_token_online_selection_mode
+            in PAIRED_SIGNAL_SELECTION_MODES
+            and "student_entropy" not in data.batch
+        ):
+            raise ValueError(
+                "Paired online Control selection requires cached Student "
+                "entropy before the optimizer step."
+            )
+        if (
+            audit.config.control_token_online_selection_enabled
+            and audit.config.control_token_online_selection_mode
+            == TOP_KL_STUDENT_ENTROPY_SELECTION_MODE
+            and not uses_topk_distill_loss(self.config.policy_loss)
+        ):
+            raise ValueError(
+                "top_kl_student_entropy requires an active Top-K "
+                "distillation loss."
+            )
+        if (
+            audit.config.control_token_online_selection_enabled
+            and audit.config.control_token_online_selection_mode
+            == TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE
+        ):
+            selected_teacher_entropy(
+                {**data.batch, **data.non_tensor_batch},
+                self.config.policy_loss,
+            )
         return_configured_token_loss = (
             return_configured_token_loss
             or audit.config.control_token_online_selection_enabled
@@ -778,6 +815,8 @@ class DataParallelPPOActor(BasePPOActor):
                 micro_batch_cross_entropy = []
                 micro_batch_configured_token_loss = []
                 micro_batch_configured_token_loss_mask = []
+                micro_batch_selector_token_loss = []
+                micro_batch_selector_token_loss_mask = []
                 for micro_batch, loss_scale in zip(micro_batches, loss_scales, strict=True):
                     result = build_actor_micro_batch_loss(
                         self,
@@ -812,6 +851,14 @@ class DataParallelPPOActor(BasePPOActor):
                     if result.configured_token_loss_mask is not None:
                         micro_batch_configured_token_loss_mask.append(
                             result.configured_token_loss_mask
+                        )
+                    if result.selector_token_loss is not None:
+                        micro_batch_selector_token_loss.append(
+                            result.selector_token_loss
+                        )
+                    if result.selector_token_loss_mask is not None:
+                        micro_batch_selector_token_loss_mask.append(
+                            result.selector_token_loss_mask
                         )
 
                 if return_teacher_student_cross_entropy:
@@ -872,6 +919,18 @@ class DataParallelPPOActor(BasePPOActor):
                             micro_batches,
                             micro_batch_configured_token_loss,
                             micro_batch_configured_token_loss_mask,
+                            selector_token_loss_batches=(
+                                micro_batch_selector_token_loss
+                                if audit.config.control_token_online_selection_mode
+                                == TOP_KL_STUDENT_ENTROPY_SELECTION_MODE
+                                else None
+                            ),
+                            selector_token_loss_mask_batches=(
+                                micro_batch_selector_token_loss_mask
+                                if audit.config.control_token_online_selection_mode
+                                == TOP_KL_STUDENT_ENTROPY_SELECTION_MODE
+                                else None
+                            ),
                         ),
                     )
             if configured_token_loss_batches:

@@ -8,7 +8,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from mopd_verl.domain_gradient.control_selection_scoring import (
+    FIXED_ONLINE_WEIGHT_MODE,
     ONLINE_CONTROL_SELECTION_MODES,
+    ONLINE_CONTROL_WEIGHT_MODES,
+    PAIRED_ONLINE_WEIGHT_MODE,
+    PAIRED_SIGNAL_SELECTION_MODES,
     TOP_LOSS_SELECTION_MODE,
     TOP_SPEED_SELECTION_MODE,
 )
@@ -128,6 +132,7 @@ class DomainGradientConfig:
     control_token_online_min_mean_occurrences_per_step: float
     control_token_online_top_k: int
     control_token_online_selection_mode: str
+    control_token_online_weight_mode: str
     control_token_phase_gate_enabled: bool
     control_token_span_weighting_enabled: bool
     control_token_phase_gate_window_steps: int
@@ -332,6 +337,15 @@ class DomainGradientConfig:
                     meta,
                     "control_token_online_selection_mode",
                     TOP_LOSS_SELECTION_MODE,
+                )
+            )
+            .strip()
+            .lower(),
+            control_token_online_weight_mode=str(
+                _get(
+                    meta,
+                    "control_token_online_weight_mode",
+                    FIXED_ONLINE_WEIGHT_MODE,
                 )
             )
             .strip()
@@ -552,6 +566,20 @@ class DomainGradientConfig:
             allowed = ", ".join(sorted(ONLINE_CONTROL_SELECTION_MODES))
             raise ValueError(
                 "Online Control selection mode must be one of: " f"{allowed}."
+            )
+        if self.control_token_online_weight_mode not in ONLINE_CONTROL_WEIGHT_MODES:
+            allowed = ", ".join(sorted(ONLINE_CONTROL_WEIGHT_MODES))
+            raise ValueError(
+                "Online Control weight mode must be one of: " f"{allowed}."
+            )
+        if (
+            self.control_token_online_weight_mode == PAIRED_ONLINE_WEIGHT_MODE
+            and self.control_token_online_selection_mode
+            not in PAIRED_SIGNAL_SELECTION_MODES
+        ):
+            raise ValueError(
+                "Online paired weight mode requires a paired-signal "
+                "selection mode."
             )
         if (
             self.control_token_online_selection_mode == TOP_SPEED_SELECTION_MODE

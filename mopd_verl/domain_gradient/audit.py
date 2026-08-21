@@ -19,6 +19,10 @@ from mopd_verl.domain_gradient.control_speed import (
     update_control_speed_state,
 )
 from mopd_verl.domain_gradient.control_selection_scoring import (
+    PAIRED_ONLINE_WEIGHT_MODE,
+    PAIRED_SIGNAL_SELECTION_MODES,
+    TOP_KL_STUDENT_ENTROPY_SELECTION_MODE,
+    TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE,
     TOP_SPEED_SELECTION_MODE,
 )
 from mopd_verl.domain_gradient.control_top_loss import (
@@ -47,6 +51,7 @@ from mopd_verl.domain_gradient.phase_control import (
     PhaseGapObservation,
     gap_observations,
     initial_phase_control_state,
+    online_token_score_weights,
     phase_token_weights,
     update_phase_control_state,
 )
@@ -91,7 +96,10 @@ from mopd_verl.domain_gradient.weighting import (
 from mopd_verl.full_gradient.actor_loss import build_actor_micro_batch_loss
 from mopd_verl.full_gradient.config import _cfg_get
 from mopd_verl.full_gradient.labels import _labels_from_mapping
-from mopd_verl.full_gradient.loss_support import selected_teacher_log_prob
+from mopd_verl.full_gradient.loss_support import (
+    selected_teacher_entropy,
+    selected_teacher_log_prob,
+)
 
 
 @dataclass(frozen=True)
@@ -203,6 +211,10 @@ class DomainGradientAudit:
             str,
             tuple[int, ...],
         ] = {}
+        self._applied_online_control_token_weights: dict[
+            str,
+            dict[int, float],
+        ] = {}
         if self.config.control_token_online_selection_enabled:
             online_state = getattr(
                 actor,
@@ -234,6 +246,7 @@ class DomainGradientAudit:
                 selection_mode=(
                     self.config.control_token_online_selection_mode
                 ),
+                weight_mode=self.config.control_token_online_weight_mode,
             )
             if online_state is None:
                 online_state = expected_state
@@ -248,6 +261,7 @@ class DomainGradientAudit:
                 != expected_state.min_mean_occurrences_per_step
                 or online_state.top_k != expected_state.top_k
                 or online_state.selection_mode != expected_state.selection_mode
+                or online_state.weight_mode != expected_state.weight_mode
             ):
                 raise ValueError(
                     "Checkpointed online Control selection state does not "
@@ -262,6 +276,11 @@ class DomainGradientAudit:
                 {domain: () for domain in self.config.domains}
                 if has_step_gap
                 else online_state.active_map()
+            )
+            self._applied_online_control_token_weights = (
+                {domain: {} for domain in self.config.domains}
+                if has_step_gap
+                else online_state.active_weight_map()
             )
         self._shared_token_selection = SharedTokenSelection(
             token_ids=tuple(),
@@ -504,7 +523,23 @@ class DomainGradientAudit:
                 or self._applied_online_control_token_ids
             ):
                 domain_token_ids = self._domain_control_token_tensor_map(token_ids)
-                if self.config.control_token_speed_weighting_enabled:
+                if (
+                    self.config.control_token_online_selection_enabled
+                    and self.config.control_token_online_weight_mode
+                    == PAIRED_ONLINE_WEIGHT_MODE
+                ):
+                    token_weights = online_token_score_weights(
+                        token_ids,
+                        response_mask,
+                        labels,
+                        domain_token_weights=(
+                            self._applied_online_control_token_weights
+                        ),
+                        normalize_per_domain=(
+                            self.config.control_token_normalize_per_domain
+                        ),
+                    )
+                elif self.config.control_token_speed_weighting_enabled:
                     token_weights = domain_control_token_weights(
                         token_ids,
                         response_mask,
@@ -1512,6 +1547,9 @@ class DomainGradientAudit:
         micro_batches: Sequence[Any],
         configured_loss_batches: Sequence[torch.Tensor],
         configured_loss_mask_batches: Sequence[torch.Tensor],
+        *,
+        selector_token_loss_batches: Sequence[torch.Tensor] | None = None,
+        selector_token_loss_mask_batches: Sequence[torch.Tensor] | None = None,
     ) -> dict[str, float]:
         """Update the online selector after a successful optimizer step."""
 
@@ -1529,12 +1567,51 @@ class DomainGradientAudit:
                 "Online Control configured-loss outputs must align with "
                 "production micro-batches."
             )
+        kl_entropy_mode = (
+            self.config.control_token_online_selection_mode
+            == TOP_KL_STUDENT_ENTROPY_SELECTION_MODE
+        )
+        if kl_entropy_mode and (
+            selector_token_loss_batches is None
+            or len(selector_token_loss_batches) != len(micro_batches)
+            or selector_token_loss_mask_batches is None
+            or len(selector_token_loss_mask_batches) != len(micro_batches)
+        ):
+            raise ValueError(
+                "KL + Student-entropy selection requires one detached raw "
+                "Top-K loss matrix per production micro-batch."
+            )
+        selection_loss_batches = (
+            selector_token_loss_batches
+            if kl_entropy_mode
+            else configured_loss_batches
+        )
+        if selection_loss_batches is None:
+            raise RuntimeError("Online Control selection loss batches are missing.")
+        selection_loss_mask_batches = (
+            selector_token_loss_mask_batches
+            if kl_entropy_mode
+            else configured_loss_mask_batches
+        )
+        if selection_loss_mask_batches is None:
+            raise RuntimeError("Online Control selection masks are missing.")
 
         token_id_batches: list[torch.Tensor] = []
         label_batches: list[Sequence[str]] = []
+        student_entropy_batches: list[torch.Tensor] = []
+        teacher_entropy_batches: list[torch.Tensor] = []
+        paired_mode = (
+            self.config.control_token_online_selection_mode
+            in PAIRED_SIGNAL_SELECTION_MODES
+        )
+        teacher_confidence_mode = (
+            self.config.control_token_online_selection_mode
+            == TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE
+        )
+        policy_loss_cfg = _cfg_get(self.actor.config, "policy_loss", {})
         for micro_batch, configured_loss in zip(
             micro_batches,
-            configured_loss_batches,
+            selection_loss_batches,
             strict=True,
         ):
             model_inputs = {
@@ -1556,13 +1633,46 @@ class DomainGradientAudit:
                     int(configured_loss.shape[0]),
                 )
             )
+            if paired_mode:
+                student_entropy = model_inputs.get("student_entropy")
+                if student_entropy is None:
+                    raise ValueError(
+                        "Paired online Control selection requires "
+                        "student_entropy in every training micro-batch."
+                    )
+                if student_entropy.shape != configured_loss.shape:
+                    raise ValueError(
+                        "Online Control Student entropy must align with the "
+                        "configured token loss."
+                    )
+                student_entropy_batches.append(student_entropy.detach())
+            if teacher_confidence_mode:
+                teacher_entropy = selected_teacher_entropy(
+                    model_inputs,
+                    policy_loss_cfg,
+                )
+                if teacher_entropy.shape != configured_loss.shape:
+                    raise ValueError(
+                        "Online Control Teacher entropy must align with the "
+                        "configured token loss."
+                    )
+                teacher_entropy_batches.append(teacher_entropy.detach())
         statistics = global_candidate_loss_statistics(
             token_id_batches,
-            configured_loss_batches,
-            configured_loss_mask_batches,
+            selection_loss_batches,
+            selection_loss_mask_batches,
             label_batches,
             domains=self.config.domains,
             domain_candidate_token_ids=(self.config.effective_domain_candidate_map()),
+            selection_mode=self.config.control_token_online_selection_mode,
+            student_entropy_batches=(
+                tuple(student_entropy_batches) if paired_mode else None
+            ),
+            teacher_entropy_batches=(
+                tuple(teacher_entropy_batches)
+                if teacher_confidence_mode
+                else None
+            ),
         )
         outcome, state = update_online_control_selection(
             state,
@@ -1588,9 +1698,13 @@ class DomainGradientAudit:
             "global/token_weight/top_speed_selection_enabled": float(
                 state.selection_mode == TOP_SPEED_SELECTION_MODE
             ),
+            "global/token_weight/paired_score_weighting_enabled": float(
+                state.weight_mode == PAIRED_ONLINE_WEIGHT_MODE
+            ),
         }
         result_map = {result.domain: result for result in outcome.domain_results}
         next_active = state.active_map()
+        next_active_weights = state.active_weight_map()
         for domain in self.config.domains:
             result = result_map.get(domain)
             metrics[f"{domain}/token_weight/candidate_token_count"] = float(
@@ -1602,10 +1716,33 @@ class DomainGradientAudit:
             metrics[f"{domain}/token_weight/next_active_token_count"] = float(
                 len(next_active.get(domain, ()))
             )
+            next_weights = tuple(next_active_weights.get(domain, {}).values())
+            if next_weights:
+                metrics[
+                    f"{domain}/token_weight/next_selected_raw_weight_mean"
+                ] = sum(next_weights) / len(next_weights)
             if result is not None:
                 metrics[f"{domain}/token_weight/eligible_token_count"] = float(
                     result.eligible_token_count
                 )
+                for population, distribution in (
+                    ("eligible", result.eligible_score_distribution),
+                    ("selected", result.selected_score_distribution),
+                ):
+                    if distribution is None:
+                        continue
+                    prefix = (
+                        f"{domain}/token_weight/"
+                        f"{population}_selection_score_"
+                    )
+                    metrics[f"{prefix}count"] = float(distribution.count)
+                    metrics[f"{prefix}mean"] = distribution.mean
+                    metrics[f"{prefix}std"] = distribution.std
+                    metrics[f"{prefix}min"] = distribution.minimum
+                    metrics[f"{prefix}p10"] = distribution.p10
+                    metrics[f"{prefix}p50"] = distribution.p50
+                    metrics[f"{prefix}p90"] = distribution.p90
+                    metrics[f"{prefix}max"] = distribution.maximum
                 selected_speeds = tuple(
                     item.optimization_speed
                     for item in result.selected_tokens
@@ -1615,6 +1752,13 @@ class DomainGradientAudit:
                     metrics[
                         f"{domain}/token_weight/selected_optimization_speed_mean"
                     ] = sum(selected_speeds) / len(selected_speeds)
+                if result.selected_tokens:
+                    metrics[
+                        f"{domain}/token_weight/selected_score_mean"
+                    ] = sum(
+                        item.mean_selection_score
+                        for item in result.selected_tokens
+                    ) / len(result.selected_tokens)
         return metrics
 
     def _token_selection_metrics(

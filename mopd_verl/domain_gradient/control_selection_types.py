@@ -17,9 +17,24 @@ class SelectedControlToken:
     token_id: int
     occurrence_count: int
     mean_occurrences_per_step: float
-    mean_abs_loss: float
+    mean_abs_loss: float | None
+    mean_selection_score: float
     optimization_speed: float | None
     observed_step_count: int
+
+
+@dataclass(frozen=True)
+class SelectionScoreDistribution:
+    """Finite summary of token-ID ranking scores at one audit boundary."""
+
+    count: int
+    mean: float
+    std: float
+    minimum: float
+    p10: float
+    p50: float
+    p90: float
+    maximum: float
 
 
 @dataclass(frozen=True)
@@ -29,6 +44,8 @@ class DomainSelectionResult:
     domain: str
     eligible_token_count: int
     selected_tokens: tuple[SelectedControlToken, ...]
+    eligible_score_distribution: SelectionScoreDistribution | None
+    selected_score_distribution: SelectionScoreDistribution | None
 
 
 @dataclass(frozen=True)

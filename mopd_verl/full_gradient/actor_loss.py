@@ -132,6 +132,7 @@ def build_actor_micro_batch_loss(
     teacher_student_cross_entropy = None
     configured_distill_loss_mat = None
     prefix_configured_loss_mat = None
+    selector_token_loss_mat = None
     if return_teacher_student_cross_entropy:
         if not teacher_topk_active:
             raise ValueError(
@@ -263,6 +264,8 @@ def build_actor_micro_batch_loss(
             include_tail=topk_distill_include_tail(policy_loss_cfg),
             temperature=topk_distill_temperature(policy_loss_cfg),
         )
+        if return_configured_token_loss:
+            selector_token_loss_mat = topk_loss_mat.detach().float()
         rollout_is_weights = model_inputs.get("rollout_is_weights")
         if rollout_is_weights is not None:
             if rollout_is_weights.shape != topk_loss_mat.shape:
@@ -441,6 +444,8 @@ def build_actor_micro_batch_loss(
         metrics["actor/pg_loss"] = pg_loss.detach().item() * float(loss_scale_factor)
     configured_token_loss = None
     configured_token_loss_mask = None
+    selector_token_loss = None
+    selector_token_loss_mask = None
     if return_configured_token_loss:
         if configured_distill_loss_mat is None:
             raise RuntimeError(
@@ -461,10 +466,18 @@ def build_actor_micro_batch_loss(
                 configured_token_loss_mask
                 + prefix_loss_mask.detach().float()
             ).clamp(max=1.0)
+        if selector_token_loss_mat is not None:
+            selector_token_loss = (
+                selector_token_loss_mat
+                * distill_response_mask.detach().float()
+            )
+            selector_token_loss_mask = distill_response_mask.detach().float()
     return ActorMicroBatchLossResult(
         loss=policy_loss * float(loss_scale_factor),
         metrics=metrics,
         teacher_student_cross_entropy=teacher_student_cross_entropy,
         configured_token_loss=configured_token_loss,
         configured_token_loss_mask=configured_token_loss_mask,
+        selector_token_loss=selector_token_loss,
+        selector_token_loss_mask=selector_token_loss_mask,
     )
