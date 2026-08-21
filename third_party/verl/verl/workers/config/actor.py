@@ -60,6 +60,13 @@ class PolicyLossConfig(BaseConfig):
     eopd_entropy_threshold: float = 0.8
     eopd_forward_kl_weight: float = 1.0
     eopd_topk_k: int = 16
+    token_baseline_method: str = "none"
+    token_baseline_retention_ratio: float = 0.5
+    token_baseline_selection_mode: str = "topk"
+    fire_opd_teacher_confidence_alpha: float = 1.0
+    fire_opd_student_confusion_beta: float = 1.0
+    fire_opd_trajectory_drop_ratio: float = 0.2
+    fire_opd_filter_trajectories: bool = False
     topk_distill_enabled: bool = False
     topk_distill_kl_direction: str = "reverse"
     topk_distill_k: int = 8

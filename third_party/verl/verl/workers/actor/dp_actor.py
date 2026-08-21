@@ -655,6 +655,7 @@ class DataParallelPPOActor(BasePPOActor):
             "base_log_prob",
             "base_ref_log_prob",
             "student_entropy",
+            "token_baseline_trajectory_weight",
             "rollout_is_weights",
             "rollout_log_probs",
             "teacher_prefix_mask",

@@ -15,18 +15,21 @@ CHOSEN_TOKEN_POLICY_GRADIENT = "chosen_token_policy_gradient"
 DISTILL_LOSS_BUILDER_AUTO = "auto"
 DISTILL_LOSS_BUILDER_CHOSEN_TOKEN_REVERSE_KL = "chosen_token_reverse_kl"
 DISTILL_LOSS_BUILDER_EOPD = "eopd"
+DISTILL_LOSS_BUILDER_EXOPD = "exopd"
 DISTILL_LOSS_BUILDER_POLICY_GRADIENT = "policy_gradient"
 DISTILL_LOSS_BUILDER_TOPK_KL = "topk_kl"
 DISTILL_LOSS_BUILDERS = {
     DISTILL_LOSS_BUILDER_AUTO,
     DISTILL_LOSS_BUILDER_CHOSEN_TOKEN_REVERSE_KL,
     DISTILL_LOSS_BUILDER_EOPD,
+    DISTILL_LOSS_BUILDER_EXOPD,
     DISTILL_LOSS_BUILDER_POLICY_GRADIENT,
     DISTILL_LOSS_BUILDER_TOPK_KL,
 }
 DISTILL_LOSS_BUILDER_ALIASES = {
     "entropy_aware": DISTILL_LOSS_BUILDER_EOPD,
     "entropy_aware_opd": DISTILL_LOSS_BUILDER_EOPD,
+    "extrapolated_opd": DISTILL_LOSS_BUILDER_EXOPD,
     "pg": DISTILL_LOSS_BUILDER_POLICY_GRADIENT,
     "chosen_token_pg": DISTILL_LOSS_BUILDER_POLICY_GRADIENT,
     CHOSEN_TOKEN_POLICY_GRADIENT: DISTILL_LOSS_BUILDER_POLICY_GRADIENT,
@@ -124,6 +127,10 @@ def uses_eopd_loss(policy_loss_config: Any) -> bool:
     return distill_loss_builder(policy_loss_config) == DISTILL_LOSS_BUILDER_EOPD
 
 
+def uses_exopd_loss(policy_loss_config: Any) -> bool:
+    return distill_loss_builder(policy_loss_config) == DISTILL_LOSS_BUILDER_EXOPD
+
+
 def uses_teacher_topk_support(policy_loss_config: Any) -> bool:
     """Return whether training needs teacher-selected top-k tensors."""
 
@@ -147,6 +154,8 @@ def configured_distill_loss_name(policy_loss_config: Any) -> str:
         name = "policy_gradient_distillation_signal"
     elif builder == DISTILL_LOSS_BUILDER_EOPD:
         name = "policy_gradient+entropy_gated_topk_forward_kl"
+    elif builder == DISTILL_LOSS_BUILDER_EXOPD:
+        name = "extrapolated_policy_gradient_distillation_signal"
     if (
         bool(cfg_get(policy_loss_config, "teacher_prefix_enabled", False))
         and teacher_prefix_loss_region(policy_loss_config)

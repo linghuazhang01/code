@@ -31,6 +31,7 @@ from mopd_verl.region_dpo_config import (
     with_control_token_fallback,
 )
 from mopd_verl.topk_distill import uses_topk_distill_loss
+from mopd_verl.token_baselines import validate_token_baseline_config
 
 DEFAULT_PAPER_EVAL_DATASETS = [
     "aime24",
@@ -93,6 +94,13 @@ class ActorConfig:
     eopd_entropy_threshold: float = 0.8
     eopd_forward_kl_weight: float = 1.0
     eopd_topk_k: int = 16
+    token_baseline_method: str = "none"
+    token_baseline_retention_ratio: float = 0.5
+    token_baseline_selection_mode: str = "topk"
+    fire_opd_teacher_confidence_alpha: float = 1.0
+    fire_opd_student_confusion_beta: float = 1.0
+    fire_opd_trajectory_drop_ratio: float = 0.2
+    fire_opd_filter_trajectories: bool = False
     topk_distill_enabled: bool = False
     topk_distill_kl_direction: str = "reverse"
     topk_distill_k: int = 8
@@ -725,6 +733,10 @@ def load_config(path: str | Path) -> MOPDConfig:
     domain_budgeting = parse_domain_budgeting_config(domain_budgeting_raw)
     normalized_loss_builder = actor.distill_loss_builder.strip().lower()
     topk_distillation_active = uses_topk_distill_loss(actor)
+    validate_token_baseline_config(
+        actor,
+        uses_topk_distillation=topk_distillation_active,
+    )
     if (
         audit.control_token_online_selection_enabled
         and audit.control_token_online_selection_mode
@@ -750,6 +762,21 @@ def load_config(path: str | Path) -> MOPDConfig:
         ):
             raise ValueError(
                 "actor.eopd_forward_kl_weight must be finite and non-negative."
+            )
+    if normalized_loss_builder in {"exopd", "extrapolated_opd"}:
+        if model.student_base_path is None:
+            raise ValueError(
+                "ExOPD requires model.student_base_path to point to the "
+                "frozen initial student."
+            )
+        if not math.isfinite(actor.lambda_vals) or actor.lambda_vals <= 0.0:
+            raise ValueError(
+                "ExOPD requires actor.lambda_vals to be finite and positive."
+            )
+        if actor.topk_distill_enabled:
+            raise ValueError(
+                "ExOPD is a chosen-token objective and cannot enable "
+                "actor.topk_distill_enabled."
             )
     if not 0.0 < audit.token_gradient_tail_fraction <= 1.0:
         raise ValueError("audit.token_gradient_tail_fraction must be in (0, 1].")

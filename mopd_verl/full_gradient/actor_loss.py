@@ -12,6 +12,7 @@ from mopd_verl.full_gradient.loss_support import (
     active_kl_loss,
     actor_advantages,
     domain_loss_gradient_mask,
+    exopd_policy_gradient_rewards,
     gate_tensor_gradient as _gate_tensor_gradient,
     masked_mean,
     policy_gradient_rewards,
@@ -27,6 +28,7 @@ from mopd_verl.region_dpo_loss import (
 )
 from mopd_verl.topk_distill import (
     DISTILL_LOSS_BUILDER_EOPD,
+    DISTILL_LOSS_BUILDER_EXOPD,
     DISTILL_LOSS_BUILDER_POLICY_GRADIENT,
     TOPK_LOGPROB_MODE_FULL_VOCAB,
     TOPK_RENORMALIZED_FORWARD_KL,
@@ -52,6 +54,12 @@ from mopd_verl.topk_distill import (
     topk_teacher_student_cross_entropy_matrix,
     uses_eopd_loss,
     uses_topk_distill_loss,
+)
+from mopd_verl.token_baselines import (
+    build_token_baseline_weights,
+    token_baseline_requires_student_entropy,
+    token_baseline_requires_teacher_entropy,
+    uses_token_baseline,
 )
 from verl import DataProto
 from verl.utils.device import get_device_id
@@ -79,11 +87,17 @@ def build_actor_micro_batch_loss(
     forward_temperature = (
         float(temperature) if temperature is not None else float(micro_batch.meta_info.get("temperature", 1.0))
     )
+    policy_loss_cfg = _cfg_get(actor.config, "policy_loss", {})
+    token_baseline_active = uses_token_baseline(policy_loss_cfg)
+    cached_student_entropy = model_inputs.get("student_entropy")
+    needs_student_entropy = token_baseline_requires_student_entropy(
+        policy_loss_cfg
+    )
     forward_kwargs = {
         "temperature": forward_temperature,
-        "calculate_entropy": entropy_coeff != 0,
+        "calculate_entropy": entropy_coeff != 0
+        or (needs_student_entropy and cached_student_entropy is None),
     }
-    policy_loss_cfg = _cfg_get(actor.config, "policy_loss", {})
     builder_name = distill_loss_builder(policy_loss_cfg)
     topk_distill_active = uses_topk_distill_loss(policy_loss_cfg)
     eopd_active = uses_eopd_loss(policy_loss_cfg)
@@ -129,6 +143,16 @@ def build_actor_micro_batch_loss(
         entropy, log_prob, _topk_ids, _topk_log_probs, student_topk_log_probs = forward_output
     else:
         entropy, log_prob = forward_output
+    student_entropy = (
+        cached_student_entropy
+        if cached_student_entropy is not None
+        else entropy
+    )
+    if needs_student_entropy and student_entropy is None:
+        raise RuntimeError(
+            "The configured token baseline requires student entropy, but the "
+            "actor forward did not return it."
+        )
     teacher_student_cross_entropy = None
     configured_distill_loss_mat = None
     prefix_configured_loss_mat = None
@@ -199,11 +223,18 @@ def build_actor_micro_batch_loss(
     else:
         old_log_prob = model_inputs["old_log_probs"]
 
+    token_baseline_result = None
     if topk_distill_active:
         policy_loss = log_prob.new_zeros(())
         pg_loss = policy_loss
     else:
-        if builder_name in {
+        if builder_name == DISTILL_LOSS_BUILDER_EXOPD:
+            advantages = exopd_policy_gradient_rewards(
+                model_inputs,
+                policy_loss_cfg,
+                old_log_prob,
+            )
+        elif builder_name in {
             DISTILL_LOSS_BUILDER_POLICY_GRADIENT,
             DISTILL_LOSS_BUILDER_EOPD,
         }:
@@ -214,6 +245,25 @@ def build_actor_micro_batch_loss(
             )
         else:
             advantages = actor_advantages(actor, model_inputs, old_log_prob)
+        if token_baseline_active:
+            teacher_entropy = (
+                selected_teacher_entropy(model_inputs, policy_loss_cfg)
+                if token_baseline_requires_teacher_entropy(policy_loss_cfg)
+                else None
+            )
+            token_baseline_result = build_token_baseline_weights(
+                student_entropy=student_entropy,
+                teacher_entropy=teacher_entropy,
+                response_mask=distill_response_mask,
+                policy_loss_config=policy_loss_cfg,
+                trajectory_weight=model_inputs.get(
+                    "token_baseline_trajectory_weight"
+                ),
+            )
+            advantages = advantages * token_baseline_result.weights.to(
+                device=advantages.device,
+                dtype=advantages.dtype,
+            )
         if return_configured_token_loss:
             configured_distill_loss_mat = -advantages.detach().float()
         loss_mode = str(_cfg_get(_cfg_get(actor.config, "policy_loss", {}), "loss_mode", "vanilla"))
@@ -266,6 +316,26 @@ def build_actor_micro_batch_loss(
         )
         if return_configured_token_loss:
             selector_token_loss_mat = topk_loss_mat.detach().float()
+        if token_baseline_active:
+            teacher_entropy = (
+                selected_teacher_entropy(model_inputs, policy_loss_cfg)
+                if token_baseline_requires_teacher_entropy(policy_loss_cfg)
+                else None
+            )
+            token_baseline_result = build_token_baseline_weights(
+                student_entropy=student_entropy,
+                teacher_entropy=teacher_entropy,
+                divergence=topk_loss_mat,
+                response_mask=distill_response_mask,
+                policy_loss_config=policy_loss_cfg,
+                trajectory_weight=model_inputs.get(
+                    "token_baseline_trajectory_weight"
+                ),
+            )
+            topk_loss_mat = topk_loss_mat * token_baseline_result.weights.to(
+                device=topk_loss_mat.device,
+                dtype=topk_loss_mat.dtype,
+            )
         rollout_is_weights = model_inputs.get("rollout_is_weights")
         if rollout_is_weights is not None:
             if rollout_is_weights.shape != topk_loss_mat.shape:
@@ -303,6 +373,19 @@ def build_actor_micro_batch_loss(
                 support_source=topk_support_source_value,
             ).items():
                 metrics[f"actor/{key}"] = value
+    if token_baseline_result is not None and include_metrics:
+        metrics["actor/token_baseline_selected_ratio"] = masked_mean(
+            token_baseline_result.selected_mask,
+            distill_response_mask,
+        )
+        metrics["actor/token_baseline_weight_mean"] = masked_mean(
+            token_baseline_result.weights,
+            distill_response_mask,
+        )
+        metrics["actor/token_baseline_score_mean"] = masked_mean(
+            token_baseline_result.score,
+            distill_response_mask,
+        )
     if eopd_active:
         teacher_entropy = selected_teacher_entropy(
             model_inputs,

@@ -31,17 +31,16 @@ from typing import Optional
 import numpy as np
 import ray
 import torch
-
 from mopd_verl.domain_budgeting import DynamicDomainBudgetController
 from mopd_verl.domain_gradient.control_selection_scoring import (
     TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE,
 )
-from mopd_verl.reproducibility import derive_seed
 from mopd_verl.region_dpo import RegionDPOController
 from mopd_verl.region_dpo_pairs import (
     attach_region_dpo_preference_pairs,
     build_region_dpo_reward_batch,
 )
+from mopd_verl.reproducibility import derive_seed
 from mopd_verl.teacher_prefix import (
     build_dataset_teacher_prefix,
     build_student_suffix_prompts,
@@ -50,14 +49,23 @@ from mopd_verl.teacher_prefix import (
     restore_teacher_prefix_response_mask,
     teacher_prefix_dataset_key,
     teacher_prefix_length,
-    teacher_prefix_rollout_correction_masks,
     teacher_prefix_rollin_metrics,
+    teacher_prefix_rollout_correction_masks,
     teacher_prefix_sampling_enabled,
+)
+from mopd_verl.token_baselines import (
+    fire_opd_filter_trajectories,
+    fire_opd_trajectory_drop_ratio,
+    fire_opd_trajectory_weights,
+    token_baseline_method,
+    token_baseline_requires_teacher_entropy,
+    uses_fire_opd_baseline,
 )
 from mopd_verl.topk_distill import (
     TOPK_SUPPORT_SOURCE_STUDENT,
     configured_distill_loss_name,
     eopd_topk_k,
+    select_teacher_log_prob_tensor,
     teacher_tensor_prefix,
     topk_distill_include_tail,
     topk_distill_k,
@@ -1736,6 +1744,9 @@ class RayPPOTrainer:
                         batch.meta_info.pop("student_topk_k", None)
                     batch.meta_info["mopd_compute_teacher_entropy"] = bool(
                         uses_eopd_loss(policy_loss_config)
+                        or token_baseline_requires_teacher_entropy(
+                            policy_loss_config
+                        )
                         or (
                             self.mopd_audit_logger.control_token_online_selection_enabled
                             and self.mopd_audit_logger.control_token_online_selection_mode
@@ -1755,9 +1766,20 @@ class RayPPOTrainer:
                         self.mopd_audit_logger.enabled
                         or self.domain_budget_controller.enabled
                     )
-                    batch.meta_info["mopd_configured_token_loss_name"] = (
-                        configured_distill_loss_name(policy_loss_config)
+                    configured_loss_name = configured_distill_loss_name(
+                        policy_loss_config
                     )
+                    configured_token_baseline = token_baseline_method(
+                        policy_loss_config
+                    )
+                    if configured_token_baseline != "none":
+                        configured_loss_name = (
+                            f"{configured_loss_name}+"
+                            f"{configured_token_baseline}_token_weighting"
+                        )
+                    batch.meta_info[
+                        "mopd_configured_token_loss_name"
+                    ] = configured_loss_name
                     batch.meta_info[
                         "mopd_configured_token_loss_epoch_reduction"
                     ] = "mean"
@@ -1920,10 +1942,10 @@ class RayPPOTrainer:
                     if "ref_log_prob" in batch.batch:
                         batch.batch["math_teacher_log_prob"] = batch.batch["ref_log_prob"]
 
-                    # The clean verl baseline already knows how to host a second
-                    # reference model as ref.model.base_model_path. Treat it as
-                    # the code teacher even when the actor has no base model.
-                    if self.ref_base_model_path is not None and not self.use_base_models:
+                    # A second reference model remains the code teacher when
+                    # configured. This is independent of ExOPD's frozen
+                    # initial-student reference on the actor worker.
+                    if self.ref_base_model_path is not None:
                         with marked_timer("code_teacher_log_prob", timing_raw, color="green"):
                             if not self.ref_in_actor:
                                 code_teacher = self.ref_policy_wg.compute_base_ref_log_prob(batch)
@@ -1932,22 +1954,11 @@ class RayPPOTrainer:
                             batch = batch.union(code_teacher)
                             batch.batch["code_teacher_log_prob"] = batch.batch["base_ref_log_prob"]
 
-                    # Compute base model log probs for corrected reward computation
-                    # This computes: base_log_prob from actor's base model (using input_ids)
-                    # and base_ref_log_prob from ref's base model (using ref_input_ids)
-                    if self.use_base_models:
+                    # ExOPD needs only the frozen initial-student log-probability.
+                    # Compute it whenever actor.model.base_model_path is present,
+                    # without requiring a second teacher/reference model.
+                    if self.base_model_path is not None:
                         with marked_timer("base_log_probs", timing_raw, color="green"):
-                            # First compute base_ref_log_prob using ref's base model
-                            # This uses ref_input_ids which may be present in batch
-                            if not self.ref_in_actor:
-                                base_ref_log_prob = self.ref_policy_wg.compute_base_ref_log_prob(batch)
-                            else:
-                                base_ref_log_prob = self.actor_rollout_wg.compute_base_ref_log_prob(batch)
-                            batch = batch.union(base_ref_log_prob)
-                            batch.batch["code_teacher_log_prob"] = batch.batch["base_ref_log_prob"]
-                            
-                            # Now compute base_log_prob using actor's base model with input_ids
-                            # We need to temporarily remove ref_input_ids to ensure compute_log_prob uses input_ids
                             ref_input_tensors = {}
                             if "ref_input_ids" in batch.batch:
                                 ref_input_tensors["ref_input_ids"] = batch.batch.pop("ref_input_ids")
@@ -1956,7 +1967,6 @@ class RayPPOTrainer:
                             if "ref_position_ids" in batch.batch:
                                 ref_input_tensors["ref_position_ids"] = batch.batch.pop("ref_position_ids")
 
-                            # Compute base_log_prob using actor's base model with input_ids
                             base_log_prob = self.actor_rollout_wg.compute_base_log_prob(batch)
                             batch = batch.union(base_log_prob)
 
@@ -1965,9 +1975,8 @@ class RayPPOTrainer:
                                 batch.batch[key] = tensor
 
                             print(
-                                "Computed base log probs for corrected reward: "
-                                f"base_log_prob shape={batch.batch['base_log_prob'].shape}, "
-                                f"base_ref_log_prob shape={batch.batch['base_ref_log_prob'].shape}"
+                                "Computed frozen student reference log probs: "
+                                f"base_log_prob shape={batch.batch['base_log_prob'].shape}"
                             )
 
                     topk_cross_entropy_active = (
@@ -2155,6 +2164,50 @@ class RayPPOTrainer:
                     domain_budget_labels = None
                     # implement critic warmup
                     if self.config.trainer.critic_warmup <= self.global_steps:
+                        if (
+                            uses_fire_opd_baseline(policy_loss_config)
+                            and fire_opd_filter_trajectories(
+                                policy_loss_config
+                            )
+                        ):
+                            fire_model_inputs = {
+                                **batch.batch,
+                                **batch.non_tensor_batch,
+                            }
+                            teacher_chosen_log_probs = (
+                                select_teacher_log_prob_tensor(
+                                    fire_model_inputs,
+                                    policy_loss_config,
+                                )
+                            )
+                            trajectory_weight = fire_opd_trajectory_weights(
+                                teacher_chosen_log_probs=(
+                                    teacher_chosen_log_probs
+                                ),
+                                response_mask=batch.batch["response_mask"],
+                                drop_ratio=fire_opd_trajectory_drop_ratio(
+                                    policy_loss_config
+                                ),
+                            )
+                            batch.batch[
+                                "token_baseline_trajectory_weight"
+                            ] = trajectory_weight
+                            trajectory_keep = trajectory_weight > 0
+                            response_mask = batch.batch[
+                                "response_mask"
+                            ].float()
+                            metrics[
+                                "actor/fire_trajectory_keep_ratio"
+                            ] = float(trajectory_keep.float().mean().item())
+                            metrics[
+                                "actor/fire_trajectory_token_keep_ratio"
+                            ] = float(
+                                (
+                                    response_mask
+                                    * trajectory_keep.unsqueeze(-1)
+                                ).sum().item()
+                                / response_mask.sum().clamp(min=1.0).item()
+                            )
                         # update actor
                         with marked_timer("update_actor", timing_raw, color="red"):
                             if self.domain_budget_controller.enabled:

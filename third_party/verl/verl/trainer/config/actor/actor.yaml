@@ -93,6 +93,27 @@ policy_loss:
   # Number of teacher-selected tokens retained by EOPD
   eopd_topk_k: 16
 
+  # Detached token scoring or weighting baseline
+  token_baseline_method: none
+
+  # Fraction of valid response positions retained by selector baselines
+  token_baseline_retention_ratio: 0.5
+
+  # Position selection operator: topk or sample
+  token_baseline_selection_mode: topk
+
+  # FiRe-OPD teacher-confidence multiplier coefficient
+  fire_opd_teacher_confidence_alpha: 1.0
+
+  # FiRe-OPD student-confusion multiplier coefficient
+  fire_opd_student_confusion_beta: 1.0
+
+  # Fraction of low-teacher-likelihood trajectories discarded by FiRe-OPD
+  fire_opd_trajectory_drop_ratio: 0.2
+
+  # Whether FiRe-OPD filters trajectories before actor mini-batch splitting
+  fire_opd_filter_trajectories: false
+
   # Whether to enable sparse top-k teacher distillation
   topk_distill_enabled: false
 
@@ -131,7 +152,11 @@ policy_loss:
 
   # Optional control-anchored Region-DPO auxiliary objective.
   region_dpo_enabled: false
+
+  # Region-DPO preference-logit temperature
   region_dpo_beta: 0.1
+
+  # Weight applied to the Region-DPO auxiliary loss
   region_dpo_loss_weight: 0.1
 
 # Constant C in Dual-clip PPO; clips when advantage < 0 and ratio > C
