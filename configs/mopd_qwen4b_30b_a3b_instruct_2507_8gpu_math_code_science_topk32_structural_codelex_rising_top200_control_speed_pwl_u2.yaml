@@ -1,0 +1,472 @@
+# Eight-GPU math+code+science Top-32 training profile for Qwen3-4B student
+# distillation from Qwen3-30B-A3B-Instruct-2507.
+#
+# Logical training topology:
+# - actor/rollout pool: 6 GPUs for Qwen3-4B student + vLLM
+# - ref/teacher pool: 2 GPUs for Qwen3-30B-A3B-Instruct-2507
+#
+# Request exactly eight Slurm GPUs. Preserve Slurm's allocated device list so
+# CUDA exposes those devices with process-local logical indices 0-7:
+# actor/rollout logical GPUs 0,1,2,3,4,5 followed by ref/teacher logical GPUs 6,7.
+#
+# Keep trainer.n_gpus_per_node equal to the actor/rollout pool size, because
+# verl uses trainer.* as the actor DP world size.
+#
+# Audits keep token-gap/entropy vocab vectors and complete response records.
+# The only active reweight mechanism is per-domain dynamic Structural+CodeLex-token speed;
+# full/sample/token gradients and other reweight families stay disabled.
+#
+# Analysis-derived Structural+CodeLex selector for a frozen follow-up intervention:
+# - discovery run: 4B-OPD baseline; Rising endpoints: step 6 -> step 20
+# - artifact: top200-token-details.csv
+# - artifact SHA256: 9f104cd452c5689b66bb59800070495e273958668612ba36565f4dc0ba0aca8f
+# - rank: endpoint absolute chosen-token log-p gap reduction, with >=20
+#   occurrences at both endpoints; keep Rising Top-200 per domain
+# - structural filter: PDTB connective candidate union Format/boundary
+# - Code-domain extension: exact, case-sensitive Python keyword/builtin/
+#   language/module/method/API/programming-lexicon matches in Code Rising
+#   Top-200; activation depends on domain, not Math/Science rank exclusion
+# - newly added Code lexical IDs beyond the structural selector: 14
+# - expected unique ID counts after union: Math=39, Code=50, Science=33
+# - Stable-only IDs are excluded; this is a discovery-run-based follow-up
+#   selector, not the outcome-independent common-support main-method selector.
+
+runtime:
+  python_bin: /home/shuang_qiu/env/miniconda3/envs/mopd-verl/bin/python
+  verl_module: verl.trainer.main_ppo
+  wandb_mode: online
+  wandb_entity: lz101-rice-university
+  # Use a distinct W&B run ID for this GPU topology.
+  wandb_run_id: q4b-8g-mcs-struct-codelex-r200-cspeed-u2-v1
+  wandb_resume: allow
+  env_file: ../mopd/code/.env.local
+  used_model: no_api
+  # Let Slurm select the eight physical devices; do not override its allocation.
+  slurm_allocation_gpus: 8
+  cuda_visible_devices: null
+
+data:
+  domain_train_files:
+    math:
+      - ../mopd/code/data/G-OPD-Training-Data/DeepMath-103K/train_filtered_level6.parquet
+    code:
+      - ../mopd/code/data/G-OPD-Training-Data/Eurus/code_train.parquet
+    science:
+      - ../mopd/code/data/G-OPD-Training-Data/Science/train.parquet
+  domain_sampling_weights:
+    math: 1
+    code: 1
+    science: 1
+  domain_sampling_replacement: true
+  load_parquet_direct: true
+  val_files:
+    - ../mopd/code/data/eval_data/math/AIME24/test.parquet
+    - ../mopd/code/data/eval_data/math/AIME25/test.parquet
+    - ../mopd/code/data/eval_data/math/HMMT25Feb/test.parquet
+    - ../mopd/code/data/eval_data/math/HMMT25Nov/test.parquet
+    - ../mopd/code/data/eval_data/code/HumanEvalPlus/test.parquet
+    - ../mopd/code/data/eval_data/code/MBPPPlus/test.parquet
+    # Prepare with scripts/prepare_m2rl_eval_data.sh.
+    - ../mopd/code/data/eval_data/science/GPQA/test.parquet
+    # - ../mopd/code/data/eval_data/code/LiveCodeBench/test.parquet
+  # 528 = 6 actor GPUs x 88 samples = 3 domains x 176 samples.
+  train_batch_size: 528
+  max_prompt_length: 2048
+  max_response_length: 16384
+  val_batch_size: 1024
+  filter_overlong_prompts: true
+  truncation: error
+  shuffle: true
+  validation_shuffle: false
+  seed: 42
+  return_raw_chat: true
+  enable_thinking: false
+
+model:
+  student_path: ../mopd/models/Qwen3-4B
+  student_base_path: null
+  math_teacher_path: ../mopd/models/Qwen3-30B-A3B-Instruct-2507
+  code_teacher_path: ../mopd/models/Qwen3-30B-A3B-Instruct-2507
+  domain_teacher_paths:
+    math: ../mopd/models/Qwen3-30B-A3B-Instruct-2507
+    code: ../mopd/models/Qwen3-30B-A3B-Instruct-2507
+    science: ../mopd/models/Qwen3-30B-A3B-Instruct-2507
+  teacher_model_device: gpu
+  attn_implementation: flash_attention_2
+
+actor:
+  learning_rate: "5e-6"
+  lr_warmup_steps_ratio: 0.0
+  only_reverse_kl_advantages: false
+  lambda_vals: 1.0
+  multi_teacher_distill: true
+  distill_loss_builder: topk_kl
+  distill_mode: topk_renormalized_reverse_kl
+  topk_distill_enabled: true
+  topk_distill_kl_direction: reverse
+  topk_distill_k: 32
+  topk_distill_support_source: teacher
+  topk_distill_tail_bucket: false
+  topk_distill_temperature: 1.0
+  topk_distill_loss_weight: 1.0
+  topk_distill_logprob_chunk_size: 16
+  topk_distill_logprob_mode: sparse
+  ppo_mini_batch_size: 528
+  ppo_micro_batch_size_per_gpu: 1
+  use_kl_loss: true
+  kl_loss_coef: 0
+  kl_loss_type: low_var_kl
+  entropy_coeff: 0
+  ppo_max_token_len_per_gpu: 32768
+  gradient_checkpointing: true
+  param_offload: true
+  optimizer_offload: true
+  fsdp_size: 1
+  use_dynamic_bsz: false
+
+rollout:
+  calculate_log_probs: true
+  log_prob_micro_batch_size_per_gpu: 1
+  tensor_model_parallel_size: 2
+  name: vllm
+  mode: sync
+  gpu_memory_utilization: 0.8
+  enforce_eager: true
+  enable_chunked_prefill: false
+  n: 1
+  max_num_batched_tokens: 32768
+  max_model_len: 18432
+  max_num_seqs: 24
+  do_sample: true
+  temperature: 1.0
+  top_p: 1.0
+  val_n: 1
+  val_do_sample: false
+  val_temperature: 0.0
+  val_top_p: 1.0
+  seed: 42
+
+rollout_correction:
+  rollout_is: token
+  rollout_is_threshold: 5.0
+  rollout_rs: null
+  bypass_mode: false
+
+extra_overrides:
+  - custom_reward_function.path=mopd_verl/mixed_reward.py
+  - custom_reward_function.name=compute_score
+  - trainer.resume_mode=auto
+
+worker_placement:
+  separate_ref_policy: true
+  actor_rollout:
+    n_gpus_per_node: 6
+    nnodes: 1
+  ref_policy:
+    n_gpus_per_node: 2
+    nnodes: 1
+
+audit:
+  enabled: true
+  output_dir: audit/qwen4b_30b_a3b_instruct_2507_8gpu_math_code_science_topk32_control_speed_pwl_u2_structural_codelex_rising_top200_v1
+  domains:
+    - math
+    - code
+    - science
+  tensorboard_prefix: mopd
+  tensorboard_layout: domain_category
+  tensorboard_prune_mode: core
+  loss_variance_signal: topk_renormalized_reverse_kl
+  max_samples_per_domain: null
+  high_variance_cv_threshold: 1.0
+  log_sample_level: false
+  log_sample_level_freq_steps: 1
+  # Save every valid response and its aligned per-token audit signals under
+  # audit/<experiment>/step_XXXXXX/jsonls/response_records_<domain>.jsonl.gz.
+  response_level_enabled: true
+  response_level_freq_steps: 1
+  response_level_compression: gzip
+  log_validation_metrics: false
+  log_validation_metrics_freq_steps: 1
+  tier2_window_size: 20
+  calibration_bins: 10
+  full_gradient_enabled: false
+  full_gradient_freq_steps: 4
+  full_grad_training_parity_freq_steps: 1
+  full_grad_training_parity_rel_l2_threshold: 2.0e-2
+  full_gradient_train_max_samples_per_domain: null
+  full_gradient_micro_batch_size_per_gpu: 1
+  full_gradient_storage_dtype: bfloat16
+  execution_timing: pre_update
+  full_gradient_direct_recompute_enabled: false
+  sequence_masked_target_enabled: true
+  sequence_masked_target_use_as_primary: true
+  sequence_replay_skip_non_target_domains: false
+  sequence_masked_target_closure_rel_l2_threshold: 0.02
+  full_gradient_offload_domain_gradients: true
+  sample_gradient_enabled: false
+  sample_gradient_freq_steps: 1
+  sample_gradient_norm_enabled: false
+  sample_gradient_cos_enabled: false
+  sample_gradient_cos_freq_steps: 1
+  sample_gradient_backward_recompute_enabled: false
+  sample_gradient_backward_sync_enabled: false
+  sample_gradient_log_sample_level: false
+  sample_gradient_log_sample_level_freq_steps: 1
+  token_gap_enabled: true
+  token_gap_freq_steps: 1
+  token_gap_vocab_vector_enabled: true
+  token_gap_vocab_vector_freq_steps: 1
+  token_gap_vocab_size: null
+  vocab_per_occurrence_mean_vector_enabled: true
+  logp_vocab_per_occurrence_mean_vector_enabled: true
+  logp_abs_vocab_per_occurrence_mean_vector_enabled: true
+  entropy_vocab_per_occurrence_mean_vector_enabled: true
+  entropy_enabled: true
+  entropy_freq_steps: 1
+  entropy_vocab_vector_enabled: true
+  entropy_vocab_vector_freq_steps: 1
+  topk_teacher_student_cross_entropy_vocab_enabled: true
+  topk_teacher_student_cross_entropy_vocab_freq_steps: 1
+  topk_teacher_student_cross_entropy_k: 32
+  topk_teacher_student_cross_entropy_include_tail: false
+  topk_teacher_student_cross_entropy_temperature: 1.0
+  logp_vector_enabled: true
+  logp_vector_freq_steps: 1
+  logp_abs_vector_enabled: true
+  logp_abs_vector_freq_steps: 1
+  token_gradient_enabled: false
+  token_gradient_freq_steps: 4
+  token_gradient_tail_enabled: false
+  token_gradient_tail_fraction: 0.10
+  token_gradient_tail_min_tokens: 1
+  token_gradient_gap_selection_enabled: false
+  token_gradient_gap_abs_selection_enabled: false
+  token_gradient_loss_abs_selection_enabled: true
+  token_gradient_top_k: null
+  token_gradient_top_p_enabled: false
+  token_gradient_top_p: 1.0
+  token_gradient_log_tokens_jsonl_enabled: true
+  token_gradient_strict_grad_restore: false
+  token_gradient_backward_recompute_enabled: false
+  token_gradient_backward_sync_enabled: false
+  dynamic_domain_loss_weighting_enabled: false
+  dynamic_domain_loss_weighting_freq_steps: 4
+  dynamic_domain_loss_weighting_ema_beta: 0.90
+  dynamic_domain_loss_weighting_weight_ema_beta: 0.90
+  dynamic_domain_loss_weighting_alpha: 0.50
+  dynamic_domain_loss_weighting_min: 0.3333333333333333
+  dynamic_domain_loss_weighting_max: 3.0
+
+  # Dynamic weighting over the fixed Structural+CodeLex selector discovered from the
+  # independent 4B-OPD baseline Rising trajectory. Structural+CodeLex means:
+  # PDTB connective candidate union deterministic Format/boundary token, plus
+  # the Code-domain lexical extension declared above.
+  # Membership order follows Rising Top-200 optimization rank; order does not
+  # affect training. Stable-only token IDs are deliberately excluded.
+  # The implementation keeps the legacy control_token_* config/log key names,
+  # but those keys refer to the Structural universe listed below in this run.
+  control_token_loss_weighting_enabled: true
+  control_token_loss_weight: 1.0
+  control_token_ids: []
+  domain_control_token_ids:
+    math:
+      - 151645  # decoded="<|im_end|>"; category=format_boundary; rising_rank=3; top100=true
+      - 54815  # decoded="Therefore"; category=pdtb_connective_candidate; rising_rank=6; top100=true
+      - 67691  # decoded="Similarly"; category=pdtb_connective_candidate; rising_rank=8; top100=true
+      - 15277  # decoded="␠Therefore"; category=pdtb_connective_candidate; rising_rank=12; top100=true
+      - 3830  # decoded="From"; category=pdtb_connective_candidate; rising_rank=17; top100=true
+      - 2870  # decoded="where"; category=pdtb_connective_candidate; rising_rank=20; top100=true
+      - 2679  # decoded="If"; category=pdtb_connective_candidate; rising_rank=23; top100=true
+      - 16085  # decoded="␠hence"; category=pdtb_connective_candidate; rising_rank=33; top100=true
+      - 2303  # decoded="␠␠↵"; category=format_boundary; rising_rank=40; top100=true
+      - 44364  # decoded="---↵↵"; category=format_boundary; rising_rank=41; top100=true
+      - 641  # decoded="In"; category=pdtb_connective_candidate; rising_rank=42; top100=true
+      - 2121  # decoded="As"; category=pdtb_connective_candidate; rising_rank=44; top100=true
+      - 820  # decoded="####"; category=format_boundary; rising_rank=45; top100=true
+      - 1752  # decoded="␠For"; category=pdtb_connective_candidate; rising_rank=48; top100=true
+      - 1416  # decoded="␠If"; category=pdtb_connective_candidate; rising_rank=49; top100=true
+      - 17949  # decoded="Because"; category=pdtb_connective_candidate; rising_rank=52; top100=true
+      - 12209  # decoded="Then"; category=pdtb_connective_candidate; rising_rank=59; top100=true
+      - 549  # decoded="␠:"; category=format_boundary; rising_rank=69; top100=true
+      - 608  # decoded="␠/"; category=format_boundary; rising_rank=78; top100=true
+      - 4416  # decoded="So"; category=pdtb_connective_candidate; rising_rank=80; top100=true
+      - 2461  # decoded="For"; category=pdtb_connective_candidate; rising_rank=85; top100=true
+      - 333  # decoded="if"; category=pdtb_connective_candidate; rising_rank=86; top100=true
+      - 269  # decoded="or"; category=pdtb_connective_candidate; rising_rank=89; top100=true
+      - 5005  # decoded="␠Then"; category=pdtb_connective_candidate; rising_rank=90; top100=true
+      - 715  # decoded="␠↵"; category=format_boundary; rising_rank=105; top100=false
+      - 2058  # decoded="␠still"; category=pdtb_connective_candidate; rising_rank=108; top100=false
+      - 1075  # decoded="␠like"; category=pdtb_connective_candidate; rising_rank=113; top100=false
+      - 2137  # decoded="},"; category=format_boundary; rising_rank=119; top100=false
+      - 13394  # decoded="Also"; category=pdtb_connective_candidate; rising_rank=123; top100=false
+      - 476  # decoded="␠or"; category=pdtb_connective_candidate; rising_rank=142; top100=false
+      - 4518  # decoded="␠instead"; category=pdtb_connective_candidate; rising_rank=162; top100=false
+      - 11209  # decoded="However"; category=pdtb_connective_candidate; rising_rank=168; top100=false
+      - 96065  # decoded="{("; category=format_boundary; rising_rank=174; top100=false
+      - 56177  # decoded="**↵↵"; category=format_boundary; rising_rank=175; top100=false
+      - 2055  # decoded="␠So"; category=pdtb_connective_candidate; rising_rank=183; top100=false
+      - 19788  # decoded="␠(\\"; category=format_boundary; rising_rank=185; top100=false
+      - 1959  # decoded="␠—"; category=format_boundary; rising_rank=196; top100=false
+      - 10293  # decoded="␠(-"; category=format_boundary; rising_rank=197; top100=false
+      - 438  # decoded="␠as"; category=pdtb_connective_candidate; rising_rank=198; top100=false
+    code:
+      - 1159  # decoded="␠import"; category=code_structure_python_keyword; rising_rank=1; top100=true
+      - 13027  # decoded="␠Python"; category=code_structure_language_module; rising_rank=2; top100=true
+      - 17949  # decoded="Because"; category=pdtb_connective_candidate; rising_rank=4; top100=true
+      - 4197  # decoded="with"; category=pdtb_connective_candidate+code_structure_python_keyword; rising_rank=11; top100=true
+      - 10694  # decoded="after"; category=pdtb_connective_candidate; rising_rank=12; top100=true
+      - 746  # decoded="set"; category=code_structure_python_builtin; rising_rank=13; top100=true
+      - 1083  # decoded="␠also"; category=pdtb_connective_candidate; rising_rank=21; top100=true
+      - 7252  # decoded=")]"; category=format_boundary; rising_rank=25; top100=true
+      - 943  # decoded="␠type"; category=code_structure_python_builtin; rising_rank=26; top100=true
+      - 2822  # decoded="()↵↵"; category=format_boundary; rising_rank=27; top100=true
+      - 4416  # decoded="So"; category=pdtb_connective_candidate; rising_rank=34; top100=true
+      - 5005  # decoded="␠Then"; category=pdtb_connective_candidate; rising_rank=41; top100=true
+      - 3767  # decoded="any"; category=code_structure_python_builtin; rising_rank=42; top100=true
+      - 474  # decoded="import"; category=code_structure_python_keyword; rising_rank=44; top100=true
+      - 300  # decoded="as"; category=pdtb_connective_candidate+code_structure_python_keyword; rising_rank=45; top100=true
+      - 269  # decoded="or"; category=pdtb_connective_candidate+code_structure_python_keyword; rising_rank=52; top100=true
+      - 5097  # decoded="Output"; category=code_structure_programming_lexicon; rising_rank=55; top100=true
+      - 151645  # decoded="<|im_end|>"; category=format_boundary; rising_rank=58; top100=true
+      - 750  # decoded="def"; category=code_structure_python_keyword; rising_rank=61; top100=true
+      - 1393  # decoded="␠while"; category=pdtb_connective_candidate+code_structure_python_keyword; rising_rank=69; top100=true
+      - 2055  # decoded="␠So"; category=pdtb_connective_candidate; rising_rank=73; top100=true
+      - 3270  # decoded="␠write"; category=code_structure_method_api_like; rising_rank=78; top100=true
+      - 758  # decoded="␠In"; category=pdtb_connective_candidate; rising_rank=79; top100=true
+      - 44364  # decoded="---↵↵"; category=format_boundary; rising_rank=84; top100=true
+      - 1494  # decoded="␠pass"; category=code_structure_python_keyword; rising_rank=94; top100=true
+      - 1416  # decoded="␠If"; category=pdtb_connective_candidate; rising_rank=97; top100=true
+      - 1648  # decoded="):"; category=format_boundary; rising_rank=98; top100=true
+      - 12209  # decoded="Then"; category=pdtb_connective_candidate; rising_rank=103; top100=false
+      - 44500  # decoded="Thus"; category=pdtb_connective_candidate; rising_rank=105; top100=false
+      - 7213  # decoded="↵␠␠␠␠↵"; category=format_boundary; rising_rank=107; top100=false
+      - 4518  # decoded="␠instead"; category=pdtb_connective_candidate; rising_rank=108; top100=false
+      - 3243  # decoded="only"; category=pdtb_connective_candidate; rising_rank=111; top100=false
+      - 2679  # decoded="If"; category=pdtb_connective_candidate; rising_rank=114; top100=false
+      - 2550  # decoded="␠output"; category=code_structure_programming_lexicon; rising_rank=122; top100=false
+      - 7609  # decoded="[-"; category=format_boundary; rising_rank=142; top100=false
+      - 1887  # decoded="␠main"; category=code_structure_programming_lexicon; rising_rank=150; top100=false
+      - 1173  # decoded="␠print"; category=code_structure_python_builtin; rising_rank=151; top100=false
+      - 4318  # decoded="␠[["; category=format_boundary; rising_rank=152; top100=false
+      - 1221  # decoded="␠then"; category=pdtb_connective_candidate; rising_rank=156; top100=false
+      - 10907  # decoded="]))↵"; category=format_boundary; rising_rank=157; top100=false
+      - 565  # decoded="##"; category=format_boundary; rising_rank=167; top100=false
+      - 1576  # decoded="␠because"; category=pdtb_connective_candidate; rising_rank=175; top100=false
+      - 3647  # decoded="␠abs"; category=code_structure_python_builtin; rising_rank=181; top100=false
+      - 5563  # decoded=")]↵"; category=format_boundary; rising_rank=185; top100=false
+      - 1790  # decoded="␠next"; category=pdtb_connective_candidate+code_structure_python_builtin; rising_rank=186; top100=false
+      - 323  # decoded="␠and"; category=pdtb_connective_candidate+code_structure_python_keyword; rising_rank=187; top100=false
+      - 641  # decoded="In"; category=pdtb_connective_candidate; rising_rank=188; top100=false
+      - 773  # decoded="␠so"; category=pdtb_connective_candidate; rising_rank=190; top100=false
+      - 981  # decoded="␠␠␠␠␠␠"; category=format_boundary; rising_rank=194; top100=false
+      - 516  # decoded="',"; category=format_boundary; rising_rank=195; top100=false
+    science:
+      - 508  # decoded="␠["; category=format_boundary; rising_rank=4; top100=true
+      - 11209  # decoded="However"; category=pdtb_connective_candidate; rising_rank=6; top100=true
+      - 15277  # decoded="␠Therefore"; category=pdtb_connective_candidate; rising_rank=10; top100=true
+      - 641  # decoded="In"; category=pdtb_connective_candidate; rising_rank=12; top100=true
+      - 54815  # decoded="Therefore"; category=pdtb_connective_candidate; rising_rank=14; top100=true
+      - 333  # decoded="if"; category=pdtb_connective_candidate; rising_rank=25; top100=true
+      - 2679  # decoded="If"; category=pdtb_connective_candidate; rising_rank=48; top100=true
+      - 44364  # decoded="---↵↵"; category=format_boundary; rising_rank=52; top100=true
+      - 8704  # decoded="␠Since"; category=pdtb_connective_candidate; rising_rank=53; top100=true
+      - 1752  # decoded="␠For"; category=pdtb_connective_candidate; rising_rank=56; top100=true
+      - 300  # decoded="as"; category=pdtb_connective_candidate; rising_rank=59; top100=true
+      - 269  # decoded="or"; category=pdtb_connective_candidate; rising_rank=60; top100=true
+      - 1416  # decoded="␠If"; category=pdtb_connective_candidate; rising_rank=63; top100=true
+      - 1573  # decoded="␠before"; category=pdtb_connective_candidate; rising_rank=88; top100=true
+      - 4416  # decoded="So"; category=pdtb_connective_candidate; rising_rank=91; top100=true
+      - 758  # decoded="␠In"; category=pdtb_connective_candidate; rising_rank=95; top100=true
+      - 8450  # decoded="␠thus"; category=pdtb_connective_candidate; rising_rank=99; top100=true
+      - 2474  # decoded="␠since"; category=pdtb_connective_candidate; rising_rank=112; top100=false
+      - 1019  # decoded="**↵"; category=format_boundary; rising_rank=116; top100=false
+      - 568  # decoded=")."; category=format_boundary; rising_rank=128; top100=false
+      - 44500  # decoded="Thus"; category=pdtb_connective_candidate; rising_rank=129; top100=false
+      - 2058  # decoded="␠still"; category=pdtb_connective_candidate; rising_rank=138; top100=false
+      - 11284  # decoded="since"; category=pdtb_connective_candidate; rising_rank=139; top100=false
+      - 2055  # decoded="␠So"; category=pdtb_connective_candidate; rising_rank=145; top100=false
+      - 1499  # decoded="from"; category=pdtb_connective_candidate; rising_rank=147; top100=false
+      - 1083  # decoded="␠also"; category=pdtb_connective_candidate; rising_rank=157; top100=false
+      - 14374  # decoded="###"; category=format_boundary; rising_rank=166; top100=false
+      - 773  # decoded="␠so"; category=pdtb_connective_candidate; rising_rank=170; top100=false
+      - 1221  # decoded="␠then"; category=pdtb_connective_candidate; rising_rank=171; top100=false
+      - 2376  # decoded=")("; category=format_boundary; rising_rank=172; top100=false
+      - 624  # decoded=".↵"; category=format_boundary; rising_rank=174; top100=false
+      - 35702  # decoded="{\\"; category=format_boundary; rising_rank=178; top100=false
+      - 330  # decoded="␠\""; category=format_boundary; rising_rank=179; top100=false
+  control_token_normalize_per_domain: true
+  control_token_phase_gate_enabled: false
+  control_token_span_weighting_enabled: false
+
+  # Per domain and per optimizer step:
+  #   G_d(t) = mean_structural |log p_teacher - log p_student|
+  #   E_d(t) = 0.80 * E_d(t-1) + 0.20 * G_d(t)
+  #   speed_d(t) = [E_d(t-5) - E_d(t)] / 5
+  # The current step uses the stored previous weight. A triggered update below
+  # becomes control_weight_next and is applied from the next optimizer step.
+  control_token_speed_weighting_enabled: true
+  control_token_speed_window_steps: 5
+  control_token_speed_ema_beta: 0.80
+  # Recompute speed every step, but commit a new raw weight every two steps.
+  control_token_speed_update_interval_steps: 2
+  control_token_speed_initial_weight: 3.0
+  # Ignore a domain observation for EMA/speed when too few Structural+CodeLex occurrences
+  # are present in the global actor batch.
+  control_token_speed_min_occurrences: 128
+  # Clamped piecewise-linear speed -> raw weight mapping.
+  control_token_speed_weight_knots:
+    - [-0.0025, 0.0]
+    - [0.0000, 0.2]
+    - [0.0050, 2.0]
+    - [0.0100, 3.0]
+    - [0.0150, 4.0]
+
+  all_domain_shared_token_loss_weighting_enabled: false
+  all_domain_shared_token_loss_weight: 1.0
+  all_domain_shared_token_selection_mode: per_step_mean_abs_loss
+  all_domain_shared_token_top_k: 100
+
+  gradient_fingerprint_enabled: false
+  gradient_fingerprint_freq_steps: 1
+
+paper_eval:
+  enabled: false
+  script_path: eval/scripts/run_paper_eval_suite.sh
+  model_path: null
+  output_dir: eval_outputs/paper_suite/qwen4b_30b_a3b_instruct_2507_8gpu_math_code_science_topk32_control_speed_pwl_u2_structural_codelex_rising_top200_v1
+  datasets:
+    - aime24
+    - aime25
+    - hmmt25_feb
+    - hmmt25_nov
+    - humaneval_plus
+    - mbpp_plus
+    - lcb
+  run_on_initial_validation: true
+  evaluate_current_checkpoint: true
+  fail_on_error: false
+  timeout_seconds: 0
+
+trainer:
+  project_name: MOPD
+  experiment_name: qwen4b-from-30b-a3b-instruct-2507-8gpu-math-code-science-topk32-control-speed-pwl-u2-structural-codelex-rising-top200-v1
+  seed: 42
+  logger: '["console","tensorboard","wandb"]'
+  n_gpus_per_node: 6
+  nnodes: 1
+  save_freq: 5
+  test_freq: -1
+  total_epochs: 3
+  total_training_steps: 200
+  default_local_dir: checkpoints/MOPD/qwen4b-from-30b-a3b-instruct-2507-8gpu-math-code-science-topk32-control-speed-pwl-u2-structural-codelex-rising-top200-v1
+  critic_warmup: 0
+  val_before_train: false
+  log_val_generations: 10
+  max_actor_ckpt_to_keep: 2
+  max_critic_ckpt_to_keep: 1
+
+ray_kwargs:
+  ray_init:
+    include_dashboard: false
+    num_cpus: 24
