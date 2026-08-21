@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = (
     ROOT
     / "configs"
-    / "mopd_qwen1p7b_30b_a3b_instruct_2507_6gpu_math_code_science_topk32.yaml"
+    / "mopd_qwen1p7b_30b_a3b_instruct_2507_6gpu_math_code_science_topk32_baseline_525.yaml"
 )
 
 

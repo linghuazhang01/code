@@ -9,7 +9,7 @@ Usage:
   ./slurm.sh <config[::profile]> [--dry-run|--check-only]
 
 Examples:
-  ./slurm.sh code/configs/mopd_qwen1p7b_30b_a3b_instruct_2507_6gpu_math_code_science_topk32.yaml
+  ./slurm.sh code/configs/mopd_qwen1p7b_30b_a3b_instruct_2507_6gpu_math_code_science_topk32_baseline_525.yaml
   ./slurm.sh configs/mopd_formal_audit_all_2gpu.yaml
   ./slurm.sh test_grad_configs/mopd_grad_reliability_qwen0p6b_8b_matrix.yaml::aw2_fsdp2_audit_on
 
@@ -24,6 +24,7 @@ The config must live inside the local code/ directory. A normal run performs:
 --check-only uploads and validates the config but does not submit.
 
 Optional environment overrides:
+  MOPD_SSH_HELPER       default: <project-root>/ssh.sh
   MOPD_REMOTE_DIR       default: /home/shuang_qiu/mopd_code
   MOPD_REMOTE_PYTHON    default: /home/shuang_qiu/env/miniconda3/envs/mopd-verl/bin/python
   MOPD_SLURM_PARTITION  default: compute
@@ -270,7 +271,7 @@ EXPECT
 
 CODE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT_DIR="$(cd "${CODE_DIR}/.." && pwd -P)"
-SSH_HELPER="${ROOT_DIR}/ssh.sh"
+SSH_HELPER="${MOPD_SSH_HELPER:-${ROOT_DIR}/ssh.sh}"
 REMOTE_DIR="${MOPD_REMOTE_DIR:-/home/shuang_qiu/mopd_code}"
 REMOTE_PYTHON="${MOPD_REMOTE_PYTHON:-/home/shuang_qiu/env/miniconda3/envs/mopd-verl/bin/python}"
 SLURM_PARTITION="${MOPD_SLURM_PARTITION:-compute}"
