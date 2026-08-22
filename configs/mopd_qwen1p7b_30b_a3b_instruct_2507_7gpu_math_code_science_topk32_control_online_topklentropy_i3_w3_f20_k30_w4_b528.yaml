@@ -1,0 +1,298 @@
+# Qwen3-1.7B online Top-K KL + Student-entropy Control-token
+# selection from three domain whitelists whose cross-domain union contains 210 IDs.
+# Topology: 6 student actor/rollout GPUs + 1 ref/teacher GPU.
+# Every 3 completed optimizer steps, rank candidates over the latest 3 steps.
+# A token is eligible when mean occurrences/step >= 20; each domain activates
+# its Top-30 by rolling occurrence-mean A+B+AB, where A is normalized raw
+# Top-K reverse-KL and B is normalized Student entropy. A selection made at
+# step t is applied from step t+1 with fixed raw weight 4 and mean-one normalization.
+
+runtime:
+  python_bin: /home/shuang_qiu/env/miniconda3/envs/mopd-verl/bin/python
+  verl_module: verl.trainer.main_ppo
+  wandb_mode: online
+  wandb_entity: lz101-rice-university
+  wandb_run_id: q1p7b-7g-topklentropy-i3w3f20k30w4-b528
+  wandb_resume: allow
+  env_file: ../mopd/code/.env.local
+  used_model: no_api
+  slurm_allocation_gpus: 7
+  cuda_visible_devices: null
+
+data:
+  domain_train_files:
+    math:
+      - ../mopd/code/data/G-OPD-Training-Data/DeepMath-103K/train_filtered_level6.parquet
+    code:
+      - ../mopd/code/data/G-OPD-Training-Data/Eurus/code_train.parquet
+    science:
+      - ../mopd/code/data/G-OPD-Training-Data/Science/train.parquet
+  domain_sampling_weights: {math: 1, code: 1, science: 1}
+  domain_sampling_replacement: true
+  load_parquet_direct: true
+  val_files:
+    - ../mopd/code/data/eval_data/math/AIME24/test.parquet
+    - ../mopd/code/data/eval_data/math/AIME25/test.parquet
+    - ../mopd/code/data/eval_data/math/HMMT25Feb/test.parquet
+    - ../mopd/code/data/eval_data/math/HMMT25Nov/test.parquet
+    - ../mopd/code/data/eval_data/code/HumanEvalPlus/test.parquet
+    - ../mopd/code/data/eval_data/code/MBPPPlus/test.parquet
+    - ../mopd/code/data/eval_data/science/GPQA/test.parquet
+  # 528 = 6 actor GPUs x 88 samples = 3 domains x 176 samples.
+  train_batch_size: 528
+  max_prompt_length: 2048
+  max_response_length: 16384
+  val_batch_size: 1024
+  filter_overlong_prompts: true
+  truncation: error
+  shuffle: true
+  validation_shuffle: false
+  seed: 42
+  return_raw_chat: true
+  enable_thinking: false
+
+model:
+  student_path: ../mopd/models/Qwen3-1.7B
+  student_base_path: null
+  math_teacher_path: ../mopd/models/Qwen3-30B-A3B-Instruct-2507
+  code_teacher_path: ../mopd/models/Qwen3-30B-A3B-Instruct-2507
+  domain_teacher_paths:
+    math: ../mopd/models/Qwen3-30B-A3B-Instruct-2507
+    code: ../mopd/models/Qwen3-30B-A3B-Instruct-2507
+    science: ../mopd/models/Qwen3-30B-A3B-Instruct-2507
+  teacher_model_device: gpu
+  attn_implementation: flash_attention_2
+
+actor:
+  learning_rate: "5e-6"
+  lr_warmup_steps_ratio: 0.0
+  only_reverse_kl_advantages: false
+  lambda_vals: 1.0
+  multi_teacher_distill: true
+  distill_loss_builder: topk_kl
+  distill_mode: topk_renormalized_reverse_kl
+  topk_distill_enabled: true
+  topk_distill_kl_direction: reverse
+  topk_distill_k: 32
+  topk_distill_support_source: teacher
+  topk_distill_tail_bucket: false
+  topk_distill_temperature: 1.0
+  topk_distill_loss_weight: 1.0
+  topk_distill_logprob_chunk_size: 16
+  topk_distill_logprob_mode: sparse
+  ppo_mini_batch_size: 528
+  ppo_micro_batch_size_per_gpu: 1
+  ppo_epochs: 1
+  use_dynamic_bsz: false
+  use_kl_loss: true
+  kl_loss_coef: 0
+  kl_loss_type: low_var_kl
+  entropy_coeff: 0
+  ppo_max_token_len_per_gpu: 32768
+  gradient_checkpointing: true
+  param_offload: true
+  optimizer_offload: true
+  fsdp_size: 1
+
+rollout:
+  calculate_log_probs: true
+  log_prob_micro_batch_size_per_gpu: 1
+  tensor_model_parallel_size: 1
+  name: vllm
+  mode: sync
+  gpu_memory_utilization: 0.6
+  enforce_eager: true
+  enable_chunked_prefill: false
+  n: 1
+  max_num_batched_tokens: 32768
+  max_model_len: 18432
+  max_num_seqs: 24
+  do_sample: true
+  temperature: 1.0
+  top_p: 1.0
+  val_n: 1
+  val_do_sample: false
+  val_temperature: 0.0
+  val_top_p: 1.0
+  seed: 42
+
+rollout_correction:
+  rollout_is: token
+  rollout_is_threshold: 5.0
+  rollout_rs: null
+  bypass_mode: false
+
+extra_overrides:
+  - custom_reward_function.path=mopd_verl/mixed_reward.py
+  - custom_reward_function.name=compute_score
+  - trainer.resume_mode=auto
+
+worker_placement:
+  separate_ref_policy: true
+  actor_rollout: {n_gpus_per_node: 6, nnodes: 1}
+  ref_policy: {n_gpus_per_node: 1, nnodes: 1}
+
+audit:
+  enabled: true
+  output_dir: audit/qwen1p7b_30b_a3b_instruct_2507_7gpu_math_code_science_topk32_control_online_topklentropy_domaincand_v2_i3_w3_f20_k30_w4_b528
+  domains: [math, code, science]
+  tensorboard_prefix: mopd
+  tensorboard_layout: domain_category
+  tensorboard_prune_mode: core
+  loss_variance_signal: opd_loss_token
+  log_sample_level: false
+  response_level_enabled: true
+  response_level_freq_steps: 1
+  response_level_compression: gzip
+  log_validation_metrics: false
+
+  # Disable expensive gradient replays; online selection reuses production loss.
+  full_gradient_enabled: false
+  full_gradient_freq_steps: 4
+  full_grad_training_parity_freq_steps: 1
+  full_grad_training_parity_rel_l2_threshold: 2.0e-2
+  full_gradient_storage_dtype: bfloat16
+  full_gradient_direct_recompute_enabled: false
+  sequence_masked_target_enabled: true
+  sequence_masked_target_use_as_primary: true
+  token_gradient_enabled: false
+  token_gradient_freq_steps: 4
+  token_gradient_tail_enabled: false
+  token_gradient_gap_selection_enabled: false
+  token_gradient_gap_abs_selection_enabled: false
+  token_gradient_top_k: null
+  token_gradient_top_p_enabled: false
+  token_gradient_top_p: 1.0
+  token_gradient_backward_recompute_enabled: false
+  token_gradient_backward_sync_enabled: false
+  sample_gradient_enabled: false
+  sample_gradient_norm_enabled: false
+  sample_gradient_backward_recompute_enabled: false
+  sample_gradient_backward_sync_enabled: false
+  sample_gradient_log_sample_level: false
+  dynamic_domain_loss_weighting_enabled: false
+  dynamic_domain_loss_weighting_freq_steps: 4
+  all_domain_shared_token_loss_weighting_enabled: false
+
+  # Preserve the fixed-w4 reference run's observational signals.
+  token_gap_vocab_vector_enabled: true
+  logp_vocab_per_occurrence_mean_vector_enabled: true
+  logp_abs_vocab_per_occurrence_mean_vector_enabled: true
+  entropy_vocab_per_occurrence_mean_vector_enabled: true
+  entropy_vocab_vector_enabled: true
+  topk_teacher_student_cross_entropy_vocab_enabled: true
+  logp_vector_enabled: true
+  logp_abs_vector_enabled: true
+
+  control_token_loss_weighting_enabled: true
+  control_token_loss_weight: 4.0
+  control_token_ids: []
+  domain_control_token_ids: {}
+  control_token_normalize_per_domain: true
+  control_token_online_selection_enabled: true
+  control_token_online_audit_interval_steps: 3
+  control_token_online_window_steps: 3
+  control_token_online_min_mean_occurrences_per_step: 20.0
+  control_token_online_top_k: 30
+  control_token_online_selection_mode: top_kl_student_entropy
+  control_token_online_weight_mode: fixed
+
+  # Frozen per-domain 1.7B Control IDs observed in the source audit table.
+  # Counts: Math=188, Code=207, Science=188; union=210, intersection=178.
+  # SHA256(comma-joined sorted IDs):
+  # Math=cdb9c4baa8770aeceda0c533a5889df8385ea1fd42739d78f29532447d040ddf
+  # Code=12f7e1a16efdd20129c11bee086fc825740c010fdda12c6a6c55b7a5cc5d69f2
+  # Science=73f68a93038df626d26a5cc856f19d4188c1016806129066ea3ffe7df45ea948
+  control_token_candidate_ids: []
+  domain_control_token_candidate_ids:
+    math: [
+      269, 323, 333, 421, 437, 476, 537, 704, 714, 773, 810, 868, 990,
+      1083, 1142, 1221, 1416, 1430, 1477, 1539, 1576, 1597, 1779, 1921,
+      1988, 2028, 2047, 2055, 2195, 2521, 2550, 2623, 2679, 2726, 2773,
+      2806, 2874, 2987, 2999, 3006, 3019, 3036, 3110, 3391, 3491, 3567,
+      3783, 3903, 3973, 3976, 3983, 4183, 4207, 4226, 4248, 4354, 4396,
+      4416, 4518, 4764, 5005, 5048, 5097, 5185, 5341, 5443, 5627, 5638,
+      6923, 6959, 7036, 7281, 7354, 7379, 7600, 7910, 8088, 8304, 8388,
+      8450, 8687, 8916, 9008, 9112, 9211, 9217, 9258, 9468, 9520, 9658,
+      9735, 9885, 9928, 9974, 10253, 10354, 10555, 10915, 11209, 11489,
+      11538, 11551, 12090, 12209, 13314, 13383, 13394, 13644, 13824, 13880,
+      14065, 14190, 14301, 14312, 14822, 15277, 16085, 16141, 16148, 16688,
+      17949, 18068, 18286, 18654, 19091, 19366, 19813, 19895, 19928, 20988,
+      21453, 21641, 21667, 21806, 22079, 22477, 23910, 24080, 24117, 25139,
+      25538, 26201, 26759, 27653, 29193, 29316, 30787, 31040, 31094, 31115,
+      31198, 33092, 33132, 33508, 33951, 34239, 34586, 38319, 39861, 39970,
+      40770, 41109, 43434, 44500, 45051, 46024, 48356, 49244, 49898, 50389,
+      54390, 54815, 54974, 62197, 63964, 64837, 65363, 67691, 69769, 71287,
+      73877, 75763, 76995, 79540, 82610, 84338, 93828, 97836
+    ]
+    code: [
+      269, 323, 333, 421, 437, 476, 537, 704, 714, 743, 773, 810, 868, 990,
+      1083, 1142, 1221, 1416, 1430, 1477, 1539, 1576, 1597, 1779, 1921,
+      1988, 2028, 2047, 2055, 2195, 2521, 2550, 2623, 2679, 2726, 2773,
+      2806, 2874, 2987, 2999, 3006, 3019, 3036, 3110, 3391, 3491, 3567,
+      3783, 3903, 3973, 3976, 3983, 4183, 4207, 4226, 4248, 4354, 4396,
+      4416, 4518, 4764, 5005, 5048, 5097, 5185, 5341, 5443, 5627, 5638,
+      6923, 6959, 7036, 7281, 7354, 7379, 7600, 7910, 8088, 8304, 8388,
+      8450, 8687, 8916, 9008, 9112, 9211, 9217, 9258, 9457, 9468, 9520,
+      9658, 9735, 9885, 9928, 9974, 10253, 10354, 10555, 10915, 11209,
+      11489, 11538, 11551, 12090, 12209, 13314, 13383, 13394, 13644, 13824,
+      13880, 14065, 14190, 14301, 14312, 14822, 15277, 16085, 16141, 16148,
+      16664, 16688, 16743, 17949, 18068, 18286, 18654, 19091, 19366, 19813,
+      19895, 19928, 20988, 21170, 21453, 21641, 21667, 21806, 22079, 22477,
+      23910, 24080, 24117, 25139, 25538, 26201, 26759, 27653, 27792, 29051,
+      29193, 29895, 30301, 30787, 30990, 31040, 31094, 31115, 31198, 33092,
+      33132, 33508, 33951, 34239, 34516, 34586, 38319, 39861, 39970, 40371,
+      40770, 41109, 43434, 44500, 45051, 46024, 48356, 49244, 49898, 50389,
+      54390, 54815, 54974, 62197, 63758, 63964, 64837, 65363, 66246, 67691,
+      69769, 69946, 71032, 71287, 73877, 75763, 76912, 76995, 78481, 79540,
+      82610, 84338, 93475, 93828, 95875, 97836
+    ]
+    science: [
+      269, 323, 333, 421, 437, 476, 537, 704, 714, 773, 810, 868, 990,
+      1083, 1142, 1221, 1416, 1430, 1477, 1539, 1576, 1597, 1779, 1921,
+      1988, 2028, 2047, 2055, 2195, 2521, 2550, 2623, 2679, 2726, 2773,
+      2806, 2874, 2987, 2999, 3006, 3019, 3036, 3110, 3391, 3491, 3567,
+      3783, 3903, 3973, 3976, 3983, 4183, 4207, 4226, 4248, 4354, 4396,
+      4416, 4518, 4764, 5005, 5048, 5097, 5185, 5341, 5443, 5627, 5638,
+      6923, 6959, 7036, 7281, 7354, 7379, 7600, 7910, 8088, 8304, 8388,
+      8450, 8687, 8916, 9112, 9211, 9217, 9258, 9457, 9468, 9520, 9658,
+      9735, 9885, 9974, 10253, 10354, 10555, 10915, 11209,
+      11489, 11538, 11551, 12090, 12209, 13314, 13383, 13394, 13644, 13824,
+      13880, 14065, 14190, 14301, 14312, 14822, 15277, 16085, 16141, 16148,
+      16664, 16688, 16743, 17949, 18068, 18286, 18654, 19091, 19366, 19813,
+      19895, 19928, 20988, 21453, 21806, 22079, 22477, 23910, 24080, 25139,
+      25538, 26759, 27653, 29051, 29193, 29895, 30787, 31040, 31094, 31115,
+      31198, 33092, 33132, 33508, 34057, 34239, 34516, 34586, 37302, 39861,
+      39970, 40770, 41109, 43434, 44500, 45051, 46024, 49244, 49898, 50389,
+      54390, 54815, 54974, 62197, 63758, 63964, 64837, 65363, 67691, 69769,
+      71287, 73877, 75763, 76995, 78481, 79540, 82610, 84338, 93828, 97836
+    ]
+  control_token_phase_gate_enabled: false
+  control_token_span_weighting_enabled: false
+  control_token_speed_weighting_enabled: false
+  control_token_speed_initial_weight: 1.0
+
+paper_eval:
+  enabled: false
+  script_path: eval/scripts/run_paper_eval_suite.sh
+  output_dir: eval_outputs/paper_suite/qwen1p7b_7gpu_control_online_topklentropy_domaincand_v2_i3w3f20k30w4_b528
+
+trainer:
+  project_name: MOPD
+  experiment_name: qwen1p7b-from-30b-a3b-instruct-2507-7gpu-math-code-science-topk32-control-online-topklentropy-domaincand-v2-i3w3f20k30w4-b528
+  seed: 42
+  logger: '["console","tensorboard","wandb"]'
+  n_gpus_per_node: 6
+  nnodes: 1
+  save_freq: 5
+  test_freq: -1
+  total_epochs: 3
+  total_training_steps: 200
+  default_local_dir: checkpoints/MOPD/qwen1p7b-7gpu-control-online-topklentropy-domaincand-v2-i3w3f20k30w4-b528
+  critic_warmup: 0
+  val_before_train: false
+  max_actor_ckpt_to_keep: 2
+  max_critic_ckpt_to_keep: 1
+
+ray_kwargs:
+  ray_init: {include_dashboard: false, num_cpus: 24}
