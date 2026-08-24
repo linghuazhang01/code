@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
-
-if TYPE_CHECKING:
-    from verl import DataProto
 
 
 _TEACHER_LABEL_KEY = "opd_teacher"
@@ -66,39 +63,3 @@ def _labels_from_mapping(mapping: dict[str, Any], batch_size: int) -> list[str]:
     if not all(label is None for label in labels):
         return [str(label if label is not None else "unknown") for label in labels]
     return ["unknown" for _ in range(batch_size)]
-
-
-def _teacher_labels(data: DataProto) -> list[str]:
-    """Return audit domain labels, not actor teacher labels."""
-    return _labels_from_mapping(data.non_tensor_batch, len(data))
-
-
-def _sample_ids(data: DataProto, step: int, fallback_prefix: str | None = None) -> list[str]:
-    batch_size = len(data)
-    sample_ids = _non_tensor_list(data.non_tensor_batch.get("sample_id"), batch_size)
-    fallback_ids = _non_tensor_list(data.non_tensor_batch.get("id"), batch_size)
-    extra_infos = _non_tensor_list(data.non_tensor_batch.get("extra_info"), batch_size)
-    resolved: list[str] = []
-    for idx, sample_id in enumerate(sample_ids):
-        if sample_id is not None:
-            resolved.append(str(sample_id))
-        elif fallback_ids[idx] is not None:
-            resolved.append(str(fallback_ids[idx]))
-        elif isinstance(extra_infos[idx], dict) and extra_infos[idx].get("sample_id") is not None:
-            resolved.append(str(extra_infos[idx]["sample_id"]))
-        elif isinstance(extra_infos[idx], dict) and extra_infos[idx].get("id") is not None:
-            resolved.append(str(extra_infos[idx]["id"]))
-        else:
-            prefix = fallback_prefix or f"step{step}"
-            resolved.append(f"{prefix}:row{idx}")
-    return resolved
-
-
-def _response_token_count(data: DataProto) -> float:
-    if data.batch is None or len(data) == 0:
-        return 0.0
-    if "response_mask" in data.batch:
-        return float(data.batch["response_mask"].sum().item())
-    if "responses" in data.batch:
-        return float(data.batch["responses"].numel())
-    return float(len(data))

@@ -45,6 +45,42 @@ class ConfigProfileTests(unittest.TestCase):
             {"data": {"batch": 12}, "items": [1, 2]},
         )
 
+    def test_relative_extends_resolves_profile_and_deep_merges(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            matrix = self._write_yaml(
+                temp_dir,
+                "matrix.yaml",
+                {
+                    "profile_matrix": {
+                        "version": 1,
+                        "base": {"actor": {"lr": 1, "epochs": 1}},
+                        "profiles": {"native": {"actor": {"lr": 2}}},
+                    }
+                },
+            )
+            child_dir = directory / "canonical"
+            child_dir.mkdir()
+            child = self._write_yaml(
+                str(child_dir),
+                "native.yaml",
+                {
+                    "extends": f"../{matrix.name}::native",
+                    "actor": {"epochs": 3},
+                },
+            )
+
+            resolved = load_raw_config(child)
+
+        self.assertEqual(resolved, {"actor": {"lr": 2, "epochs": 3}})
+
+    def test_extends_cycle_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            first = self._write_yaml(temp_dir, "first.yaml", {"extends": "second.yaml"})
+            self._write_yaml(temp_dir, "second.yaml", {"extends": "first.yaml"})
+            with self.assertRaisesRegex(ValueError, "extends cycle"):
+                load_raw_config(first)
+
     def test_matrix_profile_deep_merges_dicts_and_replaces_lists(
         self,
     ) -> None:

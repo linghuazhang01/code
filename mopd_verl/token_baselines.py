@@ -8,6 +8,15 @@ from typing import Any
 
 import torch
 
+from mopd_verl.token_baseline_math import (
+    checked_matrix,
+    clip_masked_upper_quantile,
+    finite_non_negative,
+    masked_batch_minmax,
+    normalize_by_batch_max,
+    normalize_per_sequence,
+    select_positions,
+)
 from mopd_verl.topk_distill import cfg_get
 
 
@@ -33,6 +42,7 @@ TOKEN_BASELINE_ALIASES = {
 TOKEN_SELECTION_TOPK = "topk"
 TOKEN_SELECTION_SAMPLE = "sample"
 TOKEN_SELECTION_MODES = {TOKEN_SELECTION_TOPK, TOKEN_SELECTION_SAMPLE}
+TIP_ENTROPY_CLIP_QUANTILE = 0.98
 
 
 @dataclass(frozen=True)
@@ -92,7 +102,7 @@ def token_baseline_selection_mode(policy_loss_config: Any) -> str:
 
 
 def fire_opd_teacher_confidence_alpha(policy_loss_config: Any) -> float:
-    return _finite_non_negative(
+    return finite_non_negative(
         cfg_get(
             policy_loss_config,
             "fire_opd_teacher_confidence_alpha",
@@ -103,7 +113,7 @@ def fire_opd_teacher_confidence_alpha(policy_loss_config: Any) -> float:
 
 
 def fire_opd_student_confusion_beta(policy_loss_config: Any) -> float:
-    return _finite_non_negative(
+    return finite_non_negative(
         cfg_get(
             policy_loss_config,
             "fire_opd_student_confusion_beta",
@@ -188,7 +198,7 @@ def build_token_baseline_weights(
 
     method = token_baseline_method(policy_loss_config)
     mask = response_mask.detach().to(dtype=torch.float32)
-    entropy = _checked_matrix("student_entropy", student_entropy, mask)
+    entropy = checked_matrix("student_entropy", student_entropy, mask)
     if method == TOKEN_BASELINE_NONE:
         return TokenBaselineResult(
             weights=mask,
@@ -197,39 +207,44 @@ def build_token_baseline_weights(
         )
     if method == TOKEN_BASELINE_ENTROPY:
         score = entropy
-        selected = _select_positions(
+        selected = select_positions(
             score=score,
             mask=mask,
             retention_ratio=token_baseline_retention_ratio(policy_loss_config),
             selection_mode=token_baseline_selection_mode(policy_loss_config),
         )
-        weights = _normalize_per_sequence(selected, mask)
+        weights = normalize_per_sequence(selected, mask)
         return TokenBaselineResult(weights, score, selected)
     if method == TOKEN_BASELINE_TIP_TOPK32:
         if divergence is None:
             raise ValueError("TIP-TopK32 requires a per-token divergence matrix.")
-        disagreement = _checked_matrix("divergence", divergence, mask)
-        entropy_score = _masked_minmax(entropy, mask)
-        disagreement_score = _masked_minmax(disagreement, mask)
+        disagreement = checked_matrix("divergence", divergence, mask)
+        clipped_entropy = clip_masked_upper_quantile(
+            entropy,
+            mask,
+            quantile=TIP_ENTROPY_CLIP_QUANTILE,
+        )
+        entropy_score = masked_batch_minmax(clipped_entropy, mask)
+        disagreement_score = masked_batch_minmax(disagreement, mask)
         score = (
             entropy_score
             + disagreement_score
             - entropy_score * disagreement_score
         )
-        selected = _select_positions(
+        selected = select_positions(
             score=score,
             mask=mask,
             retention_ratio=token_baseline_retention_ratio(policy_loss_config),
             selection_mode=token_baseline_selection_mode(policy_loss_config),
         )
-        weights = _normalize_per_sequence(selected, mask)
+        weights = normalize_per_sequence(selected, mask)
         return TokenBaselineResult(weights, score, selected)
     if method == TOKEN_BASELINE_FIRE_OPD:
         if teacher_entropy is None:
             raise ValueError("FiRe-OPD requires full-vocabulary teacher entropy.")
-        teacher = _checked_matrix("teacher_entropy", teacher_entropy, mask)
-        teacher_confidence = 1.0 - _normalize_by_sequence_max(teacher, mask)
-        student_confusion = _normalize_by_sequence_max(entropy, mask)
+        teacher = checked_matrix("teacher_entropy", teacher_entropy, mask)
+        teacher_confidence = 1.0 - normalize_by_batch_max(teacher, mask)
+        student_confusion = normalize_by_batch_max(entropy, mask)
         score = (
             1.0
             + fire_opd_teacher_confidence_alpha(policy_loss_config)
@@ -239,7 +254,7 @@ def build_token_baseline_weights(
             + fire_opd_student_confusion_beta(policy_loss_config)
             * student_confusion
         )
-        weights = _normalize_per_sequence(score * mask, mask)
+        weights = normalize_per_sequence(score * mask, mask)
         if trajectory_weight is not None:
             row_weight = trajectory_weight.detach().float()
             if row_weight.ndim == 1:
@@ -263,122 +278,35 @@ def fire_opd_trajectory_weights(
     response_mask: torch.Tensor,
     drop_ratio: float,
 ) -> torch.Tensor:
-    """Return valid-token-mean-one weights for FiRe trajectory filtering."""
+    """Return exact bottom-p filter weights for sequence-mean accumulation."""
 
     mask = response_mask.detach().float()
-    teacher_logp = _checked_matrix(
+    teacher_logp = checked_matrix(
         "teacher_chosen_log_probs",
         teacher_chosen_log_probs,
         mask,
     )
     if not math.isfinite(float(drop_ratio)) or not 0.0 <= float(drop_ratio) < 1.0:
         raise ValueError("drop_ratio must be finite and in [0, 1).")
-    lengths = mask.sum(dim=-1).clamp(min=1.0)
-    trajectory_scores = (teacher_logp * mask).sum(dim=-1) / lengths
-    if float(drop_ratio) == 0.0 or trajectory_scores.numel() <= 1:
-        return torch.ones_like(trajectory_scores, dtype=torch.float32)
-    threshold = torch.quantile(trajectory_scores.float(), float(drop_ratio))
-    keep = (trajectory_scores >= threshold).float()
-    kept_token_count = (mask * keep.unsqueeze(-1)).sum()
-    if float(kept_token_count.item()) <= 0.0:
-        return torch.ones_like(trajectory_scores, dtype=torch.float32)
-    scale = mask.sum() / kept_token_count
-    return keep * scale
-
-
-def _finite_non_negative(value: Any, label: str) -> float:
-    parsed = float(value)
-    if not math.isfinite(parsed) or parsed < 0.0:
-        raise ValueError(f"{label} must be finite and non-negative, got {parsed}.")
-    return parsed
-
-
-def _checked_matrix(
-    label: str,
-    value: torch.Tensor,
-    mask: torch.Tensor,
-) -> torch.Tensor:
-    matrix = value.detach().float().to(device=mask.device)
-    if matrix.shape != mask.shape:
-        raise ValueError(
-            f"{label} must match response_mask, got "
-            f"{tuple(matrix.shape)} and {tuple(mask.shape)}."
-        )
-    if not torch.isfinite(matrix[mask.bool()]).all():
-        raise ValueError(f"{label} contains non-finite values on valid tokens.")
-    return torch.where(mask.bool(), matrix, torch.zeros_like(matrix))
-
-
-def _masked_minmax(value: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-    valid = mask.bool()
-    row_min = torch.where(valid, value, torch.inf).amin(dim=-1, keepdim=True)
-    row_max = torch.where(valid, value, -torch.inf).amax(dim=-1, keepdim=True)
-    row_min = torch.where(torch.isfinite(row_min), row_min, torch.zeros_like(row_min))
-    row_max = torch.where(torch.isfinite(row_max), row_max, row_min)
-    denominator = (row_max - row_min).clamp(min=1e-12)
-    normalized = (value - row_min) / denominator
-    return torch.where(valid, normalized, torch.zeros_like(normalized))
-
-
-def _normalize_by_sequence_max(
-    value: torch.Tensor,
-    mask: torch.Tensor,
-) -> torch.Tensor:
-    valid = mask.bool()
-    row_max = torch.where(valid, value, -torch.inf).amax(dim=-1, keepdim=True)
-    row_max = torch.where(torch.isfinite(row_max), row_max, torch.ones_like(row_max))
-    normalized = value / row_max.clamp(min=1e-12)
-    return torch.where(valid, normalized, torch.zeros_like(normalized))
-
-
-def _normalize_per_sequence(
-    weights: torch.Tensor,
-    mask: torch.Tensor,
-) -> torch.Tensor:
-    masked_weights = weights.detach().float() * mask
-    valid_count = mask.sum(dim=-1, keepdim=True)
-    weight_sum = masked_weights.sum(dim=-1, keepdim=True)
-    scale = valid_count / weight_sum.clamp(min=1e-12)
-    normalized = masked_weights * scale
-    return torch.where(weight_sum > 0, normalized, torch.zeros_like(normalized))
-
-
-def _select_positions(
-    *,
-    score: torch.Tensor,
-    mask: torch.Tensor,
-    retention_ratio: float,
-    selection_mode: str,
-) -> torch.Tensor:
-    selected = torch.zeros_like(mask)
-    for row_index in range(int(mask.shape[0])):
-        valid_indices = torch.nonzero(
-            mask[row_index].bool(),
-            as_tuple=False,
-        ).squeeze(-1)
-        valid_count = int(valid_indices.numel())
-        if valid_count == 0:
-            continue
-        selected_count = max(1, int(math.floor(retention_ratio * valid_count)))
-        selected_count = min(selected_count, valid_count)
-        valid_scores = score[row_index].index_select(0, valid_indices).float()
-        if selection_mode == TOKEN_SELECTION_TOPK:
-            local_indices = torch.topk(
-                valid_scores,
-                k=selected_count,
-                largest=True,
-                sorted=False,
-            ).indices
-        elif selection_mode == TOKEN_SELECTION_SAMPLE:
-            probabilities = valid_scores.clamp(min=0.0)
-            if float(probabilities.sum().item()) <= 0.0:
-                probabilities = torch.ones_like(probabilities)
-            local_indices = torch.multinomial(
-                probabilities,
-                num_samples=selected_count,
-                replacement=False,
-            )
-        else:
-            raise AssertionError(f"Unhandled token selection mode: {selection_mode}")
-        selected[row_index, valid_indices.index_select(0, local_indices)] = 1.0
-    return selected
+    lengths = mask.sum(dim=-1)
+    valid_rows = lengths > 0
+    trajectory_scores = (teacher_logp * mask).sum(dim=-1) / lengths.clamp(
+        min=1.0
+    )
+    trajectory_scores = torch.where(
+        valid_rows,
+        trajectory_scores,
+        torch.full_like(trajectory_scores, torch.inf),
+    )
+    valid_count = int(valid_rows.sum().item())
+    if valid_count == 0:
+        return torch.zeros_like(trajectory_scores, dtype=torch.float32)
+    drop_count = int(math.floor(float(drop_ratio) * valid_count))
+    keep = valid_rows.to(dtype=torch.float32)
+    if drop_count > 0:
+        ranked = torch.argsort(trajectory_scores.float(), stable=True)
+        keep[ranked[:drop_count]] = 0.0
+    kept_count = int(keep.sum().item())
+    if kept_count == 0:
+        return valid_rows.to(dtype=torch.float32)
+    return keep * (float(valid_count) / float(kept_count))

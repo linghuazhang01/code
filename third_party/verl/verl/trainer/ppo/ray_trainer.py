@@ -58,8 +58,13 @@ from mopd_verl.token_baselines import (
     fire_opd_trajectory_drop_ratio,
     fire_opd_trajectory_weights,
     token_baseline_method,
+    token_baseline_requires_divergence,
     token_baseline_requires_teacher_entropy,
     uses_fire_opd_baseline,
+)
+from mopd_verl.token_baseline_runtime import (
+    build_precomputed_baseline_tensors,
+    requires_batch_precompute,
 )
 from mopd_verl.topk_distill import (
     TOPK_SUPPORT_SOURCE_STUDENT,
@@ -1954,9 +1959,9 @@ class RayPPOTrainer:
                             batch = batch.union(code_teacher)
                             batch.batch["code_teacher_log_prob"] = batch.batch["base_ref_log_prob"]
 
-                    # ExOPD needs only the frozen initial-student log-probability.
-                    # Compute it whenever actor.model.base_model_path is present,
-                    # without requiring a second teacher/reference model.
+                    # G-OPD/ExOPD use this frozen reference log-probability.
+                    # It is commonly the initial student, but may be any
+                    # explicitly configured G-OPD reference checkpoint.
                     if self.base_model_path is not None:
                         with marked_timer("base_log_probs", timing_raw, color="green"):
                             ref_input_tensors = {}
@@ -1975,7 +1980,7 @@ class RayPPOTrainer:
                                 batch.batch[key] = tensor
 
                             print(
-                                "Computed frozen student reference log probs: "
+                                "Computed frozen G-OPD reference log probs: "
                                 f"base_log_prob shape={batch.batch['base_log_prob'].shape}"
                             )
 
@@ -1994,6 +1999,12 @@ class RayPPOTrainer:
                     )
                     reuse_training_topk_cross_entropy = False
                     if topk_cross_entropy_active and has_topk_cross_entropy_support:
+                        return_topk_divergence = token_baseline_requires_divergence(
+                            policy_loss_config
+                        )
+                        batch.meta_info["mopd_return_topk_divergence"] = (
+                            return_topk_divergence
+                        )
                         if uses_topk_distill_loss(policy_loss_config):
                             batch.meta_info["topk_distill_include_tail"] = topk_distill_include_tail(
                                 policy_loss_config
@@ -2016,6 +2027,7 @@ class RayPPOTrainer:
                         # so only a single optimizer mini-batch is reusable.
                         reuse_training_topk_cross_entropy = (
                             uses_topk_distill_loss(policy_loss_config)
+                            and not return_topk_divergence
                             and actor_config.strategy in {"fsdp", "fsdp2"}
                             and self.config.trainer.critic_warmup <= self.global_steps
                             and int(actor_config.get("ppo_epochs", 1)) == 1
@@ -2201,13 +2213,27 @@ class RayPPOTrainer:
                             ] = float(trajectory_keep.float().mean().item())
                             metrics[
                                 "actor/fire_trajectory_token_keep_ratio"
-                            ] = float(
-                                (
-                                    response_mask
-                                    * trajectory_keep.unsqueeze(-1)
-                                ).sum().item()
-                                / response_mask.sum().clamp(min=1.0).item()
+                                ] = float(
+                                    (
+                                        response_mask
+                                        * trajectory_keep.unsqueeze(-1)
+                                    ).sum().item()
+                                    / response_mask.sum()
+                                    .clamp(min=1.0)
+                                    .item()
+                                )
+                        if requires_batch_precompute(policy_loss_config):
+                            precomputed_baseline = (
+                                build_precomputed_baseline_tensors(
+                                    {
+                                        **batch.batch,
+                                        **batch.non_tensor_batch,
+                                    },
+                                    policy_loss_config,
+                                )
                             )
+                            for key, tensor in precomputed_baseline.items():
+                                batch.batch[key] = tensor
                         # update actor
                         with marked_timer("update_actor", timing_raw, color="red"):
                             if self.domain_budget_controller.enabled:

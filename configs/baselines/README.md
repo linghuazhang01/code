@@ -1,18 +1,26 @@
 # OPD Baseline Configs
 
-All canonical comparison runs live in `opd_baselines.yaml` as named profiles.
-List profiles with:
+The source-of-truth launch interface is `canonical/`: one baseline corresponds
+to one directly launchable YAML file. For example:
 
 ```bash
-python -c "from mopd_verl.config_profiles import list_config_profiles; print(*list_config_profiles('configs/baselines/opd_baselines.yaml'), sep='\\n')"
+python -m mopd_verl.launch \
+  --config configs/baselines/canonical/tip_native_full_vocab_rho50.yaml
 ```
 
-Run one profile with:
+The small canonical YAMLs use relative `extends` references to avoid copying
+the shared budget. `opd_baselines.yaml` remains the underlying comparison
+matrix and can still be launched explicitly for profile sweeps:
 
 ```bash
 python -m mopd_verl.launch \
   --config configs/baselines/opd_baselines.yaml::tip_topk32_rho50
 ```
+
+All canonical configs target the same project setting: a Qwen3-1.7B student,
+one Qwen3-30B-A3B-Instruct-2507 teacher, and the repository's math/code/science
+training data. Paper-specific model checkpoints and datasets are intentionally
+not part of the algorithm-parity contract.
 
 ## Fair-comparison profiles
 
@@ -25,58 +33,46 @@ objective fixed and change only the detached token scoring/weighting rule:
 - `tip_topk32_rho50`
 - `fire_token_topk32`
 
-`tip_topk32_rho50` implements TIP's entropy/disagreement min-max
-normalization, Soft-OR score, and Top-rho token selection. Its disagreement
-signal is the configured Top-32 KL, so the profile is deliberately named
+`tip_topk32_rho50` clips student entropy at the complete rollout batch's 98th
+percentile, applies batch-global min-max normalization to entropy and
+disagreement, combines them with TIP's Soft-OR score, and keeps the Top-rho
+tokens within each response. Its disagreement and training loss remain the
+configured Top-32 reverse KL, so the profile is deliberately named
 `tip_topk32` rather than native full-vocabulary TIP.
 
 ## Native-objective profiles
 
+- `tip_native_full_vocab_rho50`: normalized full-vocabulary student entropy,
+  batch q98 clipping/min-max, full-vocabulary reverse-KL disagreement,
+  Soft-OR, per-rollout Top-rho, and selected-token full-vocabulary reverse-KL
+  training. Teacher and student run sequentially on colocated workers.
 - `opd_native`: chosen-token OPD policy gradient.
-- `exopd_native_lambda1p25`: ExOPD with a frozen initial-student reference.
-- `eopd_native`: OPD plus teacher-entropy-gated Top-16 forward KL.
-- `fire_opd_native`: FiRe token weighting plus global-batch bottom-20%
-  trajectory filtering on chosen-token OPD.
+- `gopd_native_lambda0p5`: the G-OPD interpolation regime (`0 < lambda < 1`),
+  with a frozen step-zero student reference.
+- `exopd_native_lambda1p25`: the ExOPD (`lambda > 1`) instance of G-OPD,
+  with a frozen initial-student reference.
+- `eopd_native`: OPD plus strict `H_teacher > 0.8` gated Top-16 forward KL;
+  rollout IS is disabled so it cannot reweight only the OPD summand.
+- `fire_opd_native`: FiRe batch-global entropy normalization, per-trajectory
+  mean-one token weights, and exact bottom-20% trajectory filtering by mean
+  teacher chosen-token log-probability on chosen-token OPD.
 
 Before launching, adjust model/data paths and worker placement for the target
-machine. ExOPD requires `model.student_base_path`; it should point to the
-frozen initial student, normally the same checkpoint as `model.student_path`
-at step zero.
+machine. G-OPD uses `distill_loss_builder: gopd`, accepts `lambda >= 0`, and
+requires `model.gopd_reference_path`. ExOPD uses
+`distill_loss_builder: exopd`, enforces `lambda > 1`, and normally points that
+reference to the frozen step-zero student. `model.student_base_path` remains
+a backward-compatible alias.
 
-## Standalone Qwen3-1.7B and Qwen3-4B / Qwen3-30B training configs
+These are method-native, project-adapted baselines: scoring, selection, loss,
+reduction, and update semantics follow the named methods, while model, data,
+batch size, learning rate, and training steps follow this project's experiment
+design. The canonical matrix uses batch 504, learning rate `5e-6`, and 200
+steps. Its three domain teacher paths alias the same 30B checkpoint, so it is a
+multi-domain single-teacher setup.
 
-The standalone configs are directly launchable without a profile suffix.
-Each baseline has matching Qwen3-1.7B and Qwen3-4B student variants under the
-`qwen1p7b_30b_*` and `qwen4b_30b_*` prefixes, with both requested worker
-topologies:
-
-- `*_4gpu_b525.yaml`: 3 actor/student GPUs, 1 ref/teacher GPU, global batch 525.
-- `*_8gpu_b528.yaml`: 6 actor/student GPUs, 2 ref/teacher GPUs, global batch 528.
-
-The fair token-scoring comparison uses the same Top-32 reverse-KL objective:
-
-- `qwen1p7b_30b_entropy_topk32_rho50_*`
-- `qwen1p7b_30b_tip_topk32_rho50_*`
-- `qwen1p7b_30b_fire_topk32_matched_*`
-- `qwen4b_30b_entropy_topk32_rho50_*`
-- `qwen4b_30b_tip_topk32_rho50_*`
-- `qwen4b_30b_fire_topk32_matched_*`
-
-The native-objective comparison uses each paper's training objective:
-
-- `qwen1p7b_30b_exopd_native_lambda1p25_*`
-- `qwen1p7b_30b_eopd_native_*`
-- `qwen1p7b_30b_fire_opd_native_*`
-- `qwen4b_30b_exopd_native_lambda1p25_*`
-- `qwen4b_30b_eopd_native_*`
-- `qwen4b_30b_fire_opd_native_*`
-
-For example:
-
-```bash
-python -m mopd_verl.launch \
-  --config configs/baselines/qwen1p7b_30b_tip_topk32_rho50_4gpu_b525.yaml
-
-python -m mopd_verl.launch \
-  --config configs/baselines/qwen1p7b_30b_tip_topk32_rho50_8gpu_b528.yaml
-```
+Full-vocabulary TIP uses a smaller, memory-safe batch of 24, one rollout per
+prompt, 8192 response tokens, and the same `5e-6` project learning rate. It
+caches teacher logits in bf16 host memory and uses a colocated sequential
+teacher/student topology on 8 GPUs. Those resource adaptations do not change
+TIP's scoring or training objective.

@@ -236,30 +236,50 @@ def policy_gradient_rewards(
     )
 
 
-def exopd_policy_gradient_rewards(
+def gopd_policy_gradient_rewards(
     model_inputs: dict[str, Any],
     policy_loss_cfg: Any,
     old_log_prob: torch.Tensor,
 ) -> torch.Tensor:
-    """Return the sampled ExOPD advantage from G-OPD Eq. (8)."""
+    """Return the sampled generalized OPD advantage from G-OPD Eq. (11)."""
 
     if "base_log_prob" not in model_inputs:
         raise ValueError(
-            "ExOPD requires base_log_prob from a frozen initial-student "
-            "reference. Set model.student_base_path."
+            "G-OPD requires base_log_prob from a frozen reference. Set "
+            "model.gopd_reference_path (or legacy model.student_base_path)."
         )
     teacher = selected_teacher_log_prob(model_inputs, policy_loss_cfg).float()
     base = model_inputs["base_log_prob"].float()
     old = old_log_prob.float()
     extrapolation = float(_cfg_get(policy_loss_cfg, "lambda_vals", 1.25))
-    if not math.isfinite(extrapolation) or extrapolation <= 0.0:
+    if not math.isfinite(extrapolation) or extrapolation < 0.0:
         raise ValueError(
-            "ExOPD lambda_vals must be finite and positive, "
+            "G-OPD lambda_vals must be finite and non-negative, "
             f"got {extrapolation}."
         )
     teacher_reward = teacher - base
     sampled_reference_kl = old - base
     return extrapolation * teacher_reward - sampled_reference_kl
+
+
+def exopd_policy_gradient_rewards(
+    model_inputs: dict[str, Any],
+    policy_loss_cfg: Any,
+    old_log_prob: torch.Tensor,
+) -> torch.Tensor:
+    """Return reward-extrapolated G-OPD, which requires lambda greater than one."""
+
+    extrapolation = float(_cfg_get(policy_loss_cfg, "lambda_vals", 1.25))
+    if not math.isfinite(extrapolation) or extrapolation <= 1.0:
+        raise ValueError(
+            "ExOPD is the reward-extrapolation regime and requires "
+            f"lambda_vals > 1, got {extrapolation}."
+        )
+    return gopd_policy_gradient_rewards(
+        model_inputs,
+        policy_loss_cfg,
+        old_log_prob,
+    )
 
 
 def masked_mean(value: torch.Tensor, mask: torch.Tensor) -> float:

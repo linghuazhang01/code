@@ -30,8 +30,17 @@ from mopd_verl.region_dpo_config import (
     validate_region_dpo_config,
     with_control_token_fallback,
 )
-from mopd_verl.topk_distill import uses_topk_distill_loss
-from mopd_verl.token_baselines import validate_token_baseline_config
+from mopd_verl.topk_distill import (
+    distill_loss_builder,
+    uses_tip_full_vocab_loss,
+    uses_topk_distill_loss,
+)
+from mopd_verl.token_baselines import (
+    TOKEN_BASELINE_FIRE_OPD,
+    TOKEN_BASELINE_TIP_TOPK32,
+    token_baseline_method,
+    validate_token_baseline_config,
+)
 
 DEFAULT_PAPER_EVAL_DATASETS = [
     "aime24",
@@ -80,11 +89,14 @@ class ModelConfig:
     secondary_teacher_path: str | None
     teacher_model_device: str = "cpu"
     attn_implementation: str = "flash_attention_2"
+    use_remove_padding: bool = True
+    gopd_reference_path: str | None = None
 
 
 @dataclass(frozen=True)
 class ActorConfig:
     learning_rate: str = "1e-5"
+    lr_scheduler_type: str = "constant"
     lr_warmup_steps_ratio: float = 0.0
     only_reverse_kl_advantages: bool = True
     lambda_vals: float = 1.25
@@ -101,6 +113,10 @@ class ActorConfig:
     fire_opd_student_confusion_beta: float = 1.0
     fire_opd_trajectory_drop_ratio: float = 0.2
     fire_opd_filter_trajectories: bool = False
+    tip_native_retention_ratio: float = 0.5
+    tip_native_entropy_clip_quantile: float = 0.98
+    tip_native_chunk_size: int = 512
+    tip_native_temperature: float = 1.0
     topk_distill_enabled: bool = False
     topk_distill_kl_direction: str = "reverse"
     topk_distill_k: int = 8
@@ -168,7 +184,7 @@ class RolloutConfig:
 
 @dataclass(frozen=True)
 class RolloutCorrectionConfig:
-    rollout_is: str = "token"
+    rollout_is: str | None = "token"
     rollout_is_threshold: float = 5.0
     rollout_rs: str | None = "null"
     bypass_mode: bool = False
@@ -694,12 +710,25 @@ def load_config(path: str | Path) -> MOPDConfig:
         domain_teacher_paths.setdefault("code", code_teacher_path)
         if if_teacher_path is not None:
             domain_teacher_paths.setdefault("if", if_teacher_path)
+    legacy_student_base_raw = model_raw.get(
+        "student_base_path",
+        model_raw["student_path"],
+    )
+    gopd_reference_raw = model_raw.get(
+        "gopd_reference_path",
+        legacy_student_base_raw,
+    )
     model = ModelConfig(
         student_path=str(model_raw["student_path"]),
         student_base_path=(
             None
-            if model_raw.get("student_base_path", model_raw["student_path"]) is None
-            else str(model_raw.get("student_base_path", model_raw["student_path"]))
+            if legacy_student_base_raw is None
+            else str(legacy_student_base_raw)
+        ),
+        gopd_reference_path=(
+            None
+            if gopd_reference_raw is None
+            else str(gopd_reference_raw)
         ),
         math_teacher_path=math_teacher_path,
         code_teacher_path=code_teacher_path,
@@ -716,9 +745,14 @@ def load_config(path: str | Path) -> MOPDConfig:
         ),
         teacher_model_device=teacher_model_device,
         attn_implementation=attn_implementation,
+        use_remove_padding=bool(model_raw.get("use_remove_padding", True)),
     )
     actor = ActorConfig(**_expect_mapping(root.get("actor", {}), "actor"))
     rollout = RolloutConfig(**_expect_mapping(root.get("rollout", {}), "rollout"))
+    rollout_correction = RolloutCorrectionConfig(
+        **_expect_mapping(root.get("rollout_correction", {}), "rollout_correction")
+    )
+    worker_placement = _worker_placement(root.get("worker_placement", {}))
     trainer = TrainerConfig(**_expect_mapping(root.get("trainer", {}), "trainer"))
     audit = AuditConfig(**_expect_mapping(root.get("audit", {}), "audit"))
     region_dpo = with_control_token_fallback(
@@ -731,12 +765,107 @@ def load_config(path: str | Path) -> MOPDConfig:
         max_response_length=data.max_response_length,
     )
     domain_budgeting = parse_domain_budgeting_config(domain_budgeting_raw)
-    normalized_loss_builder = actor.distill_loss_builder.strip().lower()
+    normalized_loss_builder = distill_loss_builder(actor)
     topk_distillation_active = uses_topk_distill_loss(actor)
     validate_token_baseline_config(
         actor,
         uses_topk_distillation=topk_distillation_active,
     )
+    if token_baseline_method(actor) in {
+        TOKEN_BASELINE_TIP_TOPK32,
+        TOKEN_BASELINE_FIRE_OPD,
+    }:
+        expected_ppo_batch = data.train_batch_size * rollout.n
+        if actor.ppo_epochs != 1:
+            raise ValueError(
+                "Batch-scoped TIP/FiRe scoring requires actor.ppo_epochs=1."
+            )
+        if actor.ppo_mini_batch_size != expected_ppo_batch:
+            raise ValueError(
+                "Batch-scoped TIP/FiRe scoring requires one optimizer "
+                "mini-batch covering the rollout batch: expected "
+                f"actor.ppo_mini_batch_size={expected_ppo_batch}, got "
+                f"{actor.ppo_mini_batch_size}."
+            )
+    if uses_tip_full_vocab_loss(actor):
+        expected_ppo_batch = data.train_batch_size
+        if actor.topk_distill_enabled:
+            raise ValueError("Native TIP cannot enable Top-K distillation.")
+        if actor.multi_teacher_distill:
+            raise ValueError(
+                "Native TIP currently supports one colocated teacher; "
+                "actor.multi_teacher_distill must be false."
+            )
+        if token_baseline_method(actor) != "none":
+            raise ValueError(
+                "Native TIP owns its full-vocabulary selector; "
+                "actor.token_baseline_method must be 'none'."
+            )
+        if actor.use_kl_loss:
+            raise ValueError("Native TIP requires actor.use_kl_loss=false.")
+        if actor.ppo_epochs != 1:
+            raise ValueError("Native TIP requires actor.ppo_epochs=1.")
+        if actor.ppo_mini_batch_size != expected_ppo_batch:
+            raise ValueError(
+                "Native TIP requires one optimizer mini-batch covering all "
+                f"prompt groups before rollout repetition ({expected_ppo_batch})."
+            )
+        if actor.ppo_micro_batch_size_per_gpu != 1:
+            raise ValueError(
+                "Native TIP currently requires "
+                "actor.ppo_micro_batch_size_per_gpu=1."
+            )
+        if actor.use_dynamic_bsz:
+            raise ValueError("Native TIP does not support dynamic micro-batches.")
+        if not actor.param_offload or not actor.optimizer_offload:
+            raise ValueError(
+                "Native TIP requires actor param and optimizer offload so the "
+                "colocated teacher and student run sequentially."
+            )
+        if model.teacher_model_device != "cpu":
+            raise ValueError("Native TIP requires model.teacher_model_device=cpu.")
+        if model.use_remove_padding:
+            raise ValueError(
+                "Native TIP currently requires model.use_remove_padding=false."
+            )
+        if rollout.mode != "sync":
+            raise ValueError("Native TIP currently requires synchronous rollout.")
+        if rollout.calculate_log_probs:
+            raise ValueError(
+                "Native TIP does not consume rollout log probabilities; set "
+                "rollout.calculate_log_probs=false."
+            )
+        if rollout.teacher_prefix_sampling_enabled or rollout.multi_turn_enable:
+            raise ValueError(
+                "Native TIP currently supports plain single-turn student rollouts."
+            )
+        if rollout_correction.rollout_is not in {None, "null", "none"}:
+            raise ValueError("Native TIP does not use rollout importance sampling.")
+        if worker_placement.separate_ref_policy:
+            raise ValueError(
+                "Native TIP requires worker_placement.separate_ref_policy=false."
+            )
+        actor_world_size = trainer.n_gpus_per_node * trainer.nnodes
+        repeated_batch_size = data.train_batch_size * rollout.n
+        if repeated_batch_size % actor_world_size:
+            raise ValueError(
+                "Native TIP rollout batch must divide evenly across actor GPUs."
+            )
+        if not 0.0 < actor.tip_native_retention_ratio <= 1.0:
+            raise ValueError("actor.tip_native_retention_ratio must be in (0, 1].")
+        if not 0.0 < actor.tip_native_entropy_clip_quantile <= 1.0:
+            raise ValueError(
+                "actor.tip_native_entropy_clip_quantile must be in (0, 1]."
+            )
+        if actor.tip_native_chunk_size < 1:
+            raise ValueError("actor.tip_native_chunk_size must be positive.")
+        if actor.tip_native_temperature <= 0.0:
+            raise ValueError("actor.tip_native_temperature must be positive.")
+        if audit.enabled or region_dpo.enabled or domain_budgeting.enabled:
+            raise ValueError(
+                "Native TIP's dedicated trainer does not run audit, Region-DPO, "
+                "or dynamic domain-budgeting side paths; disable them."
+            )
     if (
         audit.control_token_online_selection_enabled
         and audit.control_token_online_selection_mode
@@ -746,7 +875,11 @@ def load_config(path: str | Path) -> MOPDConfig:
         raise ValueError(
             "top_kl_student_entropy requires an active Top-K distillation loss."
         )
-    if normalized_loss_builder in {"eopd", "entropy_aware", "entropy_aware_opd"}:
+    if normalized_loss_builder == "eopd":
+        if rollout_correction.rollout_is not in {None, "null", "none"}:
+            raise ValueError(
+                "Paper-native EOPD requires rollout_correction.rollout_is=null."
+            )
         if actor.eopd_topk_k < 1:
             raise ValueError("actor.eopd_topk_k must be positive for EOPD.")
         if (
@@ -763,19 +896,24 @@ def load_config(path: str | Path) -> MOPDConfig:
             raise ValueError(
                 "actor.eopd_forward_kl_weight must be finite and non-negative."
             )
-    if normalized_loss_builder in {"exopd", "extrapolated_opd"}:
-        if model.student_base_path is None:
+    if normalized_loss_builder in {"gopd", "exopd"}:
+        if model.gopd_reference_path is None:
             raise ValueError(
-                "ExOPD requires model.student_base_path to point to the "
-                "frozen initial student."
+                "G-OPD/ExOPD requires model.gopd_reference_path (or legacy "
+                "model.student_base_path) to point to a frozen reference."
             )
-        if not math.isfinite(actor.lambda_vals) or actor.lambda_vals <= 0.0:
+        if not math.isfinite(actor.lambda_vals) or actor.lambda_vals < 0.0:
             raise ValueError(
-                "ExOPD requires actor.lambda_vals to be finite and positive."
+                "G-OPD requires actor.lambda_vals to be finite and non-negative."
+            )
+        if normalized_loss_builder == "exopd" and actor.lambda_vals <= 1.0:
+            raise ValueError(
+                "ExOPD is the reward-extrapolation regime and requires "
+                "actor.lambda_vals > 1."
             )
         if actor.topk_distill_enabled:
             raise ValueError(
-                "ExOPD is a chosen-token objective and cannot enable "
+                "G-OPD/ExOPD is a chosen-token objective and cannot enable "
                 "actor.topk_distill_enabled."
             )
     if not 0.0 < audit.token_gradient_tail_fraction <= 1.0:
@@ -1106,10 +1244,8 @@ def load_config(path: str | Path) -> MOPDConfig:
         model=model,
         actor=actor,
         rollout=rollout,
-        rollout_correction=RolloutCorrectionConfig(
-            **_expect_mapping(root.get("rollout_correction", {}), "rollout_correction")
-        ),
-        worker_placement=_worker_placement(root.get("worker_placement", {})),
+        rollout_correction=rollout_correction,
+        worker_placement=worker_placement,
         audit=audit,
         region_dpo=region_dpo,
         domain_budgeting=domain_budgeting,

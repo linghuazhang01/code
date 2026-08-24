@@ -124,27 +124,8 @@ def _optional_bool_with_fallback(value: Any, fallback: bool) -> bool:
 
 
 def _mask_mean(matrix: Any, mask: Any) -> Any:
-    import torch
-
     denom = mask.sum(dim=-1).clamp(min=1)
     return (matrix * mask).sum(dim=-1) / denom
-
-
-def _masked_token_stats(matrix: Any, mask: Any) -> dict[str, float | None]:
-    import torch
-
-    denom = mask.sum()
-    if float(denom.detach().cpu().item()) <= 0:
-        return {"mean": None, "std": None, "variance": None}
-    mean = (matrix * mask).sum() / denom
-    sq_mean = (matrix.square() * mask).sum() / denom
-    variance = torch.clamp(sq_mean - mean.square(), min=0.0)
-    std = torch.sqrt(variance)
-    return {
-        "mean": float(mean.detach().cpu().item()),
-        "std": float(std.detach().cpu().item()),
-        "variance": float(variance.detach().cpu().item()),
-    }
 
 
 def _token_distribution_stats(values: Any, prefix: str) -> dict[str, float | None]:
@@ -2109,7 +2090,6 @@ class MOPDAuditLogger:
         sample_loss_std = torch.sqrt(sample_loss_var)
         sample_loss_cv = sample_loss_std / (sample_token_opd_loss_mean.abs() + 1e-8)
         effective_tokens = response_mask.sum(dim=-1).detach().cpu().tolist()
-        teacher_student_gap = _mask_mean(gap_signed, response_mask)
         teacher_logprob_mean = _mask_mean(teacher_log_probs, response_mask)
         advantages = (
             tensor_batch["advantages"].detach().float()
@@ -2175,10 +2155,8 @@ class MOPDAuditLogger:
         sample_token_opd_loss_defined_flags = [
             bool(value) for value in _tensor_to_int_list(sample_token_opd_loss_defined)
         ]
-        sample_loss_vars = _tensor_to_float_list(sample_loss_var)
         loss_cvs = _tensor_to_float_list(sample_loss_cv)
         token_counts = [float(x) for x in effective_tokens]
-        gap_means = _tensor_to_float_list(teacher_student_gap)
         teacher_logprob_means = _tensor_to_float_list(teacher_logprob_mean)
         advantage_means = _tensor_to_float_list(sample_advantage_mean)
         reward_values = (
@@ -2297,7 +2275,6 @@ class MOPDAuditLogger:
             safe_domain = safe_name(domain)
             domain_token_count = token_count_by_domain[domain]
             domain_sample_count = sample_count_by_domain[domain]
-            domain_loss_vars = [sample_loss_vars[idx] for idx in indices]
             domain_cvs = [loss_cvs[idx] for idx in indices]
             domain_teacher_logprobs = [teacher_logprob_means[idx] for idx in indices]
             domain_advantages = [advantage_means[idx] for idx in indices]

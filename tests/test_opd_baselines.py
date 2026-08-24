@@ -9,7 +9,18 @@ from unittest.mock import patch
 import pytest
 import torch
 
-from mopd_verl.full_gradient.loss_support import exopd_policy_gradient_rewards
+from mopd_verl.full_gradient.loss_support import (
+    exopd_policy_gradient_rewards,
+    gopd_policy_gradient_rewards,
+    policy_gradient_rewards,
+)
+from mopd_verl.loss_scaling import global_token_mean_loss_scales
+from mopd_verl.token_baseline_runtime import (
+    PRECOMPUTED_SCORE_KEY,
+    PRECOMPUTED_SELECTED_KEY,
+    PRECOMPUTED_WEIGHT_KEY,
+    build_precomputed_baseline_tensors,
+)
 from mopd_verl.token_baselines import (
     build_token_baseline_weights,
     fire_opd_trajectory_weights,
@@ -18,7 +29,6 @@ from mopd_verl.token_baselines import (
 from mopd_verl.topk_distill import (
     distill_loss_builder,
     topk_distill_loss_matrix,
-    uses_exopd_loss,
 )
 
 @contextmanager
@@ -94,6 +104,35 @@ def test_entropy_topk_selects_high_entropy_and_preserves_row_mean() -> None:
     torch.testing.assert_close(result.weights.mean(dim=-1), torch.ones(1))
 
 
+def test_token_mean_microbatch_scaling_matches_global_token_mean() -> None:
+    masks = (
+        torch.tensor([[1.0, 0.0, 0.0]]),
+        torch.tensor([[1.0, 1.0, 1.0]]),
+    )
+    losses = (
+        torch.tensor([[2.0, 0.0, 0.0]]),
+        torch.tensor([[4.0, 6.0, 8.0]]),
+    )
+    scales = global_token_mean_loss_scales(
+        masks,
+        reduction_device="cpu",
+        distributed=False,
+    )
+    micro_means = [
+        (loss * mask).sum() / mask.sum()
+        for loss, mask in zip(losses, masks, strict=True)
+    ]
+    actual = sum(
+        scale * micro_mean
+        for scale, micro_mean in zip(scales, micro_means, strict=True)
+    )
+    expected = sum(
+        (loss * mask).sum()
+        for loss, mask in zip(losses, masks, strict=True)
+    ) / sum(mask.sum() for mask in masks)
+    torch.testing.assert_close(actual, expected)
+
+
 def test_entropy_sampling_retains_exact_budget() -> None:
     torch.manual_seed(7)
     result = build_token_baseline_weights(
@@ -130,6 +169,59 @@ def test_tip_soft_or_combines_entropy_and_topk_disagreement() -> None:
         result.selected_mask,
         torch.tensor([[0.0, 1.0, 1.0, 0.0]]),
     )
+
+
+def test_tip_clips_entropy_and_minmaxes_over_the_complete_batch() -> None:
+    result = build_token_baseline_weights(
+        student_entropy=torch.tensor(
+            [[0.0, 1.0, 2.0, 100.0], [3.0, 4.0, 5.0, 999.0]]
+        ),
+        divergence=torch.zeros(2, 4),
+        response_mask=torch.tensor(
+            [[1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 0.0]]
+        ),
+        policy_loss_config={
+            "token_baseline_method": "tip_topk32",
+            "token_baseline_retention_ratio": 0.5,
+            "token_baseline_selection_mode": "topk",
+        },
+    )
+
+    assert 0.0 < float(result.score[1, 2]) < 0.1
+    assert result.score[0, 3] == 1.0
+    assert result.score[1, 3] == 0.0
+
+
+def test_tip_batch_precompute_routes_domain_divergence_before_microbatching() -> None:
+    tensors = build_precomputed_baseline_tensors(
+        {
+            "student_entropy": torch.tensor([[0.0, 1.0], [1.0, 0.0]]),
+            "response_mask": torch.ones(2, 2),
+            "math_teacher_topk_divergence": torch.tensor(
+                [[0.0, 2.0], [99.0, 99.0]]
+            ),
+            "code_teacher_topk_divergence": torch.tensor(
+                [[99.0, 99.0], [2.0, 0.0]]
+            ),
+            "opd_teacher": ["math", "code"],
+        },
+        {
+            "token_baseline_method": "tip_topk32",
+            "token_baseline_retention_ratio": 0.5,
+            "token_baseline_selection_mode": "topk",
+            "multi_teacher_distill": True,
+        },
+    )
+
+    torch.testing.assert_close(
+        tensors[PRECOMPUTED_SELECTED_KEY],
+        torch.tensor([[0.0, 1.0], [1.0, 0.0]]),
+    )
+    torch.testing.assert_close(
+        tensors[PRECOMPUTED_WEIGHT_KEY],
+        torch.tensor([[0.0, 2.0], [2.0, 0.0]]),
+    )
+    assert all(not tensor.requires_grad for tensor in tensors.values())
 
 
 def test_tip_requires_topk_divergence_objective() -> None:
@@ -217,6 +309,26 @@ def test_tip_weights_the_actual_topk_actor_loss_matrix() -> None:
                     student_topk,
                 )
 
+        divergence = topk_distill_loss_matrix(
+            student_topk_log_probs=student_topk.detach(),
+            teacher_topk_log_probs=teacher_topk,
+            mode="topk_renormalized_reverse_kl",
+            include_tail=False,
+            temperature=1.0,
+        )
+        baseline = build_token_baseline_weights(
+            student_entropy=student_entropy,
+            divergence=divergence,
+            response_mask=torch.ones(1, 4),
+            policy_loss_config=Actor.config["policy_loss"],
+        )
+        MicroBatch.batch.update(
+            {
+                PRECOMPUTED_WEIGHT_KEY: baseline.weights,
+                PRECOMPUTED_SCORE_KEY: baseline.score,
+                PRECOMPUTED_SELECTED_KEY: baseline.selected_mask,
+            }
+        )
         result = build_actor_micro_batch_loss(
             Actor(),
             MicroBatch(),
@@ -232,12 +344,6 @@ def test_tip_weights_the_actual_topk_actor_loss_matrix() -> None:
         include_tail=False,
         temperature=1.0,
     )
-    baseline = build_token_baseline_weights(
-        student_entropy=student_entropy,
-        divergence=divergence,
-        response_mask=torch.ones(1, 4),
-        policy_loss_config=Actor.config["policy_loss"],
-    )
     expected = (divergence * baseline.weights).mean()
 
     torch.testing.assert_close(result.loss, expected)
@@ -246,9 +352,9 @@ def test_tip_weights_the_actual_topk_actor_loss_matrix() -> None:
 
 def test_fire_token_weight_matches_confidence_confusion_formula() -> None:
     result = build_token_baseline_weights(
-        student_entropy=torch.tensor([[1.0, 2.0]]),
-        teacher_entropy=torch.tensor([[1.0, 2.0]]),
-        response_mask=torch.ones(1, 2),
+        student_entropy=torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
+        teacher_entropy=torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
+        response_mask=torch.ones(2, 2),
         policy_loss_config={
             "token_baseline_method": "fire_opd",
             "fire_opd_teacher_confidence_alpha": 1.0,
@@ -256,13 +362,13 @@ def test_fire_token_weight_matches_confidence_confusion_formula() -> None:
         },
     )
 
-    raw = torch.tensor([[2.25, 2.0]])
+    raw = torch.tensor([[2.1875, 2.25], [2.1875, 2.0]])
     expected = raw / raw.mean(dim=-1, keepdim=True)
     torch.testing.assert_close(result.weights, expected)
-    torch.testing.assert_close(result.weights.mean(dim=-1), torch.ones(1))
+    torch.testing.assert_close(result.weights.mean(dim=-1), torch.ones(2))
 
 
-def test_fire_filter_is_global_and_preserves_valid_token_mean() -> None:
+def test_fire_filter_is_exact_and_preserves_sequence_mean_objective() -> None:
     response_mask = torch.tensor(
         [
             [1.0, 0.0],
@@ -290,12 +396,11 @@ def test_fire_filter_is_global_and_preserves_valid_token_mean() -> None:
 
     torch.testing.assert_close(
         weights,
-        torch.tensor([0.0, 1.125, 1.125, 1.125, 1.125]),
+        torch.tensor([0.0, 1.25, 1.25, 1.25, 1.25]),
     )
-    token_weight_mean = (
-        weights.unsqueeze(-1) * response_mask
-    ).sum() / response_mask.sum()
-    torch.testing.assert_close(token_weight_mean, torch.tensor(1.0))
+    per_sequence_loss = torch.tensor([10.0, 20.0, 30.0, 40.0, 50.0])
+    actual = (weights * per_sequence_loss).mean()
+    torch.testing.assert_close(actual, per_sequence_loss[1:].mean())
 
 
 def test_exopd_advantage_uses_frozen_student_reference() -> None:
@@ -323,8 +428,66 @@ def test_exopd_advantage_uses_frozen_student_reference() -> None:
             {"lambda_vals": 1.25},
             old,
         )
+    for invalid_lambda in (0.5, 1.0):
+        with pytest.raises(ValueError, match="lambda_vals > 1"):
+            exopd_policy_gradient_rewards(
+                {
+                    "math_teacher_log_prob": teacher,
+                    "base_log_prob": base,
+                },
+                {"lambda_vals": invalid_lambda},
+                old,
+            )
+
+
+def test_opd_advantage_is_teacher_minus_old_student_log_probability() -> None:
+    old = torch.tensor([[-2.0, -3.0]])
+    teacher = torch.tensor([[-1.0, -1.5]])
+    actual = policy_gradient_rewards(
+        {"math_teacher_log_prob": teacher},
+        {"multi_teacher_distill": False},
+        old,
+    )
+    torch.testing.assert_close(actual, teacher - old)
+
+
+@pytest.mark.parametrize("lambda_value", (0.0, 0.5, 1.0, 1.25))
+def test_gopd_advantage_matches_all_lambda_regimes(lambda_value: float) -> None:
+    old = torch.tensor([[-2.0, -3.0]])
+    teacher = torch.tensor([[-1.0, -1.5]])
+    reference = torch.tensor([[-2.5, -2.5]])
+    actual = gopd_policy_gradient_rewards(
+        {
+            "math_teacher_log_prob": teacher,
+            "base_log_prob": reference,
+        },
+        {"lambda_vals": lambda_value},
+        old,
+    )
+    expected = lambda_value * (teacher - reference) - (old - reference)
+    torch.testing.assert_close(actual, expected)
+
+
+def test_gopd_lambda_one_reduces_to_opd_for_any_reference() -> None:
+    old = torch.tensor([[-2.0, -3.0]])
+    teacher = torch.tensor([[-1.0, -1.5]])
+    references = (
+        torch.tensor([[-2.5, -2.5]]),
+        torch.tensor([[-8.0, -0.25]]),
+    )
+    for reference in references:
+        actual = gopd_policy_gradient_rewards(
+            {
+                "math_teacher_log_prob": teacher,
+                "base_log_prob": reference,
+            },
+            {"lambda_vals": 1.0},
+            old,
+        )
+        torch.testing.assert_close(actual, teacher - old)
 
 
 def test_exopd_has_an_explicit_builder() -> None:
     assert distill_loss_builder({"distill_loss_builder": "exopd"}) == "exopd"
-    assert uses_exopd_loss({"distill_loss_builder": "extrapolated_opd"})
+    assert distill_loss_builder({"distill_loss_builder": "extrapolated_opd"}) == "exopd"
+    assert distill_loss_builder({"distill_loss_builder": "gopd"}) == "gopd"

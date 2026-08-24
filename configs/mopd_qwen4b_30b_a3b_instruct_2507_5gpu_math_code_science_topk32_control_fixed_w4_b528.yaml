@@ -25,7 +25,7 @@ runtime:
   # Stable ID: create on the first launch and append to the same run on restart.
   wandb_run_id: qwen4b-30b-a3b-5gpu-mcs-control-fixed-w4-b528
   wandb_resume: allow
-  env_file: ../mopd/code/.env.local
+  env_file: .env.local
   used_model: no_api
   # Let Slurm select the five physical devices. CUDA renumbers the visible set
   # to process-local logical devices 0-4; do not override Slurm's allocation.

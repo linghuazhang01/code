@@ -126,11 +126,22 @@ profile_matrix:
         nnodes: 1
 
     audit:
-      enabled: false
+      enabled: true
       domains:
         - math
         - code
         - science
+      tensorboard_prefix: mopd
+      tensorboard_layout: domain_category
+      tensorboard_prune_mode: core
+      log_sample_level: false
+      response_level_enabled: false
+      log_validation_metrics: false
+      full_gradient_enabled: false
+      sample_gradient_enabled: false
+      token_gap_enabled: false
+      entropy_enabled: false
+      token_gradient_enabled: false
 
     domain_budgeting:
       enabled: false
@@ -171,6 +182,9 @@ profile_matrix:
       actor:
         distill_loss_builder: policy_gradient
         distill_mode: chosen_token_policy_gradient
+      audit:
+        output_dir: audit/qwen4b-opd-baseline-domain-metrics
+        loss_variance_signal: policy_gradient_distillation_signal
       trainer:
         experiment_name: qwen4b-opd-baseline
         default_local_dir: checkpoints/MOPD/qwen4b-opd-baseline
@@ -182,6 +196,11 @@ profile_matrix:
         eopd_entropy_threshold: 0.8
         eopd_forward_kl_weight: 1.0
         eopd_topk_k: 16
+      rollout_correction:
+        rollout_is: null
+      audit:
+        output_dir: audit/qwen4b-eopd-tau0p8-alpha1-k16-domain-metrics
+        loss_variance_signal: policy_gradient+entropy_gated_topk_forward_kl
       trainer:
         experiment_name: qwen4b-eopd-tau0p8-alpha1-k16
         default_local_dir: checkpoints/MOPD/qwen4b-eopd-tau0p8-alpha1-k16

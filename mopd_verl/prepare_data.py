@@ -12,12 +12,7 @@ from typing import Any
 
 import pandas as pd
 
-from eval.data_prep.paper_eval import (
-    evalplus_jsonl_to_verl_parquet,
-    lcb_jsonl_to_verl_parquet,
-    math_eval_jsonl_to_verl_parquet,
-    prepare_paper_eval_data,
-)
+from eval.data_prep.paper_eval import prepare_paper_eval_data
 from mopd_verl.general_reasoner_data import (
     DEFAULT_DATASET_NAME as GENERAL_REASONER_DATASET_NAME,
     general_reasoner_to_verl_parquet,
@@ -106,10 +101,6 @@ def merge_teacher_data(math_path: str | Path, code_path: str | Path, output_path
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     merged.to_parquet(output, index=False)
-
-
-def teacher_counts(path: str | Path) -> dict[str, int]:
-    return validate_teacher_labels(path).counts
 
 
 def _iter_extra_info(frame: pd.DataFrame):

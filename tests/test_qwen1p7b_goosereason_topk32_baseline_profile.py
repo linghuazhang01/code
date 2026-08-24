@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 from mopd_verl.domain_sampling import allocate_domain_batch_counts
 from mopd_verl.launch import build_command, format_command
 from mopd_verl.settings import load_config
-
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = (
@@ -76,11 +75,17 @@ class Qwen1p7BGooseReasonTopK32BaselineProfileTests(unittest.TestCase):
         self.assertEqual(actor.kl_loss_coef, 0)
         self.assertEqual(actor.entropy_coeff, 0)
 
-    def test_profile_disables_mopd_tlpd_method_paths(self) -> None:
+    def test_profile_keeps_only_lightweight_domain_metrics(self) -> None:
         config = load_config(CONFIG_PATH)
         audit = config.audit
 
-        self.assertFalse(audit.enabled)
+        self.assertTrue(audit.enabled)
+        self.assertEqual(audit.domains, ["math", "code", "science"])
+        self.assertIn("domain_metrics", audit.output_dir)
+        self.assertEqual(
+            audit.loss_variance_signal,
+            "topk_renormalized_reverse_kl",
+        )
         self.assertFalse(audit.full_gradient_enabled)
         self.assertFalse(audit.sample_gradient_enabled)
         self.assertFalse(audit.token_gradient_enabled)
@@ -128,7 +133,10 @@ class Qwen1p7BGooseReasonTopK32BaselineProfileTests(unittest.TestCase):
         self.assertIn("algorithm.rollout_correction.rollout_is=null", rendered)
         self.assertNotIn("algorithm.rollout_correction.rollout_is=token", rendered)
         self.assertIn("trainer.resume_mode=disable", rendered)
-        self.assertNotIn("+mopd_audit.", rendered)
+        self.assertIn("+mopd_audit.enabled=true", rendered)
+        self.assertIn("+mopd_audit.domains=", rendered)
+        self.assertIn("+mopd_audit.full_gradient_enabled=false", rendered)
+        self.assertIn("+mopd_audit.token_gradient_enabled=false", rendered)
         self.assertNotIn("+mopd_domain_budgeting.", rendered)
 
 

@@ -31,7 +31,7 @@ runtime:
   # Stable ID: create on the first launch and append to the same run on restart.
   wandb_run_id: q0p6b-4g-mcwild-toploss-i3w3f20k30w4-b528-v1
   wandb_resume: allow
-  env_file: ../mopd/code/.env.local
+  env_file: .env.local
   used_model: no_api
   # Let Slurm select the four physical devices; do not override its allocation.
   slurm_allocation_gpus: 4

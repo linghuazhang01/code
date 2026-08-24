@@ -1,0 +1,19 @@
+{
+  "projects": {
+    "opd": {
+      "project_id": "opd",
+      "repo_roots": [
+        "/Users/linghuazhang/Desktop/Project/OPD/code"
+      ],
+      "vault_name": "Obsidian",
+      "vault_root": "/Users/linghuazhang/Desktop/Project/Notes/Obsidian/Research/opd",
+      "hub_note": "Research/opd/00-Hub.md",
+      "status": "active",
+      "auto_sync": true,
+      "note_language": "zh-CN",
+      "created_at": "2026-08-22T10:07:28Z",
+      "updated_at": "2026-08-22T10:07:28Z",
+      "archive_root": "/Users/linghuazhang/Desktop/Project/Notes/Obsidian/Archive"
+    }
+  }
+}

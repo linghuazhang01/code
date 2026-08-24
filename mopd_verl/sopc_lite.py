@@ -97,22 +97,6 @@ def read_gap_vectors(path: Path) -> list[GapVector]:
     return rows
 
 
-def compute_collision_rows(
-    vectors: Sequence[GapVector],
-    top_mass_fraction: float = DEFAULT_TOP_MASS_FRACTION,
-    random_trials: int = DEFAULT_RANDOM_TRIALS,
-    seed: int = 0,
-) -> list[CollisionRow]:
-    return list(
-        compute_collision_result(
-            vectors,
-            top_mass_fraction=top_mass_fraction,
-            random_trials=random_trials,
-            seed=seed,
-        ).rows
-    )
-
-
 def compute_collision_result(
     vectors: Sequence[GapVector],
     top_mass_fraction: float = DEFAULT_TOP_MASS_FRACTION,

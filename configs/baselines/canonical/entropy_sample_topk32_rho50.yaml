@@ -1,0 +1,1 @@
+extends: ../opd_baselines.yaml::entropy_sample_topk32_rho50

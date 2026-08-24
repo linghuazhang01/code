@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 from mopd_verl.domain_sampling import allocate_domain_batch_counts
 from mopd_verl.launch import build_command, format_command
 from mopd_verl.settings import load_config
-
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = (
@@ -31,7 +30,7 @@ class Qwen1p7BGooseReason6GpuServerBaselineTests(unittest.TestCase):
         config = load_config(CONFIG_PATH)
 
         self.assertEqual(config.runtime.python_bin, PYTHON_PATH)
-        self.assertEqual(config.runtime.env_file, "../mopd/code/.env.local")
+        self.assertEqual(config.runtime.env_file, ".env.local")
         self.assertTrue(config.model.student_path.startswith(MODEL_PREFIX))
         self.assertNotIn("-Base", config.model.student_path)
         self.assertTrue(
@@ -108,7 +107,11 @@ class Qwen1p7BGooseReason6GpuServerBaselineTests(unittest.TestCase):
         self.assertEqual(server.rollout, baseline.rollout)
         self.assertEqual(server.rollout_correction, baseline.rollout_correction)
         self.assertTrue(server.audit.enabled)
-        self.assertFalse(baseline.audit.enabled)
+        self.assertTrue(baseline.audit.enabled)
+        self.assertEqual(
+            server.audit.loss_variance_signal,
+            baseline.audit.loss_variance_signal,
+        )
         self.assertFalse(server.audit.dynamic_domain_loss_weighting_enabled)
         self.assertFalse(server.audit.control_token_loss_weighting_enabled)
         self.assertFalse(server.audit.all_domain_shared_token_loss_weighting_enabled)

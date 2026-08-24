@@ -48,26 +48,6 @@ def extract_teacher_domains(non_tensor: dict[str, Any], batch_size: int) -> list
     return ["unknown" for _ in range(batch_size)]
 
 
-def extract_validation_datasets(non_tensor: dict[str, Any], batch_size: int) -> list[str]:
-    explicit = _non_tensor_list(non_tensor.get("validation_dataset"), batch_size)
-    data_sources = _non_tensor_list(non_tensor.get("data_source"), batch_size)
-    abilities = _non_tensor_list(non_tensor.get("ability"), batch_size)
-    labels: list[str] = []
-    for idx in range(batch_size):
-        if explicit[idx] is not None:
-            labels.append(str(explicit[idx]))
-            continue
-        data_source = None if data_sources[idx] is None else str(data_sources[idx])
-        ability = None if abilities[idx] is None else str(abilities[idx])
-        if data_source:
-            labels.append(data_source)
-        elif ability in {"math", "code"}:
-            labels.append(ability)
-        else:
-            labels.append("unknown")
-    return labels
-
-
 def extract_sample_ids(non_tensor: dict[str, Any], batch_size: int, step: int) -> list[str]:
     sample_ids = _non_tensor_list(non_tensor.get("sample_id"), batch_size)
     fallback_ids = _non_tensor_list(non_tensor.get("id"), batch_size)

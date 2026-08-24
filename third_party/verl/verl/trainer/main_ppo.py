@@ -23,6 +23,7 @@ import ray
 from omegaconf import OmegaConf
 
 from mopd_verl.reproducibility import GLOBAL_SEED_ENV, PYTHON_HASH_SEED_ENV, seed_everything
+from mopd_verl.topk_distill import uses_tip_full_vocab_loss
 from verl.experimental.dataset.sampler import AbstractSampler
 from verl.trainer.constants_ppo import get_ppo_ray_runtime_env
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
@@ -181,14 +182,25 @@ class TaskRunner:
         """Add actor rollout worker based on the actor strategy."""
         from verl.single_controller.ray import RayWorkerGroup
 
+        tip_native = uses_tip_full_vocab_loss(
+            config.actor_rollout_ref.actor.policy_loss
+        )
+
         if config.actor_rollout_ref.actor.strategy in {"fsdp", "fsdp2"}:
             from verl.workers.fsdp_workers import ActorRolloutRefWorker, AsyncActorRolloutRefWorker
 
-            actor_rollout_cls = (
-                AsyncActorRolloutRefWorker
-                if config.actor_rollout_ref.rollout.mode == "async"
-                else ActorRolloutRefWorker
-            )
+            if tip_native:
+                if config.actor_rollout_ref.rollout.mode != "sync":
+                    raise ValueError("Native TIP supports only synchronous rollout.")
+                from mopd_verl.tip_native_worker import TIPNativeWorker
+
+                actor_rollout_cls = TIPNativeWorker
+            else:
+                actor_rollout_cls = (
+                    AsyncActorRolloutRefWorker
+                    if config.actor_rollout_ref.rollout.mode == "async"
+                    else ActorRolloutRefWorker
+                )
             ray_worker_group_cls = RayWorkerGroup
 
         elif config.actor_rollout_ref.actor.strategy == "megatron":
@@ -415,7 +427,14 @@ class TaskRunner:
         train_sampler = create_rl_sampler(config.data, train_dataset)
 
         # Initialize the PPO trainer.
-        trainer = RayPPOTrainer(
+        trainer_class = RayPPOTrainer
+        if uses_tip_full_vocab_loss(
+            config.actor_rollout_ref.actor.policy_loss
+        ):
+            from mopd_verl.tip_native_trainer import TIPNativeTrainer
+
+            trainer_class = TIPNativeTrainer
+        trainer = trainer_class(
             config=config,
             tokenizer=tokenizer,
             processor=processor,

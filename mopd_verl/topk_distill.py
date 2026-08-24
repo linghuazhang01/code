@@ -16,23 +16,30 @@ DISTILL_LOSS_BUILDER_AUTO = "auto"
 DISTILL_LOSS_BUILDER_CHOSEN_TOKEN_REVERSE_KL = "chosen_token_reverse_kl"
 DISTILL_LOSS_BUILDER_EOPD = "eopd"
 DISTILL_LOSS_BUILDER_EXOPD = "exopd"
+DISTILL_LOSS_BUILDER_GOPD = "gopd"
 DISTILL_LOSS_BUILDER_POLICY_GRADIENT = "policy_gradient"
+DISTILL_LOSS_BUILDER_TIP_FULL_VOCAB = "tip_full_vocab"
 DISTILL_LOSS_BUILDER_TOPK_KL = "topk_kl"
 DISTILL_LOSS_BUILDERS = {
     DISTILL_LOSS_BUILDER_AUTO,
     DISTILL_LOSS_BUILDER_CHOSEN_TOKEN_REVERSE_KL,
     DISTILL_LOSS_BUILDER_EOPD,
     DISTILL_LOSS_BUILDER_EXOPD,
+    DISTILL_LOSS_BUILDER_GOPD,
     DISTILL_LOSS_BUILDER_POLICY_GRADIENT,
+    DISTILL_LOSS_BUILDER_TIP_FULL_VOCAB,
     DISTILL_LOSS_BUILDER_TOPK_KL,
 }
 DISTILL_LOSS_BUILDER_ALIASES = {
     "entropy_aware": DISTILL_LOSS_BUILDER_EOPD,
     "entropy_aware_opd": DISTILL_LOSS_BUILDER_EOPD,
     "extrapolated_opd": DISTILL_LOSS_BUILDER_EXOPD,
+    "generalized_opd": DISTILL_LOSS_BUILDER_GOPD,
     "pg": DISTILL_LOSS_BUILDER_POLICY_GRADIENT,
     "chosen_token_pg": DISTILL_LOSS_BUILDER_POLICY_GRADIENT,
     CHOSEN_TOKEN_POLICY_GRADIENT: DISTILL_LOSS_BUILDER_POLICY_GRADIENT,
+    "tip": DISTILL_LOSS_BUILDER_TIP_FULL_VOCAB,
+    "tip_native": DISTILL_LOSS_BUILDER_TIP_FULL_VOCAB,
     "topk": DISTILL_LOSS_BUILDER_TOPK_KL,
     "topk_distill": DISTILL_LOSS_BUILDER_TOPK_KL,
     "topk_distillation": DISTILL_LOSS_BUILDER_TOPK_KL,
@@ -127,8 +134,13 @@ def uses_eopd_loss(policy_loss_config: Any) -> bool:
     return distill_loss_builder(policy_loss_config) == DISTILL_LOSS_BUILDER_EOPD
 
 
-def uses_exopd_loss(policy_loss_config: Any) -> bool:
-    return distill_loss_builder(policy_loss_config) == DISTILL_LOSS_BUILDER_EXOPD
+def uses_tip_full_vocab_loss(policy_loss_config: Any) -> bool:
+    """Return whether the dedicated paper-native TIP path is configured."""
+
+    return (
+        distill_loss_builder(policy_loss_config)
+        == DISTILL_LOSS_BUILDER_TIP_FULL_VOCAB
+    )
 
 
 def uses_teacher_topk_support(policy_loss_config: Any) -> bool:
@@ -156,6 +168,10 @@ def configured_distill_loss_name(policy_loss_config: Any) -> str:
         name = "policy_gradient+entropy_gated_topk_forward_kl"
     elif builder == DISTILL_LOSS_BUILDER_EXOPD:
         name = "extrapolated_policy_gradient_distillation_signal"
+    elif builder == DISTILL_LOSS_BUILDER_GOPD:
+        name = "generalized_policy_gradient_distillation_signal"
+    elif builder == DISTILL_LOSS_BUILDER_TIP_FULL_VOCAB:
+        name = "full_vocab_reverse_kl+tip_soft_or_toprho"
     if (
         bool(cfg_get(policy_loss_config, "teacher_prefix_enabled", False))
         and teacher_prefix_loss_region(policy_loss_config)
@@ -173,11 +189,6 @@ def resolved_topk_distill_mode(policy_loss_config: Any) -> str:
             return TOPK_RENORMALIZED_FORWARD_KL
         return TOPK_RENORMALIZED_REVERSE_KL
     return mode
-
-
-def is_topk_distill_enabled(policy_loss_config: Any) -> bool:
-    mode = distill_mode(policy_loss_config)
-    return bool(cfg_get(policy_loss_config, "topk_distill_enabled", False)) or mode in TOPK_DISTILL_MODES
 
 
 def topk_distill_k(policy_loss_config: Any) -> int:
@@ -292,10 +303,6 @@ def teacher_tensor_prefix(domain: object) -> str:
     safe = "".join(char if (char.isalnum() or char == "_") else "_" for char in text)
     safe = "_".join(part for part in safe.split("_") if part)
     return safe or "math"
-
-
-def teacher_log_prob_key(domain: object) -> str:
-    return f"{teacher_tensor_prefix(domain)}_teacher_log_prob"
 
 
 def teacher_tensor_key(domain: object, suffix: str) -> str:
@@ -419,157 +426,6 @@ def chosen_token_policy_gradient_reward_matrix(
     teacher_log_probs: torch.Tensor,
 ) -> torch.Tensor:
     return teacher_log_probs.float() - student_log_probs.float()
-
-
-class _SelectedLogitsFunction(torch.autograd.Function):
-    @staticmethod
-    def forward(
-        ctx: torch.autograd.function.FunctionCtx,
-        hidden_states: torch.Tensor,
-        vocab_weights: torch.Tensor,
-        token_ids: torch.Tensor,
-        bias: torch.Tensor | None,
-        temperature: float,
-        chunk_size: int,
-    ) -> torch.Tensor:
-        if hidden_states.dim() < 2:
-            raise ValueError(f"hidden_states must have at least 2 dims, got {tuple(hidden_states.shape)}")
-        if token_ids.dim() != hidden_states.dim():
-            raise ValueError(
-                "token_ids must have one more support dimension in place of hidden_states hidden dimension, "
-                f"got hidden_states={tuple(hidden_states.shape)} token_ids={tuple(token_ids.shape)}."
-            )
-        if tuple(hidden_states.shape[:-1]) != tuple(token_ids.shape[:-1]):
-            raise ValueError(
-                "token_ids prefix shape must match hidden_states prefix shape, "
-                f"got hidden_states={tuple(hidden_states.shape)} token_ids={tuple(token_ids.shape)}."
-            )
-        if vocab_weights.dim() != 2:
-            raise ValueError(f"vocab_weights must be 2-D, got {tuple(vocab_weights.shape)}")
-        if int(vocab_weights.shape[-1]) != int(hidden_states.shape[-1]):
-            raise ValueError(
-                "vocab_weights hidden dimension must match hidden_states, "
-                f"got {tuple(vocab_weights.shape)} and {tuple(hidden_states.shape)}."
-            )
-        if bias is not None and int(bias.shape[0]) != int(vocab_weights.shape[0]):
-            raise ValueError(
-                f"bias vocab dimension must match vocab_weights, got {tuple(bias.shape)} and {tuple(vocab_weights.shape)}."
-            )
-        if chunk_size <= 0:
-            raise ValueError(f"chunk_size must be positive, got {chunk_size}")
-
-        ctx.set_materialize_grads(False)
-        token_ids = token_ids.to(device=hidden_states.device, dtype=torch.long)
-        hidden_shape = tuple(hidden_states.shape)
-        support_size = int(token_ids.shape[-1])
-        hidden_size = int(hidden_states.shape[-1])
-        flat_hidden = hidden_states.reshape(-1, hidden_size)
-        flat_ids = token_ids.reshape(-1, support_size)
-        output = hidden_states.new_empty(flat_ids.shape)
-        inv_temperature = 1.0 / max(float(temperature), 1e-6)
-
-        for start in range(0, int(flat_hidden.shape[0]), int(chunk_size)):
-            end = min(start + int(chunk_size), int(flat_hidden.shape[0]))
-            ids_chunk = flat_ids[start:end]
-            weight_chunk = vocab_weights.index_select(0, ids_chunk.reshape(-1)).view(
-                end - start,
-                support_size,
-                hidden_size,
-            )
-            logits_chunk = torch.bmm(weight_chunk, flat_hidden[start:end].unsqueeze(-1)).squeeze(-1)
-            if bias is not None:
-                logits_chunk = logits_chunk + bias.index_select(0, ids_chunk.reshape(-1)).view(end - start, support_size)
-            output[start:end] = logits_chunk * inv_temperature
-
-        ctx.save_for_backward(hidden_states, vocab_weights, token_ids)
-        ctx.has_bias = bias is not None
-        ctx.bias_requires_grad = bool(bias is not None and bias.requires_grad)
-        ctx.temperature = max(float(temperature), 1e-6)
-        ctx.chunk_size = int(chunk_size)
-        ctx.hidden_shape = hidden_shape
-        ctx.support_size = support_size
-        return output.reshape(*hidden_shape[:-1], support_size)
-
-    @staticmethod
-    def backward(
-        ctx: torch.autograd.function.FunctionCtx,
-        grad_output: torch.Tensor | None,
-    ) -> tuple[torch.Tensor | None, torch.Tensor | None, None, torch.Tensor | None, None, None]:
-        if grad_output is None:
-            return None, None, None, None, None, None
-
-        hidden_states, vocab_weights, token_ids = ctx.saved_tensors
-        support_size = int(ctx.support_size)
-        hidden_size = int(hidden_states.shape[-1])
-        flat_hidden = hidden_states.reshape(-1, hidden_size)
-        flat_ids = token_ids.reshape(-1, support_size)
-        flat_grad = grad_output.reshape(-1, support_size).to(dtype=vocab_weights.dtype)
-        inv_temperature = 1.0 / max(float(ctx.temperature), 1e-6)
-
-        grad_hidden = torch.zeros_like(flat_hidden) if hidden_states.requires_grad else None
-        grad_weights = torch.zeros_like(vocab_weights) if vocab_weights.requires_grad else None
-        grad_bias = (
-            torch.zeros(vocab_weights.shape[0], device=vocab_weights.device, dtype=vocab_weights.dtype)
-            if ctx.bias_requires_grad
-            else None
-        )
-
-        for start in range(0, int(flat_hidden.shape[0]), int(ctx.chunk_size)):
-            end = min(start + int(ctx.chunk_size), int(flat_hidden.shape[0]))
-            ids_chunk = flat_ids[start:end]
-            flat_ids_chunk = ids_chunk.reshape(-1)
-            grad_chunk = flat_grad[start:end] * inv_temperature
-
-            if grad_hidden is not None:
-                weight_chunk = vocab_weights.index_select(0, flat_ids_chunk).view(
-                    end - start,
-                    support_size,
-                    hidden_size,
-                )
-                grad_hidden[start:end] = torch.bmm(
-                    weight_chunk.transpose(1, 2),
-                    grad_chunk.unsqueeze(-1),
-                ).squeeze(-1)
-
-            if grad_weights is not None:
-                weight_grad_chunk = (
-                    grad_chunk.unsqueeze(-1) * flat_hidden[start:end].to(dtype=grad_chunk.dtype).unsqueeze(1)
-                ).reshape(-1, hidden_size)
-                grad_weights.index_add_(0, flat_ids_chunk, weight_grad_chunk)
-
-            if grad_bias is not None:
-                grad_bias.index_add_(0, flat_ids_chunk, grad_chunk.reshape(-1))
-
-        if grad_hidden is not None:
-            grad_hidden = grad_hidden.reshape(ctx.hidden_shape)
-        return grad_hidden, grad_weights, None, grad_bias, None, None
-
-
-def selected_logits_from_hidden_states(
-    hidden_states: torch.Tensor,
-    *,
-    vocab_weights: torch.Tensor,
-    token_ids: torch.Tensor,
-    bias: torch.Tensor | None = None,
-    temperature: float = 1.0,
-    chunk_size: int = _TOPK_LOGPROB_CHUNK_SIZE,
-) -> torch.Tensor:
-    """Compute logits only for a per-position support set.
-
-    This avoids materializing ``[tokens, vocab]`` logits for renormalized
-    top-k distillation.  The backward pass scatters gradients directly into
-    the dense LM-head parameter gradient without creating a dense logits
-    gradient buffer.
-    """
-
-    return _SelectedLogitsFunction.apply(
-        hidden_states,
-        vocab_weights,
-        token_ids,
-        bias,
-        float(temperature),
-        max(1, int(chunk_size)),
-    )
 
 
 def topk_log_probs_from_logits(

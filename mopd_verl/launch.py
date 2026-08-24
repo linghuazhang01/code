@@ -469,9 +469,14 @@ def build_overrides(config: MOPDConfig) -> list[str]:
         ]
 
     model_overrides = [f"actor_rollout_ref.model.path={model.student_path}"]
-    if model.student_base_path is not None:
+    gopd_reference_path = (
+        model.gopd_reference_path
+        if model.gopd_reference_path is not None
+        else model.student_base_path
+    )
+    if gopd_reference_path is not None:
         model_overrides.append(
-            f"+actor_rollout_ref.model.base_model_path={model.student_base_path}"
+            f"+actor_rollout_ref.model.base_model_path={gopd_reference_path}"
         )
     model_overrides.append(
         f"+actor_rollout_ref.ref.model.path={model.primary_teacher_path}"
@@ -493,7 +498,8 @@ def build_overrides(config: MOPDConfig) -> list[str]:
 
     overrides = [
         "algorithm.adv_estimator=grpo",
-        f"algorithm.rollout_correction.rollout_is={rollout_correction.rollout_is}",
+        "algorithm.rollout_correction.rollout_is="
+        f"{_hydra_scalar(rollout_correction.rollout_is)}",
         f"algorithm.rollout_correction.rollout_is_threshold={rollout_correction.rollout_is_threshold}",
         f"algorithm.rollout_correction.rollout_rs={_hydra_scalar(rollout_correction.rollout_rs)}",
         f"algorithm.rollout_correction.bypass_mode={str(rollout_correction.bypass_mode).lower()}",
@@ -515,8 +521,10 @@ def build_overrides(config: MOPDConfig) -> list[str]:
         f"+data.need_tools_kwargs={_bool(data.need_tools_kwargs)}",
         *model_overrides,
         f"actor_rollout_ref.actor.optim.lr={actor.learning_rate}",
+        "actor_rollout_ref.actor.optim.lr_scheduler_type="
+        f"{actor.lr_scheduler_type}",
         f"actor_rollout_ref.actor.optim.lr_warmup_steps_ratio={actor.lr_warmup_steps_ratio}",
-        "actor_rollout_ref.model.use_remove_padding=True",
+        f"actor_rollout_ref.model.use_remove_padding={_bool(model.use_remove_padding)}",
         f"actor_rollout_ref.actor.policy_loss.only_reverse_kl_advantages={_bool(actor.only_reverse_kl_advantages)}",
         f"actor_rollout_ref.actor.policy_loss.lambda_vals={actor.lambda_vals}",
         f"actor_rollout_ref.actor.policy_loss.multi_teacher_distill={str(actor.multi_teacher_distill).lower()}",
@@ -535,6 +543,14 @@ def build_overrides(config: MOPDConfig) -> list[str]:
         f"{actor.fire_opd_trajectory_drop_ratio}",
         "actor_rollout_ref.actor.policy_loss.fire_opd_filter_trajectories="
         f"{str(actor.fire_opd_filter_trajectories).lower()}",
+        "actor_rollout_ref.actor.policy_loss.tip_native_retention_ratio="
+        f"{actor.tip_native_retention_ratio}",
+        "actor_rollout_ref.actor.policy_loss.tip_native_entropy_clip_quantile="
+        f"{actor.tip_native_entropy_clip_quantile}",
+        "actor_rollout_ref.actor.policy_loss.tip_native_chunk_size="
+        f"{actor.tip_native_chunk_size}",
+        "actor_rollout_ref.actor.policy_loss.tip_native_temperature="
+        f"{actor.tip_native_temperature}",
         f"actor_rollout_ref.actor.policy_loss.topk_distill_enabled={str(actor.topk_distill_enabled).lower()}",
         f"actor_rollout_ref.actor.policy_loss.topk_distill_kl_direction={actor.topk_distill_kl_direction}",
         f"actor_rollout_ref.actor.policy_loss.topk_distill_k={actor.topk_distill_k}",

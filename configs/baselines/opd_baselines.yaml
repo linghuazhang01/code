@@ -5,8 +5,9 @@
 #     --config configs/baselines/opd_baselines.yaml::tip_topk32_rho50
 #
 # The TopK32 profiles hold the distillation objective fixed and change only
-# the token scoring/weighting rule. Native objective profiles are provided for
-# OPD, ExOPD, EOPD, and FiRe-OPD.
+# the token scoring/weighting rule. Native chosen-token objective profiles are
+# provided for OPD, G-OPD, ExOPD, EOPD, and FiRe-OPD. Full-vocabulary native
+# TIP has a different colocated topology and lives in canonical/.
 
 profile_matrix:
   version: 1
@@ -54,7 +55,9 @@ profile_matrix:
       enable_thinking: false
 
     model:
-      student_path: ../models/Qwen3-4B
+      # Canonical comparison target: project Qwen3-1.7B student distilled
+      # from one Qwen3-30B teacher across all three data domains.
+      student_path: ../models/Qwen3-1.7B
       student_base_path: null
       math_teacher_path: ../models/Qwen3-30B-A3B-Instruct-2507
       code_teacher_path: ../models/Qwen3-30B-A3B-Instruct-2507
@@ -70,7 +73,7 @@ profile_matrix:
       lr_warmup_steps_ratio: 0.0
       only_reverse_kl_advantages: false
       lambda_vals: 1.0
-      multi_teacher_distill: true
+      multi_teacher_distill: false
       distill_loss_builder: topk_kl
       distill_mode: topk_renormalized_reverse_kl
       token_baseline_method: none
@@ -147,11 +150,22 @@ profile_matrix:
         nnodes: 1
 
     audit:
-      enabled: false
+      enabled: true
       domains:
         - math
         - code
         - science
+      tensorboard_prefix: mopd
+      tensorboard_layout: domain_category
+      tensorboard_prune_mode: core
+      log_sample_level: false
+      response_level_enabled: false
+      log_validation_metrics: false
+      full_gradient_enabled: false
+      sample_gradient_enabled: false
+      token_gap_enabled: false
+      entropy_enabled: false
+      token_gradient_enabled: false
 
     domain_budgeting:
       enabled: false
@@ -189,6 +203,9 @@ profile_matrix:
 
   profiles:
     topk32_uniform:
+      audit:
+        output_dir: audit/baseline-topk32-uniform-domain-metrics
+        loss_variance_signal: topk_renormalized_reverse_kl
       trainer:
         experiment_name: baseline-topk32-uniform
         default_local_dir: checkpoints/MOPD/baseline-topk32-uniform
@@ -198,6 +215,9 @@ profile_matrix:
         token_baseline_method: entropy
         token_baseline_retention_ratio: 0.5
         token_baseline_selection_mode: topk
+      audit:
+        output_dir: audit/baseline-entropy-topk32-rho50-domain-metrics
+        loss_variance_signal: topk_renormalized_reverse_kl+entropy_token_weighting
       trainer:
         experiment_name: baseline-entropy-topk32-rho50
         default_local_dir: checkpoints/MOPD/baseline-entropy-topk32-rho50
@@ -207,6 +227,9 @@ profile_matrix:
         token_baseline_method: entropy
         token_baseline_retention_ratio: 0.5
         token_baseline_selection_mode: sample
+      audit:
+        output_dir: audit/baseline-entropy-sample-topk32-rho50-domain-metrics
+        loss_variance_signal: topk_renormalized_reverse_kl+entropy_token_weighting
       trainer:
         experiment_name: baseline-entropy-sample-topk32-rho50
         default_local_dir: checkpoints/MOPD/baseline-entropy-sample-topk32-rho50
@@ -216,6 +239,10 @@ profile_matrix:
         token_baseline_method: tip_topk32
         token_baseline_retention_ratio: 0.5
         token_baseline_selection_mode: topk
+        loss_agg_mode: seq-mean-token-mean
+      audit:
+        output_dir: audit/baseline-tip-topk32-rho50-domain-metrics
+        loss_variance_signal: topk_renormalized_reverse_kl+tip_topk32_token_weighting
       trainer:
         experiment_name: baseline-tip-topk32-rho50
         default_local_dir: checkpoints/MOPD/baseline-tip-topk32-rho50
@@ -224,6 +251,10 @@ profile_matrix:
       actor:
         token_baseline_method: fire_opd
         fire_opd_filter_trajectories: false
+        loss_agg_mode: seq-mean-token-mean
+      audit:
+        output_dir: audit/baseline-fire-token-topk32-domain-metrics
+        loss_variance_signal: topk_renormalized_reverse_kl+fire_opd_token_weighting
       trainer:
         experiment_name: baseline-fire-token-topk32
         default_local_dir: checkpoints/MOPD/baseline-fire-token-topk32
@@ -233,19 +264,41 @@ profile_matrix:
         distill_loss_builder: policy_gradient
         distill_mode: chosen_token_policy_gradient
         topk_distill_enabled: false
+      audit:
+        output_dir: audit/baseline-opd-native-domain-metrics
+        loss_variance_signal: policy_gradient_distillation_signal
       trainer:
         experiment_name: baseline-opd-native
         default_local_dir: checkpoints/MOPD/baseline-opd-native
 
+    gopd_native_lambda0p5:
+      model:
+        gopd_reference_path: ../models/Qwen3-1.7B
+      actor:
+        only_reverse_kl_advantages: false
+        lambda_vals: 0.5
+        distill_loss_builder: gopd
+        distill_mode: chosen_token_policy_gradient
+        topk_distill_enabled: false
+      audit:
+        output_dir: audit/baseline-gopd-native-lambda0p5-domain-metrics
+        loss_variance_signal: generalized_policy_gradient_distillation_signal
+      trainer:
+        experiment_name: baseline-gopd-native-lambda0p5
+        default_local_dir: checkpoints/MOPD/baseline-gopd-native-lambda0p5
+
     exopd_native_lambda1p25:
       model:
-        student_base_path: ../models/Qwen3-4B
+        gopd_reference_path: ../models/Qwen3-1.7B
       actor:
-        only_reverse_kl_advantages: true
+        only_reverse_kl_advantages: false
         lambda_vals: 1.25
         distill_loss_builder: exopd
         distill_mode: chosen_token_policy_gradient
         topk_distill_enabled: false
+      audit:
+        output_dir: audit/baseline-exopd-native-lambda1p25-domain-metrics
+        loss_variance_signal: extrapolated_policy_gradient_distillation_signal
       trainer:
         experiment_name: baseline-exopd-native-lambda1p25
         default_local_dir: checkpoints/MOPD/baseline-exopd-native-lambda1p25
@@ -258,6 +311,11 @@ profile_matrix:
         eopd_entropy_threshold: 0.8
         eopd_forward_kl_weight: 1.0
         eopd_topk_k: 16
+      rollout_correction:
+        rollout_is: null
+      audit:
+        output_dir: audit/baseline-eopd-native-tau0p8-alpha1-k16-domain-metrics
+        loss_variance_signal: policy_gradient+entropy_gated_topk_forward_kl
       trainer:
         experiment_name: baseline-eopd-native-tau0p8-alpha1-k16
         default_local_dir: checkpoints/MOPD/baseline-eopd-native-tau0p8-alpha1-k16
@@ -272,6 +330,10 @@ profile_matrix:
         fire_opd_trajectory_drop_ratio: 0.2
         fire_opd_filter_trajectories: true
         topk_distill_enabled: false
+        loss_agg_mode: seq-mean-token-mean
+      audit:
+        output_dir: audit/baseline-fire-opd-native-domain-metrics
+        loss_variance_signal: policy_gradient_distillation_signal+fire_opd_token_weighting
       trainer:
         experiment_name: baseline-fire-opd-native
         default_local_dir: checkpoints/MOPD/baseline-fire-opd-native

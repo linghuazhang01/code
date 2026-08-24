@@ -41,7 +41,7 @@ runtime:
   # Use a distinct W&B run ID for this GPU topology.
   wandb_run_id: q0p6b-6g-mcs-struct-codelex-r200-fixed-w4-b528-v1
   wandb_resume: allow
-  env_file: ../mopd/code/.env.local
+  env_file: .env.local
   used_model: no_api
   # Let Slurm select the six physical devices; do not override its allocation.
   slurm_allocation_gpus: 6

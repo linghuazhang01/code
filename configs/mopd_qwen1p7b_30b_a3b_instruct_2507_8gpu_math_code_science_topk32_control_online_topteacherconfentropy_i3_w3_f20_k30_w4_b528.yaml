@@ -14,7 +14,7 @@ runtime:
   wandb_entity: lz101-rice-university
   wandb_run_id: q1p7b-8g-topteacherconfentropy-i3w3f20k30w4-b528
   wandb_resume: allow
-  env_file: ../mopd/code/.env.local
+  env_file: .env.local
   used_model: no_api
   slurm_allocation_gpus: 8
   cuda_visible_devices: null
@@ -123,6 +123,8 @@ rollout_correction:
   bypass_mode: false
 
 extra_overrides:
+  # The selector consumes student entropy, so avoid BF16 cancellation.
+  - actor_rollout_ref.actor.entropy_from_logits_with_chunking=true
   - custom_reward_function.path=mopd_verl/mixed_reward.py
   - custom_reward_function.name=compute_score
   - trainer.resume_mode=auto

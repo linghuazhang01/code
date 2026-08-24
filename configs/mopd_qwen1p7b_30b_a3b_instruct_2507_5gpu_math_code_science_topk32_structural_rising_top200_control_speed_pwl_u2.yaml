@@ -35,7 +35,7 @@ runtime:
   # Use a separate run from the six-GPU profile because batch/topology differ.
   wandb_run_id: q1p7b-5g-mcs-struct-r200-cspeed-u2-v1
   wandb_resume: allow
-  env_file: ../mopd/code/.env.local
+  env_file: .env.local
   used_model: no_api
   # Let Slurm select the five physical devices; do not override its allocation.
   slurm_allocation_gpus: 5

@@ -20,7 +20,7 @@ runtime:
   wandb_entity: null
   wandb_run_id: null
   wandb_resume: never
-  env_file: ../mopd/code/.env.local
+  env_file: .env.local
   used_model: no_api
 
 data:

@@ -26,7 +26,7 @@ runtime:
   wandb_entity: lz101-rice-university
   wandb_run_id: null
   wandb_resume: never
-  env_file: ../mopd/code/.env.local
+  env_file: .env.local
   used_model: no_api
 
 data:
@@ -160,7 +160,7 @@ audit:
   tensorboard_prefix: mopd
   tensorboard_layout: domain_category
   tensorboard_prune_mode: core
-  loss_variance_signal: opd_loss_token
+  loss_variance_signal: topk_renormalized_reverse_kl
   max_samples_per_domain: null
   high_variance_cv_threshold: 1.0
   log_sample_level: false

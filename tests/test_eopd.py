@@ -197,9 +197,37 @@ class EOPDTests(unittest.TestCase):
         self.assertEqual(opd.data, eopd.data)
         self.assertEqual(opd.model, eopd.model)
         self.assertEqual(opd.rollout, eopd.rollout)
-        self.assertEqual(opd.rollout_correction, eopd.rollout_correction)
+        self.assertEqual(opd.rollout_correction.rollout_is, "token")
+        self.assertIsNone(eopd.rollout_correction.rollout_is)
+        self.assertEqual(
+            replace(opd.rollout_correction, rollout_is=None),
+            eopd.rollout_correction,
+        )
         self.assertEqual(opd.worker_placement, eopd.worker_placement)
-        self.assertEqual(opd.audit, eopd.audit)
+        self.assertEqual(
+            opd.audit.output_dir,
+            "audit/qwen4b-opd-baseline-domain-metrics",
+        )
+        self.assertEqual(
+            eopd.audit.output_dir,
+            "audit/qwen4b-eopd-tau0p8-alpha1-k16-domain-metrics",
+        )
+        self.assertEqual(
+            opd.audit.loss_variance_signal,
+            "policy_gradient_distillation_signal",
+        )
+        self.assertEqual(
+            eopd.audit.loss_variance_signal,
+            "policy_gradient+entropy_gated_topk_forward_kl",
+        )
+        self.assertEqual(
+            replace(
+                opd.audit,
+                output_dir=eopd.audit.output_dir,
+                loss_variance_signal=eopd.audit.loss_variance_signal,
+            ),
+            eopd.audit,
+        )
         self.assertEqual(opd.domain_budgeting, eopd.domain_budgeting)
         self.assertEqual(opd.ray_kwargs, eopd.ray_kwargs)
         self.assertEqual(
@@ -379,12 +407,21 @@ class EOPDTests(unittest.TestCase):
                 return_teacher_student_cross_entropy=True,
                 return_configured_token_loss=True,
             )
+            MicroBatch.batch["rollout_is_weights"] = torch.ones(1, 3)
+            with self.assertRaisesRegex(ValueError, "rollout IS"):
+                build_actor_micro_batch_loss(
+                    actor,
+                    MicroBatch(),
+                    loss_scale_factor=1.0,
+                    on_policy=False,
+                )
+            MicroBatch.batch.pop("rollout_is_weights")
 
         token_fkl = eopd_forward_kl_matrix(
             student_full_vocab_log_probs=student_topk_log_probs,
             teacher_topk_log_probs=teacher_topk_log_probs,
         )
-        gate = torch.tensor([[1.0, 0.0, 1.0]])
+        gate = torch.tensor([[0.0, 0.0, 1.0]])
         expected_pg = torch.tensor(-1.8)
         expected_fkl = (token_fkl * gate).sum() / 3.0
         expected_ce = eopd_teacher_student_cross_entropy_matrix(
@@ -403,7 +440,7 @@ class EOPDTests(unittest.TestCase):
         )
         self.assertAlmostEqual(
             result.metrics["actor/eopd_high_entropy_ratio"],
-            2 / 3,
+            1 / 3,
         )
         torch.testing.assert_close(
             actor.forward_kwargs["gather_topk_ids"],

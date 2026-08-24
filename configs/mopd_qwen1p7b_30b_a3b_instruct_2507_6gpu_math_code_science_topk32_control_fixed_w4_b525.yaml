@@ -30,7 +30,7 @@ runtime:
   wandb_entity: lz101-rice-university
   wandb_run_id: qwen1p7b-30b-a3b-6gpu-mcs-control-fixed-w4-b525
   wandb_resume: allow
-  env_file: ../mopd/code/.env.local
+  env_file: .env.local
   used_model: no_api
 
 data:

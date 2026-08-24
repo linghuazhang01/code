@@ -114,6 +114,18 @@ policy_loss:
   # Whether FiRe-OPD filters trajectories before actor mini-batch splitting
   fire_opd_filter_trajectories: false
 
+  # Per-rollout fraction selected by paper-native full-vocabulary TIP
+  tip_native_retention_ratio: 0.5
+
+  # Batch entropy clipping quantile used before TIP min-max normalization
+  tip_native_entropy_clip_quantile: 0.98
+
+  # Response-token chunk size for exact full-vocabulary TIP KL computation
+  tip_native_chunk_size: 512
+
+  # Distribution temperature for native TIP (the paper uses 1.0)
+  tip_native_temperature: 1.0
+
   # Whether to enable sparse top-k teacher distillation
   topk_distill_enabled: false
 

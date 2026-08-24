@@ -29,7 +29,7 @@ runtime:
   # a failed/restarted job.
   wandb_run_id: eopd-control-speed-pwl-u2-20260810
   wandb_resume: allow
-  env_file: ../mopd/code/.env.local
+  env_file: .env.local
   used_model: no_api
 
 data:
@@ -132,7 +132,7 @@ rollout:
   seed: 42
 
 rollout_correction:
-  rollout_is: token
+  rollout_is: null
   rollout_is_threshold: 5.0
   rollout_rs: null
   bypass_mode: false

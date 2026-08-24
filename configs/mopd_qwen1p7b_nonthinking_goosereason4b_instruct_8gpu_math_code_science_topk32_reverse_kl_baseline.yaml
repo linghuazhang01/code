@@ -10,8 +10,8 @@
 # - minimize reverse KL on the teacher-selected Top-32 support, renormalized
 #   inside that support, with no tail bucket;
 # - use fixed, balanced math/code/science sampling;
-# - disable MOPD/TLPD reweighting, domain budgeting, token weighting, gradient
-#   audit, and paper evaluation.
+# - disable MOPD/TLPD reweighting, domain budgeting, token weighting, expensive
+#   gradient diagnostics, and paper evaluation while retaining domain metrics.
 #
 # The actor/rollout and ref/teacher are colocated on one eight-GPU Ray pool.
 # Run a one-step smoke test before launching the full 200-step experiment.
@@ -145,13 +145,18 @@ worker_placement:
     n_gpus_per_node: 8
     nnodes: 1
 
-# Explicitly keep every MOPD/TLPD analysis or reweighting path out of training.
+# Keep a lightweight audit for per-domain training metrics only.
 audit:
-  enabled: false
+  enabled: true
+  output_dir: audit/qwen1p7b_nonthinking_goosereason4b_instruct_8gpu_math_code_science_topk32_reverse_kl_baseline_domain_metrics
   domains:
     - math
     - code
     - science
+  tensorboard_prefix: mopd
+  tensorboard_layout: domain_category
+  tensorboard_prune_mode: core
+  loss_variance_signal: topk_renormalized_reverse_kl
   log_sample_level: false
   log_validation_metrics: false
   full_gradient_enabled: false

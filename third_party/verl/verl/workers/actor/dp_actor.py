@@ -33,9 +33,13 @@ from mopd_verl.full_gradient.loss_support import (
     aggregate_actor_micro_batch_metrics,
     selected_teacher_entropy,
 )
+from mopd_verl.loss_scaling import global_token_mean_loss_scales
+from mopd_verl.token_baseline_runtime import PRECOMPUTED_KEYS
 from mopd_verl.topk_distill import (
     TOPK_LOGPROB_MODE_SPARSE,
+    resolved_topk_distill_mode,
     topk_distill_logprob_chunk_size,
+    topk_distill_loss_matrix,
     topk_distill_logprob_mode,
     topk_distill_uses_renormalized_support,
     topk_log_probs_from_logits,
@@ -555,7 +559,8 @@ class DataParallelPPOActor(BasePPOActor):
         teacher_topk_logprobs_key: str,
         include_tail: bool,
         distill_temperature: float,
-    ) -> torch.Tensor:
+        return_topk_divergence: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         self.actor_module.eval()
 
         micro_batch_size = data.meta_info["micro_batch_size"]
@@ -580,6 +585,7 @@ class DataParallelPPOActor(BasePPOActor):
             micro_batches = data.split(micro_batch_size)
 
         cross_entropy_lst = []
+        divergence_lst = []
         policy_loss_config = self.config.policy_loss
         use_renormalized_support = topk_distill_uses_renormalized_support(policy_loss_config)
         effective_topk_logprob_mode = topk_distill_logprob_mode(policy_loss_config)
@@ -606,11 +612,28 @@ class DataParallelPPOActor(BasePPOActor):
                     temperature=distill_temperature,
                 )
             cross_entropy_lst.append(cross_entropy)
+            if return_topk_divergence:
+                divergence_lst.append(
+                    topk_distill_loss_matrix(
+                        student_topk_log_probs=student_topk_log_probs,
+                        teacher_topk_log_probs=model_inputs[
+                            teacher_topk_logprobs_key
+                        ],
+                        mode=resolved_topk_distill_mode(policy_loss_config),
+                        include_tail=include_tail,
+                        temperature=distill_temperature,
+                    ).detach()
+                )
 
         cross_entropy = torch.concat(cross_entropy_lst, dim=0)
         if use_dynamic_bsz:
             cross_entropy = restore_dynamic_batch(cross_entropy, batch_idx_list)
-        return cross_entropy
+        if not return_topk_divergence:
+            return cross_entropy
+        divergence = torch.concat(divergence_lst, dim=0)
+        if use_dynamic_bsz:
+            divergence = restore_dynamic_batch(divergence, batch_idx_list)
+        return cross_entropy, divergence
 
     @GPUMemoryLogger(role="dp actor", logger=logger)
     def update_policy(
@@ -662,6 +685,7 @@ class DataParallelPPOActor(BasePPOActor):
             "student_suffix_mask",
             "student_topk_ids",
             "mopd_domain_loss_scale",
+            *PRECOMPUTED_KEYS,
         ):
             append_batch_key(key)
         for key in sorted(batch_keys):
@@ -790,15 +814,24 @@ class DataParallelPPOActor(BasePPOActor):
                     micro_batches = mini_batch.split(self.config.ppo_micro_batch_size_per_gpu)
 
                 micro_batches = list(micro_batches)
-                loss_scales = [
-                    (
-                        float(micro_batch.batch["response_mask"].shape[0])
-                        / float(self.config.ppo_mini_batch_size)
-                        if self.config.use_dynamic_bsz
-                        else 1.0 / float(self.gradient_accumulation)
+                if str(self.config.loss_agg_mode) == "token-mean":
+                    loss_scales = global_token_mean_loss_scales(
+                        [
+                            micro_batch.batch["response_mask"]
+                            for micro_batch in micro_batches
+                        ],
+                        reduction_device=get_device_id(),
                     )
-                    for micro_batch in micro_batches
-                ]
+                else:
+                    loss_scales = [
+                        (
+                            float(micro_batch.batch["response_mask"].shape[0])
+                            / float(self.config.ppo_mini_batch_size)
+                            if self.config.use_dynamic_bsz
+                            else 1.0 / float(self.gradient_accumulation)
+                        )
+                        for micro_batch in micro_batches
+                    ]
 
                 self.actor_optimizer.zero_grad()
                 append_to_dict(

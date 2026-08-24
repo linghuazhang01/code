@@ -154,8 +154,11 @@ def entropy_from_logits_with_chunking(logits: torch.Tensor, chunk_size: int = 20
     entropy = torch.zeros(logits.shape[0], device=logits.device)
     for i in range(0, logits.shape[0], chunk_size):
         logits_chunk = logits[i : i + chunk_size].float()
-        pd_chunk = torch.nn.functional.softmax(logits_chunk, dim=-1)
-        entropy_chunk = torch.logsumexp(logits_chunk, dim=-1) - torch.sum(pd_chunk * logits_chunk, dim=-1)
+        log_probs_chunk = F.log_softmax(logits_chunk, dim=-1)
+        entropy_chunk = -torch.sum(
+            log_probs_chunk.exp() * log_probs_chunk,
+            dim=-1,
+        )
         entropy[i : i + chunk_size] = entropy_chunk
     return entropy
 

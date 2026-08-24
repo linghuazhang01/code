@@ -12,6 +12,7 @@ import yaml
 
 PROFILE_SEPARATOR = "::"
 PROFILE_MATRIX_KEY = "profile_matrix"
+EXTENDS_KEY = "extends"
 SUPPORTED_MATRIX_VERSION = 1
 
 
@@ -133,10 +134,29 @@ def list_config_profiles(path: str | Path) -> tuple[str, ...]:
     return tuple(profiles)
 
 
-def load_raw_config(path: str | Path) -> dict[str, Any]:
-    """Resolve a config reference into a standalone raw config mapping."""
+def _resolve_reference_path(
+    reference: ConfigReference,
+    *,
+    relative_to: Path | None,
+) -> ConfigReference:
+    resolved_path = reference.path
+    if relative_to is not None and not resolved_path.is_absolute():
+        resolved_path = relative_to / resolved_path
+    return ConfigReference(path=resolved_path, profile=reference.profile)
 
-    reference = ConfigReference.parse(path)
+
+def _load_raw_config(
+    reference: ConfigReference,
+    *,
+    stack: tuple[str, ...],
+) -> dict[str, Any]:
+    identity = ConfigReference(
+        path=reference.path.resolve(),
+        profile=reference.profile,
+    ).as_string()
+    if identity in stack:
+        chain = " -> ".join((*stack, identity))
+        raise ValueError(f"Config extends cycle detected: {chain}.")
     root = _read_yaml_root(reference.path)
     matrix_parts = _matrix_parts(root)
     if matrix_parts is None:
@@ -145,7 +165,21 @@ def load_raw_config(path: str | Path) -> dict[str, Any]:
                 f"Config '{reference.path}' does not define a profile "
                 "matrix."
             )
-        return deepcopy(root)
+        overlay = deepcopy(root)
+        extends = overlay.pop(EXTENDS_KEY, None)
+        if extends is None:
+            return overlay
+        if not isinstance(extends, str) or not extends.strip():
+            raise ValueError("Config 'extends' must be a non-empty string.")
+        base_reference = _resolve_reference_path(
+            ConfigReference.parse(extends),
+            relative_to=reference.path.parent,
+        )
+        base = _load_raw_config(
+            base_reference,
+            stack=(*stack, identity),
+        )
+        return _deep_merge(base, overlay)
 
     base, profiles = matrix_parts
     if reference.profile is None:
@@ -165,3 +199,13 @@ def load_raw_config(path: str | Path) -> dict[str, Any]:
         f"{PROFILE_MATRIX_KEY}.profiles.{reference.profile}",
     )
     return _deep_merge(base, overlay)
+
+
+def load_raw_config(path: str | Path) -> dict[str, Any]:
+    """Resolve profiles and relative ``extends`` into one raw config mapping."""
+
+    reference = _resolve_reference_path(
+        ConfigReference.parse(path),
+        relative_to=None,
+    )
+    return _load_raw_config(reference, stack=())

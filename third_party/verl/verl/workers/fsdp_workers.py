@@ -1293,6 +1293,9 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         data.meta_info["use_dynamic_bsz"] = self.config.rollout.log_prob_use_dynamic_bsz
         include_tail = bool(data.meta_info.get("topk_distill_include_tail", True))
         distill_temperature = float(data.meta_info.get("topk_distill_temperature", 1.0))
+        return_topk_divergence = bool(
+            data.meta_info.get("mopd_return_topk_divergence", False)
+        )
         support_source = str(data.meta_info.get("topk_distill_support_source", "teacher")).lower()
         tensors = {}
 
@@ -1316,15 +1319,24 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             for ids_key, logprobs_key, domain_prefix in specifications:
                 if not domain_prefix or logprobs_key not in data.batch:
                     continue
-                tensors[f"{domain_prefix}_teacher_student_cross_entropy"] = (
-                    self.actor.compute_teacher_student_cross_entropy(
-                        data=data,
-                        teacher_topk_ids_key=ids_key,
-                        teacher_topk_logprobs_key=logprobs_key,
-                        include_tail=include_tail,
-                        distill_temperature=distill_temperature,
-                    )
+                result = self.actor.compute_teacher_student_cross_entropy(
+                    data=data,
+                    teacher_topk_ids_key=ids_key,
+                    teacher_topk_logprobs_key=logprobs_key,
+                    include_tail=include_tail,
+                    distill_temperature=distill_temperature,
+                    return_topk_divergence=return_topk_divergence,
                 )
+                if return_topk_divergence:
+                    cross_entropy, divergence = result
+                    tensors[
+                        f"{domain_prefix}_teacher_topk_divergence"
+                    ] = divergence
+                else:
+                    cross_entropy = result
+                tensors[
+                    f"{domain_prefix}_teacher_student_cross_entropy"
+                ] = cross_entropy
             output = DataProto.from_dict(tensors=tensors).to("cpu")
 
         if fsdp_version(self.actor.actor_module) == 1:

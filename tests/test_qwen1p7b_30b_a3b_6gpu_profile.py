@@ -23,7 +23,7 @@ class Qwen1p7bFrom30bA3bSixGpuProfileTests(unittest.TestCase):
             config.runtime.python_bin,
             "/home/shuang_qiu/env/miniconda3/envs/mopd-verl/bin/python",
         )
-        self.assertEqual(config.runtime.env_file, "../mopd/code/.env.local")
+        self.assertEqual(config.runtime.env_file, ".env.local")
         self.assertIsNone(config.runtime.wandb_run_id)
         self.assertEqual(config.runtime.wandb_resume, "never")
         self.assertEqual(config.model.student_path, "../mopd/models/Qwen3-1.7B")

@@ -57,6 +57,17 @@ TOP_KL_ENTROPY_CONFIG_8GPU_PATH = (
         "topk32_control_online_topklentropy_i3_w3_f20_k30_w4_b528.yaml"
     )
 )
+TOP_KL_ENTROPY_CONFIG_7GPU_PATH = (
+    ROOT
+    / "configs"
+    / (
+        "mopd_qwen1p7b_30b_a3b_instruct_2507_7gpu_math_code_science_"
+        "topk32_control_online_topklentropy_i3_w3_f20_k30_w4_b528.yaml"
+    )
+)
+STABLE_ENTROPY_OVERRIDE = (
+    "actor_rollout_ref.actor.entropy_from_logits_with_chunking=true"
+)
 EXPECTED_DOMAIN_CANDIDATE_SHA256 = {
     "math": "cdb9c4baa8770aeceda0c533a5889df8385ea1fd42739d78f29532447d040ddf",
     "code": "12f7e1a16efdd20129c11bee086fc825740c010fdda12c6a6c55b7a5cc5d69f2",
@@ -178,6 +189,28 @@ class Qwen1p7bEightGpuOnlineControlProfileTests(unittest.TestCase):
 
 
 class Qwen1p7bEightGpuControlBaselineProfileTests(unittest.TestCase):
+    def test_student_entropy_selectors_use_stable_chunked_entropy(self) -> None:
+        paths = (
+            TOP_KL_ENTROPY_CONFIG_7GPU_PATH,
+            TOP_KL_ENTROPY_CONFIG_8GPU_PATH,
+            TOP_TEACHER_CONFIDENCE_ENTROPY_CONFIG_8GPU_PATH,
+        )
+
+        for path in paths:
+            with self.subTest(path=path.name):
+                config = load_config(path)
+                rendered = format_command(build_command(config))
+
+                self.assertEqual(
+                    config.extra_overrides.count(STABLE_ENTROPY_OVERRIDE),
+                    1,
+                )
+                self.assertIn(
+                    "actor_rollout_ref.model.use_remove_padding=True",
+                    rendered,
+                )
+                self.assertIn(STABLE_ENTROPY_OVERRIDE, rendered)
+
     def test_all_candidates_profile_weights_the_complete_domain_pools(self) -> None:
         reference = load_config(CONFIG_8GPU_PATH)
         config = load_config(ALL_CANDIDATES_CONFIG_8GPU_PATH)

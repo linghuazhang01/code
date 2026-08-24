@@ -67,6 +67,10 @@ class PolicyLossConfig(BaseConfig):
     fire_opd_student_confusion_beta: float = 1.0
     fire_opd_trajectory_drop_ratio: float = 0.2
     fire_opd_filter_trajectories: bool = False
+    tip_native_retention_ratio: float = 0.5
+    tip_native_entropy_clip_quantile: float = 0.98
+    tip_native_chunk_size: int = 512
+    tip_native_temperature: float = 1.0
     topk_distill_enabled: bool = False
     topk_distill_kl_direction: str = "reverse"
     topk_distill_k: int = 8

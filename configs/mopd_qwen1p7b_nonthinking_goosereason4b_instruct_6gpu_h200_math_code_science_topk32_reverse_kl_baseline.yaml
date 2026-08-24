@@ -22,7 +22,7 @@ runtime:
   verl_module: verl.trainer.main_ppo
   wandb_mode: online
   wandb_entity: null
-  env_file: ../mopd/code/.env.local
+  env_file: .env.local
   used_model: no_api
 
 data:
@@ -148,6 +148,10 @@ audit:
     - math
     - code
     - science
+  tensorboard_prefix: mopd
+  tensorboard_layout: domain_category
+  tensorboard_prune_mode: core
+  loss_variance_signal: topk_renormalized_reverse_kl
   log_sample_level: false
   log_validation_metrics: false
   full_gradient_enabled: false
