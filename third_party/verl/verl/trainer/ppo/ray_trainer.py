@@ -2284,6 +2284,14 @@ class RayPPOTrainer:
                             ] = actor_output.batch[
                                 configured_token_loss_mask_key
                             ]
+                            for adaptive_mask_key in (
+                                "adaptive_center_mask",
+                                "adaptive_threshold_pass_mask",
+                            ):
+                                if adaptive_mask_key in actor_output.batch:
+                                    batch.batch[adaptive_mask_key] = (
+                                        actor_output.batch[adaptive_mask_key]
+                                    )
                             if domain_budget_labels is not None:
                                 self._observe_domain_loss_variance(
                                     batch,

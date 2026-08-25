@@ -9,6 +9,9 @@ from typing import Any, Final
 
 import torch
 
+from mopd_verl.domain_gradient.adaptive_neighborhood_metrics import (
+    AdaptiveNeighborhoodMetricComponents,
+)
 from mopd_verl.full_gradient.config import _cfg_get
 from mopd_verl.full_gradient.labels import _TEACHER_LABEL_KEY
 from mopd_verl.topk_distill import (
@@ -33,6 +36,9 @@ class ActorMicroBatchLossResult:
     configured_token_loss_mask: torch.Tensor | None = None
     selector_token_loss: torch.Tensor | None = None
     selector_token_loss_mask: torch.Tensor | None = None
+    adaptive_metric_components: AdaptiveNeighborhoodMetricComponents | None = None
+    adaptive_center_mask: torch.Tensor | None = None
+    adaptive_threshold_pass_mask: torch.Tensor | None = None
 
 
 ACTOR_LOSS_CONTRIBUTION_METRICS: Final[frozenset[str]] = frozenset(

@@ -560,10 +560,10 @@ class OnlineControlSelectionTests(unittest.TestCase):
         except ModuleNotFoundError as exc:
             self.skipTest(f"torch is unavailable: {exc}")
         from mopd_verl.domain_gradient.control_top_loss_runtime import (
-            global_candidate_loss_statistics,
+            global_candidate_loss_statistics_with_valid_counts,
         )
 
-        statistics = global_candidate_loss_statistics(
+        result = global_candidate_loss_statistics_with_valid_counts(
             (
                 torch.tensor(
                     [[10, 20, 99], [20, 30, 10]],
@@ -576,9 +576,11 @@ class OnlineControlSelectionTests(unittest.TestCase):
             domains=DOMAINS,
             candidate_token_ids=CANDIDATES,
         )
+        statistics = result.by_domain
 
         self.assertEqual(statistics["math"], {10: (2.0, 1), 20: (3.0, 1)})
         self.assertEqual(statistics["code"], {10: (6.0, 1), 20: (4.0, 1)})
+        self.assertEqual(result.valid_token_counts, {"math": 3, "code": 2})
 
     def test_runtime_filters_candidates_by_domain_on_a_shared_union_axis(
         self,

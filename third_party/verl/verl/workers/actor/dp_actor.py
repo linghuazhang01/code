@@ -23,6 +23,9 @@ import os
 
 import torch
 from mopd_verl.domain_gradient import DomainGradientAudit
+from mopd_verl.domain_gradient.adaptive_neighborhood_metrics import (
+    aggregate_adaptive_neighborhood_metrics,
+)
 from mopd_verl.domain_gradient.control_selection_scoring import (
     PAIRED_SIGNAL_SELECTION_MODES,
     TOP_KL_STUDENT_ENTROPY_SELECTION_MODE,
@@ -734,7 +737,18 @@ class DataParallelPPOActor(BasePPOActor):
         configured_token_loss_batches = []
         configured_token_loss_mask_batches = []
         configured_token_loss_epoch_batches = []
+        adaptive_center_mask_batches = []
+        adaptive_threshold_pass_mask_batches = []
         audit = DomainGradientAudit(self, data.meta_info.get("mopd_full_gradient", {}))
+        if self.ulysses_sequence_parallel_size > 1 and (
+            audit.config.control_token_online_selection_enabled
+            or audit.config.control_token_adaptive_neighborhood_enabled
+        ):
+            raise ValueError(
+                "Online Control selection and adaptive-neighborhood metrics "
+                "currently require ulysses_sequence_parallel_size=1 so "
+                "world-group reductions do not duplicate SP-replicated data."
+            )
         if (
             audit.config.control_token_online_selection_enabled
             and audit.config.control_token_online_selection_mode
@@ -798,6 +812,14 @@ class DataParallelPPOActor(BasePPOActor):
                 "optimizer mini-batch and one PPO epoch per actor update so "
                 "each observation covers one complete global step."
             )
+        if audit.config.control_token_adaptive_neighborhood_enabled and (
+            len(mini_batches) != 1 or self.config.ppo_epochs != 1
+        ):
+            raise ValueError(
+                "Per-token adaptive neighborhoods require exactly one "
+                "optimizer mini-batch and one PPO epoch so threshold metrics "
+                "cover one complete global step."
+            )
         for _ in range(self.config.ppo_epochs):
             if return_configured_token_loss:
                 configured_token_loss_batches = []
@@ -851,6 +873,9 @@ class DataParallelPPOActor(BasePPOActor):
                 micro_batch_configured_token_loss_mask = []
                 micro_batch_selector_token_loss = []
                 micro_batch_selector_token_loss_mask = []
+                micro_batch_adaptive_metric_components = []
+                micro_batch_adaptive_center_mask = []
+                micro_batch_adaptive_threshold_pass_mask = []
                 for micro_batch, loss_scale in zip(micro_batches, loss_scales, strict=True):
                     result = build_actor_micro_batch_loss(
                         self,
@@ -866,6 +891,9 @@ class DataParallelPPOActor(BasePPOActor):
                         ),
                         return_configured_token_loss=(
                             return_configured_token_loss
+                        ),
+                        adaptive_neighborhood_spec=(
+                            audit.adaptive_neighborhood_spec()
                         ),
                         temperature=temperature,
                     )
@@ -893,6 +921,18 @@ class DataParallelPPOActor(BasePPOActor):
                     if result.selector_token_loss_mask is not None:
                         micro_batch_selector_token_loss_mask.append(
                             result.selector_token_loss_mask
+                        )
+                    if result.adaptive_metric_components is not None:
+                        micro_batch_adaptive_metric_components.append(
+                            result.adaptive_metric_components
+                        )
+                    if result.adaptive_center_mask is not None:
+                        micro_batch_adaptive_center_mask.append(
+                            result.adaptive_center_mask
+                        )
+                    if result.adaptive_threshold_pass_mask is not None:
+                        micro_batch_adaptive_threshold_pass_mask.append(
+                            result.adaptive_threshold_pass_mask
                         )
 
                 if return_teacher_student_cross_entropy:
@@ -934,6 +974,39 @@ class DataParallelPPOActor(BasePPOActor):
                         )
                     configured_token_loss_mask_batches.append(
                         mini_batch_configured_token_loss_mask
+                    )
+                if micro_batch_adaptive_metric_components:
+                    append_to_dict(
+                        metrics,
+                        aggregate_adaptive_neighborhood_metrics(
+                            micro_batch_adaptive_metric_components,
+                            reduce_distributed=True,
+                        ),
+                    )
+                    mini_batch_adaptive_center_mask = torch.cat(
+                        micro_batch_adaptive_center_mask,
+                        dim=0,
+                    )
+                    mini_batch_adaptive_threshold_pass_mask = torch.cat(
+                        micro_batch_adaptive_threshold_pass_mask,
+                        dim=0,
+                    )
+                    if batch_idx_list is not None:
+                        mini_batch_adaptive_center_mask = restore_dynamic_batch(
+                            mini_batch_adaptive_center_mask,
+                            batch_idx_list,
+                        )
+                        mini_batch_adaptive_threshold_pass_mask = (
+                            restore_dynamic_batch(
+                                mini_batch_adaptive_threshold_pass_mask,
+                                batch_idx_list,
+                            )
+                        )
+                    adaptive_center_mask_batches.append(
+                        mini_batch_adaptive_center_mask
+                    )
+                    adaptive_threshold_pass_mask_batches.append(
+                        mini_batch_adaptive_threshold_pass_mask
                     )
 
                 contribution_metrics, observation_rows = (
@@ -986,6 +1059,15 @@ class DataParallelPPOActor(BasePPOActor):
                 ).mean(dim=0)
                 auxiliary_outputs["configured_token_loss_mask"] = torch.cat(
                     configured_token_loss_mask_batches,
+                    dim=0,
+                )
+            if adaptive_center_mask_batches:
+                auxiliary_outputs["adaptive_center_mask"] = torch.cat(
+                    adaptive_center_mask_batches,
+                    dim=0,
+                )
+                auxiliary_outputs["adaptive_threshold_pass_mask"] = torch.cat(
+                    adaptive_threshold_pass_mask_batches,
                     dim=0,
                 )
             return metrics, auxiliary_outputs

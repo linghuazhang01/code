@@ -1082,6 +1082,48 @@ class MOPDAuditLogger:
                 "fixed",
             )
         ).strip().lower()
+        self.control_token_adaptive_neighborhood_enabled = bool(
+            _cfg_get(
+                audit_config,
+                "control_token_adaptive_neighborhood_enabled",
+                False,
+            )
+        )
+        self.control_token_adaptive_neighborhood_max_distance = int(
+            _cfg_get(
+                audit_config,
+                "control_token_adaptive_neighborhood_max_distance",
+                8,
+            )
+        )
+        self.control_token_adaptive_neighborhood_epsilon = float(
+            _cfg_get(
+                audit_config,
+                "control_token_adaptive_neighborhood_epsilon",
+                1e-8,
+            )
+        )
+        self.control_token_adaptive_neighborhood_relative_loss_clip_max = float(
+            _cfg_get(
+                audit_config,
+                "control_token_adaptive_neighborhood_relative_loss_clip_max",
+                1.5,
+            )
+        )
+        self.control_token_adaptive_neighborhood_relative_loss_threshold = float(
+            _cfg_get(
+                audit_config,
+                "control_token_adaptive_neighborhood_relative_loss_threshold",
+                0.3,
+            )
+        )
+        self.control_token_adaptive_neighborhood_min_far_tokens = int(
+            _cfg_get(
+                audit_config,
+                "control_token_adaptive_neighborhood_min_far_tokens",
+                1,
+            )
+        )
         self.control_token_phase_gate_enabled = bool(
             _cfg_get(
                 audit_config,
@@ -1655,6 +1697,25 @@ class MOPDAuditLogger:
                 "control_token_online_weight_mode": (
                     self.control_token_online_weight_mode
                 ),
+                "control_token_adaptive_neighborhood_enabled": (
+                    self.control_token_adaptive_neighborhood_enabled
+                    and mode == "train"
+                ),
+                "control_token_adaptive_neighborhood_max_distance": (
+                    self.control_token_adaptive_neighborhood_max_distance
+                ),
+                "control_token_adaptive_neighborhood_epsilon": (
+                    self.control_token_adaptive_neighborhood_epsilon
+                ),
+                "control_token_adaptive_neighborhood_relative_loss_clip_max": (
+                    self.control_token_adaptive_neighborhood_relative_loss_clip_max
+                ),
+                "control_token_adaptive_neighborhood_relative_loss_threshold": (
+                    self.control_token_adaptive_neighborhood_relative_loss_threshold
+                ),
+                "control_token_adaptive_neighborhood_min_far_tokens": (
+                    self.control_token_adaptive_neighborhood_min_far_tokens
+                ),
                 "control_token_phase_gate_enabled": (
                     self.control_token_phase_gate_enabled and mode == "train"
                 ),
@@ -2071,6 +2132,16 @@ class MOPDAuditLogger:
             suffix="_teacher_student_cross_entropy",
             generic_key="teacher_student_cross_entropy",
         )
+        adaptive_center_mask = (
+            tensor_batch["adaptive_center_mask"].detach().bool()
+            if "adaptive_center_mask" in batch_keys
+            else None
+        )
+        adaptive_threshold_pass_mask = (
+            tensor_batch["adaptive_threshold_pass_mask"].detach().bool()
+            if "adaptive_threshold_pass_mask" in batch_keys
+            else None
+        )
 
         sample_token_opd_loss_mean = _mask_mean(
             configured_token_loss,
@@ -2211,6 +2282,17 @@ class MOPDAuditLogger:
                         "teacher_student_cross_entropy",
                         teacher_student_cross_entropy,
                     ),
+                    *(
+                        (
+                            ("adaptive_center_mask", adaptive_center_mask),
+                            (
+                                "adaptive_threshold_pass_mask",
+                                adaptive_threshold_pass_mask,
+                            ),
+                        )
+                        if self.control_token_adaptive_neighborhood_enabled
+                        else ()
+                    ),
                 )
                 if value is None
             ]
@@ -2269,6 +2351,57 @@ class MOPDAuditLogger:
                 signal_timing=self.execution_timing,
                 tokenizer_name_or_path=self.response_tokenizer_name_or_path,
                 tokenizer_vocab_size=self.token_gap_vocab_size,
+                adaptive_center_mask=(
+                    adaptive_center_mask.detach().bool().cpu()
+                    if adaptive_center_mask is not None
+                    else None
+                ),
+                adaptive_threshold_pass_mask=(
+                    adaptive_threshold_pass_mask.detach().bool().cpu()
+                    if adaptive_threshold_pass_mask is not None
+                    else None
+                ),
+                adaptive_neighborhood=(
+                    {
+                        "enabled": True,
+                        "decision_unit": "individual_center_neighbor_pair",
+                        "timing": "same_batch_detached_loss",
+                        "center_source": (
+                            "online_selector_applied_snapshot"
+                            if self.control_token_online_selection_enabled
+                            else "fixed_domain_control_token_ids"
+                        ),
+                        "center_membership_log": (
+                            "online_control_selection.jsonl"
+                            if self.control_token_online_selection_enabled
+                            else None
+                        ),
+                        "max_distance": (
+                            self.control_token_adaptive_neighborhood_max_distance
+                        ),
+                        "epsilon": self.control_token_adaptive_neighborhood_epsilon,
+                        "clip_max": (
+                            self.control_token_adaptive_neighborhood_relative_loss_clip_max
+                        ),
+                        "relative_loss_threshold": (
+                            self.control_token_adaptive_neighborhood_relative_loss_threshold
+                        ),
+                        "far_baseline": (
+                            "response_local_lower_median_outside_neighborhood"
+                        ),
+                        "min_far_tokens": (
+                            self.control_token_adaptive_neighborhood_min_far_tokens
+                        ),
+                        "overlap": "max",
+                        "neighbor_weight": "relative_score",
+                        "control_weight": self.control_token_loss_weight,
+                        "normalize_per_response": (
+                            self.control_token_normalize_per_domain
+                        ),
+                    }
+                    if self.control_token_adaptive_neighborhood_enabled
+                    else None
+                ),
             )
         for domain in configured_domains:
             indices = indices_by_domain[domain]

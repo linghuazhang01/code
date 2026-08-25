@@ -302,6 +302,9 @@ CORE_TOKEN_WEIGHT = {
     "mean_effective_gradient_multiplier",
     "mean_token_gradient_multiplier",
     "next_active_token_count",
+    "online_control_occurrence_count",
+    "online_control_occurrence_fraction",
+    "online_valid_token_count",
     "observed_token_type_count",
     "occurrence_count",
     "raw_configured_loss_abs_mass",
@@ -469,6 +472,25 @@ CORE_AUDIT = {
 CORE_GLOBAL_DATA = {"domain_mix_entropy", "total_samples", "total_tokens"}
 CORE_GLOBAL_COST = {"gpu_seconds_step", "memory_peak_step", "step_seconds", "tokens_per_second"}
 CORE_ACTOR = {
+    "actor/adaptive_candidate_neighbor_token_count",
+    "actor/adaptive_eligible_neighbor_token_count",
+    "actor/adaptive_extra_kernel_mass_to_d0",
+    "actor/adaptive_extra_to_d0_ratio",
+    "actor/adaptive_extra_weighted_token_count",
+    "actor/adaptive_extra_weighted_token_fraction",
+    "actor/adaptive_far_baseline_valid_response_fraction",
+    "actor/adaptive_filtered_neighbor_fraction",
+    "actor/adaptive_filtered_neighbor_token_count",
+    "actor/adaptive_fixed_d0_token_count",
+    "actor/adaptive_negative_denominator_fraction",
+    "actor/adaptive_relative_loss_threshold",
+    "actor/adaptive_threshold_eligible_token_count",
+    "actor/adaptive_threshold_pass_token_count",
+    "actor/adaptive_threshold_pass_token_fraction",
+    "actor/adaptive_threshold_pass_valid_token_fraction",
+    "actor/adaptive_total_weighted_token_count",
+    "actor/adaptive_total_weighted_token_fraction",
+    "actor/adaptive_valid_token_count",
     "actor/entropy",
     "actor/eopd_forward_kl_loss",
     "actor/eopd_high_entropy_ratio",
@@ -531,7 +553,11 @@ def keep_core_metric(key: str) -> bool:
     category = parts[1] if len(parts) > 1 else ""
     metric = parts[-1]
 
-    if key.startswith("val-core/") or key in CORE_ACTOR:
+    if (
+        key.startswith("val-core/")
+        or key.startswith("actor/adaptive_domain/")
+        or key in CORE_ACTOR
+    ):
         return True
     if root == "domain_budgeting":
         return True

@@ -20,6 +20,121 @@ KNOTS = (
 
 
 class DomainGradientConfigTests(unittest.TestCase):
+    def test_adaptive_neighborhood_configuration_is_supported(self) -> None:
+        config = DomainGradientConfig.from_meta(
+            {
+                "domains": ["math", "code"],
+                "control_token_loss_weighting_enabled": True,
+                "control_token_loss_weight": 4.0,
+                "domain_control_token_ids": {"math": [11], "code": [22]},
+                "control_token_adaptive_neighborhood_enabled": True,
+                "control_token_adaptive_neighborhood_max_distance": 8,
+                "control_token_adaptive_neighborhood_relative_loss_clip_max": 1.5,
+                "control_token_adaptive_neighborhood_relative_loss_threshold": 0.3,
+                "control_token_adaptive_neighborhood_min_far_tokens": 2,
+            }
+        )
+
+        self.assertTrue(config.control_token_adaptive_neighborhood_enabled)
+        self.assertEqual(config.control_token_adaptive_neighborhood_max_distance, 8)
+        self.assertEqual(
+            config.control_token_adaptive_neighborhood_relative_loss_clip_max,
+            1.5,
+        )
+        self.assertEqual(
+            config.control_token_adaptive_neighborhood_relative_loss_threshold,
+            0.3,
+        )
+        self.assertEqual(config.control_token_adaptive_neighborhood_min_far_tokens, 2)
+
+    def test_adaptive_neighborhood_requires_fixed_ids_or_online_selector(
+        self,
+    ) -> None:
+        common = {
+            "domains": ["math", "code"],
+            "control_token_loss_weighting_enabled": True,
+            "control_token_loss_weight": 4.0,
+            "control_token_adaptive_neighborhood_enabled": True,
+        }
+
+        with self.assertRaisesRegex(ValueError, "exactly match domains"):
+            DomainGradientConfig.from_meta(
+                {**common, "domain_control_token_ids": {"math": [11]}}
+            )
+        online = DomainGradientConfig.from_meta(
+            {
+                **common,
+                "control_token_online_selection_enabled": True,
+                "domain_control_token_candidate_ids": {
+                    "math": [11],
+                    "code": [22],
+                },
+            }
+        )
+        self.assertTrue(online.control_token_online_selection_enabled)
+        self.assertEqual(online.domain_control_token_ids, ())
+        canonical_spec = online.adaptive_neighborhood_spec(
+            domain_token_ids={"code": [22], "math": [11]},
+        )
+        self.assertEqual(
+            canonical_spec.domain_token_ids,
+            (("math", (11,)), ("code", (22,))),
+        )
+        with self.assertRaisesRegex(ValueError, "exactly match domains"):
+            online.adaptive_neighborhood_spec(
+                domain_token_ids={"math": [11]},
+            )
+        with self.assertRaisesRegex(ValueError, "shared-token"):
+            DomainGradientConfig.from_meta(
+                {
+                    **common,
+                    "domain_control_token_ids": {"math": [11], "code": [22]},
+                    "all_domain_shared_token_loss_weighting_enabled": True,
+                    "all_domain_shared_token_ids": [33],
+                }
+            )
+
+    def test_adaptive_neighborhood_rejects_token_gradient_replay(self) -> None:
+        with self.assertRaisesRegex(ValueError, "token-gradient"):
+            DomainGradientConfig.from_meta(
+                {
+                    "domains": ["math"],
+                    "token_gradient_enabled": True,
+                    "control_token_loss_weighting_enabled": True,
+                    "control_token_loss_weight": 4.0,
+                    "domain_control_token_ids": {"math": [11]},
+                    "control_token_adaptive_neighborhood_enabled": True,
+                }
+            )
+
+    def test_adaptive_neighborhood_fields_reach_actor_meta(self) -> None:
+        from mopd_verl.verl_audit import MOPDAuditLogger
+
+        logger = MOPDAuditLogger(
+            {
+                "mopd_audit": {
+                    "enabled": True,
+                    "domains": ["math"],
+                    "control_token_loss_weighting_enabled": True,
+                    "control_token_loss_weight": 4.0,
+                    "domain_control_token_ids": {"math": [11]},
+                    "control_token_adaptive_neighborhood_enabled": True,
+                    "control_token_adaptive_neighborhood_max_distance": 6,
+                    "control_token_adaptive_neighborhood_relative_loss_threshold": 0.4,
+                }
+            }
+        )
+
+        meta = logger.full_gradient_meta("train", 7)["mopd_full_gradient"]
+        config = DomainGradientConfig.from_meta(meta)
+
+        self.assertTrue(config.control_token_adaptive_neighborhood_enabled)
+        self.assertEqual(config.control_token_adaptive_neighborhood_max_distance, 6)
+        self.assertEqual(
+            config.control_token_adaptive_neighborhood_relative_loss_threshold,
+            0.4,
+        )
+
     def test_current_full_gradient_meta_is_supported(self) -> None:
         config = DomainGradientConfig.from_meta(
             {
@@ -567,6 +682,16 @@ class DomainGradientSourceTests(unittest.TestCase):
             actor_source,
         )
 
+    def test_online_control_metrics_reject_ulysses_replication(self) -> None:
+        actor_source = (
+            ROOT / "third_party/verl/verl/workers/actor/dp_actor.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("ulysses_sequence_parallel_size > 1", actor_source)
+        self.assertIn(
+            "world-group reductions do not duplicate SP-replicated data",
+            actor_source,
+        )
     def test_old_tracker_is_only_a_compatibility_shim(self) -> None:
         source = (ROOT / "mopd_verl/full_gradient/tracker.py").read_text(
             encoding="utf-8"

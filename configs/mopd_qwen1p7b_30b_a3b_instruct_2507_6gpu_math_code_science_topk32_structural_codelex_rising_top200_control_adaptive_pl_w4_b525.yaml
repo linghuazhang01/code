@@ -1,0 +1,23 @@
+# Loss-relative adaptive signed-neighborhood follow-up to the fixed
+# Structural+CodeLex selector. The base selector and all training settings are
+# inherited unchanged; only the loss controller and run identities differ.
+extends: mopd_qwen1p7b_30b_a3b_instruct_2507_6gpu_math_code_science_topk32_structural_codelex_rising_top200_control_fixed_w4_b525.yaml
+
+runtime:
+  wandb_run_id: q1p7b-6g-mcs-struct-codelex-r200-adaptive-pl-w4-b525-v1
+
+audit:
+  output_dir: audit/qwen1p7b_30b_a3b_instruct_2507_6gpu_math_code_science_topk32_structural_codelex_rising_top200_control_adaptive_pl_w4_b525_v1
+  control_token_adaptive_neighborhood_enabled: true
+  control_token_adaptive_neighborhood_max_distance: 8
+  control_token_adaptive_neighborhood_epsilon: 1.0e-8
+  control_token_adaptive_neighborhood_relative_loss_clip_max: 1.5
+  control_token_adaptive_neighborhood_relative_loss_threshold: 0.30
+  control_token_adaptive_neighborhood_min_far_tokens: 1
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/qwen1p7b_30b_a3b_instruct_2507_6gpu_math_code_science_topk32_structural_codelex_rising_top200_control_adaptive_pl_w4_b525_v1
+
+trainer:
+  experiment_name: qwen1p7b-from-30b-a3b-instruct-2507-6gpu-math-code-science-topk32-structural-codelex-rising-top200-control-adaptive-pl-w4-b525-v1
+  default_local_dir: checkpoints/MOPD/qwen1p7b-from-30b-a3b-instruct-2507-6gpu-math-code-science-topk32-structural-codelex-rising-top200-control-adaptive-pl-w4-b525-v1

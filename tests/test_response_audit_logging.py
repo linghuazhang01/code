@@ -139,6 +139,33 @@ def test_complete_response_records_are_step_scoped_and_aligned() -> None:
         "temperature": 1.0,
         "topk": 32,
     }
+
+
+def test_adaptive_response_records_use_applied_masks_not_static_ids() -> None:
+    with TemporaryDirectory() as output_dir:
+        logger = _logger(output_dir, compression="none")
+        logger.control_token_adaptive_neighborhood_enabled = True
+        batch = _response_batch()
+        batch.batch["adaptive_center_mask"] = torch.tensor(
+            [[True, False, False], [False, True, False]]
+        )
+        batch.batch["adaptive_threshold_pass_mask"] = torch.tensor(
+            [[False, True, False], [True, False, True]]
+        )
+
+        logger.log_training_step(batch, step=8, lr=1e-5)
+        directory = step_jsonl_dir(output_dir, 8)
+        math_row = json.loads(
+            (directory / "response_records_math.jsonl").read_text().splitlines()[0]
+        )
+        manifest = json.loads((directory / "response_manifest.json").read_text())
+
+    assert math_row["control_token_mask"] == [True, False]
+    assert math_row["control_token_positions"] == [0]
+    assert math_row["adaptive_threshold_pass_mask"] == [False, True]
+    assert math_row["adaptive_threshold_pass_positions"] == [1]
+    assert manifest["available_metrics"]["adaptive_center_mask"] is True
+    assert manifest["available_metrics"]["adaptive_threshold_pass_mask"] is True
     assert manifest["configured_token_loss"]["name"] == (
         "topk_renormalized_reverse_kl"
     )
@@ -170,7 +197,7 @@ def test_response_records_support_gzip_without_losing_json_schema() -> None:
         with gzip.open(path, mode="rt", encoding="utf-8") as handle:
             row = json.loads(handle.readline())
 
-    assert row["schema_version"] == 2
+    assert row["schema_version"] == 3
     assert row["step"] == 3
     assert row["sample_id"] == "math-sample"
 

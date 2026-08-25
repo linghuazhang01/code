@@ -312,6 +312,12 @@ class AuditConfig:
     control_token_online_top_k: int = 30
     control_token_online_selection_mode: str = TOP_LOSS_SELECTION_MODE
     control_token_online_weight_mode: str = FIXED_ONLINE_WEIGHT_MODE
+    control_token_adaptive_neighborhood_enabled: bool = False
+    control_token_adaptive_neighborhood_max_distance: int = 8
+    control_token_adaptive_neighborhood_epsilon: float = 1e-8
+    control_token_adaptive_neighborhood_relative_loss_clip_max: float = 1.5
+    control_token_adaptive_neighborhood_relative_loss_threshold: float = 0.30
+    control_token_adaptive_neighborhood_min_far_tokens: int = 1
     control_token_phase_gate_enabled: bool = False
     control_token_span_weighting_enabled: bool = False
     control_token_phase_gate_window_steps: int = 5
@@ -1105,6 +1111,112 @@ def load_config(path: str | Path) -> MOPDConfig:
             raise ValueError(
                 "Online Control selection is mutually exclusive with speed, "
                 "phase-gate, and successor-span weighting."
+            )
+    if (
+        audit.control_token_adaptive_neighborhood_max_distance < 1
+        or audit.control_token_adaptive_neighborhood_min_far_tokens < 1
+    ):
+        raise ValueError(
+            "Adaptive-neighborhood distance and min_far_tokens must be positive."
+        )
+    if (
+        not math.isfinite(audit.control_token_adaptive_neighborhood_epsilon)
+        or audit.control_token_adaptive_neighborhood_epsilon <= 0.0
+    ):
+        raise ValueError(
+            "audit.control_token_adaptive_neighborhood_epsilon must be positive."
+        )
+    adaptive_clip = (
+        audit.control_token_adaptive_neighborhood_relative_loss_clip_max
+    )
+    adaptive_threshold = (
+        audit.control_token_adaptive_neighborhood_relative_loss_threshold
+    )
+    if not all(
+        math.isfinite(value)
+        for value in (adaptive_clip, adaptive_threshold)
+    ):
+        raise ValueError("Adaptive-neighborhood relative-loss bounds must be finite.")
+    if not 0.0 <= adaptive_threshold <= adaptive_clip:
+        raise ValueError(
+            "Adaptive-neighborhood threshold must be in [0, clip_max]."
+        )
+    if audit.control_token_adaptive_neighborhood_enabled:
+        if audit.token_gradient_enabled:
+            raise ValueError(
+                "Per-token adaptive neighborhoods cannot be combined with "
+                "token-gradient replay because the diagnostic ranking does "
+                "not reconstruct the adaptive multiplier."
+            )
+        if (
+            not audit.control_token_online_selection_enabled
+            and set(audit.domain_control_token_ids) != set(audit.domains)
+        ):
+            raise ValueError(
+                "Adaptive-neighborhood control requires fixed "
+                "domain_control_token_ids that exactly match audit.domains or "
+                "an enabled online selector."
+            )
+        if (
+            not audit.control_token_loss_weighting_enabled
+            or audit.control_token_loss_weight < 1.0
+        ):
+            raise ValueError(
+                "Adaptive-neighborhood control requires enabled fixed "
+                "Control-token weighting with weight at least 1."
+            )
+        if (
+            audit.control_token_ids
+            or audit.control_token_speed_weighting_enabled
+            or audit.control_token_phase_gate_enabled
+            or audit.control_token_span_weighting_enabled
+            or audit.all_domain_shared_token_loss_weighting_enabled
+        ):
+            raise ValueError(
+                "Adaptive-neighborhood control is mutually exclusive with "
+                "global IDs, speed, phase, span, and shared-token modes."
+            )
+        if (
+            audit.control_token_online_selection_enabled
+            and audit.control_token_online_weight_mode
+            != FIXED_ONLINE_WEIGHT_MODE
+        ):
+            raise ValueError(
+                "Adaptive-neighborhood online selection requires fixed online "
+                "Control-token weights."
+            )
+        if not actor.topk_distill_enabled:
+            raise ValueError(
+                "Per-token adaptive neighborhoods require Top-K distillation."
+            )
+        if normalized_loss_builder != "topk_kl":
+            raise ValueError(
+                "Per-token adaptive neighborhoods currently require the "
+                "topk_kl loss builder."
+            )
+        if region_dpo.enabled:
+            raise ValueError(
+                "Per-token adaptive neighborhoods do not support Region-DPO."
+            )
+        if actor.entropy_coeff != 0 or actor.kl_loss_coef != 0:
+            raise ValueError(
+                "Per-token adaptive neighborhoods require zero entropy and KL "
+                "auxiliary coefficients so the gated configured loss is exact."
+            )
+        if actor.teacher_prefix_enabled:
+            raise ValueError(
+                "Per-token adaptive neighborhoods do not support teacher-prefix loss."
+            )
+        expected_adaptive_batch = data.train_batch_size * rollout.n
+        if (
+            actor.ppo_epochs != 1
+            or actor.ppo_mini_batch_size != expected_adaptive_batch
+        ):
+            raise ValueError(
+                "Per-token adaptive neighborhoods require one optimizer "
+                "mini-batch covering the complete rollout step and one PPO "
+                "epoch: expected actor.ppo_mini_batch_size="
+                f"{expected_adaptive_batch} and actor.ppo_epochs=1."
             )
     if not 0.0 <= audit.control_token_phase_gate_ema_beta < 1.0:
         raise ValueError("audit.control_token_phase_gate_ema_beta must be in [0, 1).")

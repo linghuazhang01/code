@@ -534,6 +534,145 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
         self.assertEqual(prefix_loss_mask.sum().item(), 0.0)
         self.assertEqual(suffix_loss_mask.sum().item(), 0.0)
 
+    def test_actor_loss_applies_same_batch_adaptive_gate_without_forward_change(
+        self,
+    ) -> None:
+        torch = self._torch()
+        with self._stubbed_verl(torch):
+            from mopd_verl.domain_gradient.adaptive_neighborhood import (
+                PerTokenAdaptiveNeighborhoodResult,
+                PerTokenAdaptiveNeighborhoodSpec,
+            )
+            from mopd_verl.full_gradient.actor_loss import (
+                build_actor_micro_batch_loss,
+            )
+
+            teacher = torch.log_softmax(
+                torch.tensor([[[3.0, 1.0, 0.0], [0.0, 1.0, 3.0]]]),
+                dim=-1,
+            )
+
+            class MicroBatch:
+                batch = {
+                    "response_mask": torch.ones(1, 2),
+                    "responses": torch.tensor([[10, 2]]),
+                    "math_teacher_topk_ids": torch.zeros(1, 2, 3, dtype=torch.long),
+                    "math_teacher_topk_logprobs": teacher,
+                }
+                non_tensor_batch = {
+                    "source_domain": ["math"],
+                    "opd_teacher": ["math"],
+                }
+                meta_info = {"temperature": 1.0}
+
+                def to(self, _device: object) -> "MicroBatch":
+                    return self
+
+            class Actor:
+                config = {
+                    "entropy_coeff": 0.0,
+                    "kl_loss_coef": 0.0,
+                    "loss_agg_mode": "token-mean",
+                    "policy_loss": {
+                        "distill_loss_builder": "topk_kl",
+                        "distill_mode": "topk_renormalized_reverse_kl",
+                        "multi_teacher_distill": True,
+                        "topk_distill_support_source": "teacher",
+                        "topk_distill_temperature": 1.0,
+                    },
+                    "use_kl_loss": False,
+                }
+
+                def __init__(self, logits: object) -> None:
+                    self.logits = logits
+
+                def _forward_micro_batch(
+                    self,
+                    _model_inputs: dict[str, object],
+                    **_kwargs: object,
+                ) -> tuple[object, ...]:
+                    return (
+                        None,
+                        torch.zeros(1, 2),
+                        None,
+                        None,
+                        torch.log_softmax(self.logits, dim=-1),
+                    )
+
+            spec = PerTokenAdaptiveNeighborhoodSpec(
+                domains=("math",),
+                domain_token_ids=(("math", (10,)),),
+                max_distance=1,
+                epsilon=1e-8,
+                clip_max=1.5,
+                threshold=0.3,
+                min_far_tokens=1,
+                control_weight=4.0,
+                normalize_per_response=False,
+            )
+            mask = torch.tensor([[True, False]])
+            adaptive_result = PerTokenAdaptiveNeighborhoodResult(
+                multiplier=torch.tensor([[2.0, 1.0]]),
+                raw_multiplier=torch.tensor([[2.0, 1.0]]),
+                relative_scores=torch.tensor([[1.0 / 3.0, 0.0]]),
+                center_mask=mask,
+                candidate_neighbor_mask=~mask,
+                eligible_neighbor_mask=~mask,
+                selected_neighbor_mask=~mask,
+                far_baselines=torch.tensor([0.0]),
+                far_token_counts=torch.tensor([1]),
+                center_denominators=torch.tensor([[1.0, 0.0]]),
+                valid_denominator_mask=mask,
+            )
+            baseline_logits = torch.tensor(
+                [[[2.0, 1.0, 0.0], [0.0, 1.0, 2.0]]],
+                requires_grad=True,
+            )
+            adaptive_logits = baseline_logits.detach().clone().requires_grad_(True)
+            baseline = build_actor_micro_batch_loss(
+                Actor(baseline_logits),
+                MicroBatch(),
+                loss_scale_factor=1.0,
+                on_policy=True,
+                return_configured_token_loss=True,
+            )
+            with patch(
+                "mopd_verl.full_gradient.actor_loss."
+                "build_per_token_adaptive_neighborhood",
+                return_value=adaptive_result,
+            ):
+                adaptive = build_actor_micro_batch_loss(
+                    Actor(adaptive_logits),
+                    MicroBatch(),
+                    loss_scale_factor=1.0,
+                    on_policy=True,
+                    include_metrics=True,
+                    return_configured_token_loss=True,
+                    adaptive_neighborhood_spec=spec,
+                )
+
+            torch.testing.assert_close(adaptive.loss, baseline.loss)
+            torch.testing.assert_close(
+                adaptive.configured_token_loss,
+                baseline.configured_token_loss,
+            )
+            self.assertIsNotNone(adaptive.adaptive_metric_components)
+            torch.testing.assert_close(adaptive.adaptive_center_mask, mask)
+            torch.testing.assert_close(
+                adaptive.adaptive_threshold_pass_mask,
+                ~mask,
+            )
+            baseline.loss.backward()
+            adaptive.loss.backward()
+            torch.testing.assert_close(
+                adaptive_logits.grad[:, 0],
+                baseline_logits.grad[:, 0] * 2.0,
+            )
+            torch.testing.assert_close(
+                adaptive_logits.grad[:, 1],
+                baseline_logits.grad[:, 1],
+            )
+
     def test_micro_batch_contributions_sum_but_observations_remain_rows(self) -> None:
         self._torch()
         from mopd_verl.full_gradient.loss_support import (
@@ -1626,6 +1765,158 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
             torch.tensor([[2.0, 1.0, 1.0], [1.0, 2.0, 1.0]]),
         )
 
+    def test_adaptive_neighborhood_is_stateless_and_skips_preforward_d0(
+        self,
+    ) -> None:
+        torch = self._torch()
+        with self._stubbed_verl(torch):
+            from mopd_verl.domain_gradient.audit import DomainGradientAudit
+
+            optimizer = SimpleNamespace(param_groups=[{}])
+            actor = SimpleNamespace(actor_optimizer=optimizer)
+            audit = DomainGradientAudit(
+                actor,
+                {
+                    "domains": ["math", "code"],
+                    "control_token_loss_weighting_enabled": True,
+                    "control_token_loss_weight": 4.0,
+                    "domain_control_token_ids": {"math": [11], "code": [22]},
+                    "control_token_normalize_per_domain": False,
+                    "control_token_adaptive_neighborhood_enabled": True,
+                    "control_token_adaptive_neighborhood_max_distance": 8,
+                    "control_token_adaptive_neighborhood_relative_loss_threshold": 0.3,
+                    "control_token_adaptive_neighborhood_min_far_tokens": 1,
+                },
+            )
+            micro_batch = SimpleNamespace(
+                batch={
+                    "response_mask": torch.ones(2, 4, dtype=torch.bool),
+                    "responses": torch.tensor(
+                        [[10, 11, 12, 9], [21, 22, 23, 19]]
+                    ),
+                },
+                non_tensor_batch={"domain": ["math", "code"]},
+            )
+
+            preforward_mask = audit.training_gradient_mask(micro_batch)
+            audit_masks = audit._production_gradient_masks((micro_batch,))
+            spec = audit.config.adaptive_neighborhood_spec()
+            metrics = audit.observe_completed_step((), (), ())
+
+        self.assertIsNone(preforward_mask)
+        torch.testing.assert_close(audit_masks[0], torch.ones(2, 4))
+        self.assertIsNotNone(spec)
+        self.assertEqual(spec.max_distance, 8)
+        self.assertEqual(spec.threshold, 0.3)
+        self.assertEqual(spec.token_id_map(), {"math": (11,), "code": (22,)})
+        self.assertEqual(metrics, {})
+        self.assertNotIn("mopd_adaptive_neighborhood_state", optimizer.param_groups[0])
+
+    def test_online_adaptive_neighborhood_uses_applied_selection_snapshot(
+        self,
+    ) -> None:
+        torch = self._torch()
+        with self._stubbed_verl(torch):
+            from mopd_verl.domain_gradient.audit import DomainGradientAudit
+            from mopd_verl.domain_gradient.control_top_loss import (
+                initial_online_control_selection_state,
+                update_online_control_selection,
+            )
+
+            state = initial_online_control_selection_state(
+                ("math", "code"),
+                {"math": (10, 30), "code": (20, 30)},
+                audit_interval_steps=1,
+                window_steps=1,
+                min_mean_occurrences_per_step=1.0,
+                top_k=1,
+            )
+            _, state = update_online_control_selection(
+                state,
+                {"math": {10: (4.0, 2)}, "code": {20: (6.0, 2)}},
+                step=3,
+            )
+            optimizer = SimpleNamespace(
+                param_groups=[{"mopd_online_control_selection_state": state.as_dict()}]
+            )
+            audit = DomainGradientAudit(
+                SimpleNamespace(actor_optimizer=optimizer),
+                {
+                    "step": 4,
+                    "domains": ["math", "code"],
+                    "control_token_loss_weighting_enabled": True,
+                    "control_token_loss_weight": 4.0,
+                    "domain_control_token_candidate_ids": {
+                        "math": [10, 30],
+                        "code": [20, 30],
+                    },
+                    "control_token_online_selection_enabled": True,
+                    "control_token_online_audit_interval_steps": 1,
+                    "control_token_online_window_steps": 1,
+                    ("control_token_online_" "min_mean_occurrences_per_step"): 1.0,
+                    "control_token_online_top_k": 1,
+                    "control_token_adaptive_neighborhood_enabled": True,
+                    "control_token_adaptive_neighborhood_relative_loss_threshold": 1.0,
+                },
+            )
+            micro_batch = SimpleNamespace(
+                batch={
+                    "response_mask": torch.ones(2, 3),
+                    "responses": torch.tensor([[10, 11, 30], [20, 21, 30]]),
+                },
+                non_tensor_batch={"domain": ["math", "code"]},
+            )
+
+            spec = audit.adaptive_neighborhood_spec()
+            preforward_mask = audit.training_gradient_mask(micro_batch)
+            audit._online_control_selection_state = (
+                initial_online_control_selection_state(
+                    ("math", "code"),
+                    {"math": (10, 30), "code": (20, 30)},
+                    audit_interval_steps=1,
+                    window_steps=1,
+                    min_mean_occurrences_per_step=1.0,
+                    top_k=1,
+                )
+            )
+            repeated_spec = audit.adaptive_neighborhood_spec()
+            with self.assertRaisesRegex(
+                ValueError,
+                "current step must be greater",
+            ):
+                DomainGradientAudit(
+                    SimpleNamespace(actor_optimizer=optimizer),
+                    {
+                        "step": 3,
+                        "domains": ["math", "code"],
+                        "control_token_loss_weighting_enabled": True,
+                        "control_token_loss_weight": 4.0,
+                        "domain_control_token_candidate_ids": {
+                            "math": [10, 30],
+                            "code": [20, 30],
+                        },
+                        "control_token_online_selection_enabled": True,
+                        "control_token_online_audit_interval_steps": 1,
+                        "control_token_online_window_steps": 1,
+                        (
+                            "control_token_online_"
+                            "min_mean_occurrences_per_step"
+                        ): 1.0,
+                        "control_token_online_top_k": 1,
+                        "control_token_adaptive_neighborhood_enabled": True,
+                        (
+                            "control_token_adaptive_neighborhood_"
+                            "relative_loss_threshold"
+                        ): 1.0,
+                    },
+                )
+
+        self.assertIsNone(preforward_mask)
+        self.assertIsNotNone(spec)
+        self.assertEqual(spec.threshold, 1.0)
+        self.assertEqual(spec.token_id_map(), {"math": (10,), "code": (20,)})
+        self.assertEqual(repeated_spec, spec)
+
     def test_online_control_snapshot_routes_only_prior_selection(self) -> None:
         torch = self._torch()
         with self._stubbed_verl(torch):
@@ -1867,6 +2158,30 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
                     step_jsonl_dir(temp_dir, 3) / "online_control_selection.jsonl"
                 )
                 record = json.loads(record_path.read_text(encoding="utf-8"))
+                next_audit = DomainGradientAudit(
+                    actor,
+                    {
+                        "step": 4,
+                        "output_dir": temp_dir,
+                        "domains": ["math", "code"],
+                        "control_token_loss_weighting_enabled": True,
+                        "control_token_loss_weight": 4.0,
+                        "control_token_candidate_ids": [10, 20],
+                        "control_token_online_selection_enabled": True,
+                        "control_token_online_audit_interval_steps": 3,
+                        "control_token_online_window_steps": 3,
+                        (
+                            "control_token_online_"
+                            "min_mean_occurrences_per_step"
+                        ): 1.0,
+                        "control_token_online_top_k": 1,
+                    },
+                )
+                next_metrics = next_audit.observe_completed_step(
+                    (micro_batch,),
+                    (torch.tensor([[2.0, 0.1], [0.1, 3.0]]),),
+                    (torch.ones(2, 2, dtype=torch.bool),),
+                )
 
             persisted = optimizer.param_groups[0]["mopd_online_control_selection_state"]
 
@@ -1891,6 +2206,18 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
             metrics["math/token_weight/selected_selection_score_count"],
             1.0,
         )
+        self.assertEqual(
+            metrics["math/token_weight/online_control_occurrence_count"],
+            0.0,
+        )
+        self.assertEqual(
+            metrics["math/token_weight/online_valid_token_count"],
+            2.0,
+        )
+        self.assertEqual(
+            metrics["math/token_weight/online_control_occurrence_fraction"],
+            0.0,
+        )
         self.assertIn(
             "eligible_selection_score_distribution",
             record["domains"]["math"],
@@ -1900,6 +2227,39 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
             record["domains"]["math"],
         )
         self.assertEqual(record["applies_from_step"], 4)
+        self.assertEqual(
+            record["applied_token_ids"],
+            {"math": [], "code": []},
+        )
+        self.assertEqual(
+            record["applied_token_coverage"]["math"],
+            {
+                "token_type_count": 0,
+                "occurrence_count": 0,
+                "valid_token_count": 2,
+                "occurrence_fraction": 0.0,
+            },
+        )
+        self.assertEqual(
+            next_metrics["math/token_weight/online_control_occurrence_count"],
+            1.0,
+        )
+        self.assertEqual(
+            next_metrics["math/token_weight/online_control_occurrence_fraction"],
+            0.5,
+        )
+        self.assertEqual(
+            next_metrics["global/token_weight/online_control_occurrence_count"],
+            2.0,
+        )
+        self.assertEqual(
+            next_metrics["global/token_weight/online_control_occurrence_fraction"],
+            0.5,
+        )
+        self.assertEqual(
+            record["next_active_token_ids"],
+            {"math": [10], "code": [20]},
+        )
         self.assertEqual(record["selection_mode"], "top_loss")
         self.assertEqual(
             record["domains"]["math"]["selected_tokens"][0][

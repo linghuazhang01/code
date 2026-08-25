@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -25,7 +26,15 @@ from mopd_verl.domain_gradient.control_selection_scoring import (
 )
 
 
-def global_candidate_loss_statistics(
+@dataclass(frozen=True)
+class GlobalCandidateLossStatistics:
+    """Globally reduced candidate scores and valid-token denominators."""
+
+    by_domain: dict[str, dict[int, tuple[float, int]]]
+    valid_token_counts: dict[str, int]
+
+
+def global_candidate_loss_statistics_with_valid_counts(
     token_id_batches: Sequence[torch.Tensor],
     loss_batches: Sequence[torch.Tensor],
     mask_batches: Sequence[torch.Tensor],
@@ -37,7 +46,7 @@ def global_candidate_loss_statistics(
     selection_mode: str = TOP_LOSS_SELECTION_MODE,
     student_entropy_batches: Sequence[torch.Tensor] | None = None,
     teacher_entropy_batches: Sequence[torch.Tensor] | None = None,
-) -> dict[str, dict[int, tuple[float, int]]]:
+) -> GlobalCandidateLossStatistics:
     """Aggregate the configured selector score and count in one all-reduce."""
 
     lengths = {
@@ -95,7 +104,7 @@ def global_candidate_loss_statistics(
         raise ValueError("Online Control candidates must be non-empty.")
     device = loss_batches[0].device
     packed = torch.zeros(
-        (len(normalized_domains), 2, len(candidates)),
+        (len(normalized_domains), 2, len(candidates) + 1),
         device=device,
         dtype=torch.float64,
     )
@@ -162,6 +171,7 @@ def global_candidate_loss_statistics(
                 dtype=torch.bool,
             ).unsqueeze(-1)
             selected_mask = valid & rows
+            packed[domain_index, 1, -1].add_(selected_mask.sum())
             selected_ids = ids[selected_mask]
             if selected_ids.numel() == 0:
                 continue
@@ -190,18 +200,36 @@ def global_candidate_loss_statistics(
             op=torch.distributed.ReduceOp.SUM,
         )
     packed_cpu = packed.cpu()
-    return {
-        domain: {
-            token_id: (
-                float(packed_cpu[domain_index, 0, candidate_index]),
-                int(packed_cpu[domain_index, 1, candidate_index]),
-            )
-            for candidate_index, token_id in enumerate(candidates)
-            if token_id in set(domain_candidates[domain])
-            if packed_cpu[domain_index, 1, candidate_index] > 0
-        }
-        for domain_index, domain in enumerate(normalized_domains)
-    }
+    return GlobalCandidateLossStatistics(
+        by_domain={
+            domain: {
+                token_id: (
+                    float(packed_cpu[domain_index, 0, candidate_index]),
+                    int(packed_cpu[domain_index, 1, candidate_index]),
+                )
+                for candidate_index, token_id in enumerate(candidates)
+                if token_id in set(domain_candidates[domain])
+                if packed_cpu[domain_index, 1, candidate_index] > 0
+            }
+            for domain_index, domain in enumerate(normalized_domains)
+        },
+        valid_token_counts={
+            domain: int(packed_cpu[domain_index, 1, -1])
+            for domain_index, domain in enumerate(normalized_domains)
+        },
+    )
+
+
+def global_candidate_loss_statistics(
+    *args: Any,
+    **kwargs: Any,
+) -> dict[str, dict[int, tuple[float, int]]]:
+    """Backward-compatible candidate-only view of the global statistics."""
+
+    return global_candidate_loss_statistics_with_valid_counts(
+        *args,
+        **kwargs,
+    ).by_domain
 
 
 def _score_distribution_record(
@@ -229,8 +257,12 @@ def append_online_control_selection_jsonl(
     state: OnlineControlSelectionState,
     outcome: OnlineControlSelectionOutcome,
     control_weight: float,
+    applied_token_ids: Mapping[str, Sequence[int]],
+    applied_token_weights: Mapping[str, Mapping[int, float]],
+    applied_token_occurrence_counts: Mapping[str, int],
+    valid_token_counts: Mapping[str, int],
 ) -> None:
-    """Persist online selector observations and exact next-step membership."""
+    """Persist exact current- and next-step online selector membership."""
 
     if (
         torch.distributed.is_available()
@@ -259,6 +291,33 @@ def append_online_control_selection_jsonl(
             for domain, token_ids in state.domain_candidate_token_ids
         },
         "control_weight": float(control_weight),
+        "applied_token_ids": {
+            str(domain): [int(token_id) for token_id in token_ids]
+            for domain, token_ids in applied_token_ids.items()
+        },
+        "applied_token_weights": {
+            str(domain): {
+                str(int(token_id)): float(weight)
+                for token_id, weight in token_weights.items()
+            }
+            for domain, token_weights in applied_token_weights.items()
+        },
+        "applied_token_coverage": {
+            str(domain): {
+                "token_type_count": len(applied_token_ids.get(domain, ())),
+                "occurrence_count": int(
+                    applied_token_occurrence_counts.get(domain, 0)
+                ),
+                "valid_token_count": int(valid_token_counts.get(domain, 0)),
+                "occurrence_fraction": (
+                    float(applied_token_occurrence_counts.get(domain, 0))
+                    / float(valid_token_counts[domain])
+                    if valid_token_counts.get(domain, 0) > 0
+                    else 0.0
+                ),
+            }
+            for domain in state.domains
+        },
         "next_active_token_ids": state.active_map(),
         "next_active_token_weights": state.active_weight_map(),
         "domains": {

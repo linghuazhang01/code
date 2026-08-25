@@ -14,7 +14,7 @@ from mopd_verl.audit_io import step_jsonl_dir
 from mopd_verl.tensorboard_tags import safe_name
 
 
-RESPONSE_AUDIT_SCHEMA_VERSION = 2
+RESPONSE_AUDIT_SCHEMA_VERSION = 3
 SUPPORTED_COMPRESSIONS = {"gzip", "none"}
 
 
@@ -46,6 +46,9 @@ class ResponseAuditBatch:
     signal_timing: str
     tokenizer_name_or_path: str | None
     tokenizer_vocab_size: int | None
+    adaptive_center_mask: Any | None
+    adaptive_threshold_pass_mask: Any | None
+    adaptive_neighborhood: dict[str, object] | None
 
 
 def normalize_response_compression(value: str) -> str:
@@ -115,13 +118,46 @@ def _response_row(
     token_ids = (
         batch.response_token_ids[index].detach().long().cpu()[valid].tolist()
     )
-    control_mask = [int(token_id) in control_token_ids for token_id in token_ids]
+    if batch.adaptive_center_mask is None:
+        control_mask = [
+            int(token_id) in control_token_ids for token_id in token_ids
+        ]
+        adaptive_center_mask = None
+    else:
+        control_mask = (
+            batch.adaptive_center_mask[index]
+            .detach()
+            .bool()
+            .cpu()[valid]
+            .tolist()
+        )
+        adaptive_center_mask = control_mask
+    adaptive_threshold_pass_mask = (
+        None
+        if batch.adaptive_threshold_pass_mask is None
+        else (
+            batch.adaptive_threshold_pass_mask[index]
+            .detach()
+            .bool()
+            .cpu()[valid]
+            .tolist()
+        )
+    )
     response_positions = [int(position) for position in positions.tolist()]
     control_positions = [
         response_positions[offset]
         for offset, is_control in enumerate(control_mask)
         if is_control
     ]
+    adaptive_threshold_pass_positions = (
+        None
+        if adaptive_threshold_pass_mask is None
+        else [
+            response_positions[offset]
+            for offset, passed in enumerate(adaptive_threshold_pass_mask)
+            if passed
+        ]
+    )
     return {
         "schema_version": RESPONSE_AUDIT_SCHEMA_VERSION,
         "step": batch.step,
@@ -136,6 +172,11 @@ def _response_row(
         "response_token_ids": [int(token_id) for token_id in token_ids],
         "control_token_mask": control_mask,
         "control_token_positions": control_positions,
+        "adaptive_center_mask": adaptive_center_mask,
+        "adaptive_threshold_pass_mask": adaptive_threshold_pass_mask,
+        "adaptive_threshold_pass_positions": (
+            adaptive_threshold_pass_positions
+        ),
         "student_token_log_prob": _masked_float_list(
             batch.student_log_prob,
             index,
@@ -198,6 +239,10 @@ def _manifest(
         "teacher_student_cross_entropy": (
             batch.teacher_student_cross_entropy is not None
         ),
+        "adaptive_center_mask": batch.adaptive_center_mask is not None,
+        "adaptive_threshold_pass_mask": (
+            batch.adaptive_threshold_pass_mask is not None
+        ),
     }
     return {
         "schema_version": RESPONSE_AUDIT_SCHEMA_VERSION,
@@ -243,6 +288,7 @@ def _manifest(
             "epoch_reduction": batch.configured_token_loss_epoch_reduction,
             "epoch_count": batch.configured_token_loss_epoch_count,
         },
+        "adaptive_neighborhood": batch.adaptive_neighborhood,
         "teacher_student_cross_entropy": {
             "scope": batch.cross_entropy_scope,
             "support_source": batch.cross_entropy_support_source,
@@ -287,6 +333,11 @@ def write_response_audit(
         ("student_entropy", batch.student_entropy),
         ("teacher_entropy", batch.teacher_entropy),
         ("teacher_student_cross_entropy", batch.teacher_student_cross_entropy),
+        ("adaptive_center_mask", batch.adaptive_center_mask),
+        (
+            "adaptive_threshold_pass_mask",
+            batch.adaptive_threshold_pass_mask,
+        ),
     ):
         _validate_matrix(name, matrix, reference)
 

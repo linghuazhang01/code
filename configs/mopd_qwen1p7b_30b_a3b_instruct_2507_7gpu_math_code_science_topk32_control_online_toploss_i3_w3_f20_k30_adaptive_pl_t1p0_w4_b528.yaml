@@ -1,0 +1,33 @@
+# Same-batch loss-relative signed neighborhoods around the lagged online
+# Top-30 Control IDs for a seven-GPU topology (6 actor + 1 ref GPU).
+# The selector audits every 3 steps over a 3-step window and applies its
+# selection from the next step. A neighbor within D in [-8, 8] is weighted
+# when its individual relative-loss score is at least 1.0; D0 remains forced
+# to kernel weight 1.
+extends: mopd_qwen1p7b_30b_a3b_instruct_2507_8gpu_math_code_science_topk32_control_online_toploss_i3_w3_f20_k30_w4_b528.yaml
+
+runtime:
+  wandb_run_id: q1p7b-7g-mcs-dcv2-i3w3f20k30-adapt-pl-t1p0-w4-b528-v1
+  slurm_allocation_gpus: 7
+
+worker_placement:
+  separate_ref_policy: true
+  actor_rollout: {n_gpus_per_node: 6, nnodes: 1}
+  ref_policy: {n_gpus_per_node: 1, nnodes: 1}
+
+audit:
+  output_dir: audit/qwen1p7b_30b_a3b_instruct_2507_7gpu_math_code_science_topk32_control_online_domaincand_v2_i3_w3_f20_k30_adaptive_pl_t1p0_w4_b528_v1
+  control_token_online_weight_mode: fixed
+  control_token_adaptive_neighborhood_enabled: true
+  control_token_adaptive_neighborhood_max_distance: 8
+  control_token_adaptive_neighborhood_epsilon: 1.0e-8
+  control_token_adaptive_neighborhood_relative_loss_clip_max: 1.5
+  control_token_adaptive_neighborhood_relative_loss_threshold: 1.0
+  control_token_adaptive_neighborhood_min_far_tokens: 1
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/qwen1p7b_30b_a3b_instruct_2507_7gpu_math_code_science_topk32_control_online_domaincand_v2_i3w3f20k30_adaptive_pl_t1p0_w4_b528_v1
+
+trainer:
+  experiment_name: qwen1p7b-from-30b-a3b-instruct-2507-7gpu-math-code-science-topk32-control-online-domaincand-v2-i3w3f20k30-adaptive-pl-t1p0-w4-b528-v1
+  default_local_dir: checkpoints/MOPD/qwen1p7b-from-30b-a3b-instruct-2507-7gpu-math-code-science-topk32-control-online-domaincand-v2-i3w3f20k30-adaptive-pl-t1p0-w4-b528-v1

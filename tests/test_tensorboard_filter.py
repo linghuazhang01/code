@@ -3,6 +3,18 @@ from __future__ import annotations
 from mopd_verl.tensorboard_filter import filter_tensorboard_metrics
 
 
+def test_core_filter_keeps_global_and_per_domain_adaptive_threshold_counts() -> None:
+    metrics = {
+        "actor/adaptive_threshold_pass_token_count": 42.0,
+        "actor/adaptive_threshold_eligible_token_count": 100.0,
+        "actor/adaptive_threshold_pass_token_fraction": 0.42,
+        "actor/adaptive_domain/math/threshold_pass_token_count": 17.0,
+        "actor/adaptive_domain/code/threshold_pass_token_fraction": 0.25,
+    }
+
+    assert filter_tensorboard_metrics(metrics, "core") == metrics
+
+
 def test_core_filter_drops_retired_domain_sum_training_audit_metrics() -> None:
     metrics = {
         "global/audit/training_gradient_from_domain_sum_requested": 1.0,

@@ -6,6 +6,14 @@ from typing import Any
 
 import torch
 
+from mopd_verl.domain_gradient.adaptive_neighborhood import (
+    PerTokenAdaptiveNeighborhoodSpec,
+    build_per_token_adaptive_neighborhood,
+)
+from mopd_verl.domain_gradient.adaptive_neighborhood_metrics import (
+    adaptive_neighborhood_metric_components,
+)
+from mopd_verl.domain_gradient.token_weighting import aligned_response_token_ids
 from mopd_verl.full_gradient.config import _cfg_get
 from mopd_verl.full_gradient.loss_support import (
     ActorMicroBatchLossResult,
@@ -23,6 +31,7 @@ from mopd_verl.full_gradient.loss_support import (
     selected_topk_support,
     topk_runtime_config,
 )
+from mopd_verl.full_gradient.labels import _labels_from_mapping
 from mopd_verl.region_dpo_loss import (
     build_region_dpo_actor_loss,
     region_dpo_enabled,
@@ -81,6 +90,7 @@ def build_actor_micro_batch_loss(
     include_metrics: bool = False,
     return_teacher_student_cross_entropy: bool = False,
     return_configured_token_loss: bool = False,
+    adaptive_neighborhood_spec: PerTokenAdaptiveNeighborhoodSpec | None = None,
     temperature: float | None = None,
 ) -> ActorMicroBatchLossResult:
     from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
@@ -111,6 +121,11 @@ def build_actor_micro_batch_loss(
     }
     builder_name = distill_loss_builder(policy_loss_cfg)
     topk_distill_active = uses_topk_distill_loss(policy_loss_cfg)
+    if adaptive_neighborhood_spec is not None and not topk_distill_active:
+        raise ValueError(
+            "Per-token adaptive neighborhoods require an active Top-K "
+            "distillation loss."
+        )
     eopd_active = uses_eopd_loss(policy_loss_cfg)
     if eopd_active and model_inputs.get("rollout_is_weights") is not None:
         raise ValueError(
@@ -173,6 +188,9 @@ def build_actor_micro_batch_loss(
     configured_distill_loss_mat = None
     prefix_configured_loss_mat = None
     selector_token_loss_mat = None
+    adaptive_metric_components = None
+    adaptive_center_mask = None
+    adaptive_threshold_pass_mask = None
     if return_teacher_student_cross_entropy:
         if not teacher_topk_active:
             raise ValueError(
@@ -367,17 +385,57 @@ def build_actor_micro_batch_loss(
                 device=topk_loss_mat.device,
                 dtype=topk_loss_mat.dtype,
             )
+        topk_weight = topk_distill_weight(policy_loss_cfg)
+        individual_configured_loss = topk_loss_mat.detach().float() * topk_weight
+        if adaptive_neighborhood_spec is not None:
+            response_token_ids = aligned_response_token_ids(
+                model_inputs,
+                topk_loss_mat,
+            )
+            if response_token_ids is None:
+                raise ValueError(
+                    "Per-token adaptive neighborhoods require response-aligned "
+                    "token IDs."
+                )
+            labels = tuple(
+                _labels_from_mapping(
+                    model_inputs,
+                    int(response_mask.shape[0]),
+                )
+            )
+            adaptive_result = build_per_token_adaptive_neighborhood(
+                individual_configured_loss,
+                distill_response_mask,
+                response_token_ids,
+                response_mask,
+                labels,
+                adaptive_neighborhood_spec,
+            )
+            topk_loss_mat = _gate_tensor_gradient(
+                topk_loss_mat,
+                adaptive_result.multiplier,
+            )
+            adaptive_center_mask = adaptive_result.center_mask
+            adaptive_threshold_pass_mask = adaptive_result.selected_neighbor_mask
+            if include_metrics:
+                adaptive_metric_components = (
+                    adaptive_neighborhood_metric_components(
+                        adaptive_result,
+                        distill_response_mask.bool()
+                        & torch.isfinite(individual_configured_loss),
+                        threshold=adaptive_neighborhood_spec.threshold,
+                        labels=labels,
+                        domains=adaptive_neighborhood_spec.domains,
+                    )
+                )
         topk_loss = agg_loss(
             loss_mat=topk_loss_mat,
             loss_mask=distill_response_mask,
             loss_agg_mode=str(_cfg_get(actor.config, "loss_agg_mode", "token-mean")),
         )
-        topk_weight = topk_distill_weight(policy_loss_cfg)
         policy_loss = policy_loss + topk_loss * topk_weight
         if return_configured_token_loss:
-            configured_distill_loss_mat = (
-                topk_loss_mat.detach().float() * topk_weight
-            )
+            configured_distill_loss_mat = individual_configured_loss
         if include_metrics:
             metrics["actor/topk_distill_loss"] = topk_loss.detach().item() * float(loss_scale_factor)
             metrics["actor/topk_distill_weight"] = topk_weight
@@ -582,4 +640,7 @@ def build_actor_micro_batch_loss(
         configured_token_loss_mask=configured_token_loss_mask,
         selector_token_loss=selector_token_loss,
         selector_token_loss_mask=selector_token_loss_mask,
+        adaptive_metric_components=adaptive_metric_components,
+        adaptive_center_mask=adaptive_center_mask,
+        adaptive_threshold_pass_mask=adaptive_threshold_pass_mask,
     )

@@ -61,6 +61,7 @@ LIGHTWEIGHT_AUDIT_FLAGS = (
     "dynamic_domain_loss_weighting_enabled",
     "control_token_loss_weighting_enabled",
     "control_token_online_selection_enabled",
+    "control_token_adaptive_neighborhood_enabled",
     "control_token_phase_gate_enabled",
     "control_token_span_weighting_enabled",
     "control_token_speed_weighting_enabled",

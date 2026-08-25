@@ -7,6 +7,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from mopd_verl.domain_gradient.adaptive_neighborhood import (
+    PerTokenAdaptiveNeighborhoodSpec,
+)
 from mopd_verl.domain_gradient.control_selection_scoring import (
     FIXED_ONLINE_WEIGHT_MODE,
     ONLINE_CONTROL_SELECTION_MODES,
@@ -133,6 +136,12 @@ class DomainGradientConfig:
     control_token_online_top_k: int
     control_token_online_selection_mode: str
     control_token_online_weight_mode: str
+    control_token_adaptive_neighborhood_enabled: bool
+    control_token_adaptive_neighborhood_max_distance: int
+    control_token_adaptive_neighborhood_epsilon: float
+    control_token_adaptive_neighborhood_relative_loss_clip_max: float
+    control_token_adaptive_neighborhood_relative_loss_threshold: float
+    control_token_adaptive_neighborhood_min_far_tokens: int
     control_token_phase_gate_enabled: bool
     control_token_span_weighting_enabled: bool
     control_token_phase_gate_window_steps: int
@@ -161,6 +170,45 @@ class DomainGradientConfig:
         if domain_candidates:
             return domain_candidates
         return {domain: self.control_token_candidate_ids for domain in self.domains}
+
+    def adaptive_neighborhood_spec(
+        self,
+        *,
+        domain_token_ids: Mapping[str, Any] | None = None,
+    ) -> PerTokenAdaptiveNeighborhoodSpec | None:
+        """Return the stateless same-batch gate specification when enabled."""
+
+        if not self.control_token_adaptive_neighborhood_enabled:
+            return None
+        if domain_token_ids is None:
+            effective_domain_token_ids = self.domain_control_token_ids
+        else:
+            token_id_map = dict(_domain_token_ids(domain_token_ids))
+            if set(token_id_map) != set(self.domains):
+                raise ValueError(
+                    "Adaptive domain token ID overrides must exactly match "
+                    "domains."
+                )
+            effective_domain_token_ids = tuple(
+                (domain, token_id_map[domain]) for domain in self.domains
+            )
+        return PerTokenAdaptiveNeighborhoodSpec(
+            domains=self.domains,
+            domain_token_ids=effective_domain_token_ids,
+            max_distance=self.control_token_adaptive_neighborhood_max_distance,
+            epsilon=self.control_token_adaptive_neighborhood_epsilon,
+            clip_max=(
+                self.control_token_adaptive_neighborhood_relative_loss_clip_max
+            ),
+            threshold=(
+                self.control_token_adaptive_neighborhood_relative_loss_threshold
+            ),
+            min_far_tokens=(
+                self.control_token_adaptive_neighborhood_min_far_tokens
+            ),
+            control_weight=self.control_token_weight,
+            normalize_per_response=self.control_token_normalize_per_domain,
+        )
 
     @classmethod
     def from_meta(cls, meta: Any) -> "DomainGradientConfig":
@@ -350,6 +398,36 @@ class DomainGradientConfig:
             )
             .strip()
             .lower(),
+            control_token_adaptive_neighborhood_enabled=bool(
+                _get(meta, "control_token_adaptive_neighborhood_enabled", False)
+            ),
+            control_token_adaptive_neighborhood_max_distance=int(
+                _get(meta, "control_token_adaptive_neighborhood_max_distance", 8)
+            ),
+            control_token_adaptive_neighborhood_epsilon=float(
+                _get(meta, "control_token_adaptive_neighborhood_epsilon", 1e-8)
+            ),
+            control_token_adaptive_neighborhood_relative_loss_clip_max=float(
+                _get(
+                    meta,
+                    "control_token_adaptive_neighborhood_relative_loss_clip_max",
+                    1.5,
+                )
+            ),
+            control_token_adaptive_neighborhood_relative_loss_threshold=float(
+                _get(
+                    meta,
+                    "control_token_adaptive_neighborhood_relative_loss_threshold",
+                    0.3,
+                )
+            ),
+            control_token_adaptive_neighborhood_min_far_tokens=int(
+                _get(
+                    meta,
+                    "control_token_adaptive_neighborhood_min_far_tokens",
+                    1,
+                )
+            ),
             control_token_phase_gate_enabled=bool(
                 _get(meta, "control_token_phase_gate_enabled", False)
             ),
@@ -623,6 +701,75 @@ class DomainGradientConfig:
                 raise ValueError(
                     "Online Control selection is mutually exclusive with "
                     "speed, phase-gate, and successor-span weighting."
+                )
+        if (
+            self.control_token_adaptive_neighborhood_max_distance < 1
+            or self.control_token_adaptive_neighborhood_min_far_tokens < 1
+        ):
+            raise ValueError(
+                "Adaptive-neighborhood distance and min_far_tokens must be positive."
+            )
+        if (
+            not math.isfinite(self.control_token_adaptive_neighborhood_epsilon)
+            or self.control_token_adaptive_neighborhood_epsilon <= 0.0
+        ):
+            raise ValueError(
+                "control_token_adaptive_neighborhood_epsilon must be positive."
+            )
+        clip_max = self.control_token_adaptive_neighborhood_relative_loss_clip_max
+        threshold = self.control_token_adaptive_neighborhood_relative_loss_threshold
+        if not all(math.isfinite(value) for value in (clip_max, threshold)):
+            raise ValueError(
+                "Adaptive-neighborhood relative-loss bounds must be finite."
+            )
+        if not 0.0 <= threshold <= clip_max:
+            raise ValueError(
+                "Adaptive-neighborhood threshold must be in [0, clip_max]."
+            )
+        if self.control_token_adaptive_neighborhood_enabled:
+            if self.token_gradient_enabled:
+                raise ValueError(
+                    "Adaptive-neighborhood control cannot be combined with "
+                    "token-gradient replay because the diagnostic ranking "
+                    "does not reconstruct the per-token adaptive multiplier."
+                )
+            fixed_domains = dict(self.domain_control_token_ids)
+            if (
+                not self.control_token_online_selection_enabled
+                and set(fixed_domains) != set(self.domains)
+            ):
+                raise ValueError(
+                    "Adaptive-neighborhood control requires fixed "
+                    "domain_control_token_ids that exactly match domains or "
+                    "an enabled online selector."
+                )
+            if (
+                not self.control_token_weighting_enabled
+                or self.control_token_weight < 1.0
+            ):
+                raise ValueError(
+                    "Adaptive-neighborhood control requires enabled fixed "
+                    "Control-token weighting with weight at least 1."
+                )
+            if (
+                self.control_token_ids
+                or self.control_token_speed_weighting_enabled
+                or self.control_token_phase_gate_enabled
+                or self.control_token_span_weighting_enabled
+                or self.all_domain_shared_token_weighting_enabled
+            ):
+                raise ValueError(
+                    "Adaptive-neighborhood control is mutually exclusive with "
+                    "global IDs, speed, phase, span, and shared-token modes."
+                )
+            if (
+                self.control_token_online_selection_enabled
+                and self.control_token_online_weight_mode
+                != FIXED_ONLINE_WEIGHT_MODE
+            ):
+                raise ValueError(
+                    "Adaptive-neighborhood online selection requires fixed "
+                    "online Control-token weights."
                 )
         if not 0.0 <= self.control_token_phase_gate_ema_beta < 1.0:
             raise ValueError("control_token_phase_gate_ema_beta must be in [0, 1).")
