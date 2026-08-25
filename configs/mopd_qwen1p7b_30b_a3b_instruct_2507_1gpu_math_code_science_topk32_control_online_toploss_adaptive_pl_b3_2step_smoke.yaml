@@ -1,0 +1,65 @@
+# One-GPU, two-step smoke profile for the adaptive online Control-token run.
+# Batch size 3 is the minimum that keeps one sample from each configured domain.
+# The selector interval/window are reduced to one so step 2 exercises the
+# selection produced after step 1; the production profile remains at 3/3.
+extends: mopd_qwen1p7b_30b_a3b_instruct_2507_8gpu_math_code_science_topk32_control_online_toploss_i3_w3_f20_k30_adaptive_pl_t1p0_w4_b528.yaml
+
+runtime:
+  wandb_mode: disabled
+  wandb_run_id: null
+  wandb_resume: never
+  slurm_allocation_gpus: 1
+
+data:
+  train_batch_size: 3
+  max_prompt_length: 512
+  max_response_length: 256
+  val_batch_size: 3
+  shuffle: false
+
+actor:
+  ppo_mini_batch_size: 3
+  ppo_micro_batch_size_per_gpu: 1
+  ppo_max_token_len_per_gpu: 1024
+
+rollout:
+  gpu_memory_utilization: 0.20
+  max_num_batched_tokens: 1024
+  max_model_len: 768
+  max_num_seqs: 3
+
+extra_overrides:
+  - custom_reward_function.path=mopd_verl/mixed_reward.py
+  - custom_reward_function.name=compute_score
+  - trainer.resume_mode=disable
+
+worker_placement:
+  separate_ref_policy: false
+  actor_rollout: {n_gpus_per_node: 1, nnodes: 1}
+  ref_policy: {n_gpus_per_node: 1, nnodes: 1}
+
+audit:
+  output_dir: audit/qwen1p7b_1gpu_control_online_toploss_adaptive_pl_b3_2step_smoke
+  control_token_online_audit_interval_steps: 1
+  control_token_online_window_steps: 1
+  control_token_online_min_mean_occurrences_per_step: 1.0
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/qwen1p7b_1gpu_control_online_toploss_adaptive_pl_b3_2step_smoke
+
+trainer:
+  experiment_name: qwen1p7b-1gpu-control-online-toploss-adaptive-pl-b3-2step-smoke
+  logger: '["console","tensorboard"]'
+  n_gpus_per_node: 1
+  nnodes: 1
+  save_freq: -1
+  test_freq: -1
+  total_epochs: 1
+  total_training_steps: 2
+  default_local_dir: checkpoints/MOPD/qwen1p7b-1gpu-control-online-toploss-adaptive-pl-b3-2step-smoke
+  val_before_train: false
+  max_actor_ckpt_to_keep: 1
+  max_critic_ckpt_to_keep: 1
+
+ray_kwargs:
+  ray_init: {include_dashboard: false, num_cpus: 8}

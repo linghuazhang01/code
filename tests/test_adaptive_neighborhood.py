@@ -87,9 +87,7 @@ class PerTokenAdaptiveNeighborhoodTests(unittest.TestCase):
         self.assertAlmostEqual(float(result.relative_scores[0, 2]), 1.0)
         torch.testing.assert_close(
             result.raw_multiplier,
-            torch.tensor([[1.93, 4.0, 4.0, 1.0, 1.0, 1.0, 1.0]]),
-            rtol=1e-5,
-            atol=1e-5,
+            torch.tensor([[4.0, 4.0, 4.0, 1.0, 1.0, 1.0, 1.0]]),
         )
 
     def test_overlap_uses_max_pair_score_without_bucket_averaging(self) -> None:
@@ -111,7 +109,7 @@ class PerTokenAdaptiveNeighborhoodTests(unittest.TestCase):
         self.assertEqual(float(result.raw_multiplier[0, 3]), 4.0)
         self.assertEqual(int(result.selected_neighbor_mask[0, 3]), 1)
 
-    def test_negative_denominator_follows_the_selected_formula_exactly(self) -> None:
+    def test_negative_denominator_pass_uses_fixed_control_weight(self) -> None:
         losses = torch.tensor([[0.1, 0.2, 0.5, 0.4]])
         token_ids = torch.tensor([[1, 10, 2, 3]])
         valid = torch.ones_like(losses, dtype=torch.bool)
@@ -127,7 +125,11 @@ class PerTokenAdaptiveNeighborhoodTests(unittest.TestCase):
 
         self.assertLess(float(result.center_denominators[0, 1]), 0.0)
         self.assertEqual(float(result.relative_scores[0, 0]), 1.5)
-        self.assertEqual(float(result.raw_multiplier[0, 0]), 5.5)
+        self.assertEqual(float(result.raw_multiplier[0, 0]), 4.0)
+        self.assertEqual(
+            float(result.raw_multiplier[0, 0]),
+            float(result.raw_multiplier[0, 1]),
+        )
 
     def test_missing_far_baseline_keeps_center_only(self) -> None:
         losses = torch.tensor([[0.7, 1.4, 1.2]])
@@ -179,7 +181,15 @@ class PerTokenAdaptiveNeighborhoodTests(unittest.TestCase):
         )
 
         self.assertTrue(result.selected_neighbor_mask[0, 0])
-        self.assertAlmostEqual(float(result.multiplier[valid].mean()), 1.0)
+        torch.testing.assert_close(
+            result.multiplier[valid].mean(),
+            torch.tensor(1.0),
+            rtol=1e-6,
+            atol=1e-6,
+        )
+        center_multiplier = result.multiplier[0, 1]
+        torch.testing.assert_close(result.multiplier[0, 0], center_multiplier)
+        torch.testing.assert_close(result.multiplier[0, 2], center_multiplier)
 
     def test_zero_threshold_does_not_select_zero_score_neighbors(self) -> None:
         losses = torch.tensor([[0.4, 1.4, 0.4, 0.4]])

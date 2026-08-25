@@ -38,7 +38,7 @@ class PerTokenAdaptiveNeighborhoodSpec:
             "far_baseline": "response_local_lower_median_outside_neighborhood",
             "min_far_tokens": self.min_far_tokens,
             "overlap": "max",
-            "neighbor_weight": "relative_score",
+            "neighbor_weight": "fixed_control_weight_after_threshold",
             "control_weight": self.control_weight,
             "normalize_per_response": self.normalize_per_response,
         }
@@ -198,8 +198,7 @@ def build_per_token_adaptive_neighborhood(
     candidates &= ~centers
     eligible &= ~centers
     selected = eligible & scores.gt(0.0) & scores.ge(spec.threshold)
-    kernel = torch.where(selected, scores, torch.zeros_like(scores))
-    kernel = torch.where(centers, torch.ones_like(kernel), kernel)
+    kernel = (centers | selected).to(dtype=scores.dtype)
     raw_multiplier = 1.0 + (spec.control_weight - 1.0) * kernel
     multiplier = raw_multiplier
     if spec.normalize_per_response:

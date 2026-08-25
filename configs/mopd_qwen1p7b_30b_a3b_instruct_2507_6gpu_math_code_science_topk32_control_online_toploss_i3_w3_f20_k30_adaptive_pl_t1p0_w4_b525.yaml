@@ -2,8 +2,8 @@
 # Top-30 Control IDs for the six-GPU H200 host (5 actor + 1 ref GPU).
 # The selector audits every 3 steps over a 3-step window and applies its
 # selection from the next step. A neighbor within D in [-8, 8] is weighted
-# when its individual relative-loss score is at least 1.0; D0 remains forced
-# to kernel weight 1.
+# when its individual relative-loss score is at least 1.0; every passing
+# neighbor receives the same fixed raw Control weight as D0.
 extends: mopd_qwen1p7b_30b_a3b_instruct_2507_6gpu_math_code_science_topk32_control_online_toploss_i3_w3_f20_k30_w4_b525.yaml
 
 runtime:

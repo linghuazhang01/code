@@ -4,7 +4,8 @@
 # step t+1. For each active D0 occurrence, neighbors within D in [-8, 8] are
 # weighted only when their individual relative-loss score is at least 1.0,
 # approximately requiring neighbor excess loss to match or exceed D0 excess
-# loss. D0 itself remains forced to kernel weight 1.
+# loss. Every passing neighbor receives the same fixed raw Control weight as
+# D0; the score acts only as a threshold gate.
 extends: mopd_qwen1p7b_30b_a3b_instruct_2507_8gpu_math_code_science_topk32_control_online_toploss_i3_w3_f20_k30_w4_b528.yaml
 
 runtime:

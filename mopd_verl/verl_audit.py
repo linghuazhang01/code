@@ -2393,7 +2393,9 @@ class MOPDAuditLogger:
                             self.control_token_adaptive_neighborhood_min_far_tokens
                         ),
                         "overlap": "max",
-                        "neighbor_weight": "relative_score",
+                        "neighbor_weight": (
+                            "fixed_control_weight_after_threshold"
+                        ),
                         "control_weight": self.control_token_loss_weight,
                         "normalize_per_response": (
                             self.control_token_normalize_per_domain
