@@ -178,7 +178,8 @@ scripts/run_local_eval.sh \
 以下三个脚本按顺序评测 `Qwen3-1.7B` 与
 `Nemotron-Research-GooseReason-4B-Instruct`，固定使用单卡 `TP=1`：
 
-两个模型完全使用同一套 GooseReason training profile 的 validation-inference
+原有 held-out diagnostic 与两个 training-data launcher 使用同一套 GooseReason
+training profile 的 validation-inference
 参数：`non_thinking`、`max_new_tokens=16384`、greedy `n=1`、
 `temperature=0`、`top_p=1`、`seed=42`、`max_model_len=18432`、
 `max_num_batched_tokens=32768`、`max_num_seqs=24`、`enforce_eager=true`，
@@ -189,6 +190,9 @@ batch 默认 24，vLLM memory utilization 为 0.9。
 # Held-out OOD benchmark suite
 scripts/run_two_model_ood_eval.sh
 
+# 单模型标准 OOD benchmark
+MODEL_PATH=/path/to/model eval/scripts/run_standard_ood_eval.sh
+
 # 四域各 10,000 条 deterministic training ceiling
 scripts/run_two_model_training_ceiling_eval.sh
 
@@ -196,16 +200,33 @@ scripts/run_two_model_training_ceiling_eval.sh
 CONFIRM_FULL_TRAINING=1 scripts/run_two_model_full_training_eval.sh
 ```
 
-三个入口均启用 `--save-completions`。原始
+标准 OOD benchmark 固定为 `MMLU-Pro-500` subset：500 道题，每题 4 个 sampled
+rollout，参数为 `non_thinking`、`temperature=1`、`top_p=1`、`seed=42`、
+`max_tokens=16384`、`max_model_len=18432`、`TP=1`、
+`gpu_memory_utilization=0.85`。数据 SHA-256 固定为
+`9db4fb82f4fc59ab4514b2f3a2fe54928b3fc9d11a483bf678958261b8f6a4a6`，有序
+selected-ID SHA-256 固定为
+`ea1c19950afe4ac82a3b32c8afb39b50fa032a64e096fed61364e1d0c1c81760`。
+launcher 会在 inference 前核验两项 hash，保存完整 2,000 条 prompt/response，
+把协议写入 `standard_ood_manifest.json`，并且只在 scoring 成功后创建 `SUCCESS`。
+该 subset 是可复现的 OpenPRM-style sample；OpenPRM 没有公开其 500 题的精确 IDs
+和 random seed。
+
+`scripts/run_two_model_ood_eval.sh` 现在会在每个模型的原有 held-out diagnostic
+之后自动运行该标准 MMLU-Pro-500 benchmark。只有在明确复现旧版九数据集 diagnostic
+时才设置 `INCLUDE_STANDARD_MMLUPRO_500=0`。
+
+三个 held-out/training 入口均启用 `--save-completions`。原始
 `thinking_eval_samples.jsonl` 和面向分析的
 `prompt_response_records.jsonl` 会保存 `prompt`、`response`、dataset、
 sample ID、model path、run ID、ground truth、rollout index、generation seed，
 以及包含源文件、原始行号、parquet `extra_info`、reward config 和额外 source
 columns 的 `sample_metadata`。
 
-OOD 脚本默认使用 9 个 held-out dataset，并统一采用每题 1 个 greedy rollout；它是
-跨 domain diagnostic，不是各 dataset 的 G-OPD paper protocol（例如 Math paper eval
-采用 sampled K=32）。LiveCodeBench 的 official protocol
+OOD 脚本原有 9 个 held-out dataset 统一采用每题 1 个 greedy rollout，它们是跨
+domain diagnostic，不是各 dataset 的 G-OPD paper protocol（例如 Math paper eval
+采用 sampled K=32）。标准 MMLU-Pro-500 component 使用独立的 K=4 protocol 单独报告，
+不能与 greedy diagnostic 混合求平均。LiveCodeBench 的 official protocol
 要求 temperature 1.0、每题 4 个 sampled rollout 和 16,384 tokens，因此不混入默认
 greedy suite；只有在同步调整协议时才通过 `OOD_DATASETS=...` 显式加入。这里的 OOD
 表示 held-out benchmark split，并不等价于已完成对所有 training source 的 prompt-hash
@@ -220,7 +241,7 @@ training parquet 与生成结果留在内存。可通过 `SHARD_SIZE` 调整；�
 输出根目录的 `suite_manifest.json` 会记录每个 source range、model、shard seed、
 预期 record 数、输出目录、source SHA-256 与当前 `SUCCESS` 状态。Resume 会先严格
 比对 immutable suite signature；配置或数据身份不一致时，在跳过任何 shard 前拒绝运行。
-三个脚本的 `DRY_RUN=1` 都只做校验并打印计划，不创建输出目录、log、shard marker
+所有脚本的 `DRY_RUN=1` 都只做校验并打印计划，不创建输出目录、log、shard marker
 或 manifest。非 resume 运行会拒绝复用非空输出目录，不会删除已有 rollout。
 
 ### W&B 上传

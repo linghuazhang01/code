@@ -83,6 +83,8 @@ def run_selected(args: argparse.Namespace) -> list[OfficialEvalResult]:
                     temperature=args.temperature if args.temperature is not None else 0.0,
                     top_p=args.top_p,
                     enable_thinking=enable_thinking,
+                    num_samples=args.num_samples,
+                    seed=args.seed,
                 )
             )
         elif dataset == "api_bank":
@@ -165,6 +167,8 @@ def parse_args() -> argparse.Namespace:
         help="Generation temperature. If omitted, each official wrapper uses its own default.",
     )
     parser.add_argument("--top-p", type=float, default=1.0)
+    parser.add_argument("--num-samples", type=int, default=1)
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--enable-thinking", choices=("true", "false", "auto"), default="auto")
     parser.add_argument("--api-base-url", default=None, help="Generic external API base URL, currently passed to BFCL.")
     parser.add_argument("--api-key", default=None, help="Generic external API key, currently passed to BFCL.")

@@ -35,3 +35,16 @@ python -m eval.domains.science.download_official_data --force
 
 Use `python -m eval.official_runner --domains science ...` for MMLU-Pro and
 SuperGPQA. Use `scripts/run_local_eval.sh` for the verl-ready GPQA path.
+
+The project-standard OOD benchmark is the pinned MMLU-Pro-500 subset:
+
+```bash
+MODEL_PATH=/path/to/model eval/scripts/run_standard_ood_eval.sh
+```
+
+Its immutable protocol is 500 questions, K=4, `temperature=1`, `top_p=1`,
+`seed=42`, `max_tokens=16384`, non-thinking mode, TP=1, and vLLM memory
+utilization 0.85. The launcher verifies the subset and ordered selected-ID
+hashes from `subsets/openprm_style_500_seed42/manifest.json` before running.
+The subset is an OpenPRM-style reproducible sample rather than OpenPRM's exact
+unpublished sample.

@@ -154,8 +154,9 @@ These launchers evaluate `Qwen3-1.7B` and
 `Nemotron-Research-GooseReason-4B-Instruct` sequentially on one GPU with
 `TP=1`:
 
-All three use the GooseReason training profile's validation-inference settings
-for both models: `non_thinking`, `max_new_tokens=16384`, greedy `n=1`,
+The held-out diagnostic and the two training-data launchers use the GooseReason
+training profile's validation-inference settings for both models:
+`non_thinking`, `max_new_tokens=16384`, greedy `n=1`,
 `temperature=0`, `top_p=1`, `seed=42`, `max_model_len=18432`,
 `max_num_batched_tokens=32768`, `max_num_seqs=24`, eager execution, and
 chunked prefill disabled. The only deliberate topology change is `TP=1` for
@@ -166,6 +167,9 @@ utilization to 0.9.
 # Held-out OOD benchmark suite
 scripts/run_two_model_ood_eval.sh
 
+# Standard OOD benchmark for one model
+MODEL_PATH=/path/to/model eval/scripts/run_standard_ood_eval.sh
+
 # Deterministic 10,000-row-per-domain training ceiling
 scripts/run_two_model_training_ceiling_eval.sh
 
@@ -173,16 +177,36 @@ scripts/run_two_model_training_ceiling_eval.sh
 CONFIRM_FULL_TRAINING=1 scripts/run_two_model_full_training_eval.sh
 ```
 
-All three launchers enable `--save-completions`. Both the raw
+The standard OOD benchmark is the pinned `MMLU-Pro-500` subset. It uses 500
+questions and four sampled rollouts per question with `non_thinking`,
+`temperature=1`, `top_p=1`, `seed=42`, `max_tokens=16384`,
+`max_model_len=18432`, `TP=1`, and `gpu_memory_utilization=0.85`. Its artifact
+identity is fixed by data SHA-256
+`9db4fb82f4fc59ab4514b2f3a2fe54928b3fc9d11a483bf678958261b8f6a4a6`
+and ordered selected-ID SHA-256
+`ea1c19950afe4ac82a3b32c8afb39b50fa032a64e096fed61364e1d0c1c81760`.
+The launcher validates both hashes before inference, writes all 2,000
+prompt/response records, records the protocol in `standard_ood_manifest.json`,
+and creates `SUCCESS` only after scoring completes. This is a reproducible
+OpenPRM-style sample; OpenPRM did not publish the exact sampled IDs or seed.
+
+`scripts/run_two_model_ood_eval.sh` runs this standard MMLU-Pro-500 component
+after the existing held-out diagnostic for each model. Set
+`INCLUDE_STANDARD_MMLUPRO_500=0` only when intentionally reproducing the
+legacy nine-dataset diagnostic without the standard OOD benchmark.
+
+The three held-out/training launchers enable `--save-completions`. Both the raw
 `thinking_eval_samples.jsonl` and analysis-facing
 `prompt_response_records.jsonl` retain the prompt, response, dataset, sample
 ID, model path, run ID, ground truth, rollout index, generation seed, and
 `sample_metadata` with the source file, original row position, parquet
 `extra_info`, reward config, and any additional source columns.
 
-The OOD launcher defaults to nine held-out datasets and uses one greedy
-rollout per prompt as a uniform diagnostic. It is not the dataset-specific
-G-OPD paper protocol (for example, Math paper evaluation uses sampled K=32).
+The OOD launcher's original nine held-out datasets use one greedy rollout per
+prompt as a uniform cross-domain diagnostic. This component is not the
+dataset-specific G-OPD paper protocol (for example, Math paper evaluation uses
+sampled K=32). The standard MMLU-Pro-500 component is reported separately with
+its K=4 protocol and must not be averaged into the greedy diagnostic.
 LiveCodeBench is excluded
 because its official protocol uses four sampled rollouts at temperature 1.0
 and a 16,384-token limit; opt in with `OOD_DATASETS=...` only when matching
@@ -200,7 +224,7 @@ The root `suite_manifest.json` records every source range, model, shard seed,
 expected record count, output directory, source SHA-256, and current `SUCCESS`
 status. Resume is rejected before any shard is skipped when this immutable
 suite signature differs from the original run.
-For all three launchers, `DRY_RUN=1` validates and prints the plan without
+For all launchers, `DRY_RUN=1` validates and prints the plan without
 creating output directories, logs, shard markers, or manifests. A non-resume
 run refuses to reuse a non-empty output directory instead of deleting prior
 rollouts.

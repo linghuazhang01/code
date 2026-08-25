@@ -62,12 +62,27 @@ def load_vllm(
     return LLM(**kwargs)
 
 
-def sampling_params(max_tokens: int, temperature: float, top_p: float) -> Any:
+def sampling_params(
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+    *,
+    num_samples: int = 1,
+    seed: int | None = None,
+) -> Any:
     try:
         from vllm import SamplingParams
     except ImportError as exc:
         raise RuntimeError("Official eval wrappers require vllm for local model generation.") from exc
-    return SamplingParams(max_tokens=max_tokens, temperature=temperature, top_p=top_p)
+    kwargs: dict[str, Any] = {
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "top_p": top_p,
+        "n": num_samples,
+    }
+    if seed is not None:
+        kwargs["seed"] = seed
+    return SamplingParams(**kwargs)
 
 
 def retry_call(fn: Any, *, max_attempts: int = 3, sleep_seconds: float = 20.0) -> Any:

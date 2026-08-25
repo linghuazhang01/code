@@ -35,8 +35,9 @@ EVAL_WANDB_MODE="${EVAL_WANDB_MODE:-online}"
 EVAL_WANDB_UPLOAD_RAW="${EVAL_WANDB_UPLOAD_RAW:-1}"
 EVAL_WANDB_TIMEOUT_SECONDS="${EVAL_WANDB_TIMEOUT_SECONDS:-1800}"
 EVAL_WANDB_ENV_FILE="${EVAL_WANDB_ENV_FILE:-${CODE_DIR}/.env.local}"
+INCLUDE_STANDARD_MMLUPRO_500="${INCLUDE_STANDARD_MMLUPRO_500:-1}"
 
-for flag in RESUME DRY_RUN EVAL_WANDB_ENABLED EVAL_WANDB_UPLOAD_RAW; do
+for flag in RESUME DRY_RUN EVAL_WANDB_ENABLED EVAL_WANDB_UPLOAD_RAW INCLUDE_STANDARD_MMLUPRO_500; do
   [[ "${!flag}" == "0" || "${!flag}" == "1" ]] || {
     echo "${flag} must be 0 or 1: ${!flag}" >&2
     exit 2
@@ -138,7 +139,26 @@ run_model() {
     | tee "${tee_args[@]}" "${output_dir}/run.log"
 }
 
+run_standard_mmlupro_ood() {
+  local model_label="$1"
+  local model_path="$2"
+  local output_dir="${OUTPUT_ROOT}/${model_label}/standard_ood"
+
+  [[ "${INCLUDE_STANDARD_MMLUPRO_500}" == "1" ]] || return 0
+  echo "[two-model-ood] standard MMLU-Pro-500 model=${model_label} output=${output_dir}"
+  MODEL_PATH="${model_path}" \
+  MODEL_NAME="${model_label}" \
+  OUTPUT_DIR="${output_dir}" \
+  CUDA_VISIBLE_DEVICES="${GPU_ID}" \
+  PYTHON_BIN="${PYTHON_BIN}" \
+  DRY_RUN="${DRY_RUN}" \
+  RESUME="${RESUME}" \
+    "${CODE_DIR}/eval/scripts/run_standard_ood_eval.sh"
+}
+
 run_model qwen3_1p7b "${STUDENT_MODEL_PATH}"
+run_standard_mmlupro_ood qwen3_1p7b "${STUDENT_MODEL_PATH}"
 run_model goosereason_4b "${TEACHER_MODEL_PATH}"
+run_standard_mmlupro_ood goosereason_4b "${TEACHER_MODEL_PATH}"
 
 echo "[two-model-ood] complete: ${OUTPUT_ROOT}"

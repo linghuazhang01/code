@@ -19,10 +19,13 @@ from eval.official_utils import (
     write_jsonl,
 )
 
-DATASET_CHOICES = ("mmlupro", "supergpqa")
+DATASET_CHOICES = ("mmlupro", "mmlupro_500_seed42", "supergpqa")
 CHOICE_LETTERS = tuple("ABCDEFGHIJ")
 LOCAL_DATA_FILES = {
     "mmlupro": Path("data/eval_data/science/MMLU-Pro/test.parquet"),
+    "mmlupro_500_seed42": Path(
+        "data/eval_data/science/MMLU-Pro/subsets/openprm_style_500_seed42/test.parquet"
+    ),
     "supergpqa": Path("data/eval_data/science/SuperGPQA/test.parquet"),
 }
 
@@ -77,14 +80,15 @@ def form_options(options: Iterable[str]) -> str:
     return output
 
 
-def get_prediction(output: str) -> str:
+def get_prediction(output: str, *, rng: random.Random | None = None) -> str:
+    prediction_rng = rng or random.Random()
     solution = extract_solution(output)
     if solution is None:
-        return random.choice(list(CHOICE_LETTERS))
+        return prediction_rng.choice(list(CHOICE_LETTERS))
     for option in CHOICE_LETTERS:
         if option in solution:
             return option
-    return random.choice(list(CHOICE_LETTERS))
+    return prediction_rng.choice(list(CHOICE_LETTERS))
 
 
 def render_prompt(tokenizer: Any, content: str, enable_thinking: bool | None) -> str:
@@ -117,6 +121,10 @@ def _load_local_parquet(dataset_key: str) -> list[dict[str, Any]] | None:
 
 def _dataset_entries(dataset_key: str) -> tuple[list[dict[str, Any]], str, str]:
     local_entries = _load_local_parquet(dataset_key)
+    if dataset_key == "mmlupro_500_seed42":
+        if local_entries is None:
+            raise FileNotFoundError(f"Missing pinned MMLU-Pro subset: {LOCAL_DATA_FILES[dataset_key]}")
+        return local_entries, "category", "answer"
     if dataset_key == "mmlupro":
         entries = local_entries if local_entries is not None else list(load_hf_dataset("TIGER-Lab/MMLU-Pro")["test"])
         return entries, "category", "answer"
@@ -149,19 +157,51 @@ def run_dataset(
     temperature: float,
     top_p: float,
     enable_thinking: bool | None,
+    num_samples: int = 1,
+    seed: int = 42,
 ) -> OfficialEvalResult:
+    if num_samples < 1:
+        raise ValueError("num_samples must be at least 1")
+    if num_samples > 1 and temperature <= 0:
+        raise ValueError("num_samples > 1 requires temperature > 0")
     output = ensure_output_dir(Path(output_dir) / dataset_key)
     entries, category_field, answer_field = _dataset_entries(dataset_key)
     entries = limited(entries, max_samples)
     total_entries = len(entries)
-    _progress(f"dataset={dataset_key} samples={total_entries} output={output}")
+    _progress(
+        f"dataset={dataset_key} prompts={total_entries} rollouts_per_prompt={num_samples} "
+        f"output={output}"
+    )
     try:
         from transformers import AutoTokenizer
     except ImportError as exc:
         raise RuntimeError("Science official eval requires the `transformers` package.") from exc
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     llm = load_vllm(model_path, tensor_parallel_size, gpu_memory_utilization, max_model_len)
-    params = sampling_params(max_tokens=max_tokens, temperature=temperature, top_p=top_p)
+    params = sampling_params(
+        max_tokens=max_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        num_samples=num_samples,
+        seed=seed,
+    )
+
+    run_config = {
+        "dataset": dataset_key,
+        "data_file": str(LOCAL_DATA_FILES[dataset_key]),
+        "model_path": model_path,
+        "prompt_count": total_entries,
+        "num_samples": num_samples,
+        "seed": seed,
+        "tensor_parallel_size": tensor_parallel_size,
+        "gpu_memory_utilization": gpu_memory_utilization,
+        "max_model_len": max_model_len,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "top_p": top_p,
+        "enable_thinking": enable_thinking,
+    }
+    write_json(output / "run_config.json", run_config)
 
     prompts = [render_prompt(tokenizer, _prompt_for_entry(dataset_key, entry), enable_thinking) for entry in entries]
     _progress(f"dataset={dataset_key} generation_start")
@@ -169,41 +209,74 @@ def run_dataset(
     _progress(f"dataset={dataset_key} generation_done outputs={len(outputs)} scoring_start")
     records: list[dict[str, Any]] = []
     correct = 0
+    passed_prompts = 0
+    prediction_rng = random.Random(seed)
     per_category: dict[str, dict[str, int]] = {}
     for index, (entry, request_output) in enumerate(zip(entries, outputs, strict=True)):
-        completion = request_output.outputs[0].text
         category = str(entry.get(category_field, "unknown"))
-        per_category.setdefault(category, {"correct": 0, "total": 0})
-        prediction = get_prediction(completion)
-        is_correct = prediction == str(entry[answer_field])
-        correct += int(is_correct)
-        per_category[category]["correct"] += int(is_correct)
-        per_category[category]["total"] += 1
-        records.append(
-            {
-                "index": index,
-                "dataset": dataset_key,
-                "category": category,
-                "prompt": prompts[index],
-                "completion": completion,
-                "prediction": prediction,
-                "answer": entry[answer_field],
-                "correct": is_correct,
-                "source": entry,
-            }
+        category_metrics = per_category.setdefault(
+            category,
+            {"correct": 0, "total": 0, "passed_prompts": 0, "prompt_count": 0},
         )
+        category_metrics["prompt_count"] += 1
+        prompt_correct = False
+        if len(request_output.outputs) != num_samples:
+            raise RuntimeError(
+                f"Expected {num_samples} outputs for prompt {index}, "
+                f"got {len(request_output.outputs)}"
+            )
+        for rollout_index, candidate in enumerate(request_output.outputs):
+            completion = candidate.text
+            prediction = get_prediction(completion, rng=prediction_rng)
+            is_correct = prediction == str(entry[answer_field])
+            prompt_correct = prompt_correct or is_correct
+            correct += int(is_correct)
+            category_metrics["correct"] += int(is_correct)
+            category_metrics["total"] += 1
+            records.append(
+                {
+                    "index": index,
+                    "question_id": entry.get("question_id", index),
+                    "rollout_index": rollout_index,
+                    "dataset": dataset_key,
+                    "category": category,
+                    "prompt": prompts[index],
+                    "completion": completion,
+                    "prediction": prediction,
+                    "answer": entry[answer_field],
+                    "correct": is_correct,
+                    "source": entry,
+                }
+            )
+        passed_prompts += int(prompt_correct)
+        category_metrics["passed_prompts"] += int(prompt_correct)
         if (index + 1) % 100 == 0 or index + 1 == total_entries:
-            _progress(f"dataset={dataset_key} scored={index + 1}/{total_entries} correct={correct}")
+            _progress(
+                f"dataset={dataset_key} scored_prompts={index + 1}/{total_entries} "
+                f"correct_rollouts={correct} passed_prompts={passed_prompts}"
+            )
 
     total = len(records)
     summary = {
         "dataset": dataset_key,
         "model_path": model_path,
+        "prompt_count": total_entries,
+        "rollouts_per_prompt": num_samples,
         "sample_count": total,
         "correct": correct,
         "accuracy": correct / total if total else None,
+        "passed_prompts": passed_prompts,
+        "observed_pass_at_k": passed_prompts / total_entries if total_entries else None,
         "per_category": {
-            key: {**value, "accuracy": value["correct"] / value["total"] if value["total"] else None}
+            key: {
+                **value,
+                "accuracy": value["correct"] / value["total"] if value["total"] else None,
+                "observed_pass_at_k": (
+                    value["passed_prompts"] / value["prompt_count"]
+                    if value["prompt_count"]
+                    else None
+                ),
+            }
             for key, value in sorted(per_category.items())
         },
     }
@@ -225,6 +298,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-tokens", type=int, default=8192)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top-p", type=float, default=1.0)
+    parser.add_argument("--num-samples", type=int, default=1)
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--enable-thinking", choices=("true", "false", "auto"), default="auto")
     return parser.parse_args()
 
@@ -244,6 +319,8 @@ def main() -> int:
         temperature=args.temperature,
         top_p=args.top_p,
         enable_thinking=enable_thinking,
+        num_samples=args.num_samples,
+        seed=args.seed,
     )
     print(json.dumps({"dataset": result.dataset, "summary": result.summary}, ensure_ascii=False, sort_keys=True))
     return 0
