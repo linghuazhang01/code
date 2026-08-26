@@ -1,0 +1,10 @@
+# Qwen3-4B student variant of ../opd_7gpu_b258.yaml.
+extends: ../opd_7gpu_b258.yaml
+model: {student_path: ../mopd/models/Qwen3-4B}
+audit: {output_dir: audit/qwen4b-30b-math-opd-7gpu-b258}
+paper_eval: {output_dir: eval_outputs/paper_suite/qwen4b-30b-math-opd-7gpu-b258}
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/qwen4b-30b-math-opd-7gpu-b258
+trainer:
+  experiment_name: qwen4b-30b-math-opd-7gpu-b258
+  default_local_dir: checkpoints/MOPD/qwen4b-30b-math-opd-7gpu-b258

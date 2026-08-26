@@ -230,6 +230,10 @@ class SlurmEvalScriptTest(unittest.TestCase):
                     str(root / "output"),
                     "--run_tag",
                     "protocol-test",
+                    "--sample_offset",
+                    "3",
+                    "--max_samples",
+                    "5",
                     "--no_score_code",
                     "--model_path",
                     str(model),
@@ -254,6 +258,8 @@ class SlurmEvalScriptTest(unittest.TestCase):
             self.assertIn("--temperature 1.0", call)
             self.assertIn("--top-p 1.0", call)
             self.assertIn("--max-new-tokens 16384", call)
+            self.assertIn("--sample-offset 3", call)
+            self.assertIn("--max-samples 5", call)
 
 
 if __name__ == "__main__":

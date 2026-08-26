@@ -1,0 +1,10 @@
+# Qwen3-4B student variant of ../eopd_5gpu_b256.yaml.
+extends: ../eopd_5gpu_b256.yaml
+model: {student_path: ../mopd/models/Qwen3-4B}
+audit: {output_dir: audit/qwen4b-30b-math-eopd-5gpu-b256}
+paper_eval: {output_dir: eval_outputs/paper_suite/qwen4b-30b-math-eopd-5gpu-b256}
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/qwen4b-30b-math-eopd-5gpu-b256
+trainer:
+  experiment_name: qwen4b-30b-math-eopd-5gpu-b256
+  default_local_dir: checkpoints/MOPD/qwen4b-30b-math-eopd-5gpu-b256

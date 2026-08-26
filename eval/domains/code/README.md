@@ -29,10 +29,15 @@ is substantially heavier.
 append the markdown Python-code-block requirement and the paper's "think first"
 sentence before applying the model chat template at generation time.
 
-`LiveCodeBench` uses the paper code's `Qwen3NonThinking` prompt content by
-default. The runner still controls `enable_thinking` for OPD thinking vs.
-non-thinking comparisons, but the user-facing problem instruction is no longer
-the simplified generic code prompt.
+All three Code benchmarks use the G-OPD training response contract: the model
+may reason before answering and must place the final solution in the last
+markdown `python` block. The runner still controls `enable_thinking` for OPD
+thinking vs. non-thinking comparisons; disabling the dedicated thinking channel
+does not require a code-only response.
+
+The validation reward follows the training extractor exactly: it executes the
+last `python` block. A response without a `python` marker follows the same
+fallback split behavior as the training reward.
 
 G-OPD samples four completions per problem with temperature 1.0, top-p 1.0,
 16,384 max tokens, and requires all public+private tests to pass. Use

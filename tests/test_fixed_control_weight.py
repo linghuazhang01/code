@@ -20,17 +20,36 @@ PROFILE = (
     / "configs"
     / (
         "mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math_code_science_"
-        "topk32_reweight_control44.yaml"
+        "topk32_structural_codelex_rising_top200_control_fixed_w4_b528.yaml"
     )
 )
+EXPECTED_DOMAIN_COUNTS = {"math": 48, "code": 58, "science": 40}
+EXPECTED_CONTROL44_ONLY_IDS = {
+    "math": {73877, 13023, 1986, 4226, 21806, 9112, 7039, 1156, 9658},
+    "code": {1249, 983, 7039, 2014, 13023, 1986, 1431, 2938},
+    "science": {16141, 9658, 21806, 4226, 1986, 1431, 2938},
+}
 
 
-class FixedControlTokenWeightTests(unittest.TestCase):
+class FixedConnectiveStructureTokenWeightTests(unittest.TestCase):
+    def test_profile_contains_expanded_connective_structure_sets(self) -> None:
+        payload = yaml.safe_load(PROFILE.read_text(encoding="utf-8"))
+        domain_ids = payload["audit"]["domain_control_token_ids"]
+        self.assertEqual(set(domain_ids), set(EXPECTED_DOMAIN_COUNTS))
+        for domain, expected_count in EXPECTED_DOMAIN_COUNTS.items():
+            with self.subTest(domain=domain):
+                token_ids = domain_ids[domain]
+                self.assertEqual(len(token_ids), expected_count)
+                self.assertEqual(len(set(token_ids)), expected_count)
+                self.assertTrue(
+                    EXPECTED_CONTROL44_ONLY_IDS[domain].issubset(token_ids)
+                )
+
     def _load_profile_with_weight(self, weight: float) -> float:
         payload = yaml.safe_load(PROFILE.read_text(encoding="utf-8"))
         payload["audit"]["control_token_loss_weight"] = weight
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "fixed-control-weight.yaml"
+            config_path = Path(temp_dir) / "fixed-structural-weight.yaml"
             config_path.write_text(
                 yaml.safe_dump(payload, sort_keys=False),
                 encoding="utf-8",

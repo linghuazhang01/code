@@ -1,0 +1,15 @@
+extends: _methods/opd.yaml
+runtime: {slurm_allocation_gpus: 5}
+data: {train_batch_size: 256}
+actor: {ppo_mini_batch_size: 256}
+worker_placement:
+  actor_rollout: {n_gpus_per_node: 4, nnodes: 1}
+  ref_policy: {n_gpus_per_node: 1, nnodes: 1}
+audit: {output_dir: audit/qwen1p7b-30b-math-opd-5gpu-b256}
+paper_eval: {output_dir: eval_outputs/paper_suite/qwen1p7b-30b-math-opd-5gpu-b256}
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/qwen1p7b-30b-math-opd-5gpu-b256
+trainer:
+  experiment_name: qwen1p7b-30b-math-opd-5gpu-b256
+  n_gpus_per_node: 4
+  default_local_dir: checkpoints/MOPD/qwen1p7b-30b-math-opd-5gpu-b256

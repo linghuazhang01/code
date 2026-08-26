@@ -218,6 +218,14 @@ paper_eval:
   fail_on_error: false
   timeout_seconds: 0
 
+huggingface_checkpoint:
+  enabled: true
+  steps: [50, 55, 60, 65, 70]
+  repo_id: icemoon28/opd-checkpoints
+  private: true
+  path_prefix: checkpoints/math/qwen4b-from-30b-a3b-instruct-2507-math
+  token_env_var: HF_TOKEN
+
 trainer:
   project_name: MOPD
   experiment_name: qwen4b-from-30b-a3b-instruct-2507-math

@@ -63,6 +63,11 @@ def _hydra_scalar(value: object) -> str:
     return str(value)
 
 
+def _hydra_string(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace("'", "\\'")
+    return f"'{escaped}'"
+
+
 def _rollout_multiturn_overrides(config: MOPDConfig) -> list[str]:
     rollout = config.rollout
     if not rollout.multi_turn_enable and rollout.multi_turn_tool_config_path is None:
@@ -508,6 +513,12 @@ def build_overrides(config: MOPDConfig) -> list[str]:
             f"+actor_rollout_ref.ref.model.base_model_path={model.secondary_teacher_path}"
         )
 
+    huggingface_checkpoint = config.huggingface_checkpoint
+    huggingface_env_file = (
+        huggingface_checkpoint.env_file
+        if huggingface_checkpoint.env_file is not None
+        else config.runtime.env_file
+    )
     overrides = [
         "algorithm.adv_estimator=grpo",
         "algorithm.rollout_correction.rollout_is="
@@ -639,6 +650,28 @@ def build_overrides(config: MOPDConfig) -> list[str]:
         f"trainer.total_training_steps={_hydra_scalar(trainer.total_training_steps)}",
         f"trainer.max_actor_ckpt_to_keep={_hydra_scalar(trainer.max_actor_ckpt_to_keep)}",
         f"trainer.max_critic_ckpt_to_keep={_hydra_scalar(trainer.max_critic_ckpt_to_keep)}",
+        "trainer.huggingface_checkpoint.enabled="
+        f"{_bool(huggingface_checkpoint.enabled)}",
+        "trainer.huggingface_checkpoint.steps="
+        f"{_hydra_int_list(huggingface_checkpoint.steps)}",
+        "trainer.huggingface_checkpoint.repo_id="
+        + (
+            "null"
+            if huggingface_checkpoint.repo_id is None
+            else _hydra_string(huggingface_checkpoint.repo_id)
+        ),
+        "trainer.huggingface_checkpoint.private="
+        f"{_bool(huggingface_checkpoint.private)}",
+        "trainer.huggingface_checkpoint.path_prefix="
+        f"{_hydra_string(huggingface_checkpoint.path_prefix)}",
+        "trainer.huggingface_checkpoint.token_env_var="
+        f"{_hydra_string(huggingface_checkpoint.token_env_var)}",
+        "trainer.huggingface_checkpoint.env_file="
+        + (
+            "null"
+            if huggingface_env_file is None
+            else _hydra_string(huggingface_env_file)
+        ),
     ]
     overrides.extend(ray_overrides)
     overrides.extend(vllm_engine_overrides)

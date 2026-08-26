@@ -76,3 +76,11 @@ prompt, 8192 response tokens, and the same `5e-6` project learning rate. It
 caches teacher logits in bf16 host memory and uses a colocated sequential
 teacher/student topology on 8 GPUs. Those resource adaptations do not change
 TIP's scoring or training objective.
+
+## Math-only 4-8 GPU suite
+
+`math/` contains the directly launchable Math-only comparison suite for OPD,
+FiRE-OPD, scalable TIP-TopK32, and EOPD. Its 4/5/6/7/8-GPU profiles use global
+batches 255/256/255/258/259 respectively, with one H200 teacher GPU and the
+remaining GPUs assigned to the actor. See `math/README.md` for the complete
+matrix and launch commands.

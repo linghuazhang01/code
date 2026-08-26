@@ -13,8 +13,7 @@ EVALPLUS_CODE_INSTRUCTION = (
 
 LCB_QWEN3_PREAMBLE = (
     "You will be given a question (problem specification) and will generate a correct "
-    "Python program that matches the specification and passes all tests. You will NOT "
-    "return anything except for the program.\n\n"
+    "Python program that matches the specification and passes all tests.\n\n"
 )
 
 LCB_AZR_SYSTEM_MESSAGE = (
@@ -38,19 +37,18 @@ LCB_FORMATTING_WITHOUT_STARTER_CODE = (
 
 
 def build_evalplus_prompt(task_prompt: str) -> str:
-    """Build the EvalPlus Qwen/chat prompt content used by the paper eval code."""
+    """Append the exact G-OPD Code training response instruction."""
 
-    paper_task_prompt = f"{task_prompt.strip()}\n"
-    return f"{paper_task_prompt}\n\n{EVALPLUS_CODE_INSTRUCTION}"
+    return f"{task_prompt.strip()}\n\n{EVALPLUS_CODE_INSTRUCTION}"
 
 
 def build_lcb_qwen3_non_thinking_prompt(question_content: str) -> str:
-    """Build the LiveCodeBench Qwen3NonThinking prompt content from the paper code."""
+    """Build an LCB prompt with the G-OPD Code training response contract."""
 
     return (
         f"{LCB_QWEN3_PREAMBLE}"
         f"Question:\n{question_content.strip()}\n\n"
-        f"\n\n{EVALPLUS_CODE_INSTRUCTION}"
+        f"{EVALPLUS_CODE_INSTRUCTION}"
     )
 
 

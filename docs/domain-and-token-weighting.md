@@ -22,35 +22,43 @@ audit:
 两种信号都经过 signal EMA、inverse weighting、上下界裁剪和 weight EMA。
 切换信息源时，checkpoint 中旧的 controller EMA 会自动重置，避免量纲混用。
 
-## 2. 调整 Control token 的优化比重
+## 2. 调整目标 token 的优化比重
 
 ```yaml
 audit:
   enabled: true
   control_token_loss_weighting_enabled: true
   control_token_loss_weight: 2.0
-  control_token_ids: [123, 456]
+  control_token_ids: []
+  domain_control_token_ids:
+    math: [123, 456]
+    code: [456, 789]
+    science: [123, 789]
 ```
 
-`control_token_ids` 是当前 tokenizer 下的 token ID，必须由实验配置显式给出。
-上述配置把匹配 token 对 actor gradient 的贡献乘以 `2.0`。token ID 与
-tokenizer 强绑定，不能直接复用其他模型的 ID。
+当前 Qwen3-4B Connective+Structure follow-up 配置使用 domain-specific
+`domain_control_token_ids`；`control_token_ids` 保留为空。两个字段名是为了兼容
+既有 runtime schema 而保留的 legacy 名称；在这批 profile 中，候选集合实际表示
+`Connective+Structure Rising Top-200`。其中 Connective 是 PDTB exact
+single-token connective 与历史 Control-44 ID 的并集，但仅保留相应 domain 的
+Rising Top-200 中实际出现的 ID；Structure 是排除扩展 Connective 后的
+deterministic Format/boundary token，以及仅在 Code domain 激活的 Python
+keyword/builtin/language/module/method/API/programming-lexicon extension。
+上述配置把各 domain 匹配 token 对 actor gradient 的贡献乘以 `2.0`。token ID
+与 tokenizer 强绑定，不能直接复用其他模型的 ID。
 
 `control_token_loss_weight` 必须是有限非负数：大于 `1.0` 表示放大，
 `0.0` 到 `1.0` 表示降权，`0.0` 会屏蔽匹配 token 的 backward gradient。
 这个 gradient gate 不改变 forward loss 数值或原有 loss metric。
 
-当前 Qwen3 Control smoke 使用 44 个 ID，严格等于之前 Rising/Stable
-Mean-Gap 六组 Top-100 类别表中实际被标为 `discourse/control` 的唯一 token
-ID 并集。此前额外保留的 8 个 curated ID 已移除，因此实验白名单与旧报告
-口径一一对齐。
-
-原 31-ID smoke 只覆盖了上述统计集合中的 23 个 ID；现已补入遗漏的 21 个
-Top-100 Control ID，包括 `as`、`In`、`This`、`As`、`For`、`Then`、
-`Also`、`Note`、`assume`、`hence`、`suppose` 等实际 tokenizer 形式。
-这里对齐的是当时六组 `domain × phase` Top-100 类别统计的实际 token
-并集，而不是将 heuristic 词典中从未进入 Top-100 的所有大小写/空格变体
-无限扩张。
+当前 Qwen3-4B follow-up profile 从独立 4B-OPD baseline 的 Rising Top-200
+冻结候选集合，Math / Code / Science 分别包含 48 / 58 / 40 个 unique token IDs；
+其中 Connective 为 35 / 31 / 31 个，Structure 为 13 / 27 / 9 个。Control-44
+相对旧 selector 新增 9 / 8 / 7 个 ID，不是把全部 44 个 ID 无条件加入每个 domain。
+Stable-only IDs 不进入该集合；不同 domain 的 membership 独立维护。完整定义以
+`mopd_qwen4b_30b_a3b_instruct_2507_*gpu_math_code_science_topk32_`
+`structural_codelex_rising_top200_control_{fixed_w4_b528,speed_pwl_u2}.yaml`
+中的 `domain_control_token_ids` 为准。
 
 ### 2.1 在线候选审计与动态激活
 
@@ -144,7 +152,7 @@ effective_weight =
     × all_domain_shared_token_weight
 ```
 
-例如某 token 同时是 Control token 和三域共享 token，两个 token factor
+例如某 token 同时是 Connective+Structure target 和三域共享 token，两个 token factor
 都会生效。forward loss 与现有 loss metric 保持不变，改变的是 backward
 时各 token 的 gradient contribution。
 
@@ -179,6 +187,9 @@ domain/control/shared 配置独立计算的期望 multiplier，正常应接近 `
 
 原 audit-based domain weighting GPU matrix 已退役；当前研究路径统一使用
 `test_grad_configs/mopd_dynamic_budget_qwen0p6b_8b_aw2_fsdp2_b16_4step_3gpu_smoke.yaml`。
-历史 matrix 中的 `gradnorm`、`projection`、`projection_control_perstep` 和
-`control44_cumulative` 不再作为 GPU experiment config 维护；相应算子行为继续由
-unit/contract tests 独立覆盖。
+历史 matrix 中的 `gradnorm`、`projection`、`projection_control_perstep` 和旧版
+global Control-token weighting variants 不再作为 GPU experiment config 维护；
+相应算子行为继续由 unit/contract tests 独立覆盖。在上述 Qwen3-4B
+Connective+Structure follow-up profiles 中，legacy `control_token_*` 字段承载
+broader domain-specific universe；其他 profile 仍以各自配置内记录的 token
+universe 为准。

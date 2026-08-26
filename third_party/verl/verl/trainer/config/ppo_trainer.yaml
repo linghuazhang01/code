@@ -155,6 +155,30 @@ trainer:
   # Save frequency (by iteration) for model checkpoints
   save_freq: -1
 
+  # Upload complete restartable checkpoints at these exact global steps
+  huggingface_checkpoint:
+
+    # Whether step-selective Hugging Face uploads are enabled
+    enabled: false
+
+    # Global steps to force-save and upload
+    steps: []
+
+    # Destination model repository, for example "organization/experiment"
+    repo_id: null
+
+    # Create the destination repository as private when it does not exist
+    private: true
+
+    # Parent directory used inside the Hub repository
+    path_prefix: checkpoints
+
+    # Environment variable populated through runtime.env_file
+    token_env_var: HF_TOKEN
+
+    # Local env file read by the uploading TaskRunner; null disables file fallback
+    env_file: null
+
   # ESI refers to the elastic server instance used during training, similar to the training plan. For example,
   # if you purchase 10 hours of computing power, the ESI will automatically shut down after 10 hours of training.
   # To ensure a checkpoint is saved before ESI shuts down, the system will start saving a checkpoint in advance.

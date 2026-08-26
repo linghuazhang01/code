@@ -13,21 +13,24 @@
 # verl uses trainer.* as the actor DP world size.
 #
 # Audits keep token-gap/entropy vocab vectors and complete response records.
-# The only active reweight mechanism is per-domain dynamic Structural+CodeLex-token speed;
+# The only active reweight mechanism is per-domain dynamic Connective+Structure-token speed;
 # full/sample/token gradients and other reweight families stay disabled.
 #
-# Analysis-derived Structural+CodeLex selector for a frozen follow-up intervention:
+# Analysis-derived Connective+Structure selector for a frozen follow-up intervention:
 # - discovery run: 4B-OPD baseline; Rising endpoints: step 6 -> step 20
 # - artifact: top200-token-details.csv
 # - artifact SHA256: 9f104cd452c5689b66bb59800070495e273958668612ba36565f4dc0ba0aca8f
 # - rank: endpoint absolute chosen-token log-p gap reduction, with >=20
 #   occurrences at both endpoints; keep Rising Top-200 per domain
-# - structural filter: PDTB connective candidate union Format/boundary
-# - Code-domain extension: exact, case-sensitive Python keyword/builtin/
+# - Connective: PDTB connective candidate union historical Control-44 IDs
+#   that occur in the same domain's Rising Top-200
+# - Structure: deterministic Format/boundary plus exact, case-sensitive
+#   Python keyword/builtin/
 #   language/module/method/API/programming-lexicon matches in Code Rising
 #   Top-200; activation depends on domain, not Math/Science rank exclusion
-# - newly added Code lexical IDs beyond the structural selector: 14
-# - expected unique ID counts after union: Math=39, Code=50, Science=33
+# - Control-44-only additions beyond the former selector: Math=9, Code=8,
+#   Science=7
+# - expected unique ID counts after union: Math=48, Code=58, Science=40
 # - Stable-only IDs are excluded; this is a discovery-run-based follow-up
 #   selector, not the outcome-independent common-support main-method selector.
 
@@ -37,7 +40,7 @@ runtime:
   wandb_mode: online
   wandb_entity: lz101-rice-university
   # Use a distinct W&B run ID for this GPU topology.
-  wandb_run_id: q4b-6g-mcs-struct-codelex-r200-cspeed-u2-v1
+  wandb_run_id: q4b-6g-mcs-connective-structure-r200-cspeed-u2-v2
   wandb_resume: allow
   env_file: .env.local
   used_model: no_api
@@ -168,7 +171,7 @@ worker_placement:
 
 audit:
   enabled: true
-  output_dir: audit/qwen4b_30b_a3b_instruct_2507_6gpu_math_code_science_topk32_control_speed_pwl_u2_structural_codelex_rising_top200_v1
+  output_dir: audit/qwen4b_30b_a3b_instruct_2507_6gpu_math_code_science_topk32_control_speed_pwl_u2_connective_structure_rising_top200_v2
   domains:
     - math
     - code
@@ -258,25 +261,28 @@ audit:
   dynamic_domain_loss_weighting_min: 0.3333333333333333
   dynamic_domain_loss_weighting_max: 3.0
 
-  # Dynamic weighting over the fixed Structural+CodeLex selector discovered from the
-  # independent 4B-OPD baseline Rising trajectory. Structural+CodeLex means:
-  # PDTB connective candidate union deterministic Format/boundary token, plus
-  # the Code-domain lexical extension declared above.
+  # Dynamic weighting over the fixed Connective+Structure selector discovered from
+  # the independent 4B-OPD baseline Rising trajectory. Connective means PDTB
+  # connective union in-domain Rising Top-200 Control-44; Structure means
+  # deterministic Format/boundary plus the Code-domain lexical extension.
   # Membership order follows Rising Top-200 optimization rank; order does not
   # affect training. Stable-only token IDs are deliberately excluded.
   # The implementation keeps the legacy control_token_* config/log key names,
-  # but those keys refer to the Structural universe listed below in this run.
+  # but those keys refer to the Connective+Structure universe below in this run.
   control_token_loss_weighting_enabled: true
   control_token_loss_weight: 1.0
   control_token_ids: []
   domain_control_token_ids:
     math:
+      - 73877  # decoded="␠Conclusion"; category=legacy_control44_connective; rising_rank=1; top100=true
       - 151645  # decoded="<|im_end|>"; category=format_boundary; rising_rank=3; top100=true
+      - 13023  # decoded="␠Final"; category=legacy_control44_connective; rising_rank=5; top100=true
       - 54815  # decoded="Therefore"; category=pdtb_connective_candidate; rising_rank=6; top100=true
       - 67691  # decoded="Similarly"; category=pdtb_connective_candidate; rising_rank=8; top100=true
       - 15277  # decoded="␠Therefore"; category=pdtb_connective_candidate; rising_rank=12; top100=true
       - 3830  # decoded="From"; category=pdtb_connective_candidate; rising_rank=17; top100=true
       - 2870  # decoded="where"; category=pdtb_connective_candidate; rising_rank=20; top100=true
+      - 1986  # decoded="This"; category=legacy_control44_connective; rising_rank=22; top100=true
       - 2679  # decoded="If"; category=pdtb_connective_candidate; rising_rank=23; top100=true
       - 16085  # decoded="␠hence"; category=pdtb_connective_candidate; rising_rank=33; top100=true
       - 2303  # decoded="␠␠↵"; category=format_boundary; rising_rank=40; top100=true
@@ -291,18 +297,24 @@ audit:
       - 549  # decoded="␠:"; category=format_boundary; rising_rank=69; top100=true
       - 608  # decoded="␠/"; category=format_boundary; rising_rank=78; top100=true
       - 4416  # decoded="So"; category=pdtb_connective_candidate; rising_rank=80; top100=true
+      - 4226  # decoded="␠answer"; category=legacy_control44_connective; rising_rank=81; top100=true
       - 2461  # decoded="For"; category=pdtb_connective_candidate; rising_rank=85; top100=true
       - 333  # decoded="if"; category=pdtb_connective_candidate; rising_rank=86; top100=true
       - 269  # decoded="or"; category=pdtb_connective_candidate; rising_rank=89; top100=true
       - 5005  # decoded="␠Then"; category=pdtb_connective_candidate; rising_rank=90; top100=true
+      - 21806  # decoded="␠Answer"; category=legacy_control44_connective; rising_rank=91; top100=true
       - 715  # decoded="␠↵"; category=format_boundary; rising_rank=105; top100=false
       - 2058  # decoded="␠still"; category=pdtb_connective_candidate; rising_rank=108; top100=false
       - 1075  # decoded="␠like"; category=pdtb_connective_candidate; rising_rank=113; top100=false
       - 2137  # decoded="},"; category=format_boundary; rising_rank=119; top100=false
       - 13394  # decoded="Also"; category=pdtb_connective_candidate; rising_rank=123; top100=false
+      - 9112  # decoded="Note"; category=legacy_control44_connective; rising_rank=126; top100=false
+      - 7039  # decoded="Now"; category=legacy_control44_connective; rising_rank=135; top100=false
       - 476  # decoded="␠or"; category=pdtb_connective_candidate; rising_rank=142; top100=false
+      - 1156  # decoded="␠first"; category=legacy_control44_connective; rising_rank=144; top100=false
       - 4518  # decoded="␠instead"; category=pdtb_connective_candidate; rising_rank=162; top100=false
       - 11209  # decoded="However"; category=pdtb_connective_candidate; rising_rank=168; top100=false
+      - 9658  # decoded="␠assume"; category=legacy_control44_connective; rising_rank=170; top100=false
       - 96065  # decoded="{("; category=format_boundary; rising_rank=174; top100=false
       - 56177  # decoded="**↵↵"; category=format_boundary; rising_rank=175; top100=false
       - 2055  # decoded="␠So"; category=pdtb_connective_candidate; rising_rank=183; top100=false
@@ -314,13 +326,16 @@ audit:
       - 1159  # decoded="␠import"; category=code_structure_python_keyword; rising_rank=1; top100=true
       - 13027  # decoded="␠Python"; category=code_structure_language_module; rising_rank=2; top100=true
       - 17949  # decoded="Because"; category=pdtb_connective_candidate; rising_rank=4; top100=true
+      - 1249  # decoded="To"; category=legacy_control44_connective; rising_rank=7; top100=true
       - 4197  # decoded="with"; category=pdtb_connective_candidate+code_structure_python_keyword; rising_rank=11; top100=true
       - 10694  # decoded="after"; category=pdtb_connective_candidate; rising_rank=12; top100=true
       - 746  # decoded="set"; category=code_structure_python_builtin; rising_rank=13; top100=true
+      - 983  # decoded="to"; category=legacy_control44_connective; rising_rank=17; top100=true
       - 1083  # decoded="␠also"; category=pdtb_connective_candidate; rising_rank=21; top100=true
       - 7252  # decoded=")]"; category=format_boundary; rising_rank=25; top100=true
       - 943  # decoded="␠type"; category=code_structure_python_builtin; rising_rank=26; top100=true
       - 2822  # decoded="()↵↵"; category=format_boundary; rising_rank=27; top100=true
+      - 7039  # decoded="Now"; category=legacy_control44_connective; rising_rank=30; top100=true
       - 4416  # decoded="So"; category=pdtb_connective_candidate; rising_rank=34; top100=true
       - 5005  # decoded="␠Then"; category=pdtb_connective_candidate; rising_rank=41; top100=true
       - 3767  # decoded="any"; category=code_structure_python_builtin; rising_rank=42; top100=true
@@ -330,14 +345,18 @@ audit:
       - 5097  # decoded="Output"; category=code_structure_programming_lexicon; rising_rank=55; top100=true
       - 151645  # decoded="<|im_end|>"; category=format_boundary; rising_rank=58; top100=true
       - 750  # decoded="def"; category=code_structure_python_keyword; rising_rank=61; top100=true
+      - 2014  # decoded="␠To"; category=legacy_control44_connective; rising_rank=65; top100=true
       - 1393  # decoded="␠while"; category=pdtb_connective_candidate+code_structure_python_keyword; rising_rank=69; top100=true
       - 2055  # decoded="␠So"; category=pdtb_connective_candidate; rising_rank=73; top100=true
       - 3270  # decoded="␠write"; category=code_structure_method_api_like; rising_rank=78; top100=true
       - 758  # decoded="␠In"; category=pdtb_connective_candidate; rising_rank=79; top100=true
       - 44364  # decoded="---↵↵"; category=format_boundary; rising_rank=84; top100=true
+      - 13023  # decoded="␠Final"; category=legacy_control44_connective; rising_rank=91; top100=true
+      - 1986  # decoded="This"; category=legacy_control44_connective; rising_rank=92; top100=true
       - 1494  # decoded="␠pass"; category=code_structure_python_keyword; rising_rank=94; top100=true
       - 1416  # decoded="␠If"; category=pdtb_connective_candidate; rising_rank=97; top100=true
       - 1648  # decoded="):"; category=format_boundary; rising_rank=98; top100=true
+      - 1431  # decoded="␠now"; category=legacy_control44_connective; rising_rank=102; top100=false
       - 12209  # decoded="Then"; category=pdtb_connective_candidate; rising_rank=103; top100=false
       - 44500  # decoded="Thus"; category=pdtb_connective_candidate; rising_rank=105; top100=false
       - 7213  # decoded="↵␠␠␠␠↵"; category=format_boundary; rising_rank=107; top100=false
@@ -345,6 +364,7 @@ audit:
       - 3243  # decoded="only"; category=pdtb_connective_candidate; rising_rank=111; top100=false
       - 2679  # decoded="If"; category=pdtb_connective_candidate; rising_rank=114; top100=false
       - 2550  # decoded="␠output"; category=code_structure_programming_lexicon; rising_rank=122; top100=false
+      - 2938  # decoded="␠That"; category=legacy_control44_connective; rising_rank=126; top100=false
       - 7609  # decoded="[-"; category=format_boundary; rising_rank=142; top100=false
       - 1887  # decoded="␠main"; category=code_structure_programming_lexicon; rising_rank=150; top100=false
       - 1173  # decoded="␠print"; category=code_structure_python_builtin; rising_rank=151; top100=false
@@ -362,11 +382,13 @@ audit:
       - 981  # decoded="␠␠␠␠␠␠"; category=format_boundary; rising_rank=194; top100=false
       - 516  # decoded="',"; category=format_boundary; rising_rank=195; top100=false
     science:
+      - 16141  # decoded="Answer"; category=legacy_control44_connective; rising_rank=3; top100=true
       - 508  # decoded="␠["; category=format_boundary; rising_rank=4; top100=true
       - 11209  # decoded="However"; category=pdtb_connective_candidate; rising_rank=6; top100=true
       - 15277  # decoded="␠Therefore"; category=pdtb_connective_candidate; rising_rank=10; top100=true
       - 641  # decoded="In"; category=pdtb_connective_candidate; rising_rank=12; top100=true
       - 54815  # decoded="Therefore"; category=pdtb_connective_candidate; rising_rank=14; top100=true
+      - 9658  # decoded="␠assume"; category=legacy_control44_connective; rising_rank=22; top100=true
       - 333  # decoded="if"; category=pdtb_connective_candidate; rising_rank=25; top100=true
       - 2679  # decoded="If"; category=pdtb_connective_candidate; rising_rank=48; top100=true
       - 44364  # decoded="---↵↵"; category=format_boundary; rising_rank=52; top100=true
@@ -375,9 +397,12 @@ audit:
       - 300  # decoded="as"; category=pdtb_connective_candidate; rising_rank=59; top100=true
       - 269  # decoded="or"; category=pdtb_connective_candidate; rising_rank=60; top100=true
       - 1416  # decoded="␠If"; category=pdtb_connective_candidate; rising_rank=63; top100=true
+      - 21806  # decoded="␠Answer"; category=legacy_control44_connective; rising_rank=64; top100=true
+      - 4226  # decoded="␠answer"; category=legacy_control44_connective; rising_rank=67; top100=true
       - 1573  # decoded="␠before"; category=pdtb_connective_candidate; rising_rank=88; top100=true
       - 4416  # decoded="So"; category=pdtb_connective_candidate; rising_rank=91; top100=true
       - 758  # decoded="␠In"; category=pdtb_connective_candidate; rising_rank=95; top100=true
+      - 1986  # decoded="This"; category=legacy_control44_connective; rising_rank=96; top100=true
       - 8450  # decoded="␠thus"; category=pdtb_connective_candidate; rising_rank=99; top100=true
       - 2474  # decoded="␠since"; category=pdtb_connective_candidate; rising_rank=112; top100=false
       - 1019  # decoded="**↵"; category=format_boundary; rising_rank=116; top100=false
@@ -395,6 +420,8 @@ audit:
       - 624  # decoded=".↵"; category=format_boundary; rising_rank=174; top100=false
       - 35702  # decoded="{\\"; category=format_boundary; rising_rank=178; top100=false
       - 330  # decoded="␠\""; category=format_boundary; rising_rank=179; top100=false
+      - 1431  # decoded="␠now"; category=legacy_control44_connective; rising_rank=191; top100=false
+      - 2938  # decoded="␠That"; category=legacy_control44_connective; rising_rank=198; top100=false
   control_token_normalize_per_domain: true
   control_token_phase_gate_enabled: false
   control_token_span_weighting_enabled: false
@@ -411,7 +438,7 @@ audit:
   # Recompute speed every step, but commit a new raw weight every two steps.
   control_token_speed_update_interval_steps: 2
   control_token_speed_initial_weight: 3.0
-  # Ignore a domain observation for EMA/speed when too few Structural+CodeLex occurrences
+  # Ignore a domain observation for EMA/speed when too few Connective+Structure occurrences
   # are present in the global actor batch.
   control_token_speed_min_occurrences: 128
   # Clamped piecewise-linear speed -> raw weight mapping.
@@ -434,7 +461,7 @@ paper_eval:
   enabled: false
   script_path: eval/scripts/run_paper_eval_suite.sh
   model_path: null
-  output_dir: eval_outputs/paper_suite/qwen4b_30b_a3b_instruct_2507_6gpu_math_code_science_topk32_control_speed_pwl_u2_structural_codelex_rising_top200_v1
+  output_dir: eval_outputs/paper_suite/qwen4b_30b_a3b_instruct_2507_6gpu_math_code_science_topk32_control_speed_pwl_u2_connective_structure_rising_top200_v2
   datasets:
     - aime24
     - aime25
@@ -450,7 +477,7 @@ paper_eval:
 
 trainer:
   project_name: MOPD
-  experiment_name: qwen4b-from-30b-a3b-instruct-2507-6gpu-math-code-science-topk32-control-speed-pwl-u2-structural-codelex-rising-top200-v1
+  experiment_name: qwen4b-from-30b-a3b-instruct-2507-6gpu-math-code-science-topk32-control-speed-pwl-u2-connective-structure-rising-top200-v2
   seed: 42
   logger: '["console","tensorboard","wandb"]'
   n_gpus_per_node: 4
@@ -459,7 +486,7 @@ trainer:
   test_freq: -1
   total_epochs: 3
   total_training_steps: 200
-  default_local_dir: checkpoints/MOPD/qwen4b-from-30b-a3b-instruct-2507-6gpu-math-code-science-topk32-control-speed-pwl-u2-structural-codelex-rising-top200-v1
+  default_local_dir: checkpoints/MOPD/qwen4b-from-30b-a3b-instruct-2507-6gpu-math-code-science-topk32-control-speed-pwl-u2-connective-structure-rising-top200-v2
   critic_warmup: 0
   val_before_train: false
   log_val_generations: 10

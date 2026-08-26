@@ -85,6 +85,7 @@ def run_selected(args: argparse.Namespace) -> list[OfficialEvalResult]:
                     enable_thinking=enable_thinking,
                     num_samples=args.num_samples,
                     seed=args.seed,
+                    sample_offset=getattr(args, "sample_offset", 0),
                 )
             )
         elif dataset == "api_bank":
@@ -156,6 +157,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--output-dir", default=_default_output_dir())
     parser.add_argument("--max-samples", type=int, default=None)
+    parser.add_argument(
+        "--sample-offset",
+        type=int,
+        default=0,
+        help="Rows to skip for selected science datasets before applying --max-samples.",
+    )
     parser.add_argument("--tensor-parallel-size", type=int, default=1)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.6)
     parser.add_argument("--max-model-len", type=int, default=None)

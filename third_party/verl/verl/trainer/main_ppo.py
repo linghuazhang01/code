@@ -109,7 +109,6 @@ def run_ppo(config, task_runner_class=None) -> None:
             PYTHON_HASH_SEED_ENV: str(global_seed),
         }
     }
-
     # Check if Ray is not initialized
     if not ray.is_initialized():
         # Initialize Ray with a local cluster configuration

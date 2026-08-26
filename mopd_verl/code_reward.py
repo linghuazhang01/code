@@ -30,16 +30,9 @@ exit_process(0)
 
 
 def _extract_code(completion: str) -> str:
-    if "```python" in completion:
-        return completion.split("```python", 1)[1].split("```", 1)[0]
-    if "```" in completion:
-        block = completion.split("```", 2)[1]
-        if "\n" in block:
-            first_line, rest = block.split("\n", 1)
-            if first_line.strip().isalpha():
-                return rest
-        return block
-    return completion
+    """Extract code using the same last-Python-block contract as training."""
+
+    return completion.split("```python")[-1].split("```", 1)[0]
 
 
 def _reliability_guard() -> None:

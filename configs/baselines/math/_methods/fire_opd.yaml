@@ -1,0 +1,16 @@
+# FiRE-OPD: OPD with FiRE token weighting and bottom-20% trajectory filtering.
+extends: ../_common.yaml
+
+actor:
+  distill_loss_builder: policy_gradient
+  distill_mode: chosen_token_policy_gradient
+  token_baseline_method: fire_opd
+  fire_opd_teacher_confidence_alpha: 1.0
+  fire_opd_student_confusion_beta: 1.0
+  fire_opd_trajectory_drop_ratio: 0.2
+  fire_opd_filter_trajectories: true
+  topk_distill_enabled: false
+  loss_agg_mode: seq-mean-token-mean
+
+audit:
+  loss_variance_signal: policy_gradient_distillation_signal+fire_opd_token_weighting

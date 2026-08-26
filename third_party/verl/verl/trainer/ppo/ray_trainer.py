@@ -35,6 +35,14 @@ from mopd_verl.domain_budgeting import DynamicDomainBudgetController
 from mopd_verl.domain_gradient.control_selection_scoring import (
     TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE,
 )
+from mopd_verl.huggingface_checkpoint import (
+    HuggingFaceCheckpointConfig,
+    checkpoint_save_required,
+    checkpoint_upload_completed,
+    clear_checkpoint_upload_receipt,
+    require_huggingface_token,
+    upload_checkpoint_to_huggingface,
+)
 from mopd_verl.region_dpo import RegionDPOController
 from mopd_verl.region_dpo_pairs import (
     attach_region_dpo_preference_pairs,
@@ -393,6 +401,35 @@ class RayPPOTrainer:
         self.config = config
         self.reward_fn = reward_fn
         self.val_reward_fn = val_reward_fn
+        self.huggingface_checkpoint = HuggingFaceCheckpointConfig.from_mapping(
+            self.config.trainer.get("huggingface_checkpoint", {})
+        )
+        if self.huggingface_checkpoint.enabled:
+            alive_ray_nodes = [
+                node for node in ray.nodes() if bool(node.get("Alive", False))
+            ]
+            if len(alive_ray_nodes) != 1:
+                raise ValueError(
+                    "Hugging Face checkpoint upload requires a single-node Ray "
+                    "cluster so the TaskRunner can see every checkpoint shard."
+                )
+            if int(self.config.trainer.nnodes) != 1:
+                raise ValueError(
+                    "Hugging Face checkpoint upload currently supports only "
+                    "trainer.nnodes=1 so every checkpoint shard is visible to "
+                    "the uploading TaskRunner."
+                )
+            if bool(self.config.trainer.del_local_ckpt_after_load):
+                raise ValueError(
+                    "Hugging Face checkpoint upload requires "
+                    "trainer.del_local_ckpt_after_load=false so a failed upload "
+                    "can be retried after resume."
+                )
+            require_huggingface_token(self.huggingface_checkpoint)
+            print(
+                "Hugging Face checkpoint upload enabled for steps: "
+                f"{list(self.huggingface_checkpoint.steps)}"
+            )
 
         # Store ref_tokenizer for re-tokenization when ref model uses different tokenizer
         self.ref_tokenizer = ref_tokenizer
@@ -1345,13 +1382,15 @@ class RayPPOTrainer:
                 config=self.config, worker_group=self.actor_rollout_wg, rm_wg=self.rm_wg
             )
 
-    def _save_checkpoint(self):
+    def _save_checkpoint(self) -> str:
         from verl.utils.fs import local_mkdir_safe
 
         # path: given_path + `/global_step_{global_steps}` + `/actor`
         local_global_step_folder = os.path.join(
             self.config.trainer.default_local_dir, f"global_step_{self.global_steps}"
         )
+        if self.huggingface_checkpoint.includes_step(self.global_steps):
+            clear_checkpoint_upload_receipt(local_global_step_folder)
 
         print(f"local_global_step_folder: {local_global_step_folder}")
         actor_local_path = os.path.join(local_global_step_folder, "actor")
@@ -1415,12 +1454,13 @@ class RayPPOTrainer:
         )
         with open(local_latest_checkpointed_iteration, "w") as f:
             f.write(str(self.global_steps))
+        return local_global_step_folder
 
-    def _load_checkpoint(self):
+    def _load_checkpoint(self) -> str | None:
         if self.config.trainer.resume_mode == "disable":
             # NOTE: while there is no checkpoint to load, we still need to offload the model and optimizer to CPU
             self.actor_rollout_wg.load_checkpoint(None)
-            return 0
+            return None
 
         # load from hdfs
         if self.config.trainer.default_hdfs_dir is not None:
@@ -1437,7 +1477,7 @@ class RayPPOTrainer:
             if global_step_folder is None:
                 print("Training from scratch")
                 self.actor_rollout_wg.load_checkpoint(None)
-                return 0
+                return None
         else:
             if self.config.trainer.resume_mode == "resume_path":
                 assert isinstance(self.config.trainer.resume_from_path, str), "resume ckpt must be str type"
@@ -1494,6 +1534,33 @@ class RayPPOTrainer:
                     "Dynamic domain budgeting cannot resume without controller "
                     f"state: {controller_path}."
                 )
+        return global_step_folder
+
+    def _upload_huggingface_checkpoint(
+        self,
+        checkpoint_dir: str,
+        step: int,
+    ) -> str | None:
+        if checkpoint_upload_completed(
+            self.huggingface_checkpoint,
+            checkpoint_dir,
+            step,
+        ):
+            print(
+                "Hugging Face checkpoint upload already completed for "
+                f"step {step}; skipping duplicate upload."
+            )
+            return None
+        commit_url = upload_checkpoint_to_huggingface(
+            self.huggingface_checkpoint,
+            checkpoint_dir,
+            step,
+        )
+        print(
+            "Hugging Face checkpoint upload completed for "
+            f"step {step}: {commit_url}"
+        )
+        return commit_url
 
     def _start_profiling(self, do_profile: bool) -> None:
         """Start profiling for all worker groups if profiling is enabled."""
@@ -1576,7 +1643,19 @@ class RayPPOTrainer:
         self.global_steps = 0
 
         # load checkpoint before doing anything
-        self._load_checkpoint()
+        resumed_checkpoint_dir = self._load_checkpoint()
+        if (
+            resumed_checkpoint_dir is not None
+            and self.huggingface_checkpoint.includes_step(self.global_steps)
+        ):
+            print(
+                "Checking pending Hugging Face upload for resumed checkpoint "
+                f"at step {self.global_steps}."
+            )
+            self._upload_huggingface_checkpoint(
+                resumed_checkpoint_dir,
+                self.global_steps,
+            )
 
         # perform validation before training
         # currently, we only support validation using the reward_function.
@@ -2352,13 +2431,33 @@ class RayPPOTrainer:
                 # 2. It's the last training step.
                 # 3. The current step number is a multiple of the save frequency.
                 # 4. The ESI(Elastic Server Instance)/training plan is close to expiration.
-                if self.config.trainer.save_freq > 0 and (
-                    is_last_step or self.global_steps % self.config.trainer.save_freq == 0 or esi_close_to_expiration
+                upload_checkpoint = self.huggingface_checkpoint.includes_step(
+                    self.global_steps
+                )
+                if checkpoint_save_required(
+                    step=self.global_steps,
+                    save_freq=int(self.config.trainer.save_freq),
+                    is_last_step=is_last_step,
+                    esi_close_to_expiration=esi_close_to_expiration,
+                    upload_config=self.huggingface_checkpoint,
                 ):
                     if esi_close_to_expiration:
                         print("Force saving checkpoint: ESI instance expiration approaching.")
+                    if upload_checkpoint:
+                        print(
+                            "Force saving checkpoint for Hugging Face upload at "
+                            f"step {self.global_steps}."
+                        )
                     with marked_timer("save_checkpoint", timing_raw, color="green"):
-                        self._save_checkpoint()
+                        checkpoint_dir = self._save_checkpoint()
+                    if upload_checkpoint:
+                        with marked_timer(
+                            "upload_checkpoint", timing_raw, color="green"
+                        ):
+                            self._upload_huggingface_checkpoint(
+                                checkpoint_dir,
+                                self.global_steps,
+                            )
 
                 with marked_timer("stop_profile", timing_raw):
                     next_step_profile = (

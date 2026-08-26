@@ -22,6 +22,13 @@ validate_positive_integer() {
     || fail "${name} must be a positive integer: ${value}"
 }
 
+validate_non_negative_integer() {
+  local name="$1"
+  local value="$2"
+  [[ "${value}" =~ ^[0-9]+$ ]] \
+    || fail "${name} must be a non-negative integer: ${value}"
+}
+
 append_protocol_dataset() {
   local domain="$1"
   local dataset="$2"
@@ -219,6 +226,7 @@ DATASETS=""
 OUTPUT_ROOT=""
 RUN_TAG=""
 MAX_SAMPLES=""
+SAMPLE_OFFSET=0
 RESUME=0
 SCORE_CODE=1
 MATH_DATASETS=""
@@ -232,6 +240,7 @@ while [[ $# -gt 0 ]]; do
     --output_root) OUTPUT_ROOT="${2:?--output_root requires a value}"; shift 2 ;;
     --run_tag) RUN_TAG="${2:?--run_tag requires a value}"; shift 2 ;;
     --max_samples) MAX_SAMPLES="${2:?--max_samples requires a value}"; shift 2 ;;
+    --sample_offset) SAMPLE_OFFSET="${2:?--sample_offset requires a value}"; shift 2 ;;
     --resume) RESUME=1; shift ;;
     --no_score_code) SCORE_CODE=0; shift ;;
     *) fail "unknown worker argument: $1" ;;
@@ -243,6 +252,8 @@ done
   || fail "worker requires datasets, output_root, and run_tag"
 [[ -n "${SLURM_JOB_ID:-}" ]] || fail "worker must run inside a Slurm allocation"
 split_protocol_datasets
+[[ -z "${MAX_SAMPLES}" ]] || validate_positive_integer "--max_samples" "${MAX_SAMPLES}"
+validate_non_negative_integer "--sample_offset" "${SAMPLE_OFFSET}"
 
 EVAL_MAX_TOKENS="${SLURM_EVAL_MAX_TOKENS:-16384}"
 EVAL_TEMPERATURE="${SLURM_EVAL_TEMPERATURE:-1.0}"
@@ -250,10 +261,12 @@ EVAL_TOP_P="${SLURM_EVAL_TOP_P:-1.0}"
 MATH_SAMPLES="${SLURM_EVAL_MATH_SAMPLES:-32}"
 CODE_SAMPLES="${SLURM_EVAL_CODE_SAMPLES:-4}"
 SCIENCE_SAMPLES="${SLURM_EVAL_SCIENCE_SAMPLES:-1}"
+EVAL_SEED="${SLURM_EVAL_SEED:-42}"
 validate_positive_integer "SLURM_EVAL_MAX_TOKENS" "${EVAL_MAX_TOKENS}"
 validate_positive_integer "SLURM_EVAL_MATH_SAMPLES" "${MATH_SAMPLES}"
 validate_positive_integer "SLURM_EVAL_CODE_SAMPLES" "${CODE_SAMPLES}"
 validate_positive_integer "SLURM_EVAL_SCIENCE_SAMPLES" "${SCIENCE_SAMPLES}"
+validate_non_negative_integer "SLURM_EVAL_SEED" "${EVAL_SEED}"
 
 PYTHON_BIN="${SLURM_EVAL_PYTHON:-${REMOTE_PYTHON_DEFAULT}}"
 VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}"
@@ -299,10 +312,12 @@ printf '[slurm-eval] job_id=%s host=%s visible_gpu=%s models=%s\n' \
 printf '[slurm-eval] protocol temperature=%s top_p=%s max_new_tokens=%s math_n=%s code_n=%s science_n=%s\n' \
   "${EVAL_TEMPERATURE}" "${EVAL_TOP_P}" "${EVAL_MAX_TOKENS}" \
   "${MATH_SAMPLES}" "${CODE_SAMPLES}" "${SCIENCE_SAMPLES}"
-"${PYTHON_BIN}" - <<'PY'
+SLURM_EVAL_SEED="${EVAL_SEED}" "${PYTHON_BIN}" - <<'PY'
+import os
+
 import torch
 
-torch.cuda.manual_seed_all(42)
+torch.cuda.manual_seed_all(int(os.environ["SLURM_EVAL_SEED"]))
 device = torch.device("cuda:0")
 witness = torch.ones((8, 8), device=device) @ torch.ones((8, 8), device=device)
 print(
@@ -329,6 +344,7 @@ for MODEL_PATH in "${MODEL_PATHS[@]}"; do
     OUTPUT_DIR="${MODEL_OUTPUT_DIR}/${DOMAIN}"
     EXTRA_ARGS=()
     [[ -z "${MAX_SAMPLES}" ]] || EXTRA_ARGS+=(--max-samples "${MAX_SAMPLES}")
+    [[ "${SAMPLE_OFFSET}" == "0" ]] || EXTRA_ARGS+=(--sample-offset "${SAMPLE_OFFSET}")
     [[ "${SCORE_CODE}" == "0" ]] || EXTRA_ARGS+=(--score-code)
     if [[ "${RESUME}" == "1" ]] && output_is_resumable "${OUTPUT_DIR}"; then
       EXTRA_ARGS+=(--resume)
@@ -353,7 +369,7 @@ for MODEL_PATH in "${MODEL_PATHS[@]}"; do
       --num-samples "${NUM_SAMPLES}" \
       --temperature "${EVAL_TEMPERATURE}" \
       --top-p "${EVAL_TOP_P}" \
-      --seed 42 \
+      --seed "${EVAL_SEED}" \
       --python "${PYTHON_BIN}" \
       --run-id "${LABEL}_${DOMAIN}_${RUN_TAG}" \
       --output-dir "${OUTPUT_DIR}" \

@@ -1,0 +1,17 @@
+# EOPD: clipped OPD plus teacher-entropy-gated Top-16 forward KL.
+extends: ../_common.yaml
+
+actor:
+  distill_loss_builder: eopd
+  distill_mode: chosen_token_policy_gradient
+  token_baseline_method: none
+  topk_distill_enabled: false
+  eopd_entropy_threshold: 0.8
+  eopd_forward_kl_weight: 1.0
+  eopd_topk_k: 16
+
+rollout_correction:
+  rollout_is: null
+
+audit:
+  loss_variance_signal: policy_gradient+entropy_gated_topk_forward_kl

@@ -159,25 +159,34 @@ def run_dataset(
     enable_thinking: bool | None,
     num_samples: int = 1,
     seed: int = 42,
+    sample_offset: int = 0,
+    llm: Any | None = None,
+    tokenizer: Any | None = None,
 ) -> OfficialEvalResult:
     if num_samples < 1:
         raise ValueError("num_samples must be at least 1")
     if num_samples > 1 and temperature <= 0:
         raise ValueError("num_samples > 1 requires temperature > 0")
+    if sample_offset < 0:
+        raise ValueError("sample_offset must be non-negative")
+    if (llm is None) != (tokenizer is None):
+        raise ValueError("llm and tokenizer must either both be provided or both be omitted")
     output = ensure_output_dir(Path(output_dir) / dataset_key)
     entries, category_field, answer_field = _dataset_entries(dataset_key)
+    entries = entries[sample_offset:]
     entries = limited(entries, max_samples)
     total_entries = len(entries)
     _progress(
         f"dataset={dataset_key} prompts={total_entries} rollouts_per_prompt={num_samples} "
         f"output={output}"
     )
-    try:
-        from transformers import AutoTokenizer
-    except ImportError as exc:
-        raise RuntimeError("Science official eval requires the `transformers` package.") from exc
-    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-    llm = load_vllm(model_path, tensor_parallel_size, gpu_memory_utilization, max_model_len)
+    if tokenizer is None:
+        try:
+            from transformers import AutoTokenizer
+        except ImportError as exc:
+            raise RuntimeError("Science official eval requires the `transformers` package.") from exc
+        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        llm = load_vllm(model_path, tensor_parallel_size, gpu_memory_utilization, max_model_len)
     params = sampling_params(
         max_tokens=max_tokens,
         temperature=temperature,
@@ -193,6 +202,7 @@ def run_dataset(
         "prompt_count": total_entries,
         "num_samples": num_samples,
         "seed": seed,
+        "sample_offset": sample_offset,
         "tensor_parallel_size": tensor_parallel_size,
         "gpu_memory_utilization": gpu_memory_utilization,
         "max_model_len": max_model_len,
@@ -210,7 +220,6 @@ def run_dataset(
     records: list[dict[str, Any]] = []
     correct = 0
     passed_prompts = 0
-    prediction_rng = random.Random(seed)
     per_category: dict[str, dict[str, int]] = {}
     for index, (entry, request_output) in enumerate(zip(entries, outputs, strict=True)):
         category = str(entry.get(category_field, "unknown"))
@@ -227,6 +236,10 @@ def run_dataset(
             )
         for rollout_index, candidate in enumerate(request_output.outputs):
             completion = candidate.text
+            global_prompt_index = sample_offset + index
+            prediction_rng = random.Random(
+                seed + global_prompt_index * num_samples + rollout_index
+            )
             prediction = get_prediction(completion, rng=prediction_rng)
             is_correct = prediction == str(entry[answer_field])
             prompt_correct = prompt_correct or is_correct
@@ -292,6 +305,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--output-dir", default="data/eval_data/results/official_science")
     parser.add_argument("--max-samples", type=int, default=None)
+    parser.add_argument("--sample-offset", type=int, default=0)
     parser.add_argument("--tensor-parallel-size", type=int, default=4)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.6)
     parser.add_argument("--max-model-len", type=int, default=None)
@@ -321,6 +335,7 @@ def main() -> int:
         enable_thinking=enable_thinking,
         num_samples=args.num_samples,
         seed=args.seed,
+        sample_offset=args.sample_offset,
     )
     print(json.dumps({"dataset": result.dataset, "summary": result.summary}, ensure_ascii=False, sort_keys=True))
     return 0

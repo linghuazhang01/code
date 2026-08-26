@@ -24,6 +24,7 @@ from mopd_verl.domain_budgeting_config import (
     parse_domain_budgeting_config,
     validate_domain_budgeting_config,
 )
+from mopd_verl.huggingface_checkpoint import HuggingFaceCheckpointConfig
 from mopd_verl.region_dpo_config import (
     RegionDPOConfig,
     parse_region_dpo_config,
@@ -458,6 +459,9 @@ class MOPDConfig:
         default_factory=DomainBudgetingConfig
     )
     paper_eval: PaperEvalConfig = field(default_factory=PaperEvalConfig)
+    huggingface_checkpoint: HuggingFaceCheckpointConfig = field(
+        default_factory=HuggingFaceCheckpointConfig
+    )
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     ray_kwargs: RayKwargsConfig = field(default_factory=RayKwargsConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
@@ -591,6 +595,9 @@ def load_config(path: str | Path) -> MOPDConfig:
     data_raw = _expect_mapping(root.get("data", {}), "data")
     model_raw = _expect_mapping(root.get("model", {}), "model")
     paper_eval_raw = _expect_mapping(root.get("paper_eval", {}), "paper_eval")
+    huggingface_checkpoint_raw = _expect_mapping(
+        root.get("huggingface_checkpoint", {}), "huggingface_checkpoint"
+    )
     domain_budgeting_raw = _expect_mapping(
         root.get("domain_budgeting", {}), "domain_budgeting"
     )
@@ -1394,6 +1401,9 @@ def load_config(path: str | Path) -> MOPDConfig:
             timeout_seconds=int(
                 paper_eval_raw.get("timeout_seconds", PaperEvalConfig.timeout_seconds)
             ),
+        ),
+        huggingface_checkpoint=HuggingFaceCheckpointConfig.from_mapping(
+            huggingface_checkpoint_raw
         ),
         trainer=trainer,
         ray_kwargs=RayKwargsConfig(

@@ -19,11 +19,12 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 DRY_RUN="${DRY_RUN:-0}"
 RESUME="${RESUME:-0}"
+SAMPLE_OFFSET="${SAMPLE_OFFSET:-0}"
+MAX_SAMPLES="${MAX_SAMPLES:-}"
+GENERATION_SEED="${GENERATION_SEED:-42}"
 
 DATA_FILE="${CODE_DIR}/data/eval_data/science/MMLU-Pro/subsets/openprm_style_500_seed42/test.parquet"
 MANIFEST_FILE="${CODE_DIR}/data/eval_data/science/MMLU-Pro/subsets/openprm_style_500_seed42/manifest.json"
-EXPECTED_DATA_SHA256="9db4fb82f4fc59ab4514b2f3a2fe54928b3fc9d11a483bf678958261b8f6a4a6"
-EXPECTED_SELECTED_IDS_SHA256="ea1c19950afe4ac82a3b32c8afb39b50fa032a64e096fed61364e1d0c1c81760"
 
 for flag in DRY_RUN RESUME; do
   [[ "${!flag}" == "0" || "${!flag}" == "1" ]] || {
@@ -31,57 +32,25 @@ for flag in DRY_RUN RESUME; do
     exit 2
   }
 done
-
-"${PYTHON_BIN}" - \
-  "${DATA_FILE}" \
-  "${MANIFEST_FILE}" \
-  "${EXPECTED_DATA_SHA256}" \
-  "${EXPECTED_SELECTED_IDS_SHA256}" <<'PY'
-from __future__ import annotations
-
-import hashlib
-import json
-import sys
-from pathlib import Path
-
-
-data_file = Path(sys.argv[1])
-manifest_file = Path(sys.argv[2])
-expected_data_sha256 = sys.argv[3]
-expected_selected_ids_sha256 = sys.argv[4]
-
-if not data_file.is_file() or not manifest_file.is_file():
-    raise SystemExit(f"Missing pinned MMLU-Pro-500 artifact under {data_file.parent}")
-
-actual_data_sha256 = hashlib.sha256(data_file.read_bytes()).hexdigest()
-if actual_data_sha256 != expected_data_sha256:
-    raise SystemExit(f"MMLU-Pro-500 data SHA-256 mismatch: {actual_data_sha256}")
-
-manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
-selection = manifest.get("selection", {})
-subset = manifest.get("subset", {})
-selected_ids = selection.get("selected_ids")
-if not isinstance(selected_ids, list):
-    raise SystemExit("MMLU-Pro-500 manifest is missing selected_ids")
-selected_ids_payload = json.dumps(
-    selected_ids,
-    ensure_ascii=False,
-    separators=(",", ":"),
-).encode("utf-8")
-actual_selected_ids_sha256 = hashlib.sha256(selected_ids_payload).hexdigest()
-
-expected_fields = {
-    "dataset": manifest.get("dataset") == "MMLU-Pro",
-    "seed": selection.get("seed") == 42,
-    "sample_size": selection.get("sample_size") == 500,
-    "subset_rows": subset.get("rows") == 500,
-    "subset_sha256": subset.get("sha256") == expected_data_sha256,
-    "selected_ids_sha256": actual_selected_ids_sha256 == expected_selected_ids_sha256,
+[[ "${SAMPLE_OFFSET}" =~ ^[0-9]+$ ]] || {
+  echo "SAMPLE_OFFSET must be a non-negative integer: ${SAMPLE_OFFSET}" >&2
+  exit 2
 }
-invalid = [name for name, valid in expected_fields.items() if not valid]
-if invalid:
-    raise SystemExit(f"Invalid MMLU-Pro-500 manifest fields: {', '.join(invalid)}")
-PY
+if [[ -n "${MAX_SAMPLES}" && ! "${MAX_SAMPLES}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "MAX_SAMPLES must be a positive integer when provided: ${MAX_SAMPLES}" >&2
+  exit 2
+fi
+[[ "${GENERATION_SEED}" =~ ^[0-9]+$ ]] || {
+  echo "GENERATION_SEED must be a non-negative integer: ${GENERATION_SEED}" >&2
+  exit 2
+}
+
+PINNED_VALIDATION_JSON="$(
+  PYTHONPATH="${CODE_DIR}:${PYTHONPATH:-}" "${PYTHON_BIN}" \
+    -m eval.domains.science.pinned_mmlupro \
+    --data-file "${DATA_FILE}" \
+    --manifest-file "${MANIFEST_FILE}"
+)"
 
 COMMAND=(
   "${CODE_DIR}/eval/scripts/run_official_eval.sh"
@@ -96,9 +65,11 @@ COMMAND=(
   --temperature 1.0
   --top-p 1.0
   --num-samples 4
-  --seed 42
+  --seed "${GENERATION_SEED}"
   --enable-thinking false
 )
+[[ "${SAMPLE_OFFSET}" == "0" ]] || COMMAND+=(--sample-offset "${SAMPLE_OFFSET}")
+[[ -z "${MAX_SAMPLES}" ]] || COMMAND+=(--max-samples "${MAX_SAMPLES}")
 
 if [[ "${DRY_RUN}" == "1" ]]; then
   printf '[standard-ood] CUDA_VISIBLE_DEVICES=%q ' "${CUDA_VISIBLE_DEVICES}"
@@ -122,8 +93,10 @@ mkdir -p "${OUTPUT_DIR}"
   "${OUTPUT_DIR}/standard_ood_manifest.json" \
   "${MODEL_PATH}" \
   "${DATA_FILE}" \
-  "${EXPECTED_DATA_SHA256}" \
-  "${EXPECTED_SELECTED_IDS_SHA256}" <<'PY'
+  "${PINNED_VALIDATION_JSON}" \
+  "${SAMPLE_OFFSET}" \
+  "${MAX_SAMPLES}" \
+  "${GENERATION_SEED}" <<'PY'
 from __future__ import annotations
 
 import json
@@ -131,24 +104,27 @@ import sys
 from pathlib import Path
 
 
+validation = json.loads(sys.argv[4])
 payload = {
     "benchmark": "MMLU-Pro-500",
     "dataset_key": "mmlupro_500_seed42",
     "model_path": sys.argv[2],
     "data_file": sys.argv[3],
-    "data_sha256": sys.argv[4],
-    "selected_ids_sha256": sys.argv[5],
+    "data_sha256": validation["data_sha256"],
+    "selected_ids_sha256": validation["selected_ids_sha256"],
     "protocol": {
         "questions": 500,
         "rollouts_per_question": 4,
         "temperature": 1.0,
         "top_p": 1.0,
-        "seed": 42,
+        "seed": int(sys.argv[7]),
         "max_tokens": 16384,
         "max_model_len": 18432,
         "tensor_parallel_size": 1,
         "gpu_memory_utilization": 0.85,
         "enable_thinking": False,
+        "sample_offset": int(sys.argv[5]),
+        "max_samples": int(sys.argv[6]) if sys.argv[6] else None,
     },
 }
 Path(sys.argv[1]).write_text(

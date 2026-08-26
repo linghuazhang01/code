@@ -12,6 +12,19 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Evaluation is Slurm-only and has its own resource/protocol parser. Keep this
+# dispatch before the training parser so existing training semantics stay intact.
+if [[ "${1:-}" == "--eval" ]]; then
+  shift
+  [[ "${1:-}" != "--slurm" ]] || shift
+  exec bash "${SCRIPT_DIR}/slurm_parallel_eval.sh" "$@"
+fi
+if [[ "${1:-}" == "--slurm" && "${2:-}" == "--eval" ]]; then
+  shift 2
+  exec bash "${SCRIPT_DIR}/slurm_parallel_eval.sh" "$@"
+fi
+
 DEFAULT_CONFIG_PATH="${SCRIPT_DIR}/configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code_science_topk32.yaml"
 MOPD_SEED="${MOPD_SEED:-42}"
 
@@ -19,6 +32,7 @@ usage() {
   cat <<'USAGE'
 Usage:
   bash start.sh [--config|-c <config[::profile]>] [--local|--slurm] [--dry-run] [-- <hydra overrides>]
+  bash start.sh --slurm --eval --model_path PATH [evaluation options]
 
 Examples:
   bash start.sh
@@ -26,6 +40,7 @@ Examples:
   bash start.sh -c configs/mopd_formal_audit_all_2gpu.yaml --local --foreground
   bash start.sh -c configs/mopd_formal_audit_all_8gpu.yaml --slurm
   bash start.sh -c configs/mopd_formal_audit_all_8gpu.yaml --slurm --slurm-args "--partition=gpu"
+  bash start.sh --slurm --eval --model_path checkpoints/model --gpus 4 --dry_run
 
 The default mode is local. MOPD_LAUNCH_MODE=auto selects Slurm when sbatch is
 available. If no config is selected, start.sh uses the original Top-32 config.
