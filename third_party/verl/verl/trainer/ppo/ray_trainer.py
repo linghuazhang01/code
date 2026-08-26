@@ -38,11 +38,10 @@ from mopd_verl.domain_gradient.control_selection_scoring import (
 from mopd_verl.huggingface_checkpoint import (
     HuggingFaceCheckpointConfig,
     checkpoint_save_required,
-    checkpoint_upload_completed,
     clear_checkpoint_upload_receipt,
     require_huggingface_token,
-    upload_checkpoint_to_huggingface,
 )
+from mopd_verl.huggingface_upload_async import AsyncHuggingFaceUploader
 from mopd_verl.region_dpo import RegionDPOController
 from mopd_verl.region_dpo_pairs import (
     attach_region_dpo_preference_pairs,
@@ -404,6 +403,7 @@ class RayPPOTrainer:
         self.huggingface_checkpoint = HuggingFaceCheckpointConfig.from_mapping(
             self.config.trainer.get("huggingface_checkpoint", {})
         )
+        self.huggingface_uploader: AsyncHuggingFaceUploader | None = None
         if self.huggingface_checkpoint.enabled:
             alive_ray_nodes = [
                 node for node in ray.nodes() if bool(node.get("Alive", False))
@@ -426,8 +426,11 @@ class RayPPOTrainer:
                     "can be retried after resume."
                 )
             require_huggingface_token(self.huggingface_checkpoint)
+            self.huggingface_uploader = AsyncHuggingFaceUploader(
+                self.huggingface_checkpoint
+            )
             print(
-                "Hugging Face checkpoint upload enabled for steps: "
+                "Asynchronous Hugging Face model upload enabled for steps: "
                 f"{list(self.huggingface_checkpoint.steps)}"
             )
 
@@ -1536,31 +1539,33 @@ class RayPPOTrainer:
                 )
         return global_step_folder
 
-    def _upload_huggingface_checkpoint(
+    def _schedule_huggingface_model_upload(
         self,
         checkpoint_dir: str,
         step: int,
-    ) -> str | None:
-        if checkpoint_upload_completed(
-            self.huggingface_checkpoint,
-            checkpoint_dir,
-            step,
-        ):
+    ) -> None:
+        if self.huggingface_uploader is None:
+            return
+        if not self.huggingface_uploader.schedule(checkpoint_dir, step):
             print(
-                "Hugging Face checkpoint upload already completed for "
+                "Hugging Face model upload already completed or queued for "
                 f"step {step}; skipping duplicate upload."
             )
-            return None
-        commit_url = upload_checkpoint_to_huggingface(
-            self.huggingface_checkpoint,
-            checkpoint_dir,
-            step,
-        )
+            return
         print(
-            "Hugging Face checkpoint upload completed for "
-            f"step {step}: {commit_url}"
+            "Hugging Face model upload queued in the background for "
+            f"step {step}."
         )
-        return commit_url
+
+    def _wait_for_huggingface_model_uploads(self) -> None:
+        if self.huggingface_uploader is None:
+            return
+        print("Training loop exited; waiting for background Hugging Face uploads.")
+        for result in self.huggingface_uploader.wait():
+            print(
+                "Hugging Face model upload completed for "
+                f"step {result.step}: {result.commit_url}"
+            )
 
     def _start_profiling(self, do_profile: bool) -> None:
         """Start profiling for all worker groups if profiling is enabled."""
@@ -1621,7 +1626,28 @@ class RayPPOTrainer:
         )
         metrics.update(global_balance_stats)
 
-    def fit(self):
+    def fit(self) -> None:
+        """Run training and always drain background model uploads on exit."""
+
+        training_error: BaseException | None = None
+        try:
+            self._fit_impl()
+        except BaseException as exc:
+            training_error = exc
+            raise
+        finally:
+            try:
+                self._wait_for_huggingface_model_uploads()
+            except Exception as upload_error:
+                if training_error is None:
+                    raise
+                print(
+                    "A background Hugging Face model upload also failed while "
+                    "preserving the original training error: "
+                    f"{upload_error!r}."
+                )
+
+    def _fit_impl(self) -> None:
         """
         The training loop of PPO.
         The driver process only need to call the compute functions of the worker group through RPC
@@ -1642,6 +1668,15 @@ class RayPPOTrainer:
 
         self.global_steps = 0
 
+        if self.huggingface_uploader is not None:
+            for retained_step in self.huggingface_uploader.schedule_retained(
+                self.config.trainer.default_local_dir
+            ):
+                print(
+                    "Retrying retained Hugging Face model upload for "
+                    f"step {retained_step}."
+                )
+
         # load checkpoint before doing anything
         resumed_checkpoint_dir = self._load_checkpoint()
         if (
@@ -1652,7 +1687,7 @@ class RayPPOTrainer:
                 "Checking pending Hugging Face upload for resumed checkpoint "
                 f"at step {self.global_steps}."
             )
-            self._upload_huggingface_checkpoint(
+            self._schedule_huggingface_model_upload(
                 resumed_checkpoint_dir,
                 self.global_steps,
             )
@@ -2452,9 +2487,9 @@ class RayPPOTrainer:
                         checkpoint_dir = self._save_checkpoint()
                     if upload_checkpoint:
                         with marked_timer(
-                            "upload_checkpoint", timing_raw, color="green"
+                            "stage_huggingface_model", timing_raw, color="green"
                         ):
-                            self._upload_huggingface_checkpoint(
+                            self._schedule_huggingface_model_upload(
                                 checkpoint_dir,
                                 self.global_steps,
                             )

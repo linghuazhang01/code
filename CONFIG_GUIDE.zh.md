@@ -61,10 +61,11 @@ model:
   code_teacher_path: ../models/Qwen3-4B-Non-Thinking-RL-Code-Step300
 ```
 
-## 按 step 上传 checkpoint 到 Hugging Face
+## 按 step 上传模型到 Hugging Face
 
-在任意训练 YAML 顶层加入以下配置，即可在指定 global step 保存并上传完整的
-verl checkpoint：
+在任意训练 YAML 顶层加入以下配置，并让 actor checkpoint 的
+`save_contents` 包含 `hf_model`，即可在指定 global step 生成并上传可由
+Transformers 加载的模型：
 
 ```yaml
 huggingface_checkpoint:
@@ -76,15 +77,17 @@ huggingface_checkpoint:
   token_env_var: HF_TOKEN
 ```
 
+```yaml
+extra_overrides:
+  - actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+```
+
 `steps` 是正整数数组。命中其中任一步时，即使该 step 不满足
 `trainer.save_freq`（包括 `save_freq: -1`），训练器也会先强制保存
-`global_step_<STEP>`，再同步上传到仓库中的
-`checkpoints/global_step_<STEP>/`。上传内容是可恢复训练的 step checkpoint，
-包括 actor、critic（若启用）、dataloader 与 MOPD controller state，而不是只上传
-合并后的 Hugging Face model weights。下载后恢复时应显式设置
-`trainer.resume_mode=resume_path` 与
-`trainer.resume_from_path=<LOCAL_DIR>/global_step_<STEP>`；Hub 路径不包含本地父目录
-中的 `latest_checkpointed_iteration.txt`，因此不能直接依赖 `resume_mode=auto`。
+`global_step_<STEP>`，再把本地 `actor/huggingface/` 中的模型权重、config 和
+tokenizer 同步上传到仓库中的 `checkpoints/global_step_<STEP>/`。optimizer、
+scheduler/RNG state、dataloader、critic 和 MOPD controller state 只保留在本地
+restartable checkpoint 中，不会上传到 Hugging Face。
 
 推荐直接在启动 `start.sh` 的同一个 shell 中 export token。若本机已通过
 `hf auth login` 登录，可以从 Hugging Face cache 安全读取，命令本身不会包含
@@ -110,12 +113,16 @@ unset HF_TOKEN
 写入 `.env.local`。上传逻辑始终优先读取当前环境变量，只有环境变量不存在时才
 尝试配置中的 env-file fallback。token 本身不会进入 YAML、Hydra 配置、日志或
 Hugging Face commit。
-若目标 repo 尚不存在，训练器会按 `private` 设置自动创建。上传是同步执行的，
-失败会使训练立即报错，避免误以为远端 checkpoint 已经落盘。
-成功后本地 step 目录会写入 upload receipt；如果上传失败后重启，训练器会在进入
-下一个 step 前自动补传，已经成功的上传不会重复执行。当前只支持单节点 Ray
-cluster 与 `trainer.nnodes: 1`；多节点 node-local checkpoint 可能分散 shards，
-检测到多节点时会 fail-fast。
+若目标 repo 尚不存在，训练器会按 `private` 设置自动创建。每个目标 step 保存模型后，
+trainer 会先在同一文件系统建立仅包含 HF model 的 hard-link snapshot，再由单独线程
+顺序上传；网络传输不会阻塞后续训练 step。训练 loop 退出时才等待剩余上传并汇总错误。
+如果 checkpoint filesystem 不支持 hard link，训练器会 fail-fast，绝不会退化为同步复制
+大模型。上传失败时 snapshot 会保留在 `.huggingface_uploads/`，下次启动同一配置时会在
+加载 checkpoint 前自动补传；成功后会自动清理，并在仍存在的本地 step 目录写入 upload
+receipt。正常结束、`val_only` 和训练异常退出都会 drain 已排队任务；训练异常与上传异常
+同时发生时保留训练异常，并额外记录上传失败信息。每次上传同时清除对应 Hub step 目录中的
+旧文件，避免旧版整 checkpoint 上传留下 optimizer 或 dataloader。当前只支持单节点 Ray
+cluster 与 `trainer.nnodes: 1`；检测到多节点时会 fail-fast。
 
 ## Dynamic Domain Budgeting
 

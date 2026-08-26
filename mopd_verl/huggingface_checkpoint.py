@@ -9,9 +9,9 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-
 DEFAULT_HF_TOKEN_ENV_VAR = "HF_TOKEN"
 UPLOAD_RECEIPT_FILENAME = ".huggingface_upload_complete.json"
+UPLOAD_KIND = "huggingface_model"
 
 
 @dataclass(frozen=True)
@@ -145,6 +145,7 @@ def checkpoint_upload_completed(
         payload.get("step") == step
         and payload.get("repo_id") == config.repo_id
         and payload.get("path_in_repo") == _path_in_repo(config, step)
+        and payload.get("upload_kind") == UPLOAD_KIND
     )
 
 
@@ -163,13 +164,33 @@ def upload_checkpoint_to_huggingface(
     environ: MutableMapping[str, str] | None = None,
     api_factory: Callable[[str], Any] | None = None,
 ) -> str:
-    """Upload one complete restartable checkpoint into its step subdirectory."""
+    """Upload only the loadable Hugging Face model for one checkpoint step."""
 
     if not config.includes_step(step):
         raise ValueError(f"Step {step} is not configured for Hugging Face upload.")
     local_dir = Path(checkpoint_dir)
-    if not local_dir.is_dir():
-        raise FileNotFoundError(f"Checkpoint directory does not exist: {local_dir}")
+    model_dir = _huggingface_model_dir(local_dir)
+
+    return _upload_huggingface_model(
+        config,
+        local_dir,
+        model_dir,
+        step,
+        environ=environ,
+        api_factory=api_factory,
+    )
+
+
+def _upload_huggingface_model(
+    config: HuggingFaceCheckpointConfig,
+    checkpoint_dir: Path,
+    model_dir: Path,
+    step: int,
+    *,
+    environ: MutableMapping[str, str] | None,
+    api_factory: Callable[[str], Any] | None,
+) -> str:
+    """Upload one validated model directory and write a local receipt."""
 
     token = require_huggingface_token(config, environ)
     if api_factory is None:
@@ -193,26 +214,22 @@ def upload_checkpoint_to_huggingface(
     )
     path_in_repo = _path_in_repo(config, step)
     result = api.upload_folder(
-        folder_path=str(local_dir),
+        folder_path=str(model_dir),
         repo_id=repo_id,
         repo_type="model",
         path_in_repo=path_in_repo,
-        commit_message=f"Upload training checkpoint at step {step}",
+        commit_message=f"Upload Hugging Face model at step {step}",
+        delete_patterns=["*", "**/*"],
     )
     commit_url = str(getattr(result, "commit_url", result))
     receipt = {
         "step": step,
         "repo_id": repo_id,
         "path_in_repo": path_in_repo,
+        "upload_kind": UPLOAD_KIND,
         "commit_url": commit_url,
     }
-    receipt_path = local_dir / UPLOAD_RECEIPT_FILENAME
-    temporary_receipt_path = receipt_path.with_suffix(".tmp")
-    temporary_receipt_path.write_text(
-        json.dumps(receipt, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    temporary_receipt_path.replace(receipt_path)
+    _write_upload_receipt(checkpoint_dir, receipt)
     return commit_url
 
 
@@ -237,6 +254,61 @@ def _path_in_repo(config: HuggingFaceCheckpointConfig, step: int) -> str:
     if not config.path_prefix:
         return step_dir
     return f"{config.path_prefix}/{step_dir}"
+
+
+def _huggingface_model_dir(checkpoint_dir: Path) -> Path:
+    if not checkpoint_dir.is_dir():
+        raise FileNotFoundError(
+            f"Checkpoint directory does not exist: {checkpoint_dir}"
+        )
+
+    model_dir = checkpoint_dir / "actor" / "huggingface"
+    return _validate_huggingface_model_dir(model_dir)
+
+
+def _validate_huggingface_model_dir(model_dir: Path) -> Path:
+    """Validate one standalone Transformers model directory."""
+
+    if not model_dir.is_dir():
+        raise FileNotFoundError(
+            "Hugging Face model directory does not exist: "
+            f"{model_dir}. Ensure actor checkpoint save_contents includes hf_model."
+        )
+    if not (model_dir / "config.json").is_file():
+        raise FileNotFoundError(
+            f"Hugging Face model config does not exist: {model_dir / 'config.json'}"
+        )
+
+    weight_files = [
+        path
+        for path in model_dir.iterdir()
+        if path.is_file()
+        and (
+            path.suffix == ".safetensors"
+            or (path.name.startswith("pytorch_model") and path.suffix == ".bin")
+        )
+    ]
+    if not weight_files:
+        raise FileNotFoundError(
+            "Hugging Face model weights do not exist in "
+            f"{model_dir}. Ensure actor checkpoint save_contents includes hf_model."
+        )
+    return model_dir
+
+
+def _write_upload_receipt(checkpoint_dir: Path, receipt: Mapping[str, Any]) -> None:
+    if not checkpoint_dir.is_dir():
+        return
+    receipt_path = checkpoint_dir / UPLOAD_RECEIPT_FILENAME
+    temporary_receipt_path = receipt_path.with_suffix(".tmp")
+    try:
+        temporary_receipt_path.write_text(
+            json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        temporary_receipt_path.replace(receipt_path)
+    except FileNotFoundError:
+        temporary_receipt_path.unlink(missing_ok=True)
 
 
 def _read_env_value(path: str, wanted_key: str) -> str | None:

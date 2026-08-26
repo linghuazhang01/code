@@ -27,6 +27,10 @@ MODEL_VARIANTS = {
 }
 HF_CHECKPOINT_STEPS = (50, 55, 60, 65, 70)
 HF_REPO_ID = "icemoon28/opd-checkpoints"
+HF_MODEL_SAVE_OVERRIDE = (
+    "actor_rollout_ref.actor.checkpoint.save_contents="
+    "[model,optimizer,extra,hf_model]"
+)
 LEGACY_MATH_CONFIGS = (
     "mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math.yaml",
     "mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math.yaml",
@@ -161,6 +165,7 @@ def test_math_baseline_resource_and_data_contract(
         f"checkpoints/math/{config.trainer.experiment_name}"
     )
     assert "trainer.huggingface_checkpoint.enabled=True" in command
+    assert HF_MODEL_SAVE_OVERRIDE in command
 
 
 @pytest.mark.parametrize("model_variant", MODEL_VARIANTS)
@@ -271,3 +276,4 @@ def test_legacy_math_configs_upload_selected_checkpoints(filename: str) -> None:
     assert huggingface.path_prefix == (
         f"checkpoints/math/{config.trainer.experiment_name}"
     )
+    assert HF_MODEL_SAVE_OVERRIDE in config.extra_overrides

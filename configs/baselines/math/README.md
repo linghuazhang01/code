@@ -65,10 +65,15 @@ within their model-variant location.
 The `_common.yaml` and `_methods/` files are inheritance fragments, not
 separate experiment cells.
 
-## Hugging Face checkpoints
+## Hugging Face models
 
-All 40 user-facing configs force-save and upload checkpoints at global steps
+All 40 user-facing configs force-save and upload loadable Hugging Face models at global steps
 50, 55, 60, 65, and 70 to the private `icemoon28/opd-checkpoints` repository.
 Each config uses a unique path under `checkpoints/math/`, so methods and GPU
 profiles cannot overwrite one another. Authentication is read from the
-exported `HF_TOKEN`; the raw token is never stored in these YAML files.
+exported `HF_TOKEN`; the raw token is never stored in these YAML files. Only
+the contents of `actor/huggingface/` are uploaded; optimizer, scheduler,
+dataloader, critic, and other restart-only state remain local. Uploads run in a
+single background queue while training continues; the trainer waits for the
+queue only when training exits. Failed model-only snapshots are retried on the
+next launch with the same config.
