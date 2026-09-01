@@ -63,12 +63,14 @@ audit:
 For grouped candidate pools, the same `top_p` threshold is applied independently
 inside each group; `control_token_online_top_k_per_group` must be omitted.
 
-The two non-Slurm launch wrappers default to the 8-GPU profile and accept
-`6`, `7`, or `8` as their first argument:
+Launch any profile directly through `start.sh` in non-Slurm mode:
 
 ```bash
-bash scripts/start_math_taxonomy_topp0p1.sh 8
-bash scripts/start_math_taxonomy_topp0p2.sh 8
-```
+GPU_IDS=0,1,2,3,4,5 bash start.sh --local --config configs/token_selection/math/top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_6gpu_4a2t_b256.yaml
+GPU_IDS=0,1,2,3,4,5,6 bash start.sh --local --config configs/token_selection/math/top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_7gpu_5a2t_b255.yaml
+GPU_IDS=0,1,2,3,4,5,6,7 bash start.sh --local --config configs/token_selection/math/top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_8gpu_6a2t_b258.yaml
 
-Set `GPU_IDS` before invoking a wrapper to use non-sequential physical GPU IDs.
+GPU_IDS=0,1,2,3,4,5 bash start.sh --local --config configs/token_selection/math/top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_6gpu_4a2t_b256.yaml
+GPU_IDS=0,1,2,3,4,5,6 bash start.sh --local --config configs/token_selection/math/top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_7gpu_5a2t_b255.yaml
+GPU_IDS=0,1,2,3,4,5,6,7 bash start.sh --local --config configs/token_selection/math/top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_8gpu_6a2t_b258.yaml
+```
