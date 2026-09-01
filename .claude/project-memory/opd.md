@@ -4,7 +4,7 @@ repo_root: /Users/linghuazhang/Desktop/Project/OPD/code
 vault_root: /Users/linghuazhang/Desktop/Project/Notes/Obsidian/Research/opd
 hub_note: Research/opd/00-Hub.md
 language: zh-CN
-last_sync_at: 2026-09-01T19:43:23+08:00
+last_sync_at: 2026-09-02T06:19:19+08:00
 last_synced_head: 395f5f467fafbf5adf4d031dbce2b39eb3b26e6c
 status: active
 auto_sync: true
@@ -18,7 +18,8 @@ auto_sync: true
 - TODO
 
 ## 当前任务
-- Online Control token selector 已新增 opt-in cumulative score-mass `top_p` budget；默认继续使用 `top_k`。配置、launcher、actor meta、checkpoint schema、统一/分组候选选择和 JSONL audit logging 已贯通，相关回归测试通过。
+- 监控 Math-only ExpandedPruned-V2 5-GPU training job 189。heartbeat `5gpu-taxonomy` 每 30 分钟复核两个门禁：`global_step_60` 的 4-rank model/optimizer/extra-state 与 HF model/tokenizer 完整后，去重提交四项 Math、K=8、seed42、DP1 的 partial evaluation；job 189 `COMPLETED / 0:0` 且 `global_step_70` 完整后，再去重提交 `configs/token_selection/math/top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_5gpu_b256.yaml`。
+- Online Control token selector 已新增 opt-in occurrence-coverage `top_p` budget；默认继续使用 `top_k`。token type 按 score 排序后，累计其 occurrence count，直到 `selected_occurrences / valid_token_count >= top_p`；rolling window 同时累计分子和分母，grouped taxonomy 在 Top-P 下按 domain candidate union 统一选择。配置、launcher、actor meta、checkpoint schema v8 和 JSONL audit logging 已贯通。
 - Math-only EOPD / OPD `global_step_60` 的四项 Math `K=8` 评测 jobs 170/171 已完成、下载并通过本地/远端 aggregate SHA、JSON/JSONL、120 题/960 rollouts 与独立指标重算验收。结果作为独立 `Mass Only（Math-only）` 区块写入 `experiments_records/eval/Summary.md`，不进入 Standard10 active 排名；详见 Obsidian `Results/Math-Only-Step60-EOPD-vs-OPD.md`。
 - Math-only FiRE-OPD 4-GPU training job 175 与 Step60 partial eval job 181 均已完成；job 181 的 32/32 shards、120 prompts、960/960 rollouts、JSON/JSONL、SUCCESS、remote/local 内容和独立指标验收通过，已写入 `experiments_records/eval/Summary.md` 与三方法 analysis bundle。
 - TIP-TopK32 `global_step_60` Math-only partial eval job 176 已完成、下载并验收：四项 Math、K=8、DP=2、32/32 shards、120 prompts、960/960 rollouts，远端/本地 checksum 一致；结果已更新到 canonical `Summary.md` 的 Math-only 区块与 Obsidian `Results/Math-Only-Step60-ExOPD-vs-TIP.md`。
@@ -43,6 +44,7 @@ auto_sync: true
 - 已实现按 global step 数组选择性上传 verl checkpoint 到 Hugging Face Hub；命中 step 会强制保存，失败后 resume 会依据本地 receipt 补传，token 推荐在 `start.sh` 外部通过 `export HF_TOKEN` 注入。
 
 ## 进行中的实验
+- `q1p7b-math-a-ns-expanded-v2-i1w1k29-5gpu-b256`：Slurm job 189 使用 5×H200（4 actor/rollout + 1 ref/teacher）、batch 256、200G；截至 2026-09-02 00:48 +08:00 已运行 04:52，最新完整训练指标 step 29/70、checkpoint `global_step_25`。后续 FullTaxonomy split Top-32 reverse-KL `top_p=0.05` 任务尚未提交。
 - `Step60-Standard10-Evaluation`：ExOPD job 143、OPD job 146、TIP job 145、V1 KL Entropy control job 160、V1 Speed control job 161、Student Base job 147 与 Teacher job 148 均已完成、下载、验收和 official EvalPlus post-scoring。V0 Speed job 162 为 FAILED/1:0，失败 archive 已下载；逐 shard 审计确认仅 AIME25 task 0020 缺 16 records。heartbeat 暂停等待用户处理。远端 output root 为 `data/eval_data/results/standard10_20260828/`。
 - `qwen1p7b-30b-tip-topk32-rho50-4gpu-b525`：远端任务已中断，W&B 已同步至 step 61/200。
 - `qwen4b-30b-tip-topk32-rho50-4gpu-b525`：远端任务在首个 training step 前取消，尚无 history metrics。
@@ -73,7 +75,10 @@ auto_sync: true
   Avg@K；当前多域整体以 step70 略优。
 
 ## 最近同步状态
-- 2026-09-01T19:43:23+08:00：Online Control token selection 支持 `control_token_online_budget_mode: top_p` 与 `control_token_online_top_p`。selector 按非负 ranking-score mass 选择达到阈值的最短前缀；grouped candidates 按组独立累计。旧 checkpoint 自动迁移为 `top_k`，新配置/state/logging 路径与 172 项相关测试通过。
+- 2026-09-02T06:19:19+08:00：根据用户进一步澄清，将 Online Control `top_p` 最终固定为现有 `online_control_occurrence_fraction` 的目标：按 score 排序 token type，累计 occurrence count，取使 `selected_occurrences / valid_token_count >= p` 的最短前缀。selector history 新增 per-domain valid-token denominator，窗口内分子分母同步累计；grouped taxonomy 按 domain union 选择，JSONL 使用 `top_p_basis=selected_occurrences_over_valid_tokens`，并显式记录 target count、是否达到及 shortfall。schema 升至 v8，旧 v7 Top-P history 因缺分母会安全清空，156 项针对性测试通过。
+- 2026-09-02T01:46:00+08:00：按用户新增要求，将 heartbeat `5gpu-taxonomy` 改为每 30 分钟执行两阶段流水线。阶段 A 在当前 ExpandedPruned-V2 job 189 的 `global_step_60` 完整保存后，提交 DP1、Math4、K=8、seed42、16 shards/dataset（64 shards / 960 rollouts）、400G/24h 的 partial evaluation，且用 manifest model path 去重；阶段 B 保持 job 189 正常完成后启动 FullTaxonomy `top_p=0.05` 5-GPU 训练。只有两个阶段均已提交/确认存在后才暂停 heartbeat。
+- 2026-09-02T00:48:39+08:00：远端 job 189 为 `RUNNING`，最新完整训练指标 step 29/70，最新完整 checkpoint 为 `global_step_25`；日志仍在增长，未发现 Traceback、CUDA OOM、NCCL fatal 或非零退出。创建每小时 heartbeat `5gpu-taxonomy`，完成门禁通过后将用 `MOPD_SLURM_MEMORY=400G ./slurm.sh` 提交 FullTaxonomy split Top-32 reverse-KL `top_p=0.05` 5-GPU config，并在成功启动后暂停 heartbeat。
+- 2026-09-01T19:43:23+08:00：Online Control token selection 接通 `control_token_online_budget_mode: top_p` 与 `control_token_online_top_p` 的配置/state/logging 路径，旧 checkpoint 自动迁移为 `top_k`；其最终选择语义已于 2026-09-02 按用户澄清固定为 selected-token occurrence coverage of all valid tokens。
 - 2026-09-01T11:03:38+08:00：完成 2025-09-01—2026-09-01 Agentic OPD primary-source 调研。技术主线收敛为 trajectory/occupancy control、selective intervention、exact state validity 与 outcome/cost/support audit；下一 research gate 是在 exact same state 上做 student / teacher-bridge paired continuation，检验 ASCR、KL、entropy、future teacher preference 对真实 outcome delta 的 calibration。详细笔记见 Obsidian `Papers/2026-09-01--Agentic-OPD-Literature-Roadmap.md`，repo 报告见 `../plan/2026-09-01--agentic-opd-last-year-literature-roadmap.md`。
 - 2026-08-31T23:24:02+08:00：FiRE-OPD eval job 181 于 22:19:14 `COMPLETED / 0:0`；223-file suite 与 Slurm log 下载到本地，32/32 shards、120 prompts、960/960 rollouts、38 SUCCESS、75 JSON、43 JSONL、remote/local content-check 与独立指标复算通过。新增 `RUN_MANIFEST.md`、三方法 paired analysis/figures，更新 canonical `Summary.md`、Obsidian experiment/result/daily/plan/hub。
 - 2026-08-31T21:32:41+08:00：确认 CityU 节点为 6×H200；训练 job 179 占用 4 张后仍有 2 张 scheduler-free GPU。`fire-opd/global_step_60` 的 3/3 actor shards、HF tokenizer/model metadata 与 4.06 GB model 均通过 preflight；远端 parallel-eval 13 tests、standard-suite 9 tests、seeded CUDA witness 通过。按 ExOPD/TIP 同协议提交 FiRE-OPD Math-only partial eval job 181：四项 Math、K=8、DP=2、8 shards/dataset、seed 42、200G、24h。job 已 `RUNNING`，两个 H200 worker 完成 CUDA witness，32-shard manifest 已建立，输出为 `data/eval_data/results/partial_math_20260831/fire_opd_step60_math4_k8_dp2_20260831/`。

@@ -1781,6 +1781,7 @@ class DomainGradientAudit:
             state,
             statistics,
             step=self.config.step,
+            valid_token_counts=global_statistics.valid_token_counts,
         )
         self._online_control_selection_state = state
         self._persist_online_control_selection_state()

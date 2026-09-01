@@ -2110,6 +2110,8 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
                 window_steps=3,
                 min_mean_occurrences_per_step=1.0,
                 top_k=1,
+                budget_mode="top_p",
+                top_p=0.5,
             )
             for step in (1, 2):
                 _, state = update_online_control_selection(
@@ -2119,6 +2121,7 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
                         "code": {20: (3.0, 1)},
                     },
                     step=step,
+                    valid_token_counts={"math": 2, "code": 2},
                 )
             optimizer = SimpleNamespace(
                 param_groups=[{"mopd_online_control_selection_state": state.as_dict()}]
@@ -2139,6 +2142,8 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
                         "control_token_online_window_steps": 3,
                         ("control_token_online_" "min_mean_occurrences_per_step"): 1.0,
                         "control_token_online_top_k": 1,
+                        "control_token_online_budget_mode": "top_p",
+                        "control_token_online_top_p": 0.5,
                     },
                 )
                 micro_batch = SimpleNamespace(
@@ -2175,6 +2180,8 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
                             "min_mean_occurrences_per_step"
                         ): 1.0,
                         "control_token_online_top_k": 1,
+                        "control_token_online_budget_mode": "top_p",
+                        "control_token_online_top_p": 0.5,
                     },
                 )
                 next_metrics = next_audit.observe_completed_step(
@@ -2261,8 +2268,30 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
             {"math": [10], "code": [20]},
         )
         self.assertEqual(record["selection_mode"], "top_loss")
-        self.assertEqual(record["budget_mode"], "top_k")
-        self.assertEqual(record["top_p"], 1.0)
+        self.assertEqual(record["budget_mode"], "top_p")
+        self.assertEqual(record["top_p"], 0.5)
+        self.assertEqual(
+            record["top_p_basis"],
+            "selected_occurrences_over_valid_tokens",
+        )
+        self.assertEqual(record["domains"]["math"]["valid_token_count"], 6)
+        self.assertEqual(
+            record["domains"]["math"]["selected_occurrence_count"],
+            3,
+        )
+        self.assertEqual(
+            record["domains"]["math"]["selected_occurrence_fraction"],
+            0.5,
+        )
+        self.assertEqual(
+            record["domains"]["math"]["target_occurrence_count"],
+            3,
+        )
+        self.assertTrue(record["domains"]["math"]["top_p_target_reached"])
+        self.assertEqual(
+            record["domains"]["math"]["top_p_occurrence_shortfall"],
+            0,
+        )
         self.assertEqual(
             record["domains"]["math"]["selected_tokens"][0][
                 "optimization_speed"

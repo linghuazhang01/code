@@ -22,13 +22,13 @@ subset in `domain-subsets.csv`: 124 Control and 266 Structure token IDs.
 | next-step | Control-44 | 40 | i1 / w1 / K8 | `a_next_step_control44_i1_w1_k8_4gpu_b255.yaml` |
 | next-step | FullTaxonomy split | 124 Control + 266 Structure | i3 / w1 / K21 per type (42 total) | `a_next_step_full_taxonomy_split_i3_w1_k21_per_type_4gpu_b255.yaml` |
 | next-step, Top-32 KL selector variant | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / K21 per type (42 total) | `top32kl_next_step_full_taxonomy_split_i1_w1_k21_per_type_4gpu_b255.yaml` |
-| next-step, Top-32 KL, 5-GPU Top-P variant | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / top_p=0.05 per type | `top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_5gpu_b256.yaml` |
-| next-step, Top-32 KL, 6-GPU dual-teacher | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / top_p=0.1 per type | `top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_6gpu_4a2t_b256.yaml` |
-| next-step, Top-32 KL, 7-GPU dual-teacher | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / top_p=0.1 per type | `top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_7gpu_5a2t_b255.yaml` |
-| next-step, Top-32 KL, 8-GPU dual-teacher | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / top_p=0.1 per type | `top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_8gpu_6a2t_b258.yaml` |
-| next-step, Top-32 KL, 6-GPU dual-teacher | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / top_p=0.2 per type | `top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_6gpu_4a2t_b256.yaml` |
-| next-step, Top-32 KL, 7-GPU dual-teacher | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / top_p=0.2 per type | `top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_7gpu_5a2t_b255.yaml` |
-| next-step, Top-32 KL, 8-GPU dual-teacher | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / top_p=0.2 per type | `top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_8gpu_6a2t_b258.yaml` |
+| next-step, Top-32 KL, 5-GPU Top-P variant | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 5% valid-token occurrence coverage | `top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_5gpu_b256.yaml` |
+| next-step, Top-32 KL, 6-GPU dual-teacher | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 10% valid-token occurrence coverage | `top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_6gpu_4a2t_b256.yaml` |
+| next-step, Top-32 KL, 7-GPU dual-teacher | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 10% valid-token occurrence coverage | `top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_7gpu_5a2t_b255.yaml` |
+| next-step, Top-32 KL, 8-GPU dual-teacher | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 10% valid-token occurrence coverage | `top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_8gpu_6a2t_b258.yaml` |
+| next-step, Top-32 KL, 6-GPU dual-teacher | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 20% valid-token occurrence coverage | `top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_6gpu_4a2t_b256.yaml` |
+| next-step, Top-32 KL, 7-GPU dual-teacher | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 20% valid-token occurrence coverage | `top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_7gpu_5a2t_b255.yaml` |
+| next-step, Top-32 KL, 8-GPU dual-teacher | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 20% valid-token occurrence coverage | `top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_8gpu_6a2t_b258.yaml` |
 | next-window | ExpandedPruned-V2 | 89 | i6 / w6 / K30 | `a_next_window_expanded_pruned_v2_i6_w6_k30_4gpu_b255.yaml` |
 | next-window | Robust190 | 66 | i6 / w6 / K30 | `a_next_window_robust190_i6_w6_k30_4gpu_b255.yaml` |
 | next-window | Control-44 | 40 | i7 / w7 / K8 | `a_next_window_control44_i7_w7_k8_4gpu_b255.yaml` |
@@ -60,8 +60,12 @@ audit:
   control_token_online_top_p: 0.8
 ```
 
-For grouped candidate pools, the same `top_p` threshold is applied independently
-inside each group; `control_token_online_top_k_per_group` must be omitted.
+Here `top_p` targets the occurrence fraction already reported as
+`online_control_occurrence_fraction`. After ranking token types, the selector
+accumulates their observed occurrence counts until
+`selected_occurrences / valid_token_count >= top_p`. Grouped taxonomy entries
+form one domain candidate union for Top-P rather than independent group quotas;
+`control_token_online_top_k_per_group` must be omitted.
 
 Launch any profile directly through `start.sh` in non-Slurm mode:
 

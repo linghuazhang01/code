@@ -303,6 +303,28 @@ def test_math_full_taxonomy_selector_config_contract(
     )
 
 
+def test_math_full_taxonomy_top_p_five_gpu_contract() -> None:
+    config = load_config(
+        CONFIG_DIR
+        / "top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_5gpu_b256.yaml"
+    )
+    command = format_command(build_command(config))
+    groups = config.audit.domain_control_token_candidate_groups
+
+    assert config.data.train_batch_size == 256
+    assert config.actor.ppo_mini_batch_size == 256
+    assert config.runtime.slurm_allocation_gpus == 5
+    assert config.worker_placement.actor_rollout.n_gpus_per_node == 4
+    assert config.worker_placement.ref_policy.n_gpus_per_node == 1
+    assert config.audit.control_token_online_budget_mode == "top_p"
+    assert config.audit.control_token_online_top_p == 0.05
+    assert config.audit.control_token_online_top_k_per_group is None
+    assert len(groups["math"]["Control"]) == 124
+    assert len(groups["math"]["Structure"]) == 266
+    assert "+mopd_audit.control_token_online_budget_mode=top_p" in command
+    assert "+mopd_audit.control_token_online_top_p=0.05" in command
+
+
 @pytest.mark.parametrize(
     "case",
     TAXONOMY_TOP_P_CASES,

@@ -1,8 +1,8 @@
 # Six-GPU Top-P overlay for the Math FullTaxonomy next-step selector.
 # Topology: 4 actor/rollout GPUs + 2 ref/teacher GPUs; global batch size 256.
 # The 30B teacher is explicitly FSDP-sharded across the two ref-policy GPUs.
-# Each taxonomy group independently selects the shortest ranked prefix reaching
-# 20% of its non-negative selection-score mass at every optimizer step.
+# Rank the domain candidate union, then accumulate selected-token occurrences
+# until they cover at least 20% of all valid tokens at every optimizer step.
 extends: top32kl_next_step_full_taxonomy_split_i1_w1_k21_per_type_4gpu_b255.yaml
 
 runtime:

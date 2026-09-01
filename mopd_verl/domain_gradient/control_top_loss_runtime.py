@@ -286,6 +286,7 @@ def append_online_control_selection_jsonl(
         "top_k_per_group": state.top_k_per_group,
         "budget_mode": state.budget_mode,
         "top_p": state.top_p,
+        "top_p_basis": "selected_occurrences_over_valid_tokens",
         "selection_mode": state.selection_mode,
         "weight_mode": state.weight_mode,
         "candidate_token_count": len(state.candidate_token_ids),
@@ -332,7 +333,17 @@ def append_online_control_selection_jsonl(
         "next_active_token_weights": state.active_weight_map(),
         "domains": {
             result.domain: {
+                "valid_token_count": result.valid_token_count,
                 "eligible_token_count": result.eligible_token_count,
+                "selected_occurrence_count": result.selected_occurrence_count,
+                "selected_occurrence_fraction": (
+                    result.selected_occurrence_fraction
+                ),
+                "target_occurrence_count": result.target_occurrence_count,
+                "top_p_target_reached": result.top_p_target_reached,
+                "top_p_occurrence_shortfall": (
+                    result.top_p_occurrence_shortfall
+                ),
                 "eligible_selection_score_distribution": (
                     _score_distribution_record(
                         result.eligible_score_distribution

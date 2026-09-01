@@ -264,36 +264,52 @@ class OnlineControlSelectionTests(unittest.TestCase):
                 **common,
             )
 
-    def test_top_p_selects_smallest_prefix_reaching_score_mass(self) -> None:
+    def test_top_p_reaches_valid_token_occurrence_fraction(self) -> None:
         state = self._state(
             audit_interval_steps=1,
             window_steps=1,
             minimum_frequency=1.0,
             top_k=1,
             budget_mode="top_p",
-            top_p=0.8,
+            top_p=0.05,
         )
 
         outcome, state = update_online_control_selection(
             state,
             _statistics(
-                ("math", 10, 6.0, 1),
-                ("math", 20, 3.0, 1),
-                ("math", 30, 1.0, 1),
+                ("math", 10, 20.0, 2),
+                ("math", 20, 15.0, 3),
+                ("math", 30, 10.0, 10),
             ),
             step=1,
+            valid_token_counts={"math": 100, "code": 0},
         )
 
         self.assertTrue(outcome.audit_triggered)
         self.assertEqual(state.active_map()["math"], (10, 20))
         self.assertEqual(state.budget_mode, "top_p")
-        self.assertEqual(state.top_p, 0.8)
+        self.assertEqual(state.top_p, 0.05)
+        result = next(
+            item for item in outcome.domain_results if item.domain == "math"
+        )
+        self.assertEqual(result.valid_token_count, 100)
+        self.assertEqual(result.selected_occurrence_count, 5)
+        self.assertEqual(result.selected_occurrence_fraction, 0.05)
+        self.assertEqual(result.target_occurrence_count, 5)
+        self.assertTrue(result.top_p_target_reached)
+        self.assertEqual(result.top_p_occurrence_shortfall, 0)
+        empty_result = next(
+            item for item in outcome.domain_results if item.domain == "code"
+        )
+        self.assertEqual(empty_result.valid_token_count, 0)
+        self.assertIsNone(empty_result.top_p_target_reached)
+        self.assertIsNone(empty_result.top_p_occurrence_shortfall)
         self.assertEqual(
             OnlineControlSelectionState.from_mapping(state.as_dict()),
             state,
         )
 
-    def test_top_p_one_selects_all_and_zero_mass_has_stable_fallback(self) -> None:
+    def test_top_p_uses_occurrences_even_when_scores_are_zero(self) -> None:
         all_state = self._state(
             audit_interval_steps=1,
             window_steps=1,
@@ -309,28 +325,61 @@ class OnlineControlSelectionTests(unittest.TestCase):
                 ("math", 20, 0.0, 1),
             ),
             step=1,
+            valid_token_counts={"math": 2, "code": 0},
         )
         self.assertEqual(all_state.active_map()["math"], (10, 20))
 
-        fallback_state = self._state(
+        fraction_state = self._state(
             audit_interval_steps=1,
             window_steps=1,
             minimum_frequency=1.0,
             top_k=4,
             budget_mode="top_p",
-            top_p=0.5,
+            top_p=0.75,
         )
-        _, fallback_state = update_online_control_selection(
-            fallback_state,
+        _, fraction_state = update_online_control_selection(
+            fraction_state,
             _statistics(
                 ("math", 10, 0.0, 1),
                 ("math", 20, 0.0, 1),
             ),
             step=1,
+            valid_token_counts={"math": 2, "code": 0},
         )
-        self.assertEqual(fallback_state.active_map()["math"], (10,))
+        self.assertEqual(fraction_state.active_map()["math"], (10, 20))
 
-    def test_grouped_top_p_accumulates_each_group_independently(self) -> None:
+    def test_top_p_denominator_is_all_valid_tokens_not_candidate_types(self) -> None:
+        candidates = tuple(range(1, 51))
+        state = initial_online_control_selection_state(
+            DOMAINS,
+            candidates,
+            audit_interval_steps=1,
+            window_steps=1,
+            min_mean_occurrences_per_step=1.0,
+            top_k=1,
+            budget_mode="top_p",
+            top_p=0.05,
+        )
+
+        statistics = _statistics(
+            *(("math", token_id, 0.0, 1) for token_id in candidates)
+        )
+        outcome, state = update_online_control_selection(
+            state,
+            statistics,
+            step=1,
+            valid_token_counts={"math": 2_000, "code": 0},
+        )
+
+        self.assertEqual(len(state.active_map()["math"]), 50)
+        result = next(
+            item for item in outcome.domain_results if item.domain == "math"
+        )
+        self.assertEqual(result.target_occurrence_count, 100)
+        self.assertFalse(result.top_p_target_reached)
+        self.assertEqual(result.top_p_occurrence_shortfall, 50)
+
+    def test_grouped_top_p_targets_union_occurrence_fraction(self) -> None:
         groups = {
             domain: {
                 "Control": (10, 20),
@@ -347,21 +396,79 @@ class OnlineControlSelectionTests(unittest.TestCase):
             top_k=1,
             candidate_token_groups=groups,
             budget_mode="top_p",
-            top_p=0.6,
+            top_p=0.05,
         )
 
         _, state = update_online_control_selection(
             state,
             _statistics(
-                ("math", 10, 6.0, 1),
-                ("math", 20, 4.0, 1),
-                ("math", 30, 3.0, 1),
-                ("math", 40, 2.0, 1),
+                ("math", 10, 30.0, 3),
+                ("math", 20, 80.0, 10),
+                ("math", 30, 18.0, 2),
+                ("math", 40, 70.0, 10),
             ),
             step=1,
+            valid_token_counts={"math": 100, "code": 0},
         )
 
         self.assertEqual(state.active_map()["math"], (10, 30))
+
+    def test_top_p_accumulates_occurrences_and_denominator_across_window(
+        self,
+    ) -> None:
+        state = self._state(
+            audit_interval_steps=2,
+            window_steps=2,
+            minimum_frequency=1.0,
+            top_k=1,
+            budget_mode="top_p",
+            top_p=0.1,
+        )
+        _, state = update_online_control_selection(
+            state,
+            _statistics(
+                ("math", 10, 100.0, 10),
+                ("math", 20, 45.0, 5),
+            ),
+            step=1,
+            valid_token_counts={"math": 100, "code": 0},
+        )
+        outcome, state = update_online_control_selection(
+            state,
+            _statistics(("math", 20, 90.0, 10)),
+            step=2,
+            valid_token_counts={"math": 100, "code": 0},
+        )
+
+        self.assertEqual(state.active_map()["math"], (10, 20))
+        result = next(
+            item for item in outcome.domain_results if item.domain == "math"
+        )
+        self.assertEqual(result.valid_token_count, 200)
+        self.assertEqual(result.selected_occurrence_count, 25)
+        self.assertEqual(result.selected_occurrence_fraction, 0.125)
+
+    def test_top_p_requires_consistent_valid_token_denominator(self) -> None:
+        state = self._state(
+            audit_interval_steps=1,
+            window_steps=1,
+            minimum_frequency=1.0,
+            budget_mode="top_p",
+            top_p=0.05,
+        )
+        with self.assertRaisesRegex(ValueError, "valid_token_counts"):
+            update_online_control_selection(
+                state,
+                _statistics(("math", 10, 1.0, 1)),
+                step=1,
+            )
+        with self.assertRaisesRegex(ValueError, "cannot be smaller"):
+            update_online_control_selection(
+                state,
+                _statistics(("math", 10, 2.0, 2)),
+                step=1,
+                valid_token_counts={"math": 1, "code": 0},
+            )
 
     def test_top_p_budget_validation_rejects_invalid_contracts(self) -> None:
         with self.assertRaisesRegex(ValueError, "budget mode"):
@@ -814,11 +921,59 @@ class OnlineControlSelectionTests(unittest.TestCase):
         self.assertEqual(migrated.budget_mode, "top_k")
         self.assertEqual(migrated.top_p, 1.0)
 
+    def test_v7_top_p_checkpoint_resets_history_without_denominator(self) -> None:
+        state = self._state(
+            audit_interval_steps=1,
+            window_steps=1,
+            minimum_frequency=1.0,
+            budget_mode="top_p",
+            top_p=0.05,
+        )
+        _, state = update_online_control_selection(
+            state,
+            _statistics(("math", 10, 5.0, 5)),
+            step=1,
+            valid_token_counts={"math": 100, "code": 0},
+        )
+        legacy = state.as_dict()
+        legacy.pop("valid_token_count_history")
+        legacy["schema_version"] = 7
+
+        migrated = OnlineControlSelectionState.from_mapping(legacy)
+
+        self.assertEqual(migrated.history, ())
+        self.assertEqual(migrated.valid_token_count_history, ())
+        self.assertEqual(migrated.active_map(), {"math": (), "code": ()})
+
     def test_checkpoint_rejects_invalid_top_p_budget(self) -> None:
         serialized = self._state(budget_mode="top_p", top_p=0.8).as_dict()
         serialized["top_p"] = float("nan")
 
         with self.assertRaisesRegex(ValueError, "top_p"):
+            OnlineControlSelectionState.from_mapping(serialized)
+
+    def test_checkpoint_rejects_valid_count_below_candidate_occurrences(
+        self,
+    ) -> None:
+        state = self._state(
+            audit_interval_steps=1,
+            window_steps=1,
+            minimum_frequency=1.0,
+            budget_mode="top_p",
+            top_p=0.05,
+        )
+        _, state = update_online_control_selection(
+            state,
+            _statistics(("math", 10, 2.0, 2)),
+            step=1,
+            valid_token_counts={"math": 2, "code": 0},
+        )
+        serialized = state.as_dict()
+        serialized["valid_token_count_history"] = (
+            (1, (("math", 1), ("code", 0))),
+        )
+
+        with self.assertRaisesRegex(ValueError, "cannot be smaller"):
             OnlineControlSelectionState.from_mapping(serialized)
 
     def test_top_speed_rejects_single_step_window_and_unknown_mode(self) -> None:

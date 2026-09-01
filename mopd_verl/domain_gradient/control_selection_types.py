@@ -8,6 +8,8 @@ from dataclasses import dataclass
 TokenStatistic = tuple[int, float, int]
 DomainStatistics = tuple[tuple[str, tuple[TokenStatistic, ...]], ...]
 StepStatistics = tuple[int, DomainStatistics]
+DomainValidTokenCounts = tuple[tuple[str, int], ...]
+StepValidTokenCounts = tuple[int, DomainValidTokenCounts]
 
 
 @dataclass(frozen=True)
@@ -42,7 +44,13 @@ class DomainSelectionResult:
     """Selection result for one domain at an audit boundary."""
 
     domain: str
+    valid_token_count: int
     eligible_token_count: int
+    selected_occurrence_count: int
+    selected_occurrence_fraction: float
+    target_occurrence_count: int | None
+    top_p_target_reached: bool | None
+    top_p_occurrence_shortfall: int | None
     selected_tokens: tuple[SelectedControlToken, ...]
     eligible_score_distribution: SelectionScoreDistribution | None
     selected_score_distribution: SelectionScoreDistribution | None
