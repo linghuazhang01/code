@@ -1,12 +1,15 @@
 # Math-only OPD baselines (4-8 GPUs, global batch approximately 256)
 
-These configs compare four implemented baselines at two student scales using
-the same Math data, Qwen3-30B-A3B-Instruct-2507 teacher, optimizer, rollout,
-evaluation protocol, and 200-step budget.
+These configs compare four full-matrix baselines at two student scales, plus a
+targeted four-GPU ExOPD baseline, using the same Math data,
+Qwen3-30B-A3B-Instruct-2507 teacher, optimizer, rollout, evaluation protocol,
+and 70-step budget.
 
 ## Model variants
 
-- The 20 configs directly under this directory use a Qwen3-1.7B student.
+- The 20 matrix configs directly under this directory use a Qwen3-1.7B
+  student. The additional `exopd_4gpu_b255.yaml` is a targeted Qwen3-1.7B
+  ExOPD profile requested for the four-GPU baseline queue.
 - The 20 matching configs under `qwen4b/` use a Qwen3-4B student and inherit
   the corresponding 1.7B method and resource profile.
 
@@ -38,6 +41,8 @@ size, not the total Slurm allocation. Every batch is the closest integer to
   Top-32 renormalized reverse KL for disagreement and training.
 - `eopd`: OPD plus the `tau=0.8`, `alpha=1.0`, teacher Top-16 entropy-gated
   forward-KL term.
+- `exopd`: extrapolated chosen-token OPD with `lambda=1.25`; currently provided
+  as a targeted four-GPU, batch-255 profile.
 
 Native full-vocabulary TIP is intentionally not expanded to batch 256. Its
 canonical memory-safe config uses batch 24 and a colocated sequential
@@ -60,15 +65,16 @@ bash scripts/run_mopd.sh \
   configs/baselines/math/qwen4b/fire_opd_8gpu_b259.yaml --slurm
 ```
 
-All 40 user-facing configs follow `{method}_{gpu_count}gpu_b{batch}.yaml`
+All 41 user-facing configs follow `{method}_{gpu_count}gpu_b{batch}.yaml`
 within their model-variant location.
 The `_common.yaml` and `_methods/` files are inheritance fragments, not
 separate experiment cells.
 
 ## Hugging Face models
 
-All 40 user-facing configs force-save and upload loadable Hugging Face models at global steps
-50, 55, 60, 65, and 70 to the private `icemoon28/opd-checkpoints` repository.
+All 41 user-facing configs run for at most 70 global steps and force-save the
+four loadable Hugging Face checkpoints at steps 55, 60, 65, and 70 to the
+public `icemoon28/opd-checkpoints` repository.
 Each config uses a unique path under `checkpoints/math/`, so methods and GPU
 profiles cannot overwrite one another. Authentication is read from the
 exported `HF_TOKEN`; the raw token is never stored in these YAML files. Only

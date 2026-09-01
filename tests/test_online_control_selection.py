@@ -81,8 +81,11 @@ class OnlineControlSelectionTests(unittest.TestCase):
         window_steps: int = 3,
         minimum_frequency: float = 20.0,
         top_k: int = 2,
+        budget_mode: str = "top_k",
+        top_p: float = 1.0,
         selection_mode: str = "top_loss",
         weight_mode: str = "fixed",
+        strict_occurrence_gate: bool = False,
     ) -> OnlineControlSelectionState:
         return initial_online_control_selection_state(
             DOMAINS,
@@ -90,7 +93,10 @@ class OnlineControlSelectionTests(unittest.TestCase):
             audit_interval_steps=audit_interval_steps,
             window_steps=window_steps,
             min_mean_occurrences_per_step=minimum_frequency,
+            strict_occurrence_gate=strict_occurrence_gate,
             top_k=top_k,
+            budget_mode=budget_mode,
+            top_p=top_p,
             selection_mode=selection_mode,
             weight_mode=weight_mode,
         )
@@ -145,6 +151,246 @@ class OnlineControlSelectionTests(unittest.TestCase):
                 step=step,
             )
         self.assertNotIn(30, below_state.active_map()["math"])
+
+    def test_strict_occurrence_gate_requires_more_than_threshold_each_step(
+        self,
+    ) -> None:
+        state = self._state(
+            minimum_frequency=20.0,
+            top_k=4,
+            strict_occurrence_gate=True,
+        )
+        statistics_by_step = (
+            _statistics(
+                ("math", 10, 21.0, 21),
+                ("math", 20, 20.0, 20),
+                ("math", 30, 21.0, 21),
+            ),
+            _statistics(
+                ("math", 10, 21.0, 21),
+                ("math", 20, 50.0, 50),
+            ),
+            _statistics(
+                ("math", 10, 21.0, 21),
+                ("math", 20, 50.0, 50),
+                ("math", 30, 21.0, 21),
+            ),
+        )
+        for step, statistics in enumerate(statistics_by_step, start=1):
+            outcome, state = update_online_control_selection(
+                state,
+                statistics,
+                step=step,
+            )
+
+        self.assertTrue(outcome.audit_triggered)
+        self.assertEqual(state.active_map()["math"], (10,))
+        self.assertTrue(state.strict_occurrence_gate)
+        self.assertEqual(
+            OnlineControlSelectionState.from_mapping(state.as_dict()),
+            state,
+        )
+
+    def test_grouped_selector_applies_top_k_independently_per_group(self) -> None:
+        groups = {
+            domain: {
+                "Control": (10, 20),
+                "Structure": (30, 40),
+            }
+            for domain in DOMAINS
+        }
+        state = initial_online_control_selection_state(
+            DOMAINS,
+            CANDIDATES,
+            audit_interval_steps=1,
+            window_steps=1,
+            min_mean_occurrences_per_step=20.0,
+            strict_occurrence_gate=True,
+            top_k=2,
+            candidate_token_groups=groups,
+            top_k_per_group=1,
+        )
+
+        outcome, state = update_online_control_selection(
+            state,
+            _statistics(
+                ("math", 10, 21.0, 21),
+                ("math", 20, 10.5, 21),
+                ("math", 30, 210.0, 21),
+                ("math", 40, 189.0, 21),
+            ),
+            step=1,
+        )
+
+        self.assertTrue(outcome.audit_triggered)
+        self.assertEqual(state.active_map()["math"], (10, 30))
+        self.assertEqual(state.candidate_group_map(), groups)
+        self.assertEqual(state.top_k_per_group, 1)
+        self.assertEqual(
+            OnlineControlSelectionState.from_mapping(state.as_dict()),
+            state,
+        )
+
+    def test_grouped_selector_rejects_overlap_and_inconsistent_budget(self) -> None:
+        common = {
+            "audit_interval_steps": 1,
+            "window_steps": 1,
+            "min_mean_occurrences_per_step": 20.0,
+            "top_k_per_group": 1,
+        }
+        overlap = {
+            domain: {"Control": (10, 20), "Structure": (20, 30, 40)}
+            for domain in DOMAINS
+        }
+        with self.assertRaisesRegex(ValueError, "disjoint"):
+            initial_online_control_selection_state(
+                DOMAINS,
+                CANDIDATES,
+                top_k=2,
+                candidate_token_groups=overlap,
+                **common,
+            )
+
+        groups = {
+            domain: {"Control": (10, 20), "Structure": (30, 40)}
+            for domain in DOMAINS
+        }
+        with self.assertRaisesRegex(ValueError, "top_k must equal"):
+            initial_online_control_selection_state(
+                DOMAINS,
+                CANDIDATES,
+                top_k=3,
+                candidate_token_groups=groups,
+                **common,
+            )
+
+    def test_top_p_selects_smallest_prefix_reaching_score_mass(self) -> None:
+        state = self._state(
+            audit_interval_steps=1,
+            window_steps=1,
+            minimum_frequency=1.0,
+            top_k=1,
+            budget_mode="top_p",
+            top_p=0.8,
+        )
+
+        outcome, state = update_online_control_selection(
+            state,
+            _statistics(
+                ("math", 10, 6.0, 1),
+                ("math", 20, 3.0, 1),
+                ("math", 30, 1.0, 1),
+            ),
+            step=1,
+        )
+
+        self.assertTrue(outcome.audit_triggered)
+        self.assertEqual(state.active_map()["math"], (10, 20))
+        self.assertEqual(state.budget_mode, "top_p")
+        self.assertEqual(state.top_p, 0.8)
+        self.assertEqual(
+            OnlineControlSelectionState.from_mapping(state.as_dict()),
+            state,
+        )
+
+    def test_top_p_one_selects_all_and_zero_mass_has_stable_fallback(self) -> None:
+        all_state = self._state(
+            audit_interval_steps=1,
+            window_steps=1,
+            minimum_frequency=1.0,
+            top_k=1,
+            budget_mode="top_p",
+            top_p=1.0,
+        )
+        _, all_state = update_online_control_selection(
+            all_state,
+            _statistics(
+                ("math", 10, 0.0, 1),
+                ("math", 20, 0.0, 1),
+            ),
+            step=1,
+        )
+        self.assertEqual(all_state.active_map()["math"], (10, 20))
+
+        fallback_state = self._state(
+            audit_interval_steps=1,
+            window_steps=1,
+            minimum_frequency=1.0,
+            top_k=4,
+            budget_mode="top_p",
+            top_p=0.5,
+        )
+        _, fallback_state = update_online_control_selection(
+            fallback_state,
+            _statistics(
+                ("math", 10, 0.0, 1),
+                ("math", 20, 0.0, 1),
+            ),
+            step=1,
+        )
+        self.assertEqual(fallback_state.active_map()["math"], (10,))
+
+    def test_grouped_top_p_accumulates_each_group_independently(self) -> None:
+        groups = {
+            domain: {
+                "Control": (10, 20),
+                "Structure": (30, 40),
+            }
+            for domain in DOMAINS
+        }
+        state = initial_online_control_selection_state(
+            DOMAINS,
+            CANDIDATES,
+            audit_interval_steps=1,
+            window_steps=1,
+            min_mean_occurrences_per_step=1.0,
+            top_k=1,
+            candidate_token_groups=groups,
+            budget_mode="top_p",
+            top_p=0.6,
+        )
+
+        _, state = update_online_control_selection(
+            state,
+            _statistics(
+                ("math", 10, 6.0, 1),
+                ("math", 20, 4.0, 1),
+                ("math", 30, 3.0, 1),
+                ("math", 40, 2.0, 1),
+            ),
+            step=1,
+        )
+
+        self.assertEqual(state.active_map()["math"], (10, 30))
+
+    def test_top_p_budget_validation_rejects_invalid_contracts(self) -> None:
+        with self.assertRaisesRegex(ValueError, "budget mode"):
+            self._state(budget_mode="mass")
+        for invalid_top_p in (0.0, 1.1, float("inf")):
+            with self.subTest(top_p=invalid_top_p):
+                with self.assertRaisesRegex(ValueError, "top_p"):
+                    self._state(budget_mode="top_p", top_p=invalid_top_p)
+
+        groups = {
+            domain: {
+                "Control": (10, 20),
+                "Structure": (30, 40),
+            }
+            for domain in DOMAINS
+        }
+        with self.assertRaisesRegex(ValueError, "grouped Top-K"):
+            initial_online_control_selection_state(
+                DOMAINS,
+                CANDIDATES,
+                audit_interval_steps=1,
+                window_steps=1,
+                min_mean_occurrences_per_step=1.0,
+                top_k=2,
+                candidate_token_groups=groups,
+                top_k_per_group=1,
+                budget_mode="top_p",
+                top_p=0.8,
+            )
 
     def test_ranking_uses_occurrence_mean_absolute_loss(self) -> None:
         state = self._state(top_k=1)
@@ -546,6 +792,35 @@ class OnlineControlSelectionTests(unittest.TestCase):
         self.assertEqual(migrated.active_map()["math"], (10,))
         self.assertEqual(migrated.active_weight_map()["math"], {})
 
+    def test_v4_checkpoint_defaults_to_mean_occurrence_gate(self) -> None:
+        state = self._state(strict_occurrence_gate=True)
+        legacy = state.as_dict()
+        legacy.pop("strict_occurrence_gate")
+        legacy["schema_version"] = 4
+
+        migrated = OnlineControlSelectionState.from_mapping(legacy)
+
+        self.assertFalse(migrated.strict_occurrence_gate)
+
+    def test_v6_checkpoint_defaults_to_top_k_budget(self) -> None:
+        state = self._state(budget_mode="top_p", top_p=0.8)
+        legacy = state.as_dict()
+        legacy.pop("budget_mode")
+        legacy.pop("top_p")
+        legacy["schema_version"] = 6
+
+        migrated = OnlineControlSelectionState.from_mapping(legacy)
+
+        self.assertEqual(migrated.budget_mode, "top_k")
+        self.assertEqual(migrated.top_p, 1.0)
+
+    def test_checkpoint_rejects_invalid_top_p_budget(self) -> None:
+        serialized = self._state(budget_mode="top_p", top_p=0.8).as_dict()
+        serialized["top_p"] = float("nan")
+
+        with self.assertRaisesRegex(ValueError, "top_p"):
+            OnlineControlSelectionState.from_mapping(serialized)
+
     def test_top_speed_rejects_single_step_window_and_unknown_mode(self) -> None:
         with self.assertRaisesRegex(ValueError, "at least 2"):
             self._state(window_steps=1, selection_mode="top_speed")
@@ -581,6 +856,27 @@ class OnlineControlSelectionTests(unittest.TestCase):
         self.assertEqual(statistics["math"], {10: (2.0, 1), 20: (3.0, 1)})
         self.assertEqual(statistics["code"], {10: (6.0, 1), 20: (4.0, 1)})
         self.assertEqual(result.valid_token_counts, {"math": 3, "code": 2})
+
+    def test_runtime_accepts_top_logp_diff_as_absolute_score(self) -> None:
+        try:
+            import torch
+        except ModuleNotFoundError as exc:
+            self.skipTest(f"torch is unavailable: {exc}")
+        from mopd_verl.domain_gradient.control_top_loss_runtime import (
+            global_candidate_loss_statistics,
+        )
+
+        statistics = global_candidate_loss_statistics(
+            (torch.tensor([[10, 20]], dtype=torch.long),),
+            (torch.tensor([[-1.5, 0.5]]),),
+            (torch.ones(1, 2, dtype=torch.bool),),
+            (("math",),),
+            domains=DOMAINS,
+            candidate_token_ids=CANDIDATES,
+            selection_mode="top_logp_diff",
+        )
+
+        self.assertEqual(statistics["math"], {10: (1.5, 1), 20: (0.5, 1)})
 
     def test_runtime_filters_candidates_by_domain_on_a_shared_union_axis(
         self,

@@ -27,7 +27,7 @@ Data-preparation utilities under `eval/scripts/` may still be run separately.
 | Domain | Code | Eval data | Status |
 |---|---|---|---|
 | Math | `domains/math/` | `../data/eval_data/math/{AIME24,AIME25,HMMT25Feb,HMMT25Nov}/test.parquet` | Ready |
-| Code | `domains/code/` | `../data/eval_data/code/{HumanEvalPlus,MBPPPlus,LiveCodeBench}/test.parquet` | HumanEvalPlus/MBPPPlus ready; generate LiveCodeBench with `prepare_paper_eval_data.sh` |
+| Code | `domains/code/` | `../data/eval_data/code/{HumanEvalPlus,MBPPPlus,LiveCodeBench-v5,LiveCodeBench}/test.parquet` | HumanEvalPlus/MBPPPlus ready; generate independent LCB v5/v6 artifacts with `prepare_paper_eval_data.sh` |
 | IF | `mopd_verl/m2rl_reward.py` | `../data/eval_data/if/{IFBench,IFEval}/test.parquet` | Generate the full bundle with `python -m eval.data_prep.m2rl_eval`; the shell helper prepares IFBench only |
 | Science | `domains/science/` | `../data/eval_data/science/{GPQA,HLE,MMLU-Pro,SuperGPQA}/test.parquet` | Generate GPQA/HLE with `python -m eval.data_prep.m2rl_eval`; MMLU-Pro/SuperGPQA include official evaluators |
 | Training ceiling | Existing domain scorers | `../data/eval_training_data/{math,code,if,science}/test.parquet` | 10,000 overlapping training samples per domain; use only for training-performance diagnostics |
@@ -45,11 +45,33 @@ Math/code paper-eval data from a G-OPD checkout:
 eval/scripts/prepare_paper_eval_data.sh
 ```
 
-This pins LiveCodeBench `v6` (`test6.jsonl`, 175 incremental problems), not the
-1,055-problem cumulative `release_v6`. For G-OPD's official public+private test
-protocol, use `eval/scripts/run_paper_eval_suite.sh`. The generated LiveCodeBench
-parquet is intentionally ignored by Git because it contains the full private
-test payload; `manifest.json` records its pinned revision and source checksum.
+This pins the independent LiveCodeBench `v5` split (167 problems in two official
+source parquet shards) and `v6` (`test6.jsonl`, 175 problems). The pinned source
+does not contain an official `test5.jsonl`; the preparation script deterministically
+materializes a hash-recorded `test5.jsonl` only for compatibility with the G-OPD
+loader. Neither artifact is the overlapping cumulative
+`release_v5` / `release_v6`. For G-OPD's official public+private test protocol,
+use `eval/scripts/run_paper_eval_suite.sh`, which runs both releases at K=8. The
+runner fixes the G-OPD registry style to `Qwen3-4B-NonThinking` while loading
+the evaluated checkpoint through `--local_model_path`. The
+generated parquet files are intentionally ignored by Git because they contain
+the full private test payload; each `manifest.json` records the pinned revision,
+source hashes, prompt hash, and ordered user-content hash.
+Code user prompts are exact G-OPD eval reproductions: HumanEvalPlus/MBPPPlus
+preserve G-OPD's three-newline join before the final Python-fence/"think first"
+instruction, while the
+LiveCodeBench `Qwen3NonThinking` prompt additionally retains the original
+`You will NOT return anything except for the program.` preamble. All use the
+G-OPD formatter's fixed `Qwen/Qwen3-4B` chat template with
+`enable_thinking=false`; this is distinct from the evaluated checkpoint tokenizer.
+Token-level identity additionally requires pinning and checking that formatter
+tokenizer revision and chat template.
+
+The canonical Step-60 launcher is `slurm_standard_eval.sh`. It runs all ten
+datasets as strict dataset waves on four persistent TP=1 vLLM replicas. Each
+wave exposes up to 16 dynamic micro-shards, and each prompt is sampled with
+`n=8` in one vLLM request. LiveCodeBench uses the same DP=4 pool and then calls
+the original G-OPD extraction and public+private scorer; it no longer uses TP=4.
 
 Create deterministic four-domain training-performance ceiling samples without
 modifying the original parquet files:

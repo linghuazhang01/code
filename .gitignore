@@ -80,3 +80,4 @@ data/agentic_benchmarks/processed/
 
 # Local agent runtime metadata
 /.aris/
+/.codex/state/

@@ -9,14 +9,22 @@ import math
 import os
 import shutil
 from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 import pyarrow.parquet as pq
 
+from eval.data_prep.code_prompt_validation import validate_code_prompt_artifact
+from eval.domains.science.parallel_summary import summarize_mmlupro_records
 from eval.domains.science.pinned_mmlupro import validate_mmlupro_500_artifact
+from eval.lcb_official import (
+    lcb_prompt_sha256,
+    merge_and_score_lcb_release,
+    validate_lcb_source,
+)
 from eval.report import _compact_record, _detail_record, summarize_records, write_report
 
 SEED_STRIDE = 1_000_003
@@ -28,7 +36,7 @@ class DatasetSpec:
 
     key: str
     domain: str
-    relative_path: str
+    relative_path: str | None
     task_type: str = "standard"
 
 
@@ -39,6 +47,8 @@ DATASET_SPECS = (
     DatasetSpec("hmmt25nov", "math", "data/eval_data/math/HMMT25Nov/test.parquet"),
     DatasetSpec("humaneval_plus", "code", "data/eval_data/code/HumanEvalPlus/test.parquet"),
     DatasetSpec("mbpp_plus", "code", "data/eval_data/code/MBPPPlus/test.parquet"),
+    DatasetSpec("lcb_v5", "code", None, task_type="official_lcb"),
+    DatasetSpec("lcb_v6", "code", None, task_type="official_lcb"),
     DatasetSpec("gpqa_diamond", "science", "data/eval_data/science/GPQA/test.parquet"),
     DatasetSpec(
         "mmlupro_500_seed42",
@@ -98,6 +108,8 @@ def build_manifest(
     suite_root: Path,
     run_tag: str,
     model_path: str,
+    eval_model_path: str | None = None,
+    gopd_dir: Path | None = None,
     dataset_keys: Sequence[str],
     shards_per_dataset: int,
     min_rows_per_shard: int,
@@ -118,12 +130,15 @@ def build_manifest(
     score_code: bool = True,
     code_sandbox_image: str = "verlai/verl:vllm023.dev1",
     code_sandbox_image_id: str = "unresolved",
+    worker_count: int = 4,
 ) -> dict[str, Any]:
     """Create a deterministic shard manifest for one model and evaluation suite."""
     if shards_per_dataset < 1:
         raise ValueError("shards_per_dataset must be positive")
     if min_rows_per_shard < 1:
         raise ValueError("min_rows_per_shard must be positive")
+    if worker_count < 1:
+        raise ValueError("worker_count must be positive")
     if base_seed < 0:
         raise ValueError("base_seed must be non-negative")
     if max_samples_per_dataset is not None and max_samples_per_dataset < 1:
@@ -151,10 +166,7 @@ def build_manifest(
     if any(value < 1 for value in samples_by_domain.values()):
         raise ValueError("samples per domain must be positive")
 
-    scorer_sources = (
-        "eval/domains/scoring.py",
-        "mopd_verl/code_reward.py",
-    )
+    scorer_sources = ("eval/domains/scoring.py", "mopd_verl/code_reward.py")
     scorer_source_sha256 = {
         relative_path: (
             file_sha256(code_dir / relative_path)
@@ -167,22 +179,40 @@ def build_manifest(
     label = model_label(model_path)
     sources: list[dict[str, Any]] = []
     tasks: list[dict[str, Any]] = []
+    waves: list[dict[str, Any]] = []
     sequence = 0
-    for spec in _selected_specs(dataset_keys, include_mmlupro_500):
-        source_file = code_dir / spec.relative_path
-        if not source_file.is_file():
-            raise FileNotFoundError(f"Missing evaluation parquet: {source_file}")
+    for wave_index, spec in enumerate(_selected_specs(dataset_keys, include_mmlupro_500)):
+        lcb_release = spec.key.removeprefix("lcb_") if spec.task_type == "official_lcb" else None
+        lcb_validation: dict[str, Any] | None = None
+        if lcb_release is not None:
+            if gopd_dir is None:
+                raise ValueError("gopd_dir is required for LiveCodeBench data-parallel evaluation")
+            lcb_validation = validate_lcb_source(gopd_dir, lcb_release)
+            source_file = Path(str(lcb_validation["source_file"]))
+            source_rows = int(lcb_validation["source_rows"])
+        else:
+            if spec.relative_path is None:
+                raise ValueError(f"Dataset {spec.key} does not define a source path")
+            source_file = code_dir / spec.relative_path
+            if not source_file.is_file():
+                raise FileNotFoundError(f"Missing evaluation parquet: {source_file}")
+            validate_code_prompt_artifact(source_file)
+            source_rows = pq.ParquetFile(source_file).metadata.num_rows
         pinned_validation = None
         if spec.task_type == "official_mmlupro":
             pinned_validation = validate_mmlupro_500_artifact(
                 source_file,
                 source_file.with_name("manifest.json"),
             )
-        source_rows = pq.ParquetFile(source_file).metadata.num_rows
         selected_rows = (
             min(source_rows, max_samples_per_dataset)
             if max_samples_per_dataset is not None
             else source_rows
+        )
+        source_hash = (
+            str(lcb_validation["source_sha256"])
+            if lcb_validation is not None
+            else file_sha256(source_file)
         )
         source_metadata: dict[str, Any] = {
             "dataset": spec.key,
@@ -191,16 +221,19 @@ def build_manifest(
             "source_file": str(source_file),
             "source_rows": source_rows,
             "selected_rows": selected_rows,
-            "source_sha256": file_sha256(source_file),
+            "source_sha256": source_hash,
         }
         if pinned_validation is not None:
             source_metadata["pinned_validation"] = pinned_validation.as_dict()
+        if lcb_release is not None and gopd_dir is not None:
+            source_metadata["prompt_sha256"] = lcb_prompt_sha256(gopd_dir, lcb_release)
         sources.append(source_metadata)
-        num_samples = 4 if spec.task_type == "official_mmlupro" else samples_by_domain[spec.domain]
+        num_samples = samples_by_domain[spec.domain]
         effective_shards = min(
             shards_per_dataset,
             max(1, selected_rows // min_rows_per_shard),
         ) if selected_rows else 0
+        wave_task_ids: list[str] = []
         for shard_index, (start, end) in enumerate(balanced_ranges(selected_rows, effective_shards)):
             task_id = (
                 f"{sequence:04d}_{spec.domain}_{spec.key}_"
@@ -209,13 +242,15 @@ def build_manifest(
             task_root = suite_root / "shards" / task_id
             if spec.task_type == "official_mmlupro":
                 output_dir = task_root / label / "mmlupro_500_seed42"
-                success_marker = output_dir / "SUCCESS"
+            elif spec.task_type == "official_lcb":
+                output_dir = task_root / label / "lcb" / str(lcb_release)
             else:
                 output_dir = task_root / label / spec.domain
-                success_marker = task_root / "SUCCESS"
+            success_marker = output_dir / "SUCCESS"
             tasks.append(
                 {
                     "sequence": sequence,
+                    "wave_index": wave_index,
                     "task_id": task_id,
                     "task_type": spec.task_type,
                     "dataset": spec.key,
@@ -234,19 +269,34 @@ def build_manifest(
                     "success_marker": str(success_marker),
                 }
             )
+            wave_task_ids.append(task_id)
             sequence += 1
+        waves.append(
+            {
+                "wave_index": wave_index,
+                "dataset": spec.key,
+                "task_ids": wave_task_ids,
+                "expected_tasks": len(wave_task_ids),
+            }
+        )
 
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "suite": "parallel_slurm_eval",
         "status": "running",
         "run_tag": run_tag,
         "suite_root": str(suite_root),
-        "model": {"label": label, "path": model_path},
+        "model": {
+            "label": label,
+            "path": model_path,
+            "eval_path": eval_model_path or model_path,
+        },
         "execution": {
             "backend": "vllm",
             "tensor_parallel_size": 1,
             "parallelism": "data_parallel_gpu_worker_pool",
+            "scheduling": "strict_dataset_wave_dynamic_microshards",
+            "worker_count": worker_count,
             "shards_per_dataset": shards_per_dataset,
             "min_rows_per_shard": min_rows_per_shard,
             "batch_size": batch_size,
@@ -268,7 +318,7 @@ def build_manifest(
             "math_samples": math_samples,
             "code_samples": code_samples,
             "science_samples": science_samples,
-            "mmlupro_samples": 4,
+            "mmlupro_samples": science_samples,
             "base_seed": base_seed,
             "standard_shard_seed_rule": f"base_seed + task_sequence * {SEED_STRIDE}",
             "mmlupro_seed_rule": "fixed base_seed for every prompt shard",
@@ -279,6 +329,14 @@ def build_manifest(
         "max_samples_per_dataset": max_samples_per_dataset,
         "sources": sources,
         "tasks": tasks,
+        "waves": waves,
+        "lcb": {
+            "gopd_dir": str(gopd_dir) if gopd_dir is not None else None,
+            "formatter": "Qwen3-4B-NonThinking",
+            "formatter_tokenizer": "Qwen/Qwen3-4B",
+            "enable_thinking": False,
+            "scorer": "G-OPD LiveCodeBench official public+private scorer",
+        },
         "total_shards": len(tasks),
         "expected_records_total": sum(task["expected_records"] for task in tasks),
         "completed_shards": 0,
@@ -339,24 +397,35 @@ def write_plan(manifest: dict[str, Any], *, resume: bool) -> Path:
         raise ValueError(f"Refusing to replace a symlinked task queue: {queue_root}")
     if queue_root.exists():
         shutil.rmtree(queue_root)
-    for queue_name in ("pending", "running", "done", "failed"):
-        (queue_root / queue_name).mkdir(parents=True)
+    waves_root = queue_root / "waves"
+    waves_root.mkdir(parents=True)
+    wave_roots: dict[int, Path] = {}
+    for wave in manifest["waves"]:
+        wave_index = int(wave["wave_index"])
+        wave_root = waves_root / f"{wave_index:04d}_{wave['dataset']}"
+        wave_roots[wave_index] = wave_root
+        for queue_name in ("pending", "running", "done", "failed"):
+            (wave_root / queue_name).mkdir(parents=True)
 
     completed = 0
     for task in manifest["tasks"]:
         file_name = f"{int(task['sequence']):04d}_{task['task_id']}.task"
         payload = task_tsv(task)
+        wave_root = wave_roots[int(task["wave_index"])]
         if Path(task["success_marker"]).is_file():
-            (queue_root / "done" / file_name).write_text(payload, encoding="utf-8")
+            (wave_root / "done" / file_name).write_text(payload, encoding="utf-8")
             completed += 1
         else:
-            if task["task_type"] == "official_mmlupro" and Path(task["output_dir"]).exists():
-                if any(Path(task["output_dir"]).iterdir()):
-                    raise ValueError(
-                        "Incomplete MMLU-Pro shards are not resumable; use a new run tag: "
-                        f"{task['output_dir']}"
-                    )
-            (queue_root / "pending" / file_name).write_text(payload, encoding="utf-8")
+            if (
+                task["task_type"] == "official_mmlupro"
+                and Path(task["output_dir"]).exists()
+                and any(Path(task["output_dir"]).iterdir())
+            ):
+                raise ValueError(
+                    "Incomplete MMLU-Pro shards are not resumable; use a new run tag: "
+                    f"{task['output_dir']}"
+                )
+            (wave_root / "pending" / file_name).write_text(payload, encoding="utf-8")
     manifest["completed_shards"] = completed
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return manifest_path
@@ -373,7 +442,7 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
             except json.JSONDecodeError as exc:
                 raise ValueError(f"Invalid JSONL record at {path}:{line_number}") from exc
             if not isinstance(value, dict):
-                raise ValueError(f"Expected an object at {path}:{line_number}")
+                raise TypeError(f"Expected an object at {path}:{line_number}")
             records.append(value)
     return records
 
@@ -481,54 +550,6 @@ def _merge_standard_domain(
         raise
 
 
-def summarize_mmlupro_records(
-    records: Sequence[Mapping[str, Any]],
-    *,
-    model_path: str,
-) -> dict[str, Any]:
-    """Recompute the official MMLU-Pro summary after merging prompt shards."""
-    correct = sum(int(record.get("correct") is True) for record in records)
-    prompts: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
-    categories: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
-    for record in records:
-        question_id = str(record.get("question_id", record.get("index")))
-        prompts[question_id].append(record)
-        categories[str(record.get("category", "unknown"))].append(record)
-
-    def category_summary(items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-        category_prompts: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
-        for item in items:
-            category_prompts[str(item.get("question_id", item.get("index")))].append(item)
-        category_correct = sum(int(item.get("correct") is True) for item in items)
-        passed = sum(any(item.get("correct") is True for item in values) for values in category_prompts.values())
-        return {
-            "correct": category_correct,
-            "total": len(items),
-            "passed_prompts": passed,
-            "prompt_count": len(category_prompts),
-            "accuracy": category_correct / len(items) if items else None,
-            "observed_pass_at_k": passed / len(category_prompts) if category_prompts else None,
-        }
-
-    passed_prompts = sum(any(item.get("correct") is True for item in values) for values in prompts.values())
-    rollout_counts = {len(values) for values in prompts.values()}
-    return {
-        "dataset": "mmlupro_500_seed42",
-        "model_path": model_path,
-        "prompt_count": len(prompts),
-        "rollouts_per_prompt": rollout_counts.pop() if len(rollout_counts) == 1 else None,
-        "sample_count": len(records),
-        "correct": correct,
-        "accuracy": correct / len(records) if records else None,
-        "passed_prompts": passed_prompts,
-        "observed_pass_at_k": passed_prompts / len(prompts) if prompts else None,
-        "per_category": {
-            category: category_summary(items)
-            for category, items in sorted(categories.items())
-        },
-    }
-
-
 def _merge_mmlupro(
     *,
     manifest: Mapping[str, Any],
@@ -617,6 +638,45 @@ def _merge_mmlupro(
         raise
 
 
+def _merge_lcb(
+    *,
+    manifest: Mapping[str, Any],
+    tasks: Sequence[Mapping[str, Any]],
+) -> None:
+    if not tasks:
+        return
+    suite_root = Path(str(manifest["suite_root"]))
+    label = str(manifest["model"]["label"])
+    output_dir = suite_root / label / "lcb"
+    temp_dir = _prepare_atomic_output(output_dir)
+    if temp_dir is None:
+        return
+    try:
+        summaries = []
+        for release in ("v5", "v6"):
+            release_tasks = [
+                task for task in tasks if str(task["dataset"]) == f"lcb_{release}"
+            ]
+            if not release_tasks:
+                continue
+            summaries.append(
+                merge_and_score_lcb_release(
+                    manifest=manifest,
+                    release=release,
+                    tasks=release_tasks,
+                    output_dir=temp_dir / release,
+                )
+            )
+        (temp_dir / "official_eval_summary.json").write_text(
+            json.dumps({"results": summaries}, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        _publish_atomic_output(temp_dir, output_dir)
+    except Exception:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
+
+
 def merge_manifest(manifest_path: Path) -> dict[str, Any]:
     """Validate all shards, merge domain outputs, and mark the suite complete."""
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -626,14 +686,18 @@ def merge_manifest(manifest_path: Path) -> dict[str, Any]:
         raise FileNotFoundError(f"Cannot merge incomplete shards: {missing[:8]}")
     standard_by_domain: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     mmlupro_tasks: list[Mapping[str, Any]] = []
+    lcb_tasks: list[Mapping[str, Any]] = []
     for task in tasks:
         if task["task_type"] == "official_mmlupro":
             mmlupro_tasks.append(task)
+        elif task["task_type"] == "official_lcb":
+            lcb_tasks.append(task)
         else:
             standard_by_domain[str(task["domain"])].append(task)
     for domain, domain_tasks in standard_by_domain.items():
         _merge_standard_domain(manifest=manifest, domain=domain, tasks=domain_tasks)
     _merge_mmlupro(manifest=manifest, tasks=mmlupro_tasks)
+    _merge_lcb(manifest=manifest, tasks=lcb_tasks)
     manifest["status"] = "complete"
     manifest["completed_shards"] = len(tasks)
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -657,8 +721,11 @@ def parse_args() -> argparse.Namespace:
     plan_parser.add_argument("--suite-root", type=Path, required=True)
     plan_parser.add_argument("--run-tag", required=True)
     plan_parser.add_argument("--model-path", required=True)
+    plan_parser.add_argument("--eval-model-path")
+    plan_parser.add_argument("--gopd-dir", type=Path)
     plan_parser.add_argument("--datasets", type=_parse_dataset_csv, required=True)
     plan_parser.add_argument("--shards-per-dataset", type=int, required=True)
+    plan_parser.add_argument("--worker-count", type=int, default=4)
     plan_parser.add_argument("--min-rows-per-shard", type=int, default=24)
     plan_parser.add_argument("--math-samples", type=int, required=True)
     plan_parser.add_argument("--code-samples", type=int, required=True)
@@ -672,10 +739,7 @@ def parse_args() -> argparse.Namespace:
     plan_parser.add_argument("--max-model-len", type=int, default=18432)
     plan_parser.add_argument("--max-num-batched-tokens", type=int, default=32768)
     plan_parser.add_argument("--max-num-seqs", type=int, default=24)
-    plan_parser.add_argument(
-        "--code-sandbox-image",
-        default="verlai/verl:vllm023.dev1",
-    )
+    plan_parser.add_argument("--code-sandbox-image", default="verlai/verl:vllm023.dev1")
     plan_parser.add_argument("--code-sandbox-image-id", default="unresolved")
     plan_parser.add_argument("--no-score-code", action="store_true")
     plan_parser.add_argument("--max-samples-per-dataset", type=int)
@@ -695,6 +759,8 @@ def main() -> int:
             suite_root=args.suite_root,
             run_tag=args.run_tag,
             model_path=args.model_path,
+            eval_model_path=args.eval_model_path,
+            gopd_dir=args.gopd_dir,
             dataset_keys=args.datasets,
             shards_per_dataset=args.shards_per_dataset,
             min_rows_per_shard=args.min_rows_per_shard,
@@ -715,6 +781,7 @@ def main() -> int:
             score_code=not args.no_score_code,
             code_sandbox_image=args.code_sandbox_image,
             code_sandbox_image_id=args.code_sandbox_image_id,
+            worker_count=args.worker_count,
         )
         manifest_path = write_plan(manifest, resume=args.resume)
         print(f"[parallel-eval] planned shards={manifest['total_shards']} manifest={manifest_path}")

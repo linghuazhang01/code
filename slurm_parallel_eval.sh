@@ -13,10 +13,10 @@ Submit a data-parallel OPD evaluation to a dynamic Slurm GPU worker pool.
 Usage:
   ./slurm_parallel_eval.sh --model_path PATH [options]
 
-Each dataset is split into disjoint prompt shards. One persistent worker owns
-each allocated GPU, loads one vLLM engine, and atomically claims pending shards,
-so a GPU that finishes early immediately starts another domain shard without
-reloading the model. tensor_parallel_size remains 1: this is Data Parallel.
+Each dataset is one strict wave of dynamic micro-shards. One persistent worker
+owns each allocated GPU and loads one TP=1 vLLM engine. Fast workers claim more
+micro-shards from the current dataset, and no worker enters the next dataset
+until the current wave completes.
 
 Options:
   --model_path PATH          Model/checkpoint path.
@@ -24,8 +24,9 @@ Options:
   --output_root PATH         Parent output directory.
   --run_tag TAG              Suite identifier (default: timestamp).
   --gpus N                   Slurm GPUs and worker count (default: 4).
-  --shards_per_dataset N     Maximum prompt shards per dataset (default: same as GPUs).
-  --min_rows_per_shard N     Avoid undersized vLLM batches (default: 24).
+  --shards_per_dataset N     Maximum micro-shards per dataset (default: 4x GPUs).
+  --min_rows_per_shard N     Minimum prompts in a micro-shard (default: 1).
+  --gopd_dir PATH            G-OPD checkout, required for lcb_v5/lcb_v6.
   --max_samples N            Maximum prompts per dataset, useful for smoke tests.
   --include_mmlupro_500      Include the pinned MMLU-Pro-500 protocol.
   --resume                   Resume compatible standard shards and skip completed ones.
@@ -38,9 +39,9 @@ Environment overrides:
   SLURM_EVAL_TIME            default: 48:00:00
   SLURM_EVAL_MEMORY          default: 400G
   SLURM_EVAL_CPUS            default: 64
-  SLURM_EVAL_MATH_SAMPLES    default: 16
-  SLURM_EVAL_CODE_SAMPLES    default: 4
-  SLURM_EVAL_SCIENCE_SAMPLES default: 4
+  SLURM_EVAL_MATH_SAMPLES    default: 8
+  SLURM_EVAL_CODE_SAMPLES    default: 8
+  SLURM_EVAL_SCIENCE_SAMPLES default: 8
   SLURM_EVAL_SEED            default: 42
 USAGE
 }
@@ -67,7 +68,8 @@ OUTPUT_ROOT="${SCRIPT_DIR}/data/eval_data/results/slurm_eval"
 RUN_TAG="$(date +%Y%m%d_%H%M%S)"
 GPU_COUNT=4
 SHARDS_PER_DATASET=""
-MIN_ROWS_PER_SHARD=24
+MIN_ROWS_PER_SHARD=1
+G_OPD_DIR=""
 MAX_SAMPLES=""
 RESUME=0
 INCLUDE_MMLUPRO_500=0
@@ -89,6 +91,7 @@ while [[ $# -gt 0 ]]; do
       MIN_ROWS_PER_SHARD="${2:?$1 requires a value}"
       shift 2
       ;;
+    --gopd_dir|--gopd-dir) G_OPD_DIR="${2:?$1 requires a value}"; shift 2 ;;
     --max_samples|--max-samples) MAX_SAMPLES="${2:?$1 requires a value}"; shift 2 ;;
     --include_mmlupro_500|--include-mmlupro-500) INCLUDE_MMLUPRO_500=1; shift ;;
     --resume) RESUME=1; shift ;;
@@ -104,7 +107,7 @@ done
 [[ -n "${DATASETS}" && -n "${RUN_TAG}" ]] || fail "datasets and run_tag cannot be empty"
 [[ -z "${SLURM_JOB_ID:-}" ]] || fail "submit mode must run from a login shell"
 validate_positive_integer "--gpus" "${GPU_COUNT}"
-SHARDS_PER_DATASET="${SHARDS_PER_DATASET:-${GPU_COUNT}}"
+SHARDS_PER_DATASET="${SHARDS_PER_DATASET:-$((GPU_COUNT * 4))}"
 validate_positive_integer "--shards_per_dataset" "${SHARDS_PER_DATASET}"
 validate_positive_integer "--min_rows_per_shard" "${MIN_ROWS_PER_SHARD}"
 [[ -z "${MAX_SAMPLES}" ]] || validate_positive_integer "--max_samples" "${MAX_SAMPLES}"
@@ -113,6 +116,9 @@ PARTITION="${SLURM_EVAL_PARTITION:-compute}"
 TIME_LIMIT="${SLURM_EVAL_TIME:-48:00:00}"
 MEMORY="${SLURM_EVAL_MEMORY:-400G}"
 CPUS="${SLURM_EVAL_CPUS:-64}"
+[[ "${MEMORY}" =~ ^([1-9][0-9]*)G$ ]] \
+  || fail "SLURM_EVAL_MEMORY must be expressed in GiB, for example 400G"
+(( BASH_REMATCH[1] <= 400 )) || fail "SLURM_EVAL_MEMORY exceeds the 400G hard cap"
 validate_positive_integer "SLURM_EVAL_CPUS" "${CPUS}"
 
 LOG_DIR="${SCRIPT_DIR}/logs/slurm_eval"
@@ -142,6 +148,7 @@ SBATCH_COMMAND=(
   --shards_per_dataset "${SHARDS_PER_DATASET}"
   --min_rows_per_shard "${MIN_ROWS_PER_SHARD}"
 )
+[[ -z "${G_OPD_DIR}" ]] || SBATCH_COMMAND+=(--gopd_dir "${G_OPD_DIR}")
 [[ -z "${MAX_SAMPLES}" ]] || SBATCH_COMMAND+=(--max_samples "${MAX_SAMPLES}")
 [[ "${RESUME}" == "0" ]] || SBATCH_COMMAND+=(--resume)
 [[ "${INCLUDE_MMLUPRO_500}" == "0" ]] || SBATCH_COMMAND+=(--include_mmlupro_500)

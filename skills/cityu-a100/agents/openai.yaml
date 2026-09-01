@@ -1,0 +1,6 @@
+interface:
+  display_name: "Cityu-A100 Skill"
+  short_description: "检查 Burgundy A100 并部署 OPD 训练环境"
+  default_prompt: "Use $cityu-a100 to inspect live Burgundy A100 resources and safely deploy the OPD environment."
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,4 @@
+interface:
+  display_name: "CityU A100 Task Queue"
+  short_description: "Manage a LIFO OPD queue and paired Burgundy A100 slots"
+  default_prompt: "Use $cityu-a100-task-queue to show my local task queue and paired CityU A100 Slurm jobs."

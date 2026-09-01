@@ -1,0 +1,15 @@
+# ExOPD: extrapolated chosen-token OPD with lambda=1.25.
+extends: ../_common.yaml
+
+model:
+  gopd_reference_path: ../mopd/models/Qwen3-1.7B
+
+actor:
+  only_reverse_kl_advantages: false
+  lambda_vals: 1.25
+  distill_loss_builder: exopd
+  distill_mode: chosen_token_policy_gradient
+  topk_distill_enabled: false
+
+audit:
+  loss_variance_signal: extrapolated_policy_gradient_distillation_signal

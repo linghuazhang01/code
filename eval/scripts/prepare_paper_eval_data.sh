@@ -14,7 +14,9 @@ G_OPD_DIR="${G_OPD_DIR:-${DEFAULT_G_OPD_DIR}}"
 HF_HOME="${HF_HOME:-${CODE_DIR}/hf_home}"
 LCB_DIR="${LCB_DIR:-${G_OPD_DIR}/code_eval/coding/LiveCodeBench/code_generation_lite}"
 LCB_REVISION="${LCB_REVISION:-48d36ed304dca42cf8ab20e941262ccd096518a3}"
-LCB_SHA256="${LCB_SHA256:-bb4c364f71921c4495a6ad15abe1a927350b720009f4933e2e71f8af0f6fd1f5}"
+LCB_V5_SHARD0_SHA256="${LCB_V5_SHARD0_SHA256:-2cafe2a842652f6aca997755a8150c348fbe25c040c0fb2ac7e63e400e10e5cb}"
+LCB_V5_SHARD1_SHA256="${LCB_V5_SHARD1_SHA256:-3558c5766089965eda005c39647ccf0b42be2bffe35665fecfaaa90d355b5d59}"
+LCB_V6_SHA256="${LCB_V6_SHA256:-${LCB_SHA256:-bb4c364f71921c4495a6ad15abe1a927350b720009f4933e2e71f8af0f6fd1f5}}"
 DOWNLOAD_LCB="${DOWNLOAD_LCB:-1}"
 
 if [[ -f "${CODE_DIR}/logs/env.sh" ]]; then
@@ -28,7 +30,9 @@ fi
 export CODE_DIR
 export LCB_DIR
 export LCB_REVISION
-export LCB_SHA256
+export LCB_V5_SHARD0_SHA256
+export LCB_V5_SHARD1_SHA256
+export LCB_V6_SHA256
 export HF_HOME="${HF_HOME}"
 export HF_XET_HIGH_PERFORMANCE="${HF_XET_HIGH_PERFORMANCE:-1}"
 export PYTHONPATH="${CODE_DIR}:${G_OPD_DIR}/verl:${PYTHONPATH:-}"
@@ -58,21 +62,37 @@ import hashlib
 from pathlib import Path
 
 from huggingface_hub import snapshot_download
+from eval.data_prep.paper_eval import lcb_source_parquet_to_jsonl
 
 snapshot_download(
     repo_id="livecodebench/code_generation_lite",
     repo_type="dataset",
     local_dir=os.environ["LCB_DIR"],
     revision=os.environ["LCB_REVISION"],
-    allow_patterns=["test6.jsonl"],
+    allow_patterns=["v5/*.parquet", "test6.jsonl"],
 )
-source = Path(os.environ["LCB_DIR"]) / "test6.jsonl"
-digest = hashlib.sha256()
-with source.open("rb") as handle:
-    while chunk := handle.read(8 * 1024 * 1024):
-        digest.update(chunk)
-if digest.hexdigest() != os.environ["LCB_SHA256"]:
-    raise SystemExit(f"LiveCodeBench v6 SHA-256 mismatch: {digest.hexdigest()}")
+root = Path(os.environ["LCB_DIR"])
+expected = {
+    root / "v5/test-00000-of-00002.parquet": os.environ["LCB_V5_SHARD0_SHA256"],
+    root / "v5/test-00001-of-00002.parquet": os.environ["LCB_V5_SHARD1_SHA256"],
+    root / "test6.jsonl": os.environ["LCB_V6_SHA256"],
+}
+for source, expected_sha256 in expected.items():
+    digest = hashlib.sha256()
+    with source.open("rb") as handle:
+        while chunk := handle.read(8 * 1024 * 1024):
+            digest.update(chunk)
+    if digest.hexdigest() != expected_sha256:
+        raise SystemExit(f"LiveCodeBench SHA-256 mismatch for {source}: {digest.hexdigest()}")
+compatibility_rows = lcb_source_parquet_to_jsonl(
+    [
+        root / "v5/test-00000-of-00002.parquet",
+        root / "v5/test-00001-of-00002.parquet",
+    ],
+    root / "test5.jsonl",
+)
+if compatibility_rows != 167:
+    raise SystemExit(f"Expected 167 LiveCodeBench v5 rows, found {compatibility_rows}")
 PY
 fi
 
@@ -87,6 +107,21 @@ import os
 from pathlib import Path
 import pandas as pd
 
+from eval.data_prep.code_prompt_validation import prompt_column_sha256
+from eval.data_prep.paper_eval import PAPER_CODE_EVAL_SPECS
+from eval.domains.code.prompting import (
+    EVALPLUS_PROMPT_TEMPLATE,
+    LCB_QWEN3_PROMPT_TEMPLATE,
+)
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(8 * 1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
 root = Path(os.environ["CODE_DIR"]) / "data/eval_data"
 paths = {
     "AIME24": root / "math/AIME24/test.parquet",
@@ -95,33 +130,96 @@ paths = {
     "HMMT25Nov": root / "math/HMMT25Nov/test.parquet",
     "HumanEvalPlus": root / "code/HumanEvalPlus/test.parquet",
     "MBPPPlus": root / "code/MBPPPlus/test.parquet",
+    "LiveCodeBench-v5": root / "code/LiveCodeBench-v5/test.parquet",
     "LiveCodeBench-v6": root / "code/LiveCodeBench/test.parquet",
 }
 for name, path in paths.items():
     print(f"{name}\t{len(pd.read_parquet(path))}\t{path}")
 
-lcb_source = Path(os.environ["LCB_DIR"]) / "test6.jsonl"
-digest = hashlib.sha256()
-with lcb_source.open("rb") as handle:
-    while chunk := handle.read(8 * 1024 * 1024):
-        digest.update(chunk)
-source_sha256 = digest.hexdigest()
-if source_sha256 != os.environ["LCB_SHA256"]:
-    raise SystemExit(f"LiveCodeBench v6 SHA-256 mismatch: {source_sha256}")
-lcb_output = paths["LiveCodeBench-v6"]
-manifest = {
-    "dataset": "livecodebench/code_generation_lite",
-    "evaluation_tests": "public+private",
-    "release_version": "v6",
-    "revision": os.environ["LCB_REVISION"],
-    "rows": len(pd.read_parquet(lcb_output)),
-    "source_file": lcb_source.name,
-    "source_sha256": source_sha256,
+gopd_root = Path(os.environ["G_OPD_DIR"])
+for _, (data_source, source_path, output_path) in PAPER_CODE_EVAL_SPECS.items():
+    source_file = gopd_root / source_path
+    destination = root / output_path
+    manifest = {
+        "data_source": data_source,
+        "dataset": data_source,
+        "enable_thinking": False,
+        "prompt_template": "gopd_evalplus_qwen_chat",
+        "prompt_template_sha256": hashlib.sha256(
+            EVALPLUS_PROMPT_TEMPLATE.encode("utf-8")
+        ).hexdigest(),
+        "rows": len(pd.read_parquet(destination)),
+        "source_file": source_file.name,
+        "source_sha256": hashlib.sha256(source_file.read_bytes()).hexdigest(),
+        "user_content_sha256": prompt_column_sha256(
+            pd.read_parquet(destination, columns=["prompt"])["prompt"]
+        ),
+    }
+    destination.with_name("manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+lcb_root = Path(os.environ["LCB_DIR"])
+lcb_specs = {
+    "v5": {
+        "output": paths["LiveCodeBench-v5"],
+        "sources": [
+            lcb_root / "v5/test-00000-of-00002.parquet",
+            lcb_root / "v5/test-00001-of-00002.parquet",
+        ],
+        "runner_compatibility_file": lcb_root / "test5.jsonl",
+    },
+    "v6": {
+        "output": paths["LiveCodeBench-v6"],
+        "sources": [lcb_root / "test6.jsonl"],
+    },
 }
-(lcb_output.parent / "manifest.json").write_text(
-    json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-    encoding="utf-8",
-)
+for release_version, spec in lcb_specs.items():
+    source_files = []
+    for source in spec["sources"]:
+        source_files.append(
+            {
+                "name": str(source.relative_to(lcb_root)),
+                "sha256": file_sha256(source),
+            }
+        )
+    output = spec["output"]
+    manifest = {
+        "chat_template_enable_thinking": False,
+        "chat_template_tokenizer": "Qwen/Qwen3-4B",
+        "data_source": f"LiveCodeBench-{release_version}",
+        "dataset": "livecodebench/code_generation_lite",
+        "enable_thinking": False,
+        "evaluation_tests": "public+private",
+        "prompt_template": "gopd_qwen3_non_thinking",
+        "prompt_template_sha256": hashlib.sha256(
+            LCB_QWEN3_PROMPT_TEMPLATE.encode("utf-8")
+        ).hexdigest(),
+        "release_version": release_version,
+        "revision": os.environ["LCB_REVISION"],
+        "rows": len(pd.read_parquet(output)),
+        "source_files": source_files,
+        "user_content_sha256": prompt_column_sha256(
+            pd.read_parquet(output, columns=["prompt"])["prompt"]
+        ),
+    }
+    compatibility_file = spec.get("runner_compatibility_file")
+    if compatibility_file is not None:
+        manifest["runner_compatibility_file"] = {
+            "derived_from": [source["name"] for source in source_files],
+            "name": compatibility_file.name,
+            "rows": sum(
+                1
+                for line in compatibility_file.open(encoding="utf-8")
+                if line
+            ),
+            "sha256": file_sha256(compatibility_file),
+        }
+    (output.parent / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 PY
 
 python - <<'PY'
@@ -138,6 +236,6 @@ for name, path in paths.items():
     print(f"{name}\t{count}\t{path}")
 
 lcb_dir = gopd / "code_eval/coding/LiveCodeBench/code_generation_lite"
-for path in sorted(lcb_dir.glob("test6.jsonl")):
+for path in [*sorted((lcb_dir / "v5").glob("*.parquet")), lcb_dir / "test6.jsonl"]:
     print(f"LCB shard\t{path.name}\t{path}")
 PY

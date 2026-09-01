@@ -12,10 +12,12 @@ from mopd_verl.domain_gradient.adaptive_neighborhood import (
 )
 from mopd_verl.domain_gradient.control_selection_scoring import (
     FIXED_ONLINE_WEIGHT_MODE,
+    ONLINE_CONTROL_BUDGET_MODES,
     ONLINE_CONTROL_SELECTION_MODES,
     ONLINE_CONTROL_WEIGHT_MODES,
     PAIRED_ONLINE_WEIGHT_MODE,
     PAIRED_SIGNAL_SELECTION_MODES,
+    TOP_K_BUDGET_MODE,
     TOP_LOSS_SELECTION_MODE,
     TOP_SPEED_SELECTION_MODE,
 )
@@ -76,6 +78,36 @@ def _domain_candidate_token_ids(
     )
 
 
+def _domain_candidate_token_groups(
+    value: Any,
+) -> tuple[tuple[str, tuple[tuple[str, tuple[int, ...]], ...]], ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, Mapping):
+        raise TypeError("domain_control_token_candidate_groups must be a mapping.")
+    normalized: list[
+        tuple[str, tuple[tuple[str, tuple[int, ...]], ...]]
+    ] = []
+    for domain, groups in value.items():
+        if not isinstance(groups, Mapping):
+            raise TypeError(
+                "Each domain_control_token_candidate_groups entry must be a mapping."
+            )
+        normalized.append(
+            (
+                str(domain),
+                tuple(
+                    (
+                        str(group),
+                        tuple(sorted({int(token_id) for token_id in token_ids})),
+                    )
+                    for group, token_ids in groups.items()
+                ),
+            )
+        )
+    return tuple(normalized)
+
+
 def _speed_weight_knots(value: Any) -> tuple[tuple[float, float], ...]:
     if value is None:
         return DEFAULT_CONTROL_SPEED_WEIGHT_KNOTS
@@ -128,12 +160,19 @@ class DomainGradientConfig:
     domain_control_token_ids: tuple[tuple[str, tuple[int, ...]], ...]
     control_token_candidate_ids: tuple[int, ...]
     domain_control_token_candidate_ids: tuple[tuple[str, tuple[int, ...]], ...]
+    domain_control_token_candidate_groups: tuple[
+        tuple[str, tuple[tuple[str, tuple[int, ...]], ...]], ...
+    ]
     control_token_normalize_per_domain: bool
     control_token_online_selection_enabled: bool
     control_token_online_audit_interval_steps: int
     control_token_online_window_steps: int
     control_token_online_min_mean_occurrences_per_step: float
+    control_token_online_strict_occurrence_gate: bool
     control_token_online_top_k: int
+    control_token_online_top_k_per_group: int | None
+    control_token_online_budget_mode: str
+    control_token_online_top_p: float
     control_token_online_selection_mode: str
     control_token_online_weight_mode: str
     control_token_adaptive_neighborhood_enabled: bool
@@ -166,10 +205,34 @@ class DomainGradientConfig:
     def effective_domain_candidate_map(self) -> dict[str, tuple[int, ...]]:
         """Return one canonical candidate whitelist for every domain."""
 
+        domain_candidate_groups = self.effective_domain_candidate_group_map()
+        if domain_candidate_groups:
+            return {
+                domain: tuple(
+                    sorted(
+                        {
+                            token_id
+                            for token_ids in groups.values()
+                            for token_id in token_ids
+                        }
+                    )
+                )
+                for domain, groups in domain_candidate_groups.items()
+            }
         domain_candidates = dict(self.domain_control_token_candidate_ids)
         if domain_candidates:
             return domain_candidates
         return {domain: self.control_token_candidate_ids for domain in self.domains}
+
+    def effective_domain_candidate_group_map(
+        self,
+    ) -> dict[str, dict[str, tuple[int, ...]]]:
+        """Return per-domain selection groups, or an empty map for unified mode."""
+
+        return {
+            domain: dict(groups)
+            for domain, groups in self.domain_control_token_candidate_groups
+        }
 
     def adaptive_neighborhood_spec(
         self,
@@ -350,6 +413,9 @@ class DomainGradientConfig:
             domain_control_token_candidate_ids=_domain_candidate_token_ids(
                 _get(meta, "domain_control_token_candidate_ids", {})
             ),
+            domain_control_token_candidate_groups=_domain_candidate_token_groups(
+                _get(meta, "domain_control_token_candidate_groups", {})
+            ),
             control_token_normalize_per_domain=bool(
                 _get(meta, "control_token_normalize_per_domain", False)
             ),
@@ -377,8 +443,32 @@ class DomainGradientConfig:
                     20.0,
                 )
             ),
+            control_token_online_strict_occurrence_gate=bool(
+                _get(
+                    meta,
+                    "control_token_online_strict_occurrence_gate",
+                    False,
+                )
+            ),
             control_token_online_top_k=int(
                 _get(meta, "control_token_online_top_k", 30)
+            ),
+            control_token_online_top_k_per_group=(
+                None
+                if _get(meta, "control_token_online_top_k_per_group", None) is None
+                else int(_get(meta, "control_token_online_top_k_per_group", None))
+            ),
+            control_token_online_budget_mode=str(
+                _get(
+                    meta,
+                    "control_token_online_budget_mode",
+                    TOP_K_BUDGET_MODE,
+                )
+            )
+            .strip()
+            .lower(),
+            control_token_online_top_p=float(
+                _get(meta, "control_token_online_top_p", 1.0)
             ),
             control_token_online_selection_mode=str(
                 _get(
@@ -577,6 +667,7 @@ class DomainGradientConfig:
                 and (
                     self.control_token_candidate_ids
                     or self.domain_control_token_candidate_ids
+                    or self.domain_control_token_candidate_groups
                 )
             )
         ):
@@ -610,10 +701,19 @@ class DomainGradientConfig:
         if any(token_id < 0 for token_id in self.control_token_candidate_ids):
             raise ValueError("control_token_candidate_ids must be non-negative.")
         domain_candidates = dict(self.domain_control_token_candidate_ids)
-        if self.control_token_candidate_ids and domain_candidates:
+        domain_candidate_groups = self.effective_domain_candidate_group_map()
+        candidate_source_count = sum(
+            bool(value)
+            for value in (
+                self.control_token_candidate_ids,
+                domain_candidates,
+                domain_candidate_groups,
+            )
+        )
+        if candidate_source_count > 1:
             raise ValueError(
-                "Configure either global or domain Control-token candidate "
-                "IDs, not both."
+                "Configure either global, domain, or grouped domain "
+                "Control-token candidate IDs, not more than one."
             )
         if domain_candidates and set(domain_candidates) != set(self.domains):
             raise ValueError(
@@ -629,6 +729,38 @@ class DomainGradientConfig:
             for token_id in token_ids
         ):
             raise ValueError("domain_control_token_candidate_ids must be non-negative.")
+        if domain_candidate_groups and set(domain_candidate_groups) != set(
+            self.domains
+        ):
+            raise ValueError(
+                "domain_control_token_candidate_groups keys must exactly match "
+                "domains."
+            )
+        if any(not groups for groups in domain_candidate_groups.values()):
+            raise ValueError(
+                "domain_control_token_candidate_groups entries must contain "
+                "at least one group."
+            )
+        for domain, groups in domain_candidate_groups.items():
+            if any(not token_ids for token_ids in groups.values()):
+                raise ValueError(
+                    "domain_control_token_candidate_groups group entries must "
+                    "be non-empty."
+                )
+            flattened = [
+                token_id
+                for token_ids in groups.values()
+                for token_id in token_ids
+            ]
+            if any(token_id < 0 for token_id in flattened):
+                raise ValueError(
+                    "domain_control_token_candidate_groups must be non-negative."
+                )
+            if len(flattened) != len(set(flattened)):
+                raise ValueError(
+                    "domain_control_token_candidate_groups groups must be "
+                    f"disjoint within domain {domain!r}."
+                )
         if (
             self.control_token_online_audit_interval_steps < 1
             or self.control_token_online_window_steps < 1
@@ -636,6 +768,44 @@ class DomainGradientConfig:
         ):
             raise ValueError(
                 "Online Control audit interval, window, and Top-K must be " "positive."
+            )
+        if self.control_token_online_budget_mode not in ONLINE_CONTROL_BUDGET_MODES:
+            allowed = ", ".join(sorted(ONLINE_CONTROL_BUDGET_MODES))
+            raise ValueError(
+                "Online Control budget mode must be one of: " f"{allowed}."
+            )
+        if (
+            not math.isfinite(self.control_token_online_top_p)
+            or not 0.0 < self.control_token_online_top_p <= 1.0
+        ):
+            raise ValueError(
+                "control_token_online_top_p must be finite and in (0, 1]."
+            )
+        if (
+            domain_candidate_groups
+            and self.control_token_online_budget_mode == TOP_K_BUDGET_MODE
+        ):
+            if (
+                self.control_token_online_top_k_per_group is None
+                or self.control_token_online_top_k_per_group < 1
+            ):
+                raise ValueError(
+                    "Grouped online Control selection requires a positive "
+                    "control_token_online_top_k_per_group."
+                )
+            expected_top_ks = {
+                self.control_token_online_top_k_per_group * len(groups)
+                for groups in domain_candidate_groups.values()
+            }
+            if expected_top_ks != {self.control_token_online_top_k}:
+                raise ValueError(
+                    "control_token_online_top_k must equal per-group K times "
+                    "the number of groups in every domain."
+                )
+        elif self.control_token_online_top_k_per_group is not None:
+            raise ValueError(
+                "control_token_online_top_k_per_group requires grouped "
+                "Top-K selection."
             )
         if (
             self.control_token_online_selection_mode
@@ -683,6 +853,7 @@ class DomainGradientConfig:
             if not (
                 self.control_token_candidate_ids
                 or self.domain_control_token_candidate_ids
+                or self.domain_control_token_candidate_groups
             ):
                 raise ValueError(
                     "Online Control selection requires "

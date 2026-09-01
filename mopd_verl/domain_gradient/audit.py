@@ -25,6 +25,7 @@ from mopd_verl.domain_gradient.control_selection_scoring import (
     PAIRED_ONLINE_WEIGHT_MODE,
     PAIRED_SIGNAL_SELECTION_MODES,
     TOP_KL_STUDENT_ENTROPY_SELECTION_MODE,
+    TOP_LOGP_DIFF_SELECTION_MODE,
     TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE,
     TOP_SPEED_SELECTION_MODE,
 )
@@ -245,7 +246,19 @@ class DomainGradientAudit:
                 min_mean_occurrences_per_step=(
                     self.config.control_token_online_min_mean_occurrences_per_step
                 ),
+                strict_occurrence_gate=(
+                    self.config.control_token_online_strict_occurrence_gate
+                ),
                 top_k=self.config.control_token_online_top_k,
+                candidate_token_groups=(
+                    self.config.effective_domain_candidate_group_map()
+                    or None
+                ),
+                top_k_per_group=(
+                    self.config.control_token_online_top_k_per_group
+                ),
+                budget_mode=self.config.control_token_online_budget_mode,
+                top_p=self.config.control_token_online_top_p,
                 selection_mode=(
                     self.config.control_token_online_selection_mode
                 ),
@@ -257,12 +270,20 @@ class DomainGradientAudit:
                 online_state.domains != expected_state.domains
                 or online_state.domain_candidate_token_ids
                 != expected_state.domain_candidate_token_ids
+                or online_state.domain_candidate_token_groups
+                != expected_state.domain_candidate_token_groups
                 or online_state.audit_interval_steps
                 != expected_state.audit_interval_steps
                 or online_state.window_steps != expected_state.window_steps
                 or online_state.min_mean_occurrences_per_step
                 != expected_state.min_mean_occurrences_per_step
+                or online_state.strict_occurrence_gate
+                != expected_state.strict_occurrence_gate
                 or online_state.top_k != expected_state.top_k
+                or online_state.top_k_per_group
+                != expected_state.top_k_per_group
+                or online_state.budget_mode != expected_state.budget_mode
+                or online_state.top_p != expected_state.top_p
                 or online_state.selection_mode != expected_state.selection_mode
                 or online_state.weight_mode != expected_state.weight_mode
             ):
@@ -1652,11 +1673,34 @@ class DomainGradientAudit:
             self.config.control_token_online_selection_mode
             == TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE
         )
+        logp_diff_mode = (
+            self.config.control_token_online_selection_mode
+            == TOP_LOGP_DIFF_SELECTION_MODE
+        )
         policy_loss_cfg = (
             _cfg_get(getattr(self.actor, "config", {}), "policy_loss", {})
-            if teacher_confidence_mode
+            if teacher_confidence_mode or logp_diff_mode
             else {}
         )
+        if logp_diff_mode:
+            selector_inputs = tuple(
+                {
+                    **micro_batch.batch,
+                    **micro_batch.non_tensor_batch,
+                }
+                for micro_batch in micro_batches
+            )
+            selection_loss_batches = tuple(
+                (
+                    selected_teacher_log_prob(model_inputs, policy_loss_cfg)
+                    - model_inputs["old_log_probs"]
+                )
+                .detach()
+                .float()
+                .abs()
+                for model_inputs in selector_inputs
+            )
+            selection_loss_mask_batches = configured_loss_mask_batches
         for micro_batch, configured_loss in zip(
             micro_batches,
             selection_loss_batches,

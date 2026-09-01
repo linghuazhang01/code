@@ -23,6 +23,7 @@ Environment knobs:
   ENV_NAME=mopd-verl
   ENV_FILE="$(pwd)/environment.yml"
   INSTALL_MINICONDA=1
+  MINICONDA_SHA256=<optional expected installer SHA-256>
   UPDATE_ENV=1
   INSTALL_GIT_LFS=1
   PULL_GIT_LFS_DATA=0
@@ -63,6 +64,7 @@ DOWNLOAD_ASSETS="${DOWNLOAD_ASSETS:-0}"
 LOG_DIR="${LOG_DIR:-${CODE_DIR}/logs}"
 HF_HOME="${HF_HOME:-${CODE_DIR}/hf_home}"
 SMOKE_DATA_DIR="${SMOKE_DATA_DIR:-${CODE_DIR}/smoke_data}"
+MINICONDA_SHA256="${MINICONDA_SHA256:-}"
 
 MINICONDA_INSTALLER=""
 
@@ -86,6 +88,25 @@ download_file() {
     echo "curl or wget is required to install Miniconda." >&2
     return 1
   fi
+}
+
+verify_file_sha256() {
+  local expected="$1"
+  local file_path="$2"
+  local actual
+  [[ -n "${expected}" ]] || return 0
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual="$(sha256sum "${file_path}" | awk '{print $1}')"
+  elif command -v shasum >/dev/null 2>&1; then
+    actual="$(shasum -a 256 "${file_path}" | awk '{print $1}')"
+  else
+    echo "sha256sum or shasum is required to verify the installer." >&2
+    return 1
+  fi
+  [[ "${actual}" == "${expected}" ]] || {
+    echo "Installer SHA-256 mismatch: expected ${expected}, got ${actual}" >&2
+    return 1
+  }
 }
 
 ensure_supported_platform() {
@@ -123,13 +144,13 @@ ensure_git_lfs() {
 find_conda_root() {
   local candidate
 
-  if command -v conda >/dev/null 2>&1; then
-    conda info --base
-    return 0
-  fi
   if [[ -n "${CONDA_ROOT:-}" ]]; then
     [[ -x "${CONDA_ROOT}/bin/conda" ]] || return 1
     printf '%s\n' "${CONDA_ROOT}"
+    return 0
+  fi
+  if command -v conda >/dev/null 2>&1; then
+    conda info --base
     return 0
   fi
   for candidate in "${HOME}/miniconda3" "/root/miniconda3" "/opt/conda" "/opt/anaconda3"; do
@@ -158,6 +179,7 @@ install_miniconda() {
   fi
   download_file "${installer_url}" "${MINICONDA_INSTALLER}"
   test -s "${MINICONDA_INSTALLER}"
+  verify_file_sha256 "${MINICONDA_SHA256}" "${MINICONDA_INSTALLER}"
   bash "${MINICONDA_INSTALLER}" -b -p "${target_root}"
   rm -f "${MINICONDA_INSTALLER}"
   MINICONDA_INSTALLER=""

@@ -164,9 +164,9 @@ paper_eval:
 
 huggingface_checkpoint:
   enabled: true
-  steps: [50, 55, 60, 65, 70]
+  steps: [55, 60, 65, 70]
   repo_id: icemoon28/opd-checkpoints
-  private: true
+  private: false
   token_env_var: HF_TOKEN
 
 trainer:
@@ -179,12 +179,12 @@ trainer:
   save_freq: 5
   test_freq: -1
   total_epochs: 3
-  total_training_steps: 200
+  total_training_steps: 70
   default_local_dir: checkpoints/MOPD/qwen1p7b-30b-math-opd-4gpu-b255
   critic_warmup: 0
   val_before_train: false
   log_val_generations: 10
-  max_actor_ckpt_to_keep: 2
+  max_actor_ckpt_to_keep: 4
   max_critic_ckpt_to_keep: 1
 
 ray_kwargs:

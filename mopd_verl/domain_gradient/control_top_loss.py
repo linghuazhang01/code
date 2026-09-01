@@ -11,8 +11,11 @@ from mopd_verl.domain_gradient.control_selection_scoring import (
     FIXED_ONLINE_WEIGHT_MODE,
     PAIRED_ONLINE_WEIGHT_MODE,
     PAIRED_SIGNAL_SELECTION_MODES,
+    TOP_K_BUDGET_MODE,
     TOP_LOSS_SELECTION_MODE,
+    TOP_P_BUDGET_MODE,
     TOP_SPEED_SELECTION_MODE,
+    normalize_online_budget_mode,
     normalize_online_weight_mode,
     normalize_selection_mode,
     occurrence_weighted_optimization_speed,
@@ -37,7 +40,10 @@ class OnlineControlSelectionState:
     audit_interval_steps: int
     window_steps: int
     min_mean_occurrences_per_step: float
+    strict_occurrence_gate: bool
     top_k: int
+    budget_mode: str
+    top_p: float
     selection_mode: str
     weight_mode: str
     history: tuple[StepStatistics, ...]
@@ -48,12 +54,22 @@ class OnlineControlSelectionState:
     last_observed_step: int | None = None
     last_audit_step: int | None = None
     update_count: int = 0
+    domain_candidate_token_groups: tuple[
+        tuple[str, tuple[tuple[str, tuple[int, ...]], ...]], ...
+    ] = ()
+    top_k_per_group: int | None = None
 
     def active_map(self) -> dict[str, tuple[int, ...]]:
         return dict(self.active_token_ids)
 
     def candidate_map(self) -> dict[str, tuple[int, ...]]:
         return dict(self.domain_candidate_token_ids)
+
+    def candidate_group_map(self) -> dict[str, dict[str, tuple[int, ...]]]:
+        return {
+            domain: dict(groups)
+            for domain, groups in self.domain_candidate_token_groups
+        }
 
     def active_weight_map(self) -> dict[str, dict[int, float]]:
         return {
@@ -77,13 +93,18 @@ class OnlineControlSelectionState:
 
     def as_dict(self) -> dict[str, object]:
         return {
-            "schema_version": 4,
+            "schema_version": 7,
             "domains": self.domains,
             "domain_candidate_token_ids": self.domain_candidate_token_ids,
             "audit_interval_steps": self.audit_interval_steps,
             "window_steps": self.window_steps,
             "min_mean_occurrences_per_step": (self.min_mean_occurrences_per_step),
+            "strict_occurrence_gate": self.strict_occurrence_gate,
             "top_k": self.top_k,
+            "budget_mode": self.budget_mode,
+            "top_p": self.top_p,
+            "domain_candidate_token_groups": self.domain_candidate_token_groups,
+            "top_k_per_group": self.top_k_per_group,
             "selection_mode": self.selection_mode,
             "weight_mode": self.weight_mode,
             "history": self.history,
@@ -114,6 +135,20 @@ class OnlineControlSelectionState:
                 )
                 for domain, token_ids in raw_domain_candidates
             )
+        raw_candidate_groups = value.get("domain_candidate_token_groups", ())
+        domain_candidate_groups = tuple(
+            (
+                str(domain),
+                tuple(
+                    (
+                        str(group),
+                        tuple(int(token_id) for token_id in token_ids),
+                    )
+                    for group, token_ids in groups
+                ),
+            )
+            for domain, groups in raw_candidate_groups
+        )
         history = tuple(
             (
                 int(step),
@@ -162,7 +197,12 @@ class OnlineControlSelectionState:
             min_mean_occurrences_per_step=float(
                 value.get("min_mean_occurrences_per_step", 0.0)
             ),
+            strict_occurrence_gate=bool(value.get("strict_occurrence_gate", False)),
             top_k=int(value.get("top_k", 0)),
+            budget_mode=normalize_online_budget_mode(
+                value.get("budget_mode", TOP_K_BUDGET_MODE)
+            ),
+            top_p=float(value.get("top_p", 1.0)),
             selection_mode=normalize_selection_mode(
                 value.get("selection_mode", TOP_LOSS_SELECTION_MODE)
             ),
@@ -175,7 +215,24 @@ class OnlineControlSelectionState:
             last_observed_step=(None if raw_observed is None else int(raw_observed)),
             last_audit_step=None if raw_audit is None else int(raw_audit),
             update_count=int(value.get("update_count", 0)),
+            domain_candidate_token_groups=domain_candidate_groups,
+            top_k_per_group=(
+                None
+                if value.get("top_k_per_group") is None
+                else int(value["top_k_per_group"])
+            ),
         )
+        if not math.isfinite(state.top_p) or not 0.0 < state.top_p <= 1.0:
+            raise ValueError(
+                "Checkpointed online Control top_p must be finite and in (0, 1]."
+            )
+        if (
+            state.budget_mode == TOP_P_BUDGET_MODE
+            and state.top_k_per_group is not None
+        ):
+            raise ValueError(
+                "Checkpointed online Control top_k_per_group requires Top-K mode."
+            )
         if state.weight_mode == PAIRED_ONLINE_WEIGHT_MODE:
             active_map = state.active_map()
             weight_map = state.active_weight_map()
@@ -205,7 +262,14 @@ def initial_online_control_selection_state(
     audit_interval_steps: int,
     window_steps: int,
     min_mean_occurrences_per_step: float,
+    strict_occurrence_gate: bool = False,
     top_k: int,
+    budget_mode: str = TOP_K_BUDGET_MODE,
+    top_p: float = 1.0,
+    candidate_token_groups: (
+        Mapping[str, Mapping[str, Sequence[int]]] | None
+    ) = None,
+    top_k_per_group: int | None = None,
     selection_mode: str = TOP_LOSS_SELECTION_MODE,
     weight_mode: str = FIXED_ONLINE_WEIGHT_MODE,
 ) -> OnlineControlSelectionState:
@@ -239,9 +303,76 @@ def initial_online_control_selection_state(
         raise ValueError(
             "Online Control candidate token IDs must be non-empty and non-negative."
         )
+    domain_candidate_groups: tuple[
+        tuple[str, tuple[tuple[str, tuple[int, ...]], ...]], ...
+    ] = ()
+    if candidate_token_groups is not None:
+        if set(candidate_token_groups) != set(normalized_domains):
+            raise ValueError(
+                "Online Control domain candidate groups must exactly match domains."
+            )
+        normalized_groups = []
+        candidate_map = dict(domain_candidates)
+        for domain in normalized_domains:
+            raw_groups = candidate_token_groups[domain]
+            if not raw_groups:
+                raise ValueError(
+                    "Online Control domain candidate groups must be non-empty."
+                )
+            groups = tuple(
+                (
+                    str(group),
+                    tuple(sorted({int(token_id) for token_id in token_ids})),
+                )
+                for group, token_ids in raw_groups.items()
+            )
+            if any(
+                not token_ids or any(token_id < 0 for token_id in token_ids)
+                for _, token_ids in groups
+            ):
+                raise ValueError(
+                    "Online Control candidate group IDs must be non-empty and "
+                    "non-negative."
+                )
+            flattened = [
+                token_id for _, token_ids in groups for token_id in token_ids
+            ]
+            if len(flattened) != len(set(flattened)):
+                raise ValueError(
+                    "Online Control candidate groups must be disjoint within "
+                    f"domain {domain!r}."
+                )
+            if set(flattened) != set(candidate_map[domain]):
+                raise ValueError(
+                    "Online Control candidate groups must exactly partition "
+                    f"the candidate IDs for domain {domain!r}."
+                )
+            normalized_groups.append((domain, groups))
+        domain_candidate_groups = tuple(normalized_groups)
     if audit_interval_steps < 1 or window_steps < 1 or top_k < 1:
         raise ValueError(
             "Online Control audit interval, window, and Top-K must be positive."
+        )
+    normalized_budget_mode = normalize_online_budget_mode(budget_mode)
+    if not math.isfinite(top_p) or not 0.0 < top_p <= 1.0:
+        raise ValueError("Online Control top_p must be finite and in (0, 1].")
+    if domain_candidate_groups and normalized_budget_mode == TOP_K_BUDGET_MODE:
+        if top_k_per_group is None or top_k_per_group < 1:
+            raise ValueError(
+                "Grouped online Control selection requires a positive "
+                "top_k_per_group."
+            )
+        group_counts = {len(groups) for _, groups in domain_candidate_groups}
+        if len(group_counts) != 1 or top_k != top_k_per_group * next(
+            iter(group_counts)
+        ):
+            raise ValueError(
+                "Grouped online Control top_k must equal top_k_per_group times "
+                "the number of groups in every domain."
+            )
+    elif top_k_per_group is not None:
+        raise ValueError(
+            "Online Control top_k_per_group requires grouped Top-K selection."
         )
     normalized_selection_mode = normalize_selection_mode(selection_mode)
     normalized_weight_mode = normalize_online_weight_mode(weight_mode)
@@ -269,12 +400,17 @@ def initial_online_control_selection_state(
         audit_interval_steps=int(audit_interval_steps),
         window_steps=int(window_steps),
         min_mean_occurrences_per_step=float(min_mean_occurrences_per_step),
+        strict_occurrence_gate=bool(strict_occurrence_gate),
         top_k=int(top_k),
+        budget_mode=normalized_budget_mode,
+        top_p=float(top_p),
         selection_mode=normalized_selection_mode,
         weight_mode=normalized_weight_mode,
         history=(),
         active_token_ids=tuple((domain, ()) for domain in normalized_domains),
         active_token_weights=tuple((domain, ()) for domain in normalized_domains),
+        domain_candidate_token_groups=domain_candidate_groups,
+        top_k_per_group=(None if top_k_per_group is None else int(top_k_per_group)),
     )
 
 
@@ -351,6 +487,56 @@ def _selection_score_distribution(
     )
 
 
+def _ranking_score(
+    state: OnlineControlSelectionState,
+    item: SelectedControlToken,
+) -> float:
+    """Return the scalar used to rank and accumulate one token type."""
+
+    if state.selection_mode == TOP_SPEED_SELECTION_MODE:
+        return cast(float, item.optimization_speed)
+    return item.mean_selection_score
+
+
+def _select_top_score_mass(
+    state: OnlineControlSelectionState,
+    ranked: Sequence[SelectedControlToken],
+) -> tuple[SelectedControlToken, ...]:
+    """Select the shortest ranked prefix reaching configured positive score mass."""
+
+    ordered = tuple(ranked)
+    if not ordered:
+        return ()
+    if state.top_p >= 1.0:
+        return ordered
+    scores = tuple(max(_ranking_score(state, item), 0.0) for item in ordered)
+    total_mass = sum(scores)
+    if total_mass <= 0.0:
+        return ordered[:1]
+    target_mass = total_mass * state.top_p
+    selected: list[SelectedControlToken] = []
+    selected_mass = 0.0
+    for item, score in zip(ordered, scores):
+        selected.append(item)
+        selected_mass += score
+        if selected_mass >= target_mass:
+            break
+    return tuple(selected)
+
+
+def _select_ranked_tokens(
+    state: OnlineControlSelectionState,
+    ranked: Sequence[SelectedControlToken],
+    *,
+    top_k: int | None = None,
+) -> tuple[SelectedControlToken, ...]:
+    """Apply the configured Top-K or cumulative Top-P budget."""
+
+    if state.budget_mode == TOP_P_BUDGET_MODE:
+        return _select_top_score_mass(state, ranked)
+    return tuple(ranked[: state.top_k if top_k is None else top_k])
+
+
 def _select_from_history(
     state: OnlineControlSelectionState,
     history: Sequence[StepStatistics],
@@ -384,7 +570,15 @@ def _select_from_history(
         eligible: list[SelectedControlToken] = []
         for token_id, (loss_sum, count) in totals[domain].items():
             frequency = count / float(state.window_steps)
-            if frequency < state.min_mean_occurrences_per_step:
+            token_observations = observations[domain].get(token_id, ())
+            if state.strict_occurrence_gate:
+                threshold = state.min_mean_occurrences_per_step
+                if len(token_observations) != state.window_steps or any(
+                    step_count <= threshold
+                    for _, _, step_count in token_observations
+                ):
+                    continue
+            elif frequency < state.min_mean_occurrences_per_step:
                 continue
             speed = (
                 occurrence_weighted_optimization_speed(
@@ -427,17 +621,34 @@ def _select_from_history(
                 eligible,
                 key=lambda item: (-item.mean_selection_score, item.token_id),
             )
-        selected = tuple(ranked[: state.top_k])
+        candidate_groups = state.candidate_group_map().get(domain, {})
+        if candidate_groups:
+            if (
+                state.budget_mode == TOP_K_BUDGET_MODE
+                and state.top_k_per_group is None
+            ):
+                raise RuntimeError(
+                    "Grouped online Control state is missing top_k_per_group."
+                )
+            grouped_selected: list[SelectedControlToken] = []
+            for token_ids in candidate_groups.values():
+                group_ids = set(token_ids)
+                grouped_selected.extend(
+                    _select_ranked_tokens(
+                        state,
+                        tuple(item for item in ranked if item.token_id in group_ids),
+                        top_k=state.top_k_per_group,
+                    )
+                )
+            selected = tuple(grouped_selected)
+        else:
+            selected = _select_ranked_tokens(state, ranked)
         eligible_ranking_scores = tuple(
-            cast(float, item.optimization_speed)
-            if state.selection_mode == TOP_SPEED_SELECTION_MODE
-            else item.mean_selection_score
+            _ranking_score(state, item)
             for item in eligible
         )
         selected_ranking_scores = tuple(
-            cast(float, item.optimization_speed)
-            if state.selection_mode == TOP_SPEED_SELECTION_MODE
-            else item.mean_selection_score
+            _ranking_score(state, item)
             for item in selected
         )
         active.append((domain, tuple(item.token_id for item in selected)))
@@ -531,7 +742,10 @@ def update_online_control_selection(
         audit_interval_steps=state.audit_interval_steps,
         window_steps=state.window_steps,
         min_mean_occurrences_per_step=(state.min_mean_occurrences_per_step),
+        strict_occurrence_gate=state.strict_occurrence_gate,
         top_k=state.top_k,
+        budget_mode=state.budget_mode,
+        top_p=state.top_p,
         selection_mode=state.selection_mode,
         weight_mode=state.weight_mode,
         history=tuple(history),
@@ -540,6 +754,8 @@ def update_online_control_selection(
         last_observed_step=step,
         last_audit_step=last_audit_step,
         update_count=update_count,
+        domain_candidate_token_groups=state.domain_candidate_token_groups,
+        top_k_per_group=state.top_k_per_group,
     )
     return (
         OnlineControlSelectionOutcome(

@@ -1,0 +1,44 @@
+# Six-GPU Top-P overlay for the Math FullTaxonomy next-step selector.
+# Topology: 4 actor/rollout GPUs + 2 ref/teacher GPUs; global batch size 256.
+# The 30B teacher is explicitly FSDP-sharded across the two ref-policy GPUs.
+# Each taxonomy group independently selects the shortest ranked prefix reaching
+# 10% of its non-negative selection-score mass at every optimizer step.
+extends: top32kl_next_step_full_taxonomy_split_i1_w1_k21_per_type_4gpu_b255.yaml
+
+runtime:
+  slurm_allocation_gpus: 6
+  wandb_run_id: q1p7b-math-top32kl-ns-taxonomy-topp0p1-i1w1-6gpu-4a2t-b256
+
+data:
+  train_batch_size: 256
+
+actor:
+  ppo_mini_batch_size: 256
+
+worker_placement:
+  actor_rollout: {n_gpus_per_node: 4, nnodes: 1}
+  ref_policy: {n_gpus_per_node: 2, nnodes: 1}
+
+audit:
+  output_dir: audit/q1p7b-math-top32kl-ns-taxonomy-topp0p1-i1w1-6gpu-4a2t-b256
+  control_token_online_budget_mode: top_p
+  control_token_online_top_p: 0.1
+  control_token_online_top_k_per_group: null
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-top32kl-ns-taxonomy-topp0p1-i1w1-6gpu-4a2t-b256
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-top32kl-ns-taxonomy-topp0p1-i1w1-6gpu-4a2t-b256
+
+trainer:
+  experiment_name: q1p7b-math-top32kl-ns-taxonomy-topp0p1-i1w1-6gpu-4a2t-b256
+  n_gpus_per_node: 4
+  default_local_dir: checkpoints/MOPD/q1p7b-math-top32kl-ns-taxonomy-topp0p1-i1w1-6gpu-4a2t-b256
+
+extra_overrides:
+  - custom_reward_function.path=mopd_verl/mixed_reward.py
+  - custom_reward_function.name=compute_score
+  - trainer.resume_mode=disable
+  - actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+  - actor_rollout_ref.ref.fsdp_config.fsdp_size=2

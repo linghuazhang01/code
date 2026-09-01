@@ -20,6 +20,44 @@ KNOTS = (
 
 
 class DomainGradientConfigTests(unittest.TestCase):
+    def test_online_top_p_budget_reaches_actor_meta(self) -> None:
+        from mopd_verl.verl_audit import MOPDAuditLogger
+
+        logger = MOPDAuditLogger(
+            {
+                "mopd_audit": {
+                    "enabled": True,
+                    "domains": ["math"],
+                    "control_token_loss_weighting_enabled": True,
+                    "control_token_online_selection_enabled": True,
+                    "domain_control_token_candidate_ids": {"math": [10, 20]},
+                    "control_token_online_budget_mode": "top_p",
+                    "control_token_online_top_p": 0.8,
+                }
+            }
+        )
+
+        meta = logger.full_gradient_meta("train", 1)["mopd_full_gradient"]
+        config = DomainGradientConfig.from_meta(meta)
+
+        self.assertEqual(config.control_token_online_budget_mode, "top_p")
+        self.assertEqual(config.control_token_online_top_p, 0.8)
+
+    def test_online_top_p_budget_validation_is_strict(self) -> None:
+        common = {
+            "domains": ["math"],
+            "control_token_loss_weighting_enabled": True,
+            "control_token_online_selection_enabled": True,
+            "domain_control_token_candidate_ids": {"math": [10, 20]},
+            "control_token_online_budget_mode": "top_p",
+        }
+        for invalid_top_p in (0.0, 1.1, float("nan")):
+            with self.subTest(top_p=invalid_top_p):
+                with self.assertRaisesRegex(ValueError, "top_p"):
+                    DomainGradientConfig.from_meta(
+                        {**common, "control_token_online_top_p": invalid_top_p}
+                    )
+
     def test_adaptive_neighborhood_configuration_is_supported(self) -> None:
         config = DomainGradientConfig.from_meta(
             {
@@ -461,6 +499,67 @@ class DomainGradientConfigTests(unittest.TestCase):
                 "science": (40,),
             },
         )
+
+    def test_grouped_online_control_candidates_are_canonicalized(self) -> None:
+        config = DomainGradientConfig.from_meta(
+            {
+                "domains": ["math", "code"],
+                "control_token_loss_weighting_enabled": True,
+                "domain_control_token_candidate_groups": {
+                    "math": {
+                        "Control": [30, 10, 30],
+                        "Structure": [40, 20],
+                    },
+                    "code": {
+                        "Control": [11],
+                        "Structure": [22],
+                    },
+                },
+                "control_token_online_selection_enabled": True,
+                "control_token_online_top_k": 4,
+                "control_token_online_top_k_per_group": 2,
+            }
+        )
+
+        self.assertEqual(
+            config.effective_domain_candidate_group_map(),
+            {
+                "math": {"Control": (10, 30), "Structure": (20, 40)},
+                "code": {"Control": (11,), "Structure": (22,)},
+            },
+        )
+        self.assertEqual(
+            config.effective_domain_candidate_map(),
+            {"math": (10, 20, 30, 40), "code": (11, 22)},
+        )
+
+    def test_grouped_online_control_candidates_validate_partition(self) -> None:
+        common = {
+            "domains": ["math"],
+            "control_token_loss_weighting_enabled": True,
+            "control_token_online_selection_enabled": True,
+            "control_token_online_top_k": 2,
+            "control_token_online_top_k_per_group": 1,
+        }
+        with self.assertRaisesRegex(ValueError, "disjoint"):
+            DomainGradientConfig.from_meta(
+                {
+                    **common,
+                    "domain_control_token_candidate_groups": {
+                        "math": {"Control": [10], "Structure": [10]}
+                    },
+                }
+            )
+        with self.assertRaisesRegex(ValueError, "must equal per-group K"):
+            DomainGradientConfig.from_meta(
+                {
+                    **common,
+                    "control_token_online_top_k": 3,
+                    "domain_control_token_candidate_groups": {
+                        "math": {"Control": [10], "Structure": [20]}
+                    },
+                }
+            )
 
     def test_domain_online_control_candidates_require_exact_domains(self) -> None:
         base = {

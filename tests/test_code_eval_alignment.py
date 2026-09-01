@@ -4,6 +4,8 @@ import unittest
 
 from eval.domains.code.prompting import (
     EVALPLUS_CODE_INSTRUCTION,
+    EVALPLUS_PROMPT_TEMPLATE,
+    LCB_QWEN3_PROMPT_TEMPLATE,
     build_evalplus_prompt,
     build_lcb_qwen3_non_thinking_prompt,
 )
@@ -18,6 +20,11 @@ GOPD_TRAINING_CODE_SUFFIX = (
     "at the end.\n"
     "You need to think first then write the Python code."
 )
+GOPD_LCB_QWEN3_PREAMBLE = (
+    "You will be given a question (problem specification) and will generate a correct "
+    "Python program that matches the specification and passes all tests. You will NOT "
+    "return anything except for the program."
+)
 
 
 class CodeEvalAlignmentTest(unittest.TestCase):
@@ -27,15 +34,33 @@ class CodeEvalAlignmentTest(unittest.TestCase):
         self.assertEqual(EVALPLUS_CODE_INSTRUCTION, GOPD_TRAINING_CODE_SUFFIX)
         self.assertEqual(
             prompt,
-            f"Implement solve().\n\n{GOPD_TRAINING_CODE_SUFFIX}",
+            f"Implement solve().\n\n\n{GOPD_TRAINING_CODE_SUFFIX}",
+        )
+        self.assertEqual(
+            EVALPLUS_PROMPT_TEMPLATE.format(task_prompt="Implement solve()."),
+            prompt,
         )
 
-    def test_livecodebench_allows_reasoning_before_final_code(self) -> None:
+    def test_livecodebench_uses_exact_gopd_qwen3_non_thinking_prompt(self) -> None:
         prompt = build_lcb_qwen3_non_thinking_prompt("Read two integers.")
 
-        self.assertNotIn("return anything except for the program", prompt)
-        self.assertTrue(
-            prompt.endswith(f"Read two integers.\n\n{GOPD_TRAINING_CODE_SUFFIX}")
+        self.assertEqual(
+            prompt,
+            f"{GOPD_LCB_QWEN3_PREAMBLE}\n\n"
+            f"Question:\nRead two integers.\n\n\n\n"
+            f"{GOPD_TRAINING_CODE_SUFFIX}",
+        )
+        self.assertEqual(
+            LCB_QWEN3_PROMPT_TEMPLATE.format(question_content="Read two integers."),
+            prompt,
+        )
+
+    def test_livecodebench_preserves_question_whitespace_like_gopd(self) -> None:
+        question_content = "\nRead two integers.\n"
+
+        self.assertIn(
+            f"Question:\n{question_content}\n\n\n\n",
+            build_lcb_qwen3_non_thinking_prompt(question_content),
         )
 
     def test_extractor_uses_last_python_block(self) -> None:

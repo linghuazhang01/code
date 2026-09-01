@@ -1026,6 +1026,18 @@ class MOPDAuditLogger:
             str(domain): tuple(sorted({int(token_id) for token_id in token_ids}))
             for domain, token_ids in raw_domain_control_candidates.items()
         }
+        raw_domain_control_candidate_groups = _cfg_get(
+            audit_config,
+            "domain_control_token_candidate_groups",
+            {},
+        )
+        self.domain_control_token_candidate_groups = {
+            str(domain): {
+                str(group): tuple(sorted({int(token_id) for token_id in token_ids}))
+                for group, token_ids in groups.items()
+            }
+            for domain, groups in raw_domain_control_candidate_groups.items()
+        }
         self.control_token_normalize_per_domain = bool(
             _cfg_get(
                 audit_config,
@@ -1061,12 +1073,37 @@ class MOPDAuditLogger:
                 20.0,
             )
         )
+        self.control_token_online_strict_occurrence_gate = bool(
+            _cfg_get(
+                audit_config,
+                "control_token_online_strict_occurrence_gate",
+                False,
+            )
+        )
         self.control_token_online_top_k = int(
             _cfg_get(
                 audit_config,
                 "control_token_online_top_k",
                 30,
             )
+        )
+        raw_top_k_per_group = _cfg_get(
+            audit_config,
+            "control_token_online_top_k_per_group",
+            None,
+        )
+        self.control_token_online_top_k_per_group = (
+            None if raw_top_k_per_group is None else int(raw_top_k_per_group)
+        )
+        self.control_token_online_budget_mode = str(
+            _cfg_get(
+                audit_config,
+                "control_token_online_budget_mode",
+                "top_k",
+            )
+        ).strip().lower()
+        self.control_token_online_top_p = float(
+            _cfg_get(audit_config, "control_token_online_top_p", 1.0)
         )
         self.control_token_online_selection_mode = str(
             _cfg_get(
@@ -1675,6 +1712,9 @@ class MOPDAuditLogger:
                 "domain_control_token_candidate_ids": (
                     self.domain_control_token_candidate_ids
                 ),
+                "domain_control_token_candidate_groups": (
+                    self.domain_control_token_candidate_groups
+                ),
                 "control_token_normalize_per_domain": (
                     self.control_token_normalize_per_domain
                 ),
@@ -1690,7 +1730,17 @@ class MOPDAuditLogger:
                 (
                     "control_token_online_" "min_mean_occurrences_per_step"
                 ): self.control_token_online_min_mean_occurrences_per_step,
+                "control_token_online_strict_occurrence_gate": (
+                    self.control_token_online_strict_occurrence_gate
+                ),
                 "control_token_online_top_k": (self.control_token_online_top_k),
+                "control_token_online_top_k_per_group": (
+                    self.control_token_online_top_k_per_group
+                ),
+                "control_token_online_budget_mode": (
+                    self.control_token_online_budget_mode
+                ),
+                "control_token_online_top_p": self.control_token_online_top_p,
                 "control_token_online_selection_mode": (
                     self.control_token_online_selection_mode
                 ),

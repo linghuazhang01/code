@@ -35,6 +35,16 @@ def _hydra_int_list_dict(values: Mapping[str, Sequence[int]]) -> str:
     return "{" + items + "}"
 
 
+def _hydra_nested_int_list_dict(
+    values: Mapping[str, Mapping[str, Sequence[int]]],
+) -> str:
+    items = ", ".join(
+        f"{domain}: {_hydra_int_list_dict(groups)}"
+        for domain, groups in values.items()
+    )
+    return "{" + items + "}"
+
+
 def _hydra_float_pair_list(values: Sequence[Sequence[float]]) -> str:
     pairs = ", ".join(f"[{float(pair[0]):g}, {float(pair[1]):g}]" for pair in values)
     return "[" + pairs + "]"
@@ -302,6 +312,8 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"{_hydra_int_list(audit.control_token_candidate_ids)}",
         "+mopd_audit.domain_control_token_candidate_ids="
         f"{_hydra_int_list_dict(audit.domain_control_token_candidate_ids)}",
+        "+mopd_audit.domain_control_token_candidate_groups="
+        f"{_hydra_nested_int_list_dict(audit.domain_control_token_candidate_groups)}",
         "+mopd_audit.control_token_normalize_per_domain="
         f"{str(audit.control_token_normalize_per_domain).lower()}",
         "+mopd_audit.control_token_online_selection_enabled="
@@ -313,7 +325,15 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         "+mopd_audit."
         "control_token_online_min_mean_occurrences_per_step="
         f"{audit.control_token_online_min_mean_occurrences_per_step}",
+        "+mopd_audit.control_token_online_strict_occurrence_gate="
+        f"{str(audit.control_token_online_strict_occurrence_gate).lower()}",
         "+mopd_audit.control_token_online_top_k=" f"{audit.control_token_online_top_k}",
+        "+mopd_audit.control_token_online_top_k_per_group="
+        f"{_hydra_scalar(audit.control_token_online_top_k_per_group)}",
+        "+mopd_audit.control_token_online_budget_mode="
+        f"{audit.control_token_online_budget_mode}",
+        "+mopd_audit.control_token_online_top_p="
+        f"{audit.control_token_online_top_p}",
         "+mopd_audit.control_token_online_selection_mode="
         f"{audit.control_token_online_selection_mode}",
         "+mopd_audit.control_token_online_weight_mode="

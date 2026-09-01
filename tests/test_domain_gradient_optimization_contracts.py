@@ -2261,6 +2261,8 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
             {"math": [10], "code": [20]},
         )
         self.assertEqual(record["selection_mode"], "top_loss")
+        self.assertEqual(record["budget_mode"], "top_k")
+        self.assertEqual(record["top_p"], 1.0)
         self.assertEqual(
             record["domains"]["math"]["selected_tokens"][0][
                 "optimization_speed"

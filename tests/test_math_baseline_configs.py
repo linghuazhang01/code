@@ -25,7 +25,7 @@ MODEL_VARIANTS = {
     "qwen1p7b": (CONFIG_DIR, "../mopd/models/Qwen3-1.7B"),
     "qwen4b": (QWEN4B_CONFIG_DIR, "../mopd/models/Qwen3-4B"),
 }
-HF_CHECKPOINT_STEPS = (50, 55, 60, 65, 70)
+HF_CHECKPOINT_STEPS = (55, 60, 65, 70)
 HF_REPO_ID = "icemoon28/opd-checkpoints"
 HF_MODEL_SAVE_OVERRIDE = (
     "actor_rollout_ref.actor.checkpoint.save_contents="
@@ -35,6 +35,7 @@ LEGACY_MATH_CONFIGS = (
     "mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math.yaml",
     "mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math.yaml",
 )
+TARGETED_MATH_CONFIGS = ("exopd_4gpu_b255.yaml",)
 SCALE_SPECIFIC_CONFIG_FIELDS = {
     "audit.output_dir",
     "huggingface_checkpoint.path_prefix",
@@ -154,17 +155,20 @@ def test_math_baseline_resource_and_data_contract(
     assert batch_size % actor_gpus == 0
     assert abs(batch_size - 256) <= 3
     assert f"data.train_batch_size={batch_size}" in command
+    assert config.trainer.total_training_steps == 70
+    assert config.trainer.max_actor_ckpt_to_keep == 4
 
     huggingface = config.huggingface_checkpoint
     assert huggingface.enabled
     assert huggingface.steps == HF_CHECKPOINT_STEPS
     assert huggingface.repo_id == HF_REPO_ID
-    assert huggingface.private
+    assert not huggingface.private
     assert huggingface.token_env_var == "HF_TOKEN"
     assert huggingface.path_prefix == (
         f"checkpoints/math/{config.trainer.experiment_name}"
     )
     assert "trainer.huggingface_checkpoint.enabled=True" in command
+    assert "trainer.huggingface_checkpoint.private=False" in command
     assert HF_MODEL_SAVE_OVERRIDE in command
 
 
@@ -210,6 +214,32 @@ def test_math_baseline_method_contracts(
     assert eopd.rollout_correction.rollout_is is None
 
 
+def test_math_exopd_four_gpu_contract() -> None:
+    config = load_config(CONFIG_DIR / "exopd_4gpu_b255.yaml")
+    command = format_command(build_command(config))
+
+    assert config.data.domain_train_files == {"math": [MATH_TRAIN_FILE]}
+    assert config.data.train_batch_size == 255
+    assert config.actor.ppo_mini_batch_size == 255
+    assert config.runtime.slurm_allocation_gpus == 4
+    assert config.worker_placement.separate_ref_policy
+    assert config.worker_placement.actor_rollout.n_gpus_per_node == 3
+    assert config.worker_placement.ref_policy.n_gpus_per_node == 1
+    assert config.trainer.n_gpus_per_node == 3
+    assert config.rollout.tensor_model_parallel_size == 1
+    assert config.model.gopd_reference_path == "../mopd/models/Qwen3-1.7B"
+    assert config.actor.distill_loss_builder == "exopd"
+    assert config.actor.distill_mode == "chosen_token_policy_gradient"
+    assert config.actor.lambda_vals == 1.25
+    assert not config.actor.topk_distill_enabled
+    assert config.huggingface_checkpoint.steps == HF_CHECKPOINT_STEPS
+    assert config.huggingface_checkpoint.path_prefix.endswith(
+        "qwen1p7b-30b-math-exopd-lambda1p25-4gpu-b255"
+    )
+    assert "policy_loss.distill_loss_builder=exopd" in command
+    assert "policy_loss.lambda_vals=1.25" in command
+
+
 @pytest.mark.parametrize("method", METHODS)
 @pytest.mark.parametrize(
     ("gpu_count", "batch_size"),
@@ -241,7 +271,10 @@ def test_all_math_run_names_and_output_dirs_are_unique() -> None:
     huggingface_path_prefixes: set[str] = set()
 
     config_paths = _all_math_config_paths()
-    expected_baselines = len(MODEL_VARIANTS) * len(METHODS) * len(GPU_PROFILES)
+    expected_baselines = (
+        len(MODEL_VARIANTS) * len(METHODS) * len(GPU_PROFILES)
+        + len(TARGETED_MATH_CONFIGS)
+    )
     assert len(config_paths) == expected_baselines + len(LEGACY_MATH_CONFIGS)
 
     for path in config_paths:
@@ -268,10 +301,12 @@ def test_legacy_math_configs_upload_selected_checkpoints(filename: str) -> None:
     huggingface = config.huggingface_checkpoint
 
     assert set(config.data.domain_train_files) == {"math"}
+    assert config.trainer.total_training_steps == 70
+    assert config.trainer.max_actor_ckpt_to_keep == 4
     assert huggingface.enabled
     assert huggingface.steps == HF_CHECKPOINT_STEPS
     assert huggingface.repo_id == HF_REPO_ID
-    assert huggingface.private
+    assert not huggingface.private
     assert huggingface.token_env_var == "HF_TOKEN"
     assert huggingface.path_prefix == (
         f"checkpoints/math/{config.trainer.experiment_name}"

@@ -1,0 +1,33 @@
+{
+  "chat_template_enable_thinking": false,
+  "chat_template_tokenizer": "Qwen/Qwen3-4B",
+  "data_source": "LiveCodeBench-v5",
+  "dataset": "livecodebench/code_generation_lite",
+  "enable_thinking": false,
+  "evaluation_tests": "public+private",
+  "prompt_template": "gopd_qwen3_non_thinking",
+  "prompt_template_sha256": "693a6a62405d64893850785962c4834d51cde07624c3b3ba9cf0f1c9c683d52d",
+  "release_version": "v5",
+  "revision": "48d36ed304dca42cf8ab20e941262ccd096518a3",
+  "rows": 167,
+  "runner_compatibility_file": {
+    "derived_from": [
+      "v5/test-00000-of-00002.parquet",
+      "v5/test-00001-of-00002.parquet"
+    ],
+    "name": "test5.jsonl",
+    "rows": 167,
+    "sha256": "34dc80fac0fb8c3919835079dafa7831fc10056705d9b0d242003ad3ad1e0f5c"
+  },
+  "source_files": [
+    {
+      "name": "v5/test-00000-of-00002.parquet",
+      "sha256": "2cafe2a842652f6aca997755a8150c348fbe25c040c0fb2ac7e63e400e10e5cb"
+    },
+    {
+      "name": "v5/test-00001-of-00002.parquet",
+      "sha256": "3558c5766089965eda005c39647ccf0b42be2bffe35665fecfaaa90d355b5d59"
+    }
+  ],
+  "user_content_sha256": "047120e15ce2db6e805889bc55ba6bb1244c1ef667dbb6d6fb4c1570ab318d72"
+}

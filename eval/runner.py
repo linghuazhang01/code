@@ -7,9 +7,10 @@ import json
 import logging
 import math
 import time
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator, Sequence
+from typing import Any
 
 from eval.common import (
     DEFAULT_DATA_FILES,
@@ -23,6 +24,7 @@ from eval.common import (
     summarize_results,
     write_outputs,
 )
+from eval.data_prep.code_prompt_validation import validate_code_prompt_artifact
 from eval.domains.scoring import SCORER_NAME, score_completion
 
 LOGGER = logging.getLogger(__name__)
@@ -321,9 +323,13 @@ def generate_vllm_batch(
     save_completion: bool,
     rollout_index: int = 0,
     generation_seed: int | None = None,
+    num_return_sequences: int = 1,
 ) -> list[EvalResult]:
+    """Generate one prompt batch, optionally sampling multiple rollouts per prompt."""
     from vllm import SamplingParams
 
+    if num_return_sequences < 1:
+        raise ValueError("num_return_sequences must be positive")
     enable_thinking = mode == "thinking"
     prompts = [encode_prompt_text(sample.messages, tokenizer, enable_thinking) for sample in samples]
     prompt_tokens = [len(tokenizer.encode(prompt, add_special_tokens=False)) for prompt in prompts]
@@ -332,49 +338,61 @@ def generate_vllm_batch(
         temperature=temperature,
         top_p=top_p,
         seed=generation_seed,
+        n=num_return_sequences,
     )
 
     start_time = time.perf_counter()
     outputs = llm.generate(prompts, sampling_params)
     batch_latency = time.perf_counter() - start_time
     results: list[EvalResult] = []
-    for index, (sample, request_output, prompt_token_count) in enumerate(zip(samples, outputs, prompt_tokens)):
-        output = request_output.outputs[0]
-        completion = output.text
-        generated_tokens = len(output.token_ids)
-        score, prediction, reward_metadata = score_completion(sample, completion, score_code=score_code)
-        thinking_tokens = count_thinking_tokens(completion, tokenizer)
-        answer_tokens = max(generated_tokens - thinking_tokens, 0)
-        tokens_per_second = generated_tokens / batch_latency if batch_latency > 0 else 0.0
-        results.append(
-            EvalResult(
-                mode=mode,
-                enable_thinking=enable_thinking,
-                sample_id=sample.sample_id,
-                dataset=sample.dataset,
-                ability=sample.ability,
-                ground_truth=sample.ground_truth,
-                prediction=prediction,
-                score=score,
-                correct=None if score is None else score == 1.0,
-                prompt_tokens=prompt_token_count,
-                generated_tokens=generated_tokens,
-                thinking_tokens=thinking_tokens,
-                answer_tokens=answer_tokens,
-                total_tokens=prompt_token_count + generated_tokens,
-                latency_seconds=batch_latency,
-                generated_tokens_per_second=tokens_per_second,
-                completion_preview=remove_think_block(completion)[:600],
-                rollout_index=rollout_index,
-                generation_seed=generation_seed,
-                max_new_tokens=max_new_tokens,
-                messages=sample.messages if save_completion else None,
-                prompt=prompts[index] if save_completion else None,
-                completion=completion if save_completion else None,
-                reward_metadata=reward_metadata,
-                sample_metadata=sample.sample_metadata if save_completion else None,
+    for index, (sample, request_output, prompt_token_count) in enumerate(
+        zip(samples, outputs, prompt_tokens, strict=True)
+    ):
+        if len(request_output.outputs) != num_return_sequences:
+            raise RuntimeError(
+                f"Expected {num_return_sequences} outputs for prompt {index}, "
+                f"got {len(request_output.outputs)}"
             )
-        )
+        for output_index, output in enumerate(request_output.outputs):
+            completion = output.text
+            generated_tokens = len(output.token_ids)
+            score, prediction, reward_metadata = score_completion(
+                sample,
+                completion,
+                score_code=score_code,
+            )
+            thinking_tokens = count_thinking_tokens(completion, tokenizer)
+            answer_tokens = max(generated_tokens - thinking_tokens, 0)
+            tokens_per_second = generated_tokens / batch_latency if batch_latency > 0 else 0.0
+            results.append(
+                EvalResult(
+                    mode=mode,
+                    enable_thinking=enable_thinking,
+                    sample_id=sample.sample_id,
+                    dataset=sample.dataset,
+                    ability=sample.ability,
+                    ground_truth=sample.ground_truth,
+                    prediction=prediction,
+                    score=score,
+                    correct=None if score is None else score == 1.0,
+                    prompt_tokens=prompt_token_count,
+                    generated_tokens=generated_tokens,
+                    thinking_tokens=thinking_tokens,
+                    answer_tokens=answer_tokens,
+                    total_tokens=prompt_token_count + generated_tokens,
+                    latency_seconds=batch_latency,
+                    generated_tokens_per_second=tokens_per_second,
+                    completion_preview=remove_think_block(completion)[:600],
+                    rollout_index=rollout_index + output_index,
+                    generation_seed=generation_seed,
+                    max_new_tokens=max_new_tokens,
+                    messages=sample.messages if save_completion else None,
+                    prompt=prompts[index] if save_completion else None,
+                    completion=completion if save_completion else None,
+                    reward_metadata=reward_metadata,
+                    sample_metadata=sample.sample_metadata if save_completion else None,
+                )
+            )
     return results
 
 
@@ -557,6 +575,8 @@ def main() -> None:
 
     output_dir = Path(args.output_dir)
     validate_output_directory(output_dir, resume=args.resume)
+    for data_file in args.data_files:
+        validate_code_prompt_artifact(data_file)
     samples = load_eval_samples(
         args.data_files,
         max_samples_per_dataset=args.max_samples_per_dataset,

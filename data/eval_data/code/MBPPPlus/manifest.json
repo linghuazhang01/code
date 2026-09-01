@@ -1,0 +1,11 @@
+{
+  "data_source": "MBPPPlus",
+  "dataset": "MBPPPlus",
+  "enable_thinking": false,
+  "prompt_template": "gopd_evalplus_qwen_chat",
+  "prompt_template_sha256": "02c18e08b8b17d8317d4735e29cc68dce52f4ddca20f1def66b5e5f473e8cc79",
+  "rows": 378,
+  "source_file": "MbppPlus.jsonl",
+  "source_sha256": "b54e762755248ca411b523c917fa9f93c07b5ff2966bf60b3917b853926a3dad",
+  "user_content_sha256": "16390cc9c230d0659d6ea01dc553d8c0ea2b951daba802fe9b86078d8d3f3c95"
+}

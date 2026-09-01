@@ -1,0 +1,35 @@
+# Offline optimum: next-step Type F1, unified Metric A, pre-window=1, K=29.
+# Runtime cadence i1 updates the selected set after every completed step.
+extends: _common.yaml
+
+runtime:
+  wandb_run_id: q1p7b-math-a-ns-expanded-v2-i1w1k29-b255
+
+audit:
+  output_dir: audit/q1p7b-math-a-ns-expanded-v2-i1w1k29-b255
+  control_token_online_selection_enabled: true
+  control_token_online_audit_interval_steps: 1
+  control_token_online_window_steps: 1
+  control_token_online_top_k: 29
+  domain_control_token_candidate_ids:
+    math: [
+      14, 25, 258, 269, 300, 304, 333, 334, 369, 421, 438, 476,
+      504, 510, 549, 608, 641, 704, 715, 758, 773, 820, 1019, 1075,
+      1083, 1156, 1221, 1380, 1416, 1431, 1447, 1499, 1576, 1634, 1752,
+      1958, 1959, 1986, 2055, 2058, 2121, 2137, 2195, 2293, 2303, 2461,
+      2521, 2679, 2870, 3070, 3830, 4080, 4226, 4354, 4416, 4518, 4803,
+      5005, 5338, 5542, 5627, 7039, 9064, 9112, 9211, 9658, 10293, 11209,
+      11520, 12209, 13023, 13394, 15277, 16085, 17949, 19357, 19788, 21806,
+      23322, 27653, 30787, 31040, 44364, 54815, 56177, 67691, 73877, 96065,
+      151645
+    ]
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-a-ns-expanded-v2-i1w1k29-b255
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-a-ns-expanded-v2-i1w1k29-b255
+
+trainer:
+  experiment_name: q1p7b-math-a-ns-expanded-v2-i1w1k29-b255
+  default_local_dir: checkpoints/MOPD/q1p7b-math-a-ns-expanded-v2-i1w1k29-b255

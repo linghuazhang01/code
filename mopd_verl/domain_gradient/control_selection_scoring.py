@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 
 TOP_LOSS_SELECTION_MODE = "top_loss"
+TOP_LOGP_DIFF_SELECTION_MODE = "top_logp_diff"
 TOP_SPEED_SELECTION_MODE = "top_speed"
 TOP_KL_STUDENT_ENTROPY_SELECTION_MODE = "top_kl_student_entropy"
 TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE = (
@@ -26,9 +27,16 @@ PAIRED_SIGNAL_SELECTION_MODES = frozenset(
 ONLINE_CONTROL_SELECTION_MODES = frozenset(
     {
         TOP_LOSS_SELECTION_MODE,
+        TOP_LOGP_DIFF_SELECTION_MODE,
         TOP_SPEED_SELECTION_MODE,
         *PAIRED_SIGNAL_SELECTION_MODES,
     }
+)
+
+TOP_K_BUDGET_MODE = "top_k"
+TOP_P_BUDGET_MODE = "top_p"
+ONLINE_CONTROL_BUDGET_MODES = frozenset(
+    {TOP_K_BUDGET_MODE, TOP_P_BUDGET_MODE}
 )
 
 FIXED_ONLINE_WEIGHT_MODE = "fixed"
@@ -54,6 +62,18 @@ def normalize_selection_mode(value: object) -> str:
         allowed = ", ".join(sorted(ONLINE_CONTROL_SELECTION_MODES))
         raise ValueError(
             "Online Control selection mode must be one of: " f"{allowed}."
+        )
+    return mode
+
+
+def normalize_online_budget_mode(value: object) -> str:
+    """Return one supported online Control-token selection budget mode."""
+
+    mode = str(value).strip().lower()
+    if mode not in ONLINE_CONTROL_BUDGET_MODES:
+        allowed = ", ".join(sorted(ONLINE_CONTROL_BUDGET_MODES))
+        raise ValueError(
+            "Online Control budget mode must be one of: " f"{allowed}."
         )
     return mode
 

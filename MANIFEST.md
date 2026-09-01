@@ -36,3 +36,7 @@
 | 2026-08-26 22:51 | /experiment-plan | configs/baselines/math/eopd_7gpu_b258.yaml | implementation | Math-only eopd 7-GPU batch-258 config |
 | 2026-08-26 22:51 | /experiment-plan | configs/baselines/math/eopd_8gpu_b259.yaml | implementation | Math-only eopd 8-GPU batch-259 config |
 | 2026-08-26 22:51 | /experiment-plan | tests/test_math_baseline_configs.py | implementation | 20 个 Math baseline configs 的资源、数据、方法与唯一性回归测试 |
+| 2026-08-31 02:32 | /experiment-plan | refine-logs/EXPERIMENT_PLAN_20260831_023212.md | implementation | Small VR 与 Surface domaincand pool 的公平 ablation 计划 |
+| 2026-08-31 02:32 | /experiment-plan | refine-logs/EXPERIMENT_PLAN.md | implementation | latest copy |
+| 2026-08-31 02:32 | /experiment-plan | refine-logs/EXPERIMENT_TRACKER_20260831_023212.md | implementation | Candidate pool size ablation 执行矩阵 |
+| 2026-08-31 02:32 | /experiment-plan | refine-logs/EXPERIMENT_TRACKER.md | implementation | latest copy |

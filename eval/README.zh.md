@@ -27,7 +27,7 @@ scripts/run_local_eval.sh --model-path /path/to/model [options]
 | Domain | 代码位置 | 评测数据 | 状态 |
 |---|---|---|---|
 | Math | `domains/math/` | `../data/eval_data/math/{AIME24,AIME25,HMMT25Feb,HMMT25Nov}/test.parquet` | 已就绪 |
-| Code | `domains/code/` | `../data/eval_data/code/{HumanEvalPlus,MBPPPlus,LiveCodeBench}/test.parquet` | HumanEvalPlus/MBPPPlus 已就绪；LiveCodeBench 用 `prepare_paper_eval_data.sh` 生成 |
+| Code | `domains/code/` | `../data/eval_data/code/{HumanEvalPlus,MBPPPlus,LiveCodeBench-v5,LiveCodeBench}/test.parquet` | HumanEvalPlus/MBPPPlus 已就绪；LCB v5/v6 独立 artifacts 用 `prepare_paper_eval_data.sh` 生成 |
 | IF | `mopd_verl/m2rl_reward.py` | `../data/eval_data/if/{IFBench,IFEval}/test.parquet` | 完整数据用 `python -m eval.data_prep.m2rl_eval` 生成；shell helper 只准备 IFBench |
 | Science | `domains/science/` | `../data/eval_data/science/{GPQA,HLE,MMLU-Pro,SuperGPQA}/test.parquet` | GPQA/HLE 用 `python -m eval.data_prep.m2rl_eval` 生成；MMLU-Pro/SuperGPQA 提供 official evaluator |
 | Training ceiling | 复用现有 domain scorer | `../data/eval_training_data/{math,code,if,science}/test.parquet` | 每个 domain 10,000 条、与训练源重叠，只用于 training-performance 诊断 |
@@ -100,17 +100,35 @@ Please reason step by step, and put your final answer within \boxed{}.
 
 Code prompt 由 `domains/code/prompting.py` 统一构建：
 
-- `HumanEvalPlus` / `MBPPPlus`: 使用原 EvalPlus Qwen/chat instruction，在题目后追加
-  markdown Python code block 要求和 paper 里的 "think first" 句子。
-- `LiveCodeBench`: 使用 G-OPD 对齐的增量 `v6`（仅 `test6.jsonl`，175 题），
-  默认使用 paper 代码中的 `Qwen3NonThinking` prompt 内容。它不是累计 1,055 题的
+- `HumanEvalPlus` / `MBPPPlus`: 逐字复现原 G-OPD EvalPlus 路径；stripped 题目与
+  markdown Python code block / "think first" suffix 之间固定为 3 个换行。
+- `LiveCodeBench`: 使用两个独立官方增量 split：`v5/` 的两个 parquet shards
+  （167 题）和 `test6.jsonl` / `v6`（175 题）。pinned source 中不存在官方
+  `test5.jsonl`；准备脚本仅为兼容 G-OPD loader，从两个 pinned v5 shard
+  确定性生成并记录 hash 的 `test5.jsonl`。两者也都不是累计
+  `release_v5` / `release_v6`。二者默认逐字复现
+  paper 代码中的同一个 `Qwen3NonThinking` prompt，包括
+  `You will NOT return anything except for the program.` preamble。它不是累计 1,055 题的
   `release_v6`。生成的 parquet 包含完整 private tests，因此由 Git 忽略；
-  `manifest.json` 仅记录固定 revision 与 source checksum。
+  各自的 `manifest.json` 记录固定 revision、source hashes、prompt hash 与 ordered
+  user-content hash。
 
-G-OPD 的 official LiveCodeBench protocol 是每题 4 samples、`temperature=1.0`、
-`top_p=1.0`、`max_tokens=16384`，并执行 public + private tests。请使用
-`eval/scripts/run_paper_eval_suite.sh` 复现；`run_local_eval.sh` 更适合统一接口下的
-smoke/debug evaluation。
+以上“逐字复现”指 user content；评测时由 G-OPD formatter 固定使用
+`Qwen/Qwen3-4B` tokenizer/chat template 与 `enable_thinking=false` 渲染，并非
+使用 target checkpoint 的 chat template。若要声称 token-level prompt 完全相同，
+还需在 run provenance 中固定 tokenizer revision 并核验 chat-template hash。
+
+当前标准是每题 8 samples、`temperature=1.0`、`top_p=1.0`、
+`max_tokens=16384`，并执行 public + private tests。请使用
+`eval/scripts/run_paper_eval_suite.sh` 依次运行 v5/v6；该脚本固定 G-OPD model style 为
+`Qwen3-4B-NonThinking`，实际权重由 `--local_model_path` 指向待测 checkpoint。通用 Docker Code scorer 尚未隔离
+LCB input/output scorer，因此不能用其失败/空分数代替 official evaluation。
+
+canonical Step-60 入口为 `slurm_standard_eval.sh`。十个数据集按严格 dataset
+wave 顺序执行，四个常驻的单卡 `TP=1` vLLM replica 只动态领取当前数据集的
+最多 16 个 micro-shards；每个 prompt 在一次 vLLM request 中直接采样 `n=8`。
+LiveCodeBench v5/v6 也走同一个 `DP=4` worker pool，合并后调用原始 G-OPD
+extraction 与 public+private scorer，不再使用 `TP=4`。
 
 ## 从训练数据生成 Performance-Ceiling Eval
 

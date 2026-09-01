@@ -1,0 +1,10 @@
+# Minimal dependencies used by the EvalPlus source vendored in G-OPD commit
+# 37371a4c31ad7947746200d234161769191f4748.
+appdirs==1.4.4
+fire==0.6.0
+multipledispatch==0.6.0
+tempdir==0.7.1
+termcolor==2.4.0
+tree-sitter==0.22.3
+tree-sitter-python==0.21.0
+wget==3.2

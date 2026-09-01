@@ -49,7 +49,12 @@ def score_with_project_reward(
 
         result = compute_m2rl_score(data_source, completion, ground_truth, extra_info=extra_info)
         return float(result["score"]), [result]
-    if data_source in {"HumanEvalPlus", "MBPPPlus", "LiveCodeBench"}:
+    if data_source in {
+        "HumanEvalPlus",
+        "MBPPPlus",
+        "LiveCodeBench-v5",
+        "LiveCodeBench-v6",
+    }:
         from mopd_verl.code_reward import compute_score as compute_code_score
 
         score, metadata = compute_code_score(data_source, completion, ground_truth)

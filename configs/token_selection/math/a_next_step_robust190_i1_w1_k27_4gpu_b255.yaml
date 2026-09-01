@@ -1,0 +1,31 @@
+# Offline optimum: next-step Type F1, unified Metric A, pre-window=1, K=27.
+extends: _common.yaml
+
+runtime:
+  wandb_run_id: q1p7b-math-a-ns-robust190-i1w1k27-b255
+
+audit:
+  output_dir: audit/q1p7b-math-a-ns-robust190-i1w1k27-b255
+  control_token_online_selection_enabled: true
+  control_token_online_audit_interval_steps: 1
+  control_token_online_window_steps: 1
+  control_token_online_top_k: 27
+  domain_control_token_candidate_ids:
+    math: [
+      14, 25, 258, 269, 300, 304, 333, 334, 369, 421, 438, 476,
+      504, 510, 549, 608, 641, 758, 773, 820, 1075, 1083, 1156, 1221,
+      1380, 1416, 1431, 1447, 1576, 1752, 1958, 1959, 1986, 2055, 2058,
+      2121, 2137, 2303, 2461, 2679, 2870, 3070, 3830, 4080, 4226, 4354,
+      4416, 4518, 5005, 7039, 9112, 9658, 10293, 11209, 11520, 12209,
+      13023, 16085, 17949, 19788, 21806, 44364, 54815, 56177, 96065, 151645
+    ]
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-a-ns-robust190-i1w1k27-b255
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-a-ns-robust190-i1w1k27-b255
+
+trainer:
+  experiment_name: q1p7b-math-a-ns-robust190-i1w1k27-b255
+  default_local_dir: checkpoints/MOPD/q1p7b-math-a-ns-robust190-i1w1k27-b255

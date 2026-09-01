@@ -1,9 +1,20 @@
 {
+  "chat_template_enable_thinking": false,
+  "chat_template_tokenizer": "Qwen/Qwen3-4B",
+  "data_source": "LiveCodeBench-v6",
   "dataset": "livecodebench/code_generation_lite",
+  "enable_thinking": false,
   "evaluation_tests": "public+private",
+  "prompt_template": "gopd_qwen3_non_thinking",
+  "prompt_template_sha256": "693a6a62405d64893850785962c4834d51cde07624c3b3ba9cf0f1c9c683d52d",
   "release_version": "v6",
   "revision": "48d36ed304dca42cf8ab20e941262ccd096518a3",
   "rows": 175,
-  "source_file": "test6.jsonl",
-  "source_sha256": "bb4c364f71921c4495a6ad15abe1a927350b720009f4933e2e71f8af0f6fd1f5"
+  "source_files": [
+    {
+      "name": "test6.jsonl",
+      "sha256": "bb4c364f71921c4495a6ad15abe1a927350b720009f4933e2e71f8af0f6fd1f5"
+    }
+  ],
+  "user_content_sha256": "e3f854ec80eb363b8f7971e1101dc20e217ea008e4bc97a2ae0a1cb6f5f07fda"
 }

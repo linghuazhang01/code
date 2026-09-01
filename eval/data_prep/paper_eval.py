@@ -80,6 +80,10 @@ for _lcb_idx in range(1, 7):
     LCB_RELEASE_FILES[f"v{_lcb_idx}"] = [
         "test.jsonl" if _lcb_idx == 1 else f"test{_lcb_idx}.jsonl"
     ]
+LCB_RELEASE_FILES["v5"] = [
+    "v5/test-00000-of-00002.parquet",
+    "v5/test-00001-of-00002.parquet",
+]
 
 
 def _load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -250,63 +254,113 @@ def _lcb_ground_truth(record: Mapping[str, Any]) -> str:
     )
 
 
-def lcb_jsonl_to_verl_parquet(
-    input_paths: Sequence[str | Path], output_path: str | Path
+def _lcb_records_to_verl_parquet(
+    records: Sequence[Mapping[str, Any]],
+    output_path: str | Path,
+    data_source: str,
 ) -> int:
-    """Convert LiveCodeBench code-generation-lite JSONL shards into verl validation parquet format."""
-
     output = Path(output_path)
     rows: list[dict[str, Any]] = []
-    for input_path in input_paths:
-        source = Path(input_path)
-        if not source.exists():
-            continue
-        for record in _load_jsonl(source):
-            row_position = len(rows)
-            question_id = str(record.get("question_id", row_position))
-            title = str(record.get("question_title", "")).strip()
-            question = str(record.get("question_content", "")).strip()
-            starter_code = str(record.get("starter_code", "") or "").strip()
-            if not question and not title and not starter_code:
-                raise ValueError(
-                    f"{source}:{row_position + 1} must contain question text or starter code."
-                )
-            prompt_content = build_lcb_qwen3_non_thinking_prompt(
-                question or title or starter_code
+    for row_position, record in enumerate(records):
+        question_id = str(record.get("question_id", row_position))
+        question = str(record.get("question_content", ""))
+        if not question.strip():
+            raise ValueError(
+                f"LiveCodeBench row {row_position + 1} must contain question_content."
             )
-            rows.append(
-                {
-                    "id": f"LiveCodeBench:{question_id}",
-                    "data_source": "LiveCodeBench",
-                    "prompt": [
-                        {
-                            "role": "user",
-                            "content": prompt_content,
-                        }
-                    ],
-                    "ability": "code",
-                    "reward_model": {
-                        "style": "rule",
-                        "ground_truth": _lcb_ground_truth(record),
-                    },
-                    "extra_info": {
-                        "index": row_position,
-                        "split": "test",
-                        "sample_id": f"validation:LiveCodeBench:{question_id}",
-                        "opd_teacher": "code",
-                        "domain": "code",
-                        "source_domain": "code",
-                        "validation_dataset": "LiveCodeBench",
-                        "prompt_template": "paper_lcb_qwen3_non_thinking",
-                        "question_id": question_id,
-                        "platform": record.get("platform"),
-                    },
-                }
-            )
+        prompt_content = build_lcb_qwen3_non_thinking_prompt(question)
+        rows.append(
+            {
+                "id": f"{data_source}:{question_id}",
+                "data_source": data_source,
+                "prompt": [
+                    {
+                        "role": "user",
+                        "content": prompt_content,
+                    }
+                ],
+                "ability": "code",
+                "reward_model": {
+                    "style": "rule",
+                    "ground_truth": _lcb_ground_truth(record),
+                },
+                "extra_info": {
+                    "index": row_position,
+                    "split": "test",
+                    "sample_id": f"validation:{data_source}:{question_id}",
+                    "opd_teacher": "code",
+                    "domain": "code",
+                    "source_domain": "code",
+                    "validation_dataset": data_source,
+                    "prompt_template": "paper_lcb_qwen3_non_thinking",
+                    "question_id": question_id,
+                    "platform": record.get("platform"),
+                },
+            }
+        )
 
     output.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows).to_parquet(output, index=False)
     return len(rows)
+
+
+def lcb_jsonl_to_verl_parquet(
+    input_paths: Sequence[str | Path],
+    output_path: str | Path,
+    data_source: str = "LiveCodeBench-v6",
+) -> int:
+    """Convert LiveCodeBench JSONL shards into verl validation parquet format."""
+
+    records: list[dict[str, Any]] = []
+    for input_path in input_paths:
+        source = Path(input_path)
+        if not source.is_file():
+            raise FileNotFoundError(f"Missing LiveCodeBench source: {source}")
+        records.extend(_load_jsonl(source))
+    return _lcb_records_to_verl_parquet(records, output_path, data_source)
+
+
+def lcb_source_parquet_to_verl_parquet(
+    input_paths: Sequence[str | Path],
+    output_path: str | Path,
+    data_source: str,
+) -> int:
+    """Convert official LiveCodeBench source parquet shards into verl format."""
+
+    records: list[dict[str, Any]] = []
+    for input_path in input_paths:
+        source = Path(input_path)
+        if not source.is_file():
+            raise FileNotFoundError(f"Missing LiveCodeBench source: {source}")
+        records.extend(pd.read_parquet(source).to_dict(orient="records"))
+    return _lcb_records_to_verl_parquet(records, output_path, data_source)
+
+
+def lcb_source_parquet_to_jsonl(
+    input_paths: Sequence[str | Path],
+    output_path: str | Path,
+) -> int:
+    """Materialize the JSONL compatibility file expected by the G-OPD LCB fork."""
+
+    records: list[dict[str, Any]] = []
+    for input_path in input_paths:
+        source = Path(input_path)
+        if not source.is_file():
+            raise FileNotFoundError(f"Missing LiveCodeBench source: {source}")
+        records.extend(pd.read_parquet(source).to_dict(orient="records"))
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary_output = output.with_suffix(f"{output.suffix}.tmp")
+    with temporary_output.open("w", encoding="utf-8") as handle:
+        for record in records:
+            encoded = json.dumps(
+                record,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            handle.write(f"{encoded}\n")
+    temporary_output.replace(output)
+    return len(records)
 
 
 def prepare_paper_eval_data(
@@ -340,9 +394,14 @@ def prepare_paper_eval_data(
             data_source=data_source,
         )
     lcb_root = root / "code_eval/coding/LiveCodeBench/code_generation_lite"
-    lcb_files = [lcb_root / name for name in LCB_RELEASE_FILES["v6"]]
-    counts["lcb"] = lcb_jsonl_to_verl_parquet(
-        input_paths=lcb_files,
+    counts["lcb_v5"] = lcb_source_parquet_to_verl_parquet(
+        input_paths=[lcb_root / name for name in LCB_RELEASE_FILES["v5"]],
+        output_path=target_root / "code/LiveCodeBench-v5/test.parquet",
+        data_source="LiveCodeBench-v5",
+    )
+    counts["lcb_v6"] = lcb_jsonl_to_verl_parquet(
+        input_paths=[lcb_root / name for name in LCB_RELEASE_FILES["v6"]],
         output_path=target_root / "code/LiveCodeBench/test.parquet",
+        data_source="LiveCodeBench-v6",
     )
     return counts

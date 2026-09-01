@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-CODE_DATASETS = frozenset({"HumanEvalPlus", "MBPPPlus", "LiveCodeBench"})
+CODE_DATASETS = frozenset(
+    {"HumanEvalPlus", "MBPPPlus", "LiveCodeBench-v5", "LiveCodeBench-v6"}
+)
 
 
 def is_code_dataset(data_source: str) -> bool:

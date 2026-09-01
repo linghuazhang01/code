@@ -1,0 +1,11 @@
+{
+  "data_source": "HumanEvalPlus",
+  "dataset": "HumanEvalPlus",
+  "enable_thinking": false,
+  "prompt_template": "gopd_evalplus_qwen_chat",
+  "prompt_template_sha256": "02c18e08b8b17d8317d4735e29cc68dce52f4ddca20f1def66b5e5f473e8cc79",
+  "rows": 164,
+  "source_file": "HumanEvalPlus.jsonl",
+  "source_sha256": "42526ec0e7d5f3ee0b06d6ced98f8c8bae3d76519151bfb3d36f79010645bd7f",
+  "user_content_sha256": "7600a79a4f97a20dfd4cce69aa1c339f6715e0ad0890c7a34b690e47b544e57f"
+}

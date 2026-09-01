@@ -11,11 +11,13 @@ from typing import Any
 from mopd_verl.config_profiles import load_raw_config
 from mopd_verl.domain_gradient.control_selection_scoring import (
     FIXED_ONLINE_WEIGHT_MODE,
+    ONLINE_CONTROL_BUDGET_MODES,
     ONLINE_CONTROL_SELECTION_MODES,
     ONLINE_CONTROL_WEIGHT_MODES,
     PAIRED_ONLINE_WEIGHT_MODE,
     PAIRED_SIGNAL_SELECTION_MODES,
     TOP_KL_STUDENT_ENTROPY_SELECTION_MODE,
+    TOP_K_BUDGET_MODE,
     TOP_LOSS_SELECTION_MODE,
     TOP_SPEED_SELECTION_MODE,
 )
@@ -305,12 +307,19 @@ class AuditConfig:
     domain_control_token_candidate_ids: dict[str, list[int]] = field(
         default_factory=dict
     )
+    domain_control_token_candidate_groups: dict[
+        str, dict[str, list[int]]
+    ] = field(default_factory=dict)
     control_token_normalize_per_domain: bool = False
     control_token_online_selection_enabled: bool = False
     control_token_online_audit_interval_steps: int = 3
     control_token_online_window_steps: int = 3
     control_token_online_min_mean_occurrences_per_step: float = 20.0
+    control_token_online_strict_occurrence_gate: bool = False
     control_token_online_top_k: int = 30
+    control_token_online_top_k_per_group: int | None = None
+    control_token_online_budget_mode: str = TOP_K_BUDGET_MODE
+    control_token_online_top_p: float = 1.0
     control_token_online_selection_mode: str = TOP_LOSS_SELECTION_MODE
     control_token_online_weight_mode: str = FIXED_ONLINE_WEIGHT_MODE
     control_token_adaptive_neighborhood_enabled: bool = False
@@ -988,6 +997,7 @@ def load_config(path: str | Path) -> MOPDConfig:
             and (
                 audit.control_token_candidate_ids
                 or audit.domain_control_token_candidate_ids
+                or audit.domain_control_token_candidate_groups
             )
         )
     ):
@@ -1017,10 +1027,20 @@ def load_config(path: str | Path) -> MOPDConfig:
             "audit.control_token_candidate_ids must not contain duplicates."
         )
     domain_candidates = audit.domain_control_token_candidate_ids
-    if audit.control_token_candidate_ids and domain_candidates:
+    domain_candidate_groups = audit.domain_control_token_candidate_groups
+    candidate_source_count = sum(
+        bool(value)
+        for value in (
+            audit.control_token_candidate_ids,
+            domain_candidates,
+            domain_candidate_groups,
+        )
+    )
+    if candidate_source_count > 1:
         raise ValueError(
             "Configure either audit.control_token_candidate_ids or "
-            "audit.domain_control_token_candidate_ids, not both."
+            "audit.domain_control_token_candidate_ids or "
+            "audit.domain_control_token_candidate_groups, not more than one."
         )
     if domain_candidates and set(domain_candidates) != set(audit.domains):
         raise ValueError(
@@ -1047,6 +1067,54 @@ def load_config(path: str | Path) -> MOPDConfig:
             "audit.domain_control_token_candidate_ids entries must not "
             "contain duplicates."
         )
+    if domain_candidate_groups and set(domain_candidate_groups) != set(
+        audit.domains
+    ):
+        raise ValueError(
+            "audit.domain_control_token_candidate_groups keys must exactly "
+            "match audit.domains."
+        )
+    if any(not groups for groups in domain_candidate_groups.values()):
+        raise ValueError(
+            "audit.domain_control_token_candidate_groups entries must contain "
+            "at least one group."
+        )
+    if any(
+        not token_ids
+        for groups in domain_candidate_groups.values()
+        for token_ids in groups.values()
+    ):
+        raise ValueError(
+            "audit.domain_control_token_candidate_groups group entries must be "
+            "non-empty."
+        )
+    if any(
+        token_id < 0
+        for groups in domain_candidate_groups.values()
+        for token_ids in groups.values()
+        for token_id in token_ids
+    ):
+        raise ValueError(
+            "audit.domain_control_token_candidate_groups must be non-negative."
+        )
+    if any(
+        len(token_ids) != len(set(token_ids))
+        for groups in domain_candidate_groups.values()
+        for token_ids in groups.values()
+    ):
+        raise ValueError(
+            "audit.domain_control_token_candidate_groups group entries must not "
+            "contain duplicates."
+        )
+    for domain, groups in domain_candidate_groups.items():
+        flattened = [
+            token_id for token_ids in groups.values() for token_id in token_ids
+        ]
+        if len(flattened) != len(set(flattened)):
+            raise ValueError(
+                "audit.domain_control_token_candidate_groups groups must be "
+                f"disjoint within domain {domain!r}."
+            )
     if (
         audit.control_token_online_audit_interval_steps < 1
         or audit.control_token_online_window_steps < 1
@@ -1054,6 +1122,45 @@ def load_config(path: str | Path) -> MOPDConfig:
     ):
         raise ValueError(
             "Online Control audit interval, window, and Top-K must be positive."
+        )
+    if audit.control_token_online_budget_mode not in ONLINE_CONTROL_BUDGET_MODES:
+        allowed = ", ".join(sorted(ONLINE_CONTROL_BUDGET_MODES))
+        raise ValueError(
+            "audit.control_token_online_budget_mode must be one of: "
+            f"{allowed}."
+        )
+    if (
+        not math.isfinite(audit.control_token_online_top_p)
+        or not 0.0 < audit.control_token_online_top_p <= 1.0
+    ):
+        raise ValueError(
+            "audit.control_token_online_top_p must be finite and in (0, 1]."
+        )
+    if (
+        domain_candidate_groups
+        and audit.control_token_online_budget_mode == TOP_K_BUDGET_MODE
+    ):
+        if (
+            audit.control_token_online_top_k_per_group is None
+            or audit.control_token_online_top_k_per_group < 1
+        ):
+            raise ValueError(
+                "Grouped online Control selection requires a positive "
+                "audit.control_token_online_top_k_per_group."
+            )
+        expected_top_ks = {
+            audit.control_token_online_top_k_per_group * len(groups)
+            for groups in domain_candidate_groups.values()
+        }
+        if expected_top_ks != {audit.control_token_online_top_k}:
+            raise ValueError(
+                "audit.control_token_online_top_k must equal per-group K times "
+                "the number of groups in every domain."
+            )
+    elif audit.control_token_online_top_k_per_group is not None:
+        raise ValueError(
+            "audit.control_token_online_top_k_per_group requires grouped "
+            "Top-K selection."
         )
     if audit.control_token_online_selection_mode not in ONLINE_CONTROL_SELECTION_MODES:
         allowed = ", ".join(sorted(ONLINE_CONTROL_SELECTION_MODES))
@@ -1100,6 +1207,7 @@ def load_config(path: str | Path) -> MOPDConfig:
         if not (
             audit.control_token_candidate_ids
             or audit.domain_control_token_candidate_ids
+            or audit.domain_control_token_candidate_groups
         ):
             raise ValueError(
                 "Online Control selection requires "

@@ -188,6 +188,6 @@ def compute_score(data_source: str, completion: str, ground_truth: str | dict[st
     os.environ.setdefault("PYTHONINTMAXSTRDIGITS", "0")
     if data_source in {"HumanEvalPlus", "MBPPPlus"}:
         return _assert_score(completion, payload)
-    if data_source == "LiveCodeBench":
+    if data_source in {"LiveCodeBench-v5", "LiveCodeBench-v6"}:
         return _input_output_score(completion, payload)
     return 0.0, [{"error": f"unsupported data_source: {data_source}"}]

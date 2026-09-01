@@ -1,0 +1,30 @@
+# Event-supported next-window Type-F1 optimum: unified A, window=7, K=8.
+# Control-44 has no effective Structure candidates in the frozen taxonomy.
+extends: _common.yaml
+
+runtime:
+  wandb_run_id: q1p7b-math-a-nw-control44-i7w7k8-b255
+
+audit:
+  output_dir: audit/q1p7b-math-a-nw-control44-i7w7k8-b255
+  control_token_online_selection_enabled: true
+  control_token_online_audit_interval_steps: 7
+  control_token_online_window_steps: 7
+  control_token_online_top_k: 8
+  domain_control_token_candidate_ids:
+    math: [
+      300, 641, 758, 983, 1083, 1156, 1249, 1416, 1431, 1986,
+      2055, 2121, 2461, 2679, 2938, 4226, 4354, 4416, 5005, 5338,
+      7039, 8704, 9112, 9211, 9658, 11209, 11284, 12209, 12549, 13023,
+      13394, 15277, 16085, 17949, 19357, 21806, 22477, 44500, 54815, 73877
+    ]
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-a-nw-control44-i7w7k8-b255
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-a-nw-control44-i7w7k8-b255
+
+trainer:
+  experiment_name: q1p7b-math-a-nw-control44-i7w7k8-b255
+  default_local_dir: checkpoints/MOPD/q1p7b-math-a-nw-control44-i7w7k8-b255

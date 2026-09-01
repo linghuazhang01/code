@@ -281,7 +281,11 @@ def append_online_control_selection_jsonl(
         "window_steps": state.window_steps,
         "audit_interval_steps": state.audit_interval_steps,
         "min_mean_occurrences_per_step": (state.min_mean_occurrences_per_step),
+        "strict_occurrence_gate": state.strict_occurrence_gate,
         "top_k": state.top_k,
+        "top_k_per_group": state.top_k_per_group,
+        "budget_mode": state.budget_mode,
+        "top_p": state.top_p,
         "selection_mode": state.selection_mode,
         "weight_mode": state.weight_mode,
         "candidate_token_count": len(state.candidate_token_ids),
@@ -289,6 +293,12 @@ def append_online_control_selection_jsonl(
         "domain_candidate_token_counts": {
             domain: len(token_ids)
             for domain, token_ids in state.domain_candidate_token_ids
+        },
+        "domain_candidate_group_counts": {
+            domain: {
+                group: len(token_ids) for group, token_ids in groups.items()
+            }
+            for domain, groups in state.candidate_group_map().items()
         },
         "control_weight": float(control_weight),
         "applied_token_ids": {
