@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from mopd_verl.m2rl_reward import compute_score as compute_m2rl_score
@@ -111,4 +111,26 @@ def compute_score(
         ground_truth=ground_truth,
         extra_info=extra_info,
         **kwargs,
+    )
+
+
+def compute_score_batched(
+    data_sources: Sequence[str],
+    solution_strs: Sequence[str],
+    ground_truths: Sequence[Any],
+    extra_infos: Sequence[Any],
+    max_workers: int = 32,
+    batch_timeout_seconds: float = 120.0,
+) -> list[dict[str, float]]:
+    """Score mixed rewards concurrently with a hard batch timeout."""
+
+    from mopd_verl.batched_reward import compute_score_batched as score_batched
+
+    return score_batched(
+        data_sources=data_sources,
+        solution_strs=solution_strs,
+        ground_truths=ground_truths,
+        extra_infos=extra_infos,
+        max_workers=max_workers,
+        batch_timeout_seconds=batch_timeout_seconds,
     )

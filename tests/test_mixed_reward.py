@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -93,3 +95,87 @@ def test_math_verify_adapter_converts_ground_truth_to_string(
         "model_output": "The answer is \\boxed{42}.",
         "ground_truth": "42",
     }
+
+
+def test_batched_reward_entrypoint_forwards_bounds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mopd_verl import batched_reward
+
+    captured: dict[str, Any] = {}
+
+    def fake_score_batched(**kwargs: Any) -> list[dict[str, float]]:
+        captured.update(kwargs)
+        return [{"score": 1.0}]
+
+    monkeypatch.setattr(batched_reward, "compute_score_batched", fake_score_batched)
+
+    result = mixed_reward.compute_score_batched(
+        data_sources=["DeepMath"],
+        solution_strs=["answer"],
+        ground_truths=["answer"],
+        extra_infos=[{}],
+        max_workers=7,
+        batch_timeout_seconds=12.5,
+    )
+
+    assert result == [{"score": 1.0}]
+    assert captured["max_workers"] == 7
+    assert captured["batch_timeout_seconds"] == 12.5
+
+
+def test_batched_reward_normalizes_all_metric_keys() -> None:
+    from mopd_verl.batched_reward import _fallback_result, _normalize_result
+
+    assert _normalize_result({"score": 0.5, "m2rl_gpqa": 1.0}) == {
+        "score": 0.5,
+        "m2rl_gpqa": 1.0,
+        "m2rl_ifbench": 0.0,
+        "reward_timeout": 0.0,
+        "reward_error": 0.0,
+    }
+    assert _fallback_result(timed_out=True) == {
+        "score": 0.0,
+        "m2rl_gpqa": 0.0,
+        "m2rl_ifbench": 0.0,
+        "reward_timeout": 1.0,
+        "reward_error": 0.0,
+    }
+
+
+def test_batched_reward_terminates_pool_at_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mopd_verl import batched_reward
+
+    async_result = SimpleNamespace(ready=lambda: False)
+    pool = MagicMock()
+    pool.apply_async.return_value = async_result
+    context = SimpleNamespace(Pool=lambda **_kwargs: pool)
+
+    monkeypatch.setattr(
+        batched_reward.multiprocessing,
+        "get_context",
+        lambda _method: context,
+    )
+    monotonic_values = iter([0.0, 1.0])
+    monkeypatch.setattr(
+        batched_reward.time,
+        "monotonic",
+        lambda: next(monotonic_values),
+    )
+
+    result = batched_reward.compute_score_batched(
+        data_sources=["DeepMath"],
+        solution_strs=["pathological answer"],
+        ground_truths=["0"],
+        extra_infos=[{}],
+        max_workers=1,
+        batch_timeout_seconds=0.5,
+    )
+
+    assert result[0]["score"] == 0.0
+    assert result[0]["reward_timeout"] == 1.0
+    pool.terminate.assert_called_once_with()
+    pool.close.assert_not_called()
+    pool.join.assert_called_once_with()

@@ -416,12 +416,26 @@ def test_math_full_taxonomy_top_p_resume15_contract() -> None:
         config.runtime.wandb_run_id
         == "q1p7b-math-tax-topp0p01-5gpu-3a2t-b258-r15"
     )
+    assert config.runtime.wandb_resume == "must"
     assert config.data.train_batch_size == 258
     assert config.worker_placement.actor_rollout.n_gpus_per_node == 3
     assert config.worker_placement.ref_policy.n_gpus_per_node == 2
+    assert config.rollout.val_n == 4
+    assert config.rollout.val_do_sample is True
+    assert config.rollout.val_temperature == 1.0
+    assert config.rollout.val_top_p == 1.0
     assert "trainer.resume_mode=disable" not in command
     assert "custom_reward_function.path=mopd_verl/mixed_reward.py" in command
-    assert "custom_reward_function.name=compute_score" in command
+    assert "custom_reward_function.name=compute_score_batched" in command
+    assert "reward_model.reward_manager=batch" in command
+    assert "+custom_reward_function.reward_kwargs.max_workers=32" in command
+    assert (
+        "+custom_reward_function.reward_kwargs.batch_timeout_seconds=120.0"
+        in command
+    )
+    assert "actor_rollout_ref.rollout.val_kwargs.n=4" in command
+    assert "actor_rollout_ref.rollout.val_kwargs.do_sample=True" in command
+    assert "actor_rollout_ref.rollout.val_kwargs.temperature=1.0" in command
     assert "trainer.resume_mode=resume_path" in command
     assert (
         "trainer.resume_from_path=checkpoints/MOPD/"

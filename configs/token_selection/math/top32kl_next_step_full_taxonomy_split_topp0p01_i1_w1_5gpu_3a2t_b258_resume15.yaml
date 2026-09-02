@@ -3,7 +3,7 @@ extends: top32kl_next_step_full_taxonomy_split_topp0p01_i1_w1_5gpu_3a2t_b258.yam
 
 runtime:
   wandb_run_id: q1p7b-math-tax-topp0p01-5gpu-3a2t-b258-r15
-  wandb_resume: never
+  wandb_resume: must
 
 audit:
   output_dir: audit/q1p7b-math-top32kl-ns-taxonomy-topp0p01-i1w1-5gpu-3a2t-b258-resume15
@@ -18,9 +18,19 @@ trainer:
   experiment_name: q1p7b-math-top32kl-ns-taxonomy-topp0p01-i1w1-5gpu-3a2t-b258-resume15
   default_local_dir: checkpoints/MOPD/q1p7b-math-top32kl-ns-taxonomy-topp0p01-i1w1-5gpu-3a2t-b258-resume15
 
+# Validation Avg@4. verl reports this metric as reward/mean@4.
+rollout:
+  val_n: 4
+  val_do_sample: true
+  val_temperature: 1.0
+  val_top_p: 1.0
+
 extra_overrides:
   - custom_reward_function.path=mopd_verl/mixed_reward.py
-  - custom_reward_function.name=compute_score
+  - custom_reward_function.name=compute_score_batched
+  - +custom_reward_function.reward_kwargs.max_workers=32
+  - +custom_reward_function.reward_kwargs.batch_timeout_seconds=120.0
+  - reward_model.reward_manager=batch
   - trainer.resume_mode=resume_path
   - trainer.resume_from_path=checkpoints/MOPD/q1p7b-math-top32kl-ns-taxonomy-topp0p01-i1w1-5gpu-3a2t-b258/global_step_15
   - actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
