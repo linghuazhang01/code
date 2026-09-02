@@ -9,6 +9,9 @@ from typing import Any
 from mopd_verl.m2rl_reward import compute_score as compute_m2rl_score
 
 
+_MATH_VERIFY_DATA_SOURCES = frozenset({"HMMT25Feb", "HMMT25Nov"})
+
+
 def _normalize_metadata(value: Any) -> dict[str, Any]:
     if isinstance(value, Mapping):
         return dict(value)
@@ -47,15 +50,18 @@ def _compute_default_score(
     extra_info: dict[str, Any] | str | None,
     **kwargs: Any,
 ) -> dict[str, float]:
-    from verl.utils.reward_score import default_compute_score
+    if data_source in _MATH_VERIFY_DATA_SOURCES:
+        result = _compute_math_verify_score(solution_str, ground_truth)
+    else:
+        from verl.utils.reward_score import default_compute_score
 
-    result = default_compute_score(
-        data_source=data_source,
-        solution_str=solution_str,
-        ground_truth=ground_truth,
-        extra_info=extra_info,
-        **kwargs,
-    )
+        result = default_compute_score(
+            data_source=data_source,
+            solution_str=solution_str,
+            ground_truth=ground_truth,
+            extra_info=extra_info,
+            **kwargs,
+        )
     # Return a dict with a consistent set of keys so that every item in a
     # mixed batch contributes the same entries to reward_extra_info.
     # The NaiveRewardManager aggregates per-item results into a
@@ -71,6 +77,15 @@ def _compute_default_score(
         "m2rl_gpqa": 0.0,
         "m2rl_ifbench": 0.0,
     }
+
+
+def _compute_math_verify_score(
+    solution_str: str,
+    ground_truth: Any,
+) -> float:
+    from verl.utils.reward_score import math_verify
+
+    return float(math_verify.compute_score(solution_str, str(ground_truth)))
 
 
 def compute_score(

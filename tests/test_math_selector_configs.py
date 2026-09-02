@@ -107,6 +107,13 @@ CASES = (
 
 TAXONOMY_TOP_P_CASES = (
     TaxonomyTopPCase(
+        "top32kl_next_step_full_taxonomy_split_topp0p01_i1_w1_5gpu_3a2t_b258.yaml",
+        0.01,
+        5,
+        3,
+        258,
+    ),
+    TaxonomyTopPCase(
         "top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_6gpu_4a2t_b256.yaml",
         0.1,
         6,
@@ -370,6 +377,12 @@ def test_math_full_taxonomy_top_p_dual_teacher_contract(
         == case.actor_gpus
     )
     assert config.worker_placement.ref_policy.n_gpus_per_node == 2
+    if case.total_gpus == 5:
+        assert (
+            case.batch_size
+            % config.worker_placement.ref_policy.n_gpus_per_node
+            == 0
+        )
     assert config.trainer.n_gpus_per_node == case.actor_gpus
 
     assert config.audit.control_token_online_selection_mode == "top_loss"
@@ -389,3 +402,37 @@ def test_math_full_taxonomy_top_p_dual_teacher_contract(
     assert "+mopd_audit.control_token_online_budget_mode=top_p" in command
     assert f"+mopd_audit.control_token_online_top_p={case.top_p}" in command
     assert "+mopd_audit.control_token_online_top_k_per_group=null" in command
+
+
+def test_math_full_taxonomy_top_p_resume15_contract() -> None:
+    config = load_config(
+        CONFIG_DIR
+        / "top32kl_next_step_full_taxonomy_split_topp0p01_i1_w1_5gpu_3a2t_b258_resume15.yaml"
+    )
+    command = format_command(build_command(config))
+
+    assert config.runtime.slurm_allocation_gpus == 5
+    assert (
+        config.runtime.wandb_run_id
+        == "q1p7b-math-tax-topp0p01-5gpu-3a2t-b258-r15"
+    )
+    assert config.data.train_batch_size == 258
+    assert config.worker_placement.actor_rollout.n_gpus_per_node == 3
+    assert config.worker_placement.ref_policy.n_gpus_per_node == 2
+    assert "trainer.resume_mode=disable" not in command
+    assert "custom_reward_function.path=mopd_verl/mixed_reward.py" in command
+    assert "custom_reward_function.name=compute_score" in command
+    assert "trainer.resume_mode=resume_path" in command
+    assert (
+        "trainer.resume_from_path=checkpoints/MOPD/"
+        "q1p7b-math-top32kl-ns-taxonomy-topp0p01-i1w1-5gpu-3a2t-b258/"
+        "global_step_15"
+        in command
+    )
+    assert "actor_rollout_ref.ref.fsdp_config.fsdp_size=2" in command
+    assert (
+        "trainer.default_local_dir=checkpoints/MOPD/"
+        "q1p7b-math-top32kl-ns-taxonomy-topp0p01-i1w1-5gpu-3a2t-b258-"
+        "resume15"
+        in command
+    )
