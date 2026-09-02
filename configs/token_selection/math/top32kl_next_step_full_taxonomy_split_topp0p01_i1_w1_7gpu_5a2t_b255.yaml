@@ -1,0 +1,29 @@
+# Seven-GPU resource overlay: 5 actor/rollout GPUs + 2 sharded teacher GPUs.
+extends: top32kl_next_step_full_taxonomy_split_topp0p01_i1_w1_6gpu_4a2t_b256.yaml
+
+runtime:
+  slurm_allocation_gpus: 7
+  wandb_run_id: q1p7b-math-top32kl-ns-taxonomy-topp0p01-i1w1-7gpu-5a2t-b255
+
+data:
+  train_batch_size: 255
+
+actor:
+  ppo_mini_batch_size: 255
+
+worker_placement:
+  actor_rollout: {n_gpus_per_node: 5, nnodes: 1}
+
+audit:
+  output_dir: audit/q1p7b-math-top32kl-ns-taxonomy-topp0p01-i1w1-7gpu-5a2t-b255
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-top32kl-ns-taxonomy-topp0p01-i1w1-7gpu-5a2t-b255
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-top32kl-ns-taxonomy-topp0p01-i1w1-7gpu-5a2t-b255
+
+trainer:
+  experiment_name: q1p7b-math-top32kl-ns-taxonomy-topp0p01-i1w1-7gpu-5a2t-b255
+  n_gpus_per_node: 5
+  default_local_dir: checkpoints/MOPD/q1p7b-math-top32kl-ns-taxonomy-topp0p01-i1w1-7gpu-5a2t-b255
