@@ -13,6 +13,12 @@ runtime:
 
 data:
   train_batch_size: 255
+  # Keep periodic validation Math-only and aligned with the paper suite.
+  val_files:
+    - ../mopd/code/data/eval_data/math/AIME24/test.parquet
+    - ../mopd/code/data/eval_data/math/AIME25/test.parquet
+    - ../mopd/code/data/eval_data/math/HMMT25Feb/test.parquet
+    - ../mopd/code/data/eval_data/math/HMMT25Nov/test.parquet
 
 actor:
   multi_teacher_distill: false
@@ -83,3 +89,5 @@ paper_eval:
 
 trainer:
   n_gpus_per_node: 3
+  test_freq: 20
+  val_before_train: false

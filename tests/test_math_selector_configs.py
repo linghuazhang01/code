@@ -26,6 +26,12 @@ DOMAIN_SUBSETS = (
     / "tables"
     / "domain-subsets.csv"
 )
+MATH_VALIDATION_FILES = [
+    "../mopd/code/data/eval_data/math/AIME24/test.parquet",
+    "../mopd/code/data/eval_data/math/AIME25/test.parquet",
+    "../mopd/code/data/eval_data/math/HMMT25Feb/test.parquet",
+    "../mopd/code/data/eval_data/math/HMMT25Nov/test.parquet",
+]
 
 
 @dataclass(frozen=True)
@@ -143,6 +149,22 @@ TAXONOMY_TOP_P_CASES = (
         258,
     ),
 )
+
+
+def test_all_math_token_selector_configs_use_periodic_validation() -> None:
+    config_paths = sorted(
+        path
+        for path in CONFIG_DIR.glob("*.yaml")
+        if not path.name.startswith("_")
+    )
+
+    assert config_paths
+    for path in config_paths:
+        config = load_config(path)
+
+        assert config.data.val_files == MATH_VALIDATION_FILES, path.name
+        assert config.trainer.test_freq == 20, path.name
+        assert not config.trainer.val_before_train, path.name
 
 
 def _effective_math_pool(pool: str) -> list[int]:
