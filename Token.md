@@ -591,9 +591,10 @@ V2 相对 V1 的新增量为 Math/Code/Science `+9/+8/+7`。当前数据中这�
 ### 6.1 VR Seed-Sibling Expanded ControlStructure Candidate Pool
 
 为避免把 `domaincand_v1/v2` Semantic Control whitelist 错当成 Control/Structure
-大池子，当前新增一套独立 candidate family：`VR Seed-Expanded ControlStructure V1/V2`。
-它以第 5–6 节的原始 VR Rising Top-200 Control/Structure selector 为 Small seed，
-对每个 seed 做确定性的 tokenizer sibling closure：
+大池子，当前新增一套独立 candidate family：`VR Seed-Expanded ControlStructure V1/V2/V3`。
+V1/V2 以第 5–6 节的 4B-OPD Rising Top-200 Control/Structure selector 为 Small
+seed；V3 的 four-baseline cross-size consensus 定义见下文。三者都对每个 seed 做
+确定性的 tokenizer sibling closure：
 
 ```text
 Small_v(d) = VRControlStructure_v(d)
@@ -639,9 +640,61 @@ target。统一 threshold=20 后的最终数量为：
 | V2 | Math | 35/13 | 153/73 | 92/24 | 116 |
 | V2 | Code | 31/27 | 137/93 | 89/57 | 146 |
 | V2 | Science | 31/9 | 123/71 | 81/24 | 105 |
+| V3 | Math | 46/19 | 191/126 | 112/34 | 146 |
+| V3 | Code | 19/35 | 93/167 | 57/83 | 140 |
+| V3 | Science | 33/18 | 151/119 | 91/37 | 128 |
 
-机器可读 membership、provenance、config-ready whitelist 与完整 replay 位于：
+V3 跨 domain 汇总如下。`Domain-aware entries` 会把同一 token 在不同 domain 中分别
+计数；`Unique global token IDs` 则对 token ID 去重：
+
+| V3 stage | Candidate-label C/S | Domain-aware entries | Unique global token IDs |
+|---|---:|---:|---:|
+| Small seed | 98/72 | 170 | 131 |
+| Raw Expanded | 435/412 | 847 | 507 |
+| ExpandedPruned@20 | 260/154 | 414 | 268 |
+
+相比 ExpandedPruned-V2 的 367 个 domain-aware entries、239 个 unique IDs，V3 最终
+分别增加 47（`+12.8%`）和 29。该差异表示 candidate-pool capacity 变化，不是
+selector performance 增益。
+
+其中 V3 是 **candidate-pool version**，不是新的 Control Structure taxonomy version；
+它继续使用 V2 taxonomy。对四条 baseline
+`B={1.7B-OPD, 1.7B-EOPD, 4B-OPD, 4B-EOPD}`，先在每条 baseline 内合并
+Rising/Stable Top-200，再在同一 model size 内合并 OPD/EOPD，最后对 1.7B 与 4B
+取交集：
+
+```text
+S_b(d)
+  = V2_ControlStructure(d)
+    ∩ (RisingTop200_b(d) ∪ StableTop200_b(d))
+
+Small_V3(d)
+  = (S_1.7B-OPD(d) ∪ S_1.7B-EOPD(d))
+    ∩ (S_4B-OPD(d) ∪ S_4B-EOPD(d))
+
+ExpandedPruned_V3(d; 20)
+  = Small_V3(d)
+    ∪ {t ∈ SiblingClosure(Small_V3(d)):
+         max_archived_step_occurrence(t,d) ≥ 20}
+```
+
+因此每个 V3 seed 必须由至少一条 1.7B baseline 和至少一条 4B baseline 支持，但
+不要求同时进入 Rising 与 Stable，也不要求出现在全部四条 baseline。每个 seed 和
+sibling 都记录 phase、baseline 与 source-seed provenance。V3 不再保证是 V2 的超集。
+
+按当前 Four-Baseline-Supported active taxonomy 做 domain intersection 后，V3 的有效
+Control/Structure 数量为 Math `85/30`（115）、Code `46/64`（110）、Science
+`69/30`（99），合计 324 个 domain-aware entries、214 个 unique global token IDs；
+其余 raw pool entries 保留在 audit 表中并标为 OutOfTaxonomy。
+
+机器可读 membership、phase provenance 和 config-ready whitelist 位于：
 `analysis-output/V2_token_precision_recall/vr_seed_expanded_pool_search/`。
+V3 已按 A/C/E/F、split/unified、K=1...100 与 window/pre-window=1...20 独立
+replay；主 taxonomy Type F1 下，Math-only next-step optimum 为 unified A/i1/w1
+（pre-update source）/K25，next-window event-supported optimum 为 unified A/i7/w7/K41。
+这些结果来自当前四条 trajectories，属于 in-sample exploratory evidence；训练尚未
+提交，held-out validation 前不得表述为泛化优势。历史 V2 replay 指标不得迁移为 V3
+结果。
 逐 baseline、逐 step 的完整 taxonomy Top-200 coverage audit 位于其子目录
 `top200_coverage_audit/`。
 

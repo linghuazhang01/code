@@ -40,6 +40,40 @@ reported mean selected count is K per type rather than the combined runtime
 budget. The Top-32-KL selector variant uses the requested per-step i1/w1/K21
 schedule and is not presented as a KL-grid optimum.
 
+## ExpandedPruned-V3 unified configs
+
+The V3 standalone configs contain the complete resolved YAML and have no
+`extends` key. They use the Math effective taxonomy intersection: 115 unified
+candidate IDs (85 Control + 30 Structure). Metric A is `top_logp_diff`, the
+budget is fixed `top_k`, and selected tokens receive raw weight 4 with
+per-domain normalization.
+
+| Target | Offline optimum | Config filename prefix |
+|---|---|---|
+| next-step | i1 / w1 (pre-update source) / K25 total | `a_next_step_expanded_pruned_v3_unified_i1_w1_k25_` |
+| next-window | i7 / w7 / K41 total | `a_next_window_expanded_pruned_v3_unified_i7_w7_k41_` |
+
+Both targets provide the following resource variants:
+
+| Total GPUs | Actor + teacher | Global batch | Filename suffix |
+|---:|---:|---:|---|
+| 4 | 3 + 1 | 255 | `4gpu_3a1t_b255.yaml` |
+| 5 | 4 + 1 | 256 | `5gpu_4a1t_b256.yaml` |
+| 6 | 4 + 2 | 256 | `6gpu_4a2t_b256.yaml` |
+| 7 | 5 + 2 | 255 | `7gpu_5a2t_b255.yaml` |
+| 8 | 6 + 2 | 258 | `8gpu_6a2t_b258.yaml` |
+
+The 6--8 GPU variants add `actor_rollout_ref.ref.fsdp_config.fsdp_size=2`
+because the teacher pool spans two GPUs. Slurm host memory is a launcher
+setting rather than a YAML field; use the project rule of 100G per allocated
+GPU when submitting these configs. All ten profiles use the bounded batched
+Math reward scorer (32 workers with a 120-second batch deadline).
+
+### Historical FullTaxonomy replay reference
+
+The following metrics belong to the earlier FullTaxonomy split configs, not
+ExpandedPruned-V3:
+
 | Target | Precision | Pool Recall | Pool F1 | Type Recall | Type F1 | Mean selection share |
 |---|---:|---:|---:|---:|---:|---:|
 | next-step, i3/w1/K21 per type | 0.2830 | 0.5282 | 0.3646 | 0.4743 | 0.3504 | 15.71% |
@@ -67,7 +101,14 @@ accumulates their observed occurrence counts until
 form one domain candidate union for Top-P rather than independent group quotas;
 `control_token_online_top_k_per_group` must be omitted.
 
-Launch any profile directly through `start.sh` in non-Slurm mode:
+Launch a resolved profile directly through `start.sh` in non-Slurm mode. For
+example, the V3 4-GPU next-step profile is:
+
+```bash
+GPU_IDS=0,1,2,3 bash start.sh --local --config configs/token_selection/math/a_next_step_expanded_pruned_v3_unified_i1_w1_k25_4gpu_3a1t_b255.yaml
+```
+
+Additional FullTaxonomy examples:
 
 ```bash
 GPU_IDS=0,1,2,3,4,5 bash start.sh --local --config configs/token_selection/math/top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_6gpu_4a2t_b256.yaml
