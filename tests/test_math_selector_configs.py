@@ -114,6 +114,13 @@ TAXONOMY_TOP_P_CASES = (
         258,
     ),
     TaxonomyTopPCase(
+        "top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_5gpu_3a2t_b258.yaml",
+        0.1,
+        5,
+        3,
+        258,
+    ),
+    TaxonomyTopPCase(
         "top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_6gpu_4a2t_b256.yaml",
         0.1,
         6,
@@ -450,3 +457,58 @@ def test_math_full_taxonomy_top_p_resume15_contract() -> None:
         "resume15"
         in command
     )
+
+
+@pytest.mark.parametrize(
+    ("filename", "total_gpus", "actor_gpus"),
+    (
+        (
+            "top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_5gpu_3a2t_b258.yaml",
+            5,
+            3,
+        ),
+        (
+            "top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_8gpu_6a2t_b258.yaml",
+            8,
+            6,
+        ),
+    ),
+)
+def test_math_full_taxonomy_top_p_ten_percent_avg4_contract(
+    filename: str,
+    total_gpus: int,
+    actor_gpus: int,
+) -> None:
+    config = load_config(CONFIG_DIR / filename)
+    command = format_command(build_command(config))
+    run_id = config.runtime.wandb_run_id
+
+    assert config.runtime.slurm_allocation_gpus == total_gpus
+    assert config.data.train_batch_size == 258
+    assert config.worker_placement.actor_rollout.n_gpus_per_node == actor_gpus
+    assert config.worker_placement.ref_policy.n_gpus_per_node == 2
+    assert config.audit.control_token_online_budget_mode == "top_p"
+    assert config.audit.control_token_online_top_p == 0.1
+    assert config.audit.control_token_online_top_k_per_group is None
+    assert config.rollout.val_n == 4
+    assert config.rollout.val_do_sample is True
+    assert config.rollout.val_temperature == 1.0
+    assert config.rollout.val_top_p == 1.0
+    assert run_id.endswith("-avg4")
+    assert config.audit.output_dir == f"audit/{run_id}"
+    assert config.paper_eval.output_dir == f"eval_outputs/paper_suite/{run_id}"
+    assert config.huggingface_checkpoint.path_prefix == f"checkpoints/math/{run_id}"
+    assert config.trainer.experiment_name == run_id
+    assert config.trainer.default_local_dir == f"checkpoints/MOPD/{run_id}"
+    assert "custom_reward_function.name=compute_score_batched" in command
+    assert "reward_model.reward_manager=batch" in command
+    assert "+custom_reward_function.reward_kwargs.max_workers=32" in command
+    assert (
+        "+custom_reward_function.reward_kwargs.batch_timeout_seconds=120.0"
+        in command
+    )
+    assert "actor_rollout_ref.rollout.val_kwargs.n=4" in command
+    assert "actor_rollout_ref.rollout.val_kwargs.do_sample=True" in command
+    assert "actor_rollout_ref.rollout.val_kwargs.temperature=1.0" in command
+    assert "trainer.resume_mode=disable" in command
+    assert "actor_rollout_ref.ref.fsdp_config.fsdp_size=2" in command

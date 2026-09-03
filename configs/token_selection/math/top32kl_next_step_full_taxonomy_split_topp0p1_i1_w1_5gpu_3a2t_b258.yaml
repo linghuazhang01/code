@@ -1,9 +1,9 @@
-# Eight-GPU Top-P=0.10 overlay: 6 actor/rollout GPUs + 2 sharded teacher GPUs.
+# Five-GPU Top-P=0.10 overlay: 3 actor/rollout GPUs + 2 sharded teacher GPUs.
 extends: top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_6gpu_4a2t_b256.yaml
 
 runtime:
-  slurm_allocation_gpus: 8
-  wandb_run_id: q1p7b-math-top32kl-ns-taxonomy-topp0p1-i1w1-8gpu-6a2t-b258-avg4
+  slurm_allocation_gpus: 5
+  wandb_run_id: q1p7b-math-top32kl-ns-taxonomy-topp0p1-i1w1-5gpu-3a2t-b258-avg4
 
 data:
   train_batch_size: 258
@@ -12,24 +12,24 @@ actor:
   ppo_mini_batch_size: 258
 
 worker_placement:
-  actor_rollout: {n_gpus_per_node: 6, nnodes: 1}
+  actor_rollout: {n_gpus_per_node: 3, nnodes: 1}
 
 audit:
-  output_dir: audit/q1p7b-math-top32kl-ns-taxonomy-topp0p1-i1w1-8gpu-6a2t-b258-avg4
+  output_dir: audit/q1p7b-math-top32kl-ns-taxonomy-topp0p1-i1w1-5gpu-3a2t-b258-avg4
   control_token_online_budget_mode: top_p
   control_token_online_top_p: 0.1
   control_token_online_top_k_per_group: null
 
 paper_eval:
-  output_dir: eval_outputs/paper_suite/q1p7b-math-top32kl-ns-taxonomy-topp0p1-i1w1-8gpu-6a2t-b258-avg4
+  output_dir: eval_outputs/paper_suite/q1p7b-math-top32kl-ns-taxonomy-topp0p1-i1w1-5gpu-3a2t-b258-avg4
 
 huggingface_checkpoint:
-  path_prefix: checkpoints/math/q1p7b-math-top32kl-ns-taxonomy-topp0p1-i1w1-8gpu-6a2t-b258-avg4
+  path_prefix: checkpoints/math/q1p7b-math-top32kl-ns-taxonomy-topp0p1-i1w1-5gpu-3a2t-b258-avg4
 
 trainer:
-  experiment_name: q1p7b-math-top32kl-ns-taxonomy-topp0p1-i1w1-8gpu-6a2t-b258-avg4
-  n_gpus_per_node: 6
-  default_local_dir: checkpoints/MOPD/q1p7b-math-top32kl-ns-taxonomy-topp0p1-i1w1-8gpu-6a2t-b258-avg4
+  experiment_name: q1p7b-math-top32kl-ns-taxonomy-topp0p1-i1w1-5gpu-3a2t-b258-avg4
+  n_gpus_per_node: 3
+  default_local_dir: checkpoints/MOPD/q1p7b-math-top32kl-ns-taxonomy-topp0p1-i1w1-5gpu-3a2t-b258-avg4
 
 # Validation Avg@4. verl reports this metric as reward/mean@4.
 rollout:
