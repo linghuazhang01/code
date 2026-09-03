@@ -1,0 +1,23 @@
+# Four-GPU Top-P=0.02 overlay for the ExpandedPruned-V3 Math next-step selector.
+# The selector ranks the unified 115-token candidate pool by Metric A, then
+# keeps the smallest prefix covering at least 2% of valid-token occurrences.
+extends: a_next_step_expanded_pruned_v3_unified_i1_w1_k25_4gpu_3a1t_b255.yaml
+
+audit:
+  output_dir: audit/q1p7b-math-a-ns-v3-u-topp0p02-i1w1-4gpu-3a1t-b255
+  control_token_online_budget_mode: top_p
+  control_token_online_top_p: 0.02
+  control_token_online_top_k_per_group: null
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-a-ns-v3-u-topp0p02-i1w1-4gpu-3a1t-b255
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-a-ns-v3-u-topp0p02-i1w1-4gpu-3a1t-b255
+
+trainer:
+  experiment_name: q1p7b-math-a-ns-v3-u-topp0p02-i1w1-4gpu-3a1t-b255
+  default_local_dir: checkpoints/MOPD/q1p7b-math-a-ns-v3-u-topp0p02-i1w1-4gpu-3a1t-b255
+
+runtime:
+  wandb_run_id: q1p7b-math-a-ns-v3-u-topp0p02-i1w1-4gpu-3a1t-b255
