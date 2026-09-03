@@ -4,8 +4,8 @@ repo_root: /Users/linghuazhang/Desktop/Project/OPD/code
 vault_root: /Users/linghuazhang/Desktop/Project/Notes/Obsidian/Research/opd
 hub_note: Research/opd/00-Hub.md
 language: zh-CN
-last_sync_at: 2026-09-02T06:19:19+08:00
-last_synced_head: 395f5f467fafbf5adf4d031dbce2b39eb3b26e6c
+last_sync_at: 2026-09-03T08:06:28+08:00
+last_synced_head: a925de611df850ef2a23b26ca063009b47d6cef2
 status: active
 auto_sync: true
 ---
@@ -18,6 +18,26 @@ auto_sync: true
 - TODO
 
 ## 当前任务
+- `q1p7b-math-top32kl-ns-taxonomy-topp0p01-i1w1-5gpu-3a2t-b258-resume15`
+  已在 Slurm job 201 从 `global_step_15` 完整恢复；02:20--03:53 四次约 30 分钟
+  健康检查均通过，训练从 step 17 推进到 step 22，日志持续增长且无 Traceback、
+  CUDA OOM、RayTaskError 或 NCCL fatal。step 20 已产出四项真实 Avg@4，并保存完整
+  3-rank checkpoint；bounded batched reward 与 validation Avg@4 修复已由远端 9 项
+  targeted tests 和真实运行共同验证。commit
+  `e231273882951ff2f16984efba847b08b3ce19dd` 已推送至 `origin/main`；当前继续运行
+  至 step 70，step 20 指标只作为中间 protocol smoke，不作最终实验结论。
+- ExpandedPruned-V3 candidate pool 已冻结：使用 V2 taxonomy；每条 baseline 内合并
+  Rising/Stable Top-200，同 size 内合并 OPD/EOPD，再取 1.7B/4B intersection。
+  Small Math/Code/Science 为 65/54/51，raw ExpandedPruned 为 146/140/128，
+  共 414 个 domain-aware entries、268 个 unique IDs；active-taxonomy effective 为
+  115/110/99（共 324/214 domain-aware/unique）。V1/V2 hash 未变化。V3 selector
+  replay 已覆盖 A/C/E/F、split/unified、K1...100、window/pre-window1...20：主
+  taxonomy Type F1 下 next-step 为 unified A/i1/w1（pre-update source）/K25（0.2050），
+  next-window event-supported 为 unified A/i7/w7/K41（0.3048）。两个 optimum 的
+  Math-only 4--8 GPU standalone full config matrix 已生成，31 targeted tests 与
+  10/10 launcher dry-run
+  通过；尚未启动训练，仍需 held-out 验证。详见 Obsidian
+  `Experiments/ExpandedPruned-V3-Candidate-Pool.md`。
 - 监控 Math-only ExpandedPruned-V2 5-GPU training job 189。heartbeat `5gpu-taxonomy` 每 30 分钟复核两个门禁：`global_step_60` 的 4-rank model/optimizer/extra-state 与 HF model/tokenizer 完整后，去重提交四项 Math、K=8、seed42、DP1 的 partial evaluation；job 189 `COMPLETED / 0:0` 且 `global_step_70` 完整后，再去重提交 `configs/token_selection/math/top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_5gpu_b256.yaml`。
 - Online Control token selector 已新增 opt-in occurrence-coverage `top_p` budget；默认继续使用 `top_k`。token type 按 score 排序后，累计其 occurrence count，直到 `selected_occurrences / valid_token_count >= top_p`；rolling window 同时累计分子和分母，grouped taxonomy 在 Top-P 下按 domain candidate union 统一选择。配置、launcher、actor meta、checkpoint schema v8 和 JSONL audit logging 已贯通。
 - Math-only EOPD / OPD `global_step_60` 的四项 Math `K=8` 评测 jobs 170/171 已完成、下载并通过本地/远端 aggregate SHA、JSON/JSONL、120 题/960 rollouts 与独立指标重算验收。结果作为独立 `Mass Only（Math-only）` 区块写入 `experiments_records/eval/Summary.md`，不进入 Standard10 active 排名；详见 Obsidian `Results/Math-Only-Step60-EOPD-vs-OPD.md`。
@@ -75,6 +95,36 @@ auto_sync: true
   Avg@K；当前多域整体以 step70 略优。
 
 ## 最近同步状态
+- 2026-09-03T03:58:25+08:00：取消停滞且不会热加载修复的 job 199；job 200 因
+  W&B `resume=never` 冲突失败后，将目标配置修正为 `resume=must`，job 201 从 step 15
+  完整恢复。四次约 30 分钟健康检查从 step 17 推进到 step 22，均为 `RUNNING` 且无
+  fatal error。step 20 的 Avg@4 为 AIME2024 0.3083、AIME2025 0.2750、HMMT25Feb
+  0.2000、HMMT25Nov 0.1417，checkpoint 完整。远端受影响测试 9 passed，修复 commit
+  `e231273882951ff2f16984efba847b08b3ce19dd` 已推送并与 `origin/main` 对齐。
+- 2026-09-03T01:33:08+08:00：定位 FullTaxonomy Top-P=0.01 resume job 199 的
+  停滞点为 resume 后第一批 DeepMath reward 的串行 Math-Verify，而非 checkpoint、
+  distributed worker 或 validation。新增 pickle-safe bounded batch scorer，目标配置改为
+  `reward_manager=batch`，并将 validation 设为 stochastic Avg@4（native metric
+  `mean@4`）。本地 targeted tests 为 7 passed / 1 skipped / 1 deselected；远端
+  dynamic custom-module + spawn scoring smoke 与完整 Hydra compose 通过，6 个同步文件
+  SHA256 一致。job 199 仍保留运行，未自动取消或重提。
+- 2026-09-02T18:38:18+08:00：为 V3 next-step A/unified/i1/w1/K25 与
+  next-window A/unified/i7/w7/K41 生成 4--8 GPU Math-only standalone full configs，
+  使用 effective 115-token unified whitelist。topology/batch 覆盖 3a1t/255、
+  4a1t/256、4a2t/256、5a2t/255、6a2t/258；30 tests 与 10/10 launcher dry-run
+  通过，训练尚未提交。
+- 2026-09-02T18:08:27+08:00：完成 ExpandedPruned-V3 四 baseline × 三 domain
+  selector replay。搜索 A/C/E/F、split/unified、K1...100、window/pre-window1...20；
+  occurrence 严格 >20，验证 20/20 通过。主 Type F1 下 next-step 为 unified
+  A/i1/w1（pre-update source）/K25（0.2050），next-window event-supported 为 unified A/i7/w7/K41
+  （0.3048）；原始稀疏长窗口极值不作为推荐。
+- 2026-09-02T17:17:42+08:00：按用户确认将 ExpandedPruned-V3 seed source 从单条
+  4B-OPD phase union 改为 four-baseline cross-size consensus。Small 共 170 个
+  domain-aware entries；sibling closure 后 847，occurrence pruning 后 414；V2 hash
+  保持不变，V3 phase/baseline provenance 与 active-taxonomy audit 全部通过。
+- 2026-09-02T06:43:01+08:00：冻结 ExpandedPruned-V3 pool construction、phase
+  provenance、hash 与 active-taxonomy audit；该 4B-OPD-only seed 定义已在 17:17
+  被 four-baseline cross-size consensus 取代。完整 replay 尚未执行。
 - 2026-09-02T06:19:19+08:00：根据用户进一步澄清，将 Online Control `top_p` 最终固定为现有 `online_control_occurrence_fraction` 的目标：按 score 排序 token type，累计 occurrence count，取使 `selected_occurrences / valid_token_count >= p` 的最短前缀。selector history 新增 per-domain valid-token denominator，窗口内分子分母同步累计；grouped taxonomy 按 domain union 选择，JSONL 使用 `top_p_basis=selected_occurrences_over_valid_tokens`，并显式记录 target count、是否达到及 shortfall。schema 升至 v8，旧 v7 Top-P history 因缺分母会安全清空，156 项针对性测试通过。
 - 2026-09-02T01:46:00+08:00：按用户新增要求，将 heartbeat `5gpu-taxonomy` 改为每 30 分钟执行两阶段流水线。阶段 A 在当前 ExpandedPruned-V2 job 189 的 `global_step_60` 完整保存后，提交 DP1、Math4、K=8、seed42、16 shards/dataset（64 shards / 960 rollouts）、400G/24h 的 partial evaluation，且用 manifest model path 去重；阶段 B 保持 job 189 正常完成后启动 FullTaxonomy `top_p=0.05` 5-GPU 训练。只有两个阶段均已提交/确认存在后才暂停 heartbeat。
 - 2026-09-02T00:48:39+08:00：远端 job 189 为 `RUNNING`，最新完整训练指标 step 29/70，最新完整 checkpoint 为 `global_step_25`；日志仍在增长，未发现 Traceback、CUDA OOM、NCCL fatal 或非零退出。创建每小时 heartbeat `5gpu-taxonomy`，完成门禁通过后将用 `MOPD_SLURM_MEMORY=400G ./slurm.sh` 提交 FullTaxonomy split Top-32 reverse-KL `top_p=0.05` 5-GPU config，并在成功启动后暂停 heartbeat。

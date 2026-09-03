@@ -5,7 +5,7 @@
 - 禁止直接修改远端源码；远端只允许运行、测试、训练和生成运行产物。
 - `../ssh.sh` 第 1 行是 SSH 连接命令，第 2 行是密码。不得修改、打印、提交或整体执行该文件；只执行第 1 行，并在密码提示时输入第 2 行。
 - 默认禁止 `rsync --delete`，不得覆盖远端独有的 dataset、model、logs 或 checkpoints。
-- 后续所有远端 Slurm 任务（训练、评测和 smoke）的内存请求 hard cap 为 `400G`，`--mem` 不得超过 `400G`。若 launcher 默认值高于 `400G`，提交前必须显式设置 `MOPD_SLURM_MEMORY=400G`（或更低）；无法满足时不得提交。
+- 后续所有请求 GPU 的远端 Slurm 任务（训练、评测和 smoke）必须按 GPU 数量线性分配 host memory：`1 GPU = 100G`，即 `--mem = GPU_COUNT × 100G`（例如 1/2/5 GPU 分别请求 100G/200G/500G）。提交前必须核对 launcher 输出与 `scontrol` 中的 GPU 数和 `ReqMem`；不得擅自多申请或少申请。只有用户对某个具体任务明确指定例外时才允许偏离该公式，并必须在运行记录中注明。当前 taxonomy job 193 使用 `200G` 是用户明确指定的一次性例外，不得据此改变后续任务的默认公式。
 
 ## MOPD 标准评测与归档规则
 
@@ -61,12 +61,20 @@ source of truth。旧的 Control-44、PDTB、VR Rising Top-200、candidate seed 
 - Candidate pool 是 taxonomy 子集，不是 taxonomy 来源。对任何 raw pool `P_d`，selector
   的有效集合必须为 `P_d ∩ (DomainControl_d ∪ DomainStructure_d)`，类型由 global
   taxonomy 决定；历史 `candidate_type`/seed provenance 只能用于审计。
-- 冻结 raw pool：ExpandedPruned-V2 Math/Code/Science=`116/146/105`；Robust190=
-  `69/74/47`（190 个 domain-token entries）；Control-44 每个 domain 使用同一 44 IDs。
+- 冻结 raw pool：ExpandedPruned-V2 Math/Code/Science=`116/146/105`；
+  ExpandedPruned-V3=`146/140/128`；Robust190=`69/74/47`（190 个 domain-token
+  entries）；Control-44 每个 domain 使用同一 44 IDs。V3 是 candidate-pool version，
+  继续使用 V2 taxonomy；Small seed 先对每条 baseline 合并 Rising/Stable Top-200，
+  再分别合并 1.7B/4B 的 OPD/EOPD，最后取两个 model-size 集合的交集。
 - 与 domain taxonomy 相交后的有效 Control/Structure 数量分别为：
   ExpandedPruned-V2 Math=`66/23`、Code=`68/47`、Science=`59/19`；Robust190
-  Math=`46/20`、Code=`39/30`、Science=`30/14`；Control-44 Math=`40/0`、
-  Code=`40/0`、Science=`38/0`。被排除项必须保留在 audit 表中，不能静默重分类。
+  Math=`46/20`、Code=`39/30`、Science=`30/14`；ExpandedPruned-V3 Math=`85/30`、
+  Code=`46/64`、Science=`69/30`；Control-44 Math=`40/0`、Code=`40/0`、
+  Science=`38/0`。被排除项必须保留在 audit 表中，不能静默重分类。
+- ExpandedPruned-V3 已按下述 protocol 独立 replay；主 taxonomy Type F1 下，Math-only
+  部署参数为 next-step unified A/i1/w1（pre-update source）/K25，next-window event-supported unified
+  A/i7/w7/K41。该结论来自当前四条 trajectories，仍属于 in-sample exploratory
+  evidence；禁止把它表述为 held-out 泛化优势。
 
 机器可读 source of truth：
 `analysis-output/four-baseline-global-token-taxonomy/tables/global-taxonomy.csv`、
@@ -89,7 +97,7 @@ source of truth。旧的 Control-44、PDTB、VR Rising Top-200、candidate seed 
 
 ### Candidate recall replay contract
 
-- 固定搜索 A/C/E/F、`window=1..20`、`K=1..30`。selection boundary 从该 window
+- 固定搜索 A/C/E/F、`window=1..20`、`K=1..100`。selection boundary 从该 window
   最早的 supported step 锚定，之后每隔恰好 `window` 个 optimizer steps 选择一次；
   score 只能使用 boundary 及历史数据。
 - source candidate 必须属于有效 candidate-pool/domain-taxonomy 交集，并在 score 所需
