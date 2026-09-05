@@ -12,6 +12,7 @@ from mopd_verl.domain_gradient.adaptive_neighborhood import (
 )
 from mopd_verl.domain_gradient.control_selection_scoring import (
     FIXED_ONLINE_WEIGHT_MODE,
+    LOSS_RATIO_ONLINE_WEIGHT_MODE,
     ONLINE_CONTROL_BUDGET_MODES,
     ONLINE_CONTROL_SELECTION_MODES,
     ONLINE_CONTROL_WEIGHT_MODES,
@@ -20,6 +21,7 @@ from mopd_verl.domain_gradient.control_selection_scoring import (
     TOP_K_BUDGET_MODE,
     TOP_LOSS_SELECTION_MODE,
     TOP_SPEED_SELECTION_MODE,
+    validate_loss_ratio_alpha,
 )
 from mopd_verl.domain_gradient.token_weighting_state import (
     PER_STEP_MEAN_ABS_LOSS_SELECTION,
@@ -175,11 +177,13 @@ class DomainGradientConfig:
     control_token_online_top_p: float
     control_token_online_selection_mode: str
     control_token_online_weight_mode: str
+    control_token_loss_ratio_alpha: float
     control_token_adaptive_neighborhood_enabled: bool
     control_token_adaptive_neighborhood_max_distance: int
     control_token_adaptive_neighborhood_epsilon: float
     control_token_adaptive_neighborhood_relative_loss_clip_max: float
     control_token_adaptive_neighborhood_relative_loss_threshold: float
+    control_token_adaptive_neighborhood_strict_threshold: bool
     control_token_adaptive_neighborhood_min_far_tokens: int
     control_token_phase_gate_enabled: bool
     control_token_span_weighting_enabled: bool
@@ -265,6 +269,9 @@ class DomainGradientConfig:
             ),
             threshold=(
                 self.control_token_adaptive_neighborhood_relative_loss_threshold
+            ),
+            strict_threshold=(
+                self.control_token_adaptive_neighborhood_strict_threshold
             ),
             min_far_tokens=(
                 self.control_token_adaptive_neighborhood_min_far_tokens
@@ -488,6 +495,9 @@ class DomainGradientConfig:
             )
             .strip()
             .lower(),
+            control_token_loss_ratio_alpha=float(
+                _get(meta, "control_token_loss_ratio_alpha", 1.0)
+            ),
             control_token_adaptive_neighborhood_enabled=bool(
                 _get(meta, "control_token_adaptive_neighborhood_enabled", False)
             ),
@@ -509,6 +519,13 @@ class DomainGradientConfig:
                     meta,
                     "control_token_adaptive_neighborhood_relative_loss_threshold",
                     0.3,
+                )
+            ),
+            control_token_adaptive_neighborhood_strict_threshold=bool(
+                _get(
+                    meta,
+                    "control_token_adaptive_neighborhood_strict_threshold",
+                    False,
                 )
             ),
             control_token_adaptive_neighborhood_min_far_tokens=int(
@@ -820,6 +837,10 @@ class DomainGradientConfig:
             raise ValueError(
                 "Online Control weight mode must be one of: " f"{allowed}."
             )
+        validate_loss_ratio_alpha(
+            self.control_token_loss_ratio_alpha,
+            weight_mode=self.control_token_online_weight_mode,
+        )
         if (
             self.control_token_online_weight_mode == PAIRED_ONLINE_WEIGHT_MODE
             and self.control_token_online_selection_mode
@@ -828,6 +849,21 @@ class DomainGradientConfig:
             raise ValueError(
                 "Online paired weight mode requires a paired-signal "
                 "selection mode."
+            )
+        if (
+            self.control_token_online_weight_mode == LOSS_RATIO_ONLINE_WEIGHT_MODE
+            and self.control_token_online_selection_mode != TOP_LOSS_SELECTION_MODE
+        ):
+            raise ValueError(
+                "Online loss-ratio weight mode requires top-loss selection mode."
+            )
+        if (
+            self.control_token_online_weight_mode == LOSS_RATIO_ONLINE_WEIGHT_MODE
+            and self.control_token_weight < 1.0
+        ):
+            raise ValueError(
+                "Online loss-ratio weighting uses control_token_weight as its "
+                "maximum and requires it to be at least 1."
             )
         if (
             self.control_token_online_selection_mode == TOP_SPEED_SELECTION_MODE

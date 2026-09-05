@@ -1,0 +1,31 @@
+# Five-GPU adaptive-neighborhood overlay for the Math FullTaxonomy 10% selector.
+# The lagged Top-P taxonomy selection remains the center set. For every center
+# occurrence, inspect response-local neighbors at signed distance [-8, 8]. A
+# neighbor receives the same raw weight 4 only when its relative-loss score is
+# strictly greater than 1.0; the 3-actor/2-teacher placement, batch 258,
+# Avg@4 validation, and per-response mean-one normalization are inherited.
+extends: top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_5gpu_3a2t_b258.yaml
+
+runtime:
+  wandb_run_id: q1p7b-math-tax-topp10-i1w1-adapt-gt1-w4-5g-3a2t-b258-avg4
+
+audit:
+  output_dir: audit/q1p7b-math-tax-topp10-i1w1-adapt-gt1-w4-5g-3a2t-b258-avg4
+  control_token_online_weight_mode: fixed
+  control_token_adaptive_neighborhood_enabled: true
+  control_token_adaptive_neighborhood_max_distance: 8
+  control_token_adaptive_neighborhood_epsilon: 1.0e-8
+  control_token_adaptive_neighborhood_relative_loss_clip_max: 1.5
+  control_token_adaptive_neighborhood_relative_loss_threshold: 1.0
+  control_token_adaptive_neighborhood_strict_threshold: true
+  control_token_adaptive_neighborhood_min_far_tokens: 1
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-tax-topp10-i1w1-adapt-gt1-w4-5g-3a2t-b258-avg4
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-tax-topp10-i1w1-adapt-gt1-w4-5g-3a2t-b258-avg4
+
+trainer:
+  experiment_name: q1p7b-math-tax-topp10-i1w1-adapt-gt1-w4-5g-3a2t-b258-avg4
+  default_local_dir: checkpoints/MOPD/q1p7b-math-tax-topp10-i1w1-adapt-gt1-w4-5g-3a2t-b258-avg4

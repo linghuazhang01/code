@@ -1,0 +1,23 @@
+# Five-GPU Top-P=0.20 overlay for the Math FullTaxonomy next-step selector.
+# Topology: 4 actor/student GPUs + 1 ref/teacher GPU; global batch size 256.
+# Adaptive-neighborhood expansion is disabled. Validation and paper-eval use
+# the aligned AIME24, AIME25, HMMT25Feb, and HMMT25Nov Math benchmarks.
+extends: top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_5gpu_b256.yaml
+
+runtime:
+  wandb_run_id: q1p7b-math-top32kl-ns-taxonomy-topp0p2-i1w1-5gpu-4a1t-b256
+
+audit:
+  output_dir: audit/q1p7b-math-top32kl-ns-taxonomy-topp0p2-i1w1-5gpu-4a1t-b256
+  control_token_online_top_p: 0.2
+  control_token_adaptive_neighborhood_enabled: false
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-top32kl-ns-taxonomy-topp0p2-i1w1-5gpu-4a1t-b256
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-top32kl-ns-taxonomy-topp0p2-i1w1-5gpu-4a1t-b256
+
+trainer:
+  experiment_name: q1p7b-math-top32kl-ns-taxonomy-topp0p2-i1w1-5gpu-4a1t-b256
+  default_local_dir: checkpoints/MOPD/q1p7b-math-top32kl-ns-taxonomy-topp0p2-i1w1-5gpu-4a1t-b256

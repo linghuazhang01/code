@@ -20,6 +20,7 @@ class AdaptiveNeighborhoodMetricComponents:
     values: torch.Tensor
     threshold: float
     domains: tuple[str, ...]
+    strict_threshold: bool = False
 
 
 def adaptive_neighborhood_metric_components(
@@ -29,6 +30,7 @@ def adaptive_neighborhood_metric_components(
     threshold: float,
     labels: Sequence[str] | None = None,
     domains: Sequence[str] | None = None,
+    strict_threshold: bool = False,
 ) -> AdaptiveNeighborhoodMetricComponents:
     """Build additive metrics without synchronizing the accelerator."""
 
@@ -100,6 +102,7 @@ def adaptive_neighborhood_metric_components(
         values=values.detach(),
         threshold=float(threshold),
         domains=domain_names,
+        strict_threshold=bool(strict_threshold),
     )
 
 
@@ -122,6 +125,14 @@ def aggregate_adaptive_neighborhood_metrics(
     domains = components[0].domains
     if any(component.domains != domains for component in components[1:]):
         raise ValueError("Adaptive metric domains must match within one step.")
+    strict_threshold = components[0].strict_threshold
+    if any(
+        component.strict_threshold != strict_threshold
+        for component in components[1:]
+    ):
+        raise ValueError(
+            "Adaptive metric threshold operators must match within one step."
+        )
     total = components[0].values.clone()
     for component in components[1:]:
         total.add_(component.values.to(device=total.device))
@@ -148,6 +159,7 @@ def aggregate_adaptive_neighborhood_metrics(
     total_weighted = centers + selected
     metrics = {
         "actor/adaptive_relative_loss_threshold": threshold,
+        "actor/adaptive_threshold_is_strict": float(strict_threshold),
         "actor/adaptive_valid_token_count": valid_count,
         "actor/adaptive_fixed_d0_token_count": centers,
         "actor/adaptive_candidate_neighbor_token_count": candidates,

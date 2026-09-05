@@ -1,0 +1,14 @@
+# Resume the original five-GPU Top-P=0.075 run from its last complete
+# checkpoint. Reuse the same W&B run ID and output directories so global_step_60
+# is produced under the original run path.
+extends: top32kl_next_step_full_taxonomy_split_topp0p075_i1_w1_5gpu_4a1t_b256.yaml
+
+runtime:
+  wandb_resume: must
+
+extra_overrides:
+  - custom_reward_function.path=mopd_verl/mixed_reward.py
+  - custom_reward_function.name=compute_score
+  - trainer.resume_mode=resume_path
+  - trainer.resume_from_path=checkpoints/MOPD/q1p7b-math-top32kl-ns-taxonomy-topp0p075-i1w1-5gpu-4a1t-b256/global_step_55
+  - actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]

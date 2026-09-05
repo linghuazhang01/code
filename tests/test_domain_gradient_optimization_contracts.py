@@ -2299,6 +2299,89 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
             0.0,
         )
 
+    def test_online_loss_ratio_is_logged_and_applied_next_step(self) -> None:
+        torch = self._torch()
+        with self._stubbed_verl(torch):
+            from mopd_verl.domain_gradient.audit import DomainGradientAudit
+
+            optimizer = SimpleNamespace(param_groups=[{}])
+            actor = SimpleNamespace(actor_optimizer=optimizer)
+            base_meta = {
+                "output_dir": "unused",
+                "domains": ["math"],
+                "control_token_loss_weighting_enabled": True,
+                "control_token_loss_weight": 4.0,
+                "control_token_normalize_per_domain": True,
+                "control_token_candidate_ids": [10, 20],
+                "control_token_online_selection_enabled": True,
+                "control_token_online_audit_interval_steps": 1,
+                "control_token_online_window_steps": 1,
+                "control_token_online_min_mean_occurrences_per_step": 1.0,
+                "control_token_online_top_k": 1,
+                "control_token_online_selection_mode": "top_loss",
+                "control_token_online_weight_mode": "loss_ratio",
+            }
+            micro_batch = SimpleNamespace(
+                batch={
+                    "response_mask": torch.ones(1, 4),
+                    "responses": torch.tensor([[10, 20, 99, 99]]),
+                },
+                non_tensor_batch={"domain": ["math"]},
+            )
+            with tempfile.TemporaryDirectory() as temp_dir:
+                audit = DomainGradientAudit(
+                    actor,
+                    {**base_meta, "step": 1, "output_dir": temp_dir},
+                )
+                metrics = audit.observe_completed_step(
+                    (micro_batch,),
+                    (torch.tensor([[3.0, 1.0, 1.0, 1.0]]),),
+                    (torch.ones(1, 4, dtype=torch.bool),),
+                )
+                record = json.loads(
+                    (
+                        step_jsonl_dir(temp_dir, 1)
+                        / "online_control_selection.jsonl"
+                    ).read_text(encoding="utf-8")
+                )
+                next_audit = DomainGradientAudit(
+                    actor,
+                    {**base_meta, "step": 2, "output_dir": temp_dir},
+                )
+                effective = next_audit.training_gradient_mask(micro_batch)
+
+        self.assertEqual(
+            audit._online_control_selection_state.active_weight_map(),
+            {"math": {10: 3.0}},
+        )
+        self.assertEqual(
+            metrics["global/token_weight/loss_ratio_weighting_enabled"],
+            1.0,
+        )
+        self.assertEqual(
+            metrics[
+                "math/token_weight/loss_ratio_selected_occurrence_mean_abs_loss"
+            ],
+            3.0,
+        )
+        self.assertEqual(
+            metrics["math/token_weight/loss_ratio_other_occurrence_mean_abs_loss"],
+            1.0,
+        )
+        self.assertEqual(
+            record["domains"]["math"]["raw_selected_to_other_loss_ratio"],
+            3.0,
+        )
+        self.assertEqual(
+            record["domains"]["math"]["selected_raw_loss_ratio_weight"],
+            3.0,
+        )
+        self.assertIsNotNone(effective)
+        torch.testing.assert_close(
+            effective,
+            torch.tensor([[2.0, 2.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0]]),
+        )
+
     def test_loss_amplification_metrics_compare_raw_and_weighted_mass(
         self,
     ) -> None:

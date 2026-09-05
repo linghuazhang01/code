@@ -22,6 +22,7 @@ class PerTokenAdaptiveNeighborhoodSpec:
     min_far_tokens: int
     control_weight: float
     normalize_per_response: bool
+    strict_threshold: bool = False
 
     def token_id_map(self) -> dict[str, tuple[int, ...]]:
         return dict(self.domain_token_ids)
@@ -35,6 +36,9 @@ class PerTokenAdaptiveNeighborhoodSpec:
             "epsilon": self.epsilon,
             "clip_max": self.clip_max,
             "relative_loss_threshold": self.threshold,
+            "relative_loss_threshold_operator": (
+                ">" if self.strict_threshold else ">="
+            ),
             "far_baseline": "response_local_lower_median_outside_neighborhood",
             "min_far_tokens": self.min_far_tokens,
             "overlap": "max",
@@ -197,7 +201,12 @@ def build_per_token_adaptive_neighborhood(
         scores = torch.maximum(scores, pair_score)
     candidates &= ~centers
     eligible &= ~centers
-    selected = eligible & scores.gt(0.0) & scores.ge(spec.threshold)
+    threshold_pass = (
+        scores.gt(spec.threshold)
+        if spec.strict_threshold
+        else scores.ge(spec.threshold)
+    )
+    selected = eligible & scores.gt(0.0) & threshold_pass
     kernel = (centers | selected).to(dtype=scores.dtype)
     raw_multiplier = 1.0 + (spec.control_weight - 1.0) * kernel
     multiplier = raw_multiplier

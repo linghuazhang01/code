@@ -1119,6 +1119,9 @@ class MOPDAuditLogger:
                 "fixed",
             )
         ).strip().lower()
+        self.control_token_loss_ratio_alpha = float(
+            _cfg_get(audit_config, "control_token_loss_ratio_alpha", 1.0)
+        )
         self.control_token_adaptive_neighborhood_enabled = bool(
             _cfg_get(
                 audit_config,
@@ -1152,6 +1155,13 @@ class MOPDAuditLogger:
                 audit_config,
                 "control_token_adaptive_neighborhood_relative_loss_threshold",
                 0.3,
+            )
+        )
+        self.control_token_adaptive_neighborhood_strict_threshold = bool(
+            _cfg_get(
+                audit_config,
+                "control_token_adaptive_neighborhood_strict_threshold",
+                False,
             )
         )
         self.control_token_adaptive_neighborhood_min_far_tokens = int(
@@ -1747,6 +1757,7 @@ class MOPDAuditLogger:
                 "control_token_online_weight_mode": (
                     self.control_token_online_weight_mode
                 ),
+                "control_token_loss_ratio_alpha": self.control_token_loss_ratio_alpha,
                 "control_token_adaptive_neighborhood_enabled": (
                     self.control_token_adaptive_neighborhood_enabled
                     and mode == "train"
@@ -1762,6 +1773,9 @@ class MOPDAuditLogger:
                 ),
                 "control_token_adaptive_neighborhood_relative_loss_threshold": (
                     self.control_token_adaptive_neighborhood_relative_loss_threshold
+                ),
+                "control_token_adaptive_neighborhood_strict_threshold": (
+                    self.control_token_adaptive_neighborhood_strict_threshold
                 ),
                 "control_token_adaptive_neighborhood_min_far_tokens": (
                     self.control_token_adaptive_neighborhood_min_far_tokens
@@ -2435,6 +2449,11 @@ class MOPDAuditLogger:
                         ),
                         "relative_loss_threshold": (
                             self.control_token_adaptive_neighborhood_relative_loss_threshold
+                        ),
+                        "relative_loss_threshold_operator": (
+                            ">"
+                            if self.control_token_adaptive_neighborhood_strict_threshold
+                            else ">="
                         ),
                         "far_baseline": (
                             "response_local_lower_median_outside_neighborhood"

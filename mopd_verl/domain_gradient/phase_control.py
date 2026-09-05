@@ -280,10 +280,15 @@ def online_token_score_weights(
         domain_valid = domain_rows & valid
         if not bool(domain_valid.any()):
             continue
-        mean_weight = weights[domain_valid].mean().clamp(min=1e-12)
+        # Accumulate in float64: finite scaled float32 weights can overflow
+        # the float32 reduction even when their mathematical mean is finite.
+        mean_weight = weights[domain_valid].double().mean()
+        denominator = torch.where(
+            mean_weight > 0.0, mean_weight, torch.ones_like(mean_weight)
+        )
         weights = torch.where(
             domain_valid,
-            weights / mean_weight,
+            weights / denominator,
             weights,
         )
     return weights

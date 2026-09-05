@@ -22,6 +22,7 @@ from mopd_verl.domain_gradient.control_speed import (
     update_control_speed_state,
 )
 from mopd_verl.domain_gradient.control_selection_scoring import (
+    LOSS_RATIO_ONLINE_WEIGHT_MODE,
     PAIRED_ONLINE_WEIGHT_MODE,
     PAIRED_SIGNAL_SELECTION_MODES,
     TOP_KL_STUDENT_ENTROPY_SELECTION_MODE,
@@ -263,6 +264,7 @@ class DomainGradientAudit:
                     self.config.control_token_online_selection_mode
                 ),
                 weight_mode=self.config.control_token_online_weight_mode,
+                loss_ratio_alpha=self.config.control_token_loss_ratio_alpha,
             )
             if online_state is None:
                 online_state = expected_state
@@ -286,6 +288,7 @@ class DomainGradientAudit:
                 or online_state.top_p != expected_state.top_p
                 or online_state.selection_mode != expected_state.selection_mode
                 or online_state.weight_mode != expected_state.weight_mode
+                or online_state.loss_ratio_alpha != expected_state.loss_ratio_alpha
             ):
                 raise ValueError(
                     "Checkpointed online Control selection state does not "
@@ -570,7 +573,10 @@ class DomainGradientAudit:
                 if (
                     self.config.control_token_online_selection_enabled
                     and self.config.control_token_online_weight_mode
-                    == PAIRED_ONLINE_WEIGHT_MODE
+                    in {
+                        PAIRED_ONLINE_WEIGHT_MODE,
+                        LOSS_RATIO_ONLINE_WEIGHT_MODE,
+                    }
                 ):
                     token_weights = online_token_score_weights(
                         token_ids,
@@ -1782,6 +1788,8 @@ class DomainGradientAudit:
             statistics,
             step=self.config.step,
             valid_token_counts=global_statistics.valid_token_counts,
+            valid_score_sums=global_statistics.valid_score_sums,
+            loss_ratio_max_weight=self.config.control_token_weight,
         )
         self._online_control_selection_state = state
         self._persist_online_control_selection_state()
@@ -1812,6 +1820,10 @@ class DomainGradientAudit:
                 "global/token_weight/paired_score_weighting_enabled": float(
                     state.weight_mode == PAIRED_ONLINE_WEIGHT_MODE
                 ),
+                "global/token_weight/loss_ratio_weighting_enabled": float(
+                    state.weight_mode == LOSS_RATIO_ONLINE_WEIGHT_MODE
+                ),
+                "global/token_weight/loss_ratio_alpha": state.loss_ratio_alpha,
             }
         )
         result_map = {result.domain: result for result in outcome.domain_results}
@@ -1869,6 +1881,33 @@ class DomainGradientAudit:
                 metrics[f"{domain}/token_weight/eligible_token_count"] = float(
                     result.eligible_token_count
                 )
+                if result.selected_occurrence_mean_abs_loss is not None:
+                    metrics[
+                        f"{domain}/token_weight/"
+                        "loss_ratio_selected_occurrence_mean_abs_loss"
+                    ] = result.selected_occurrence_mean_abs_loss
+                if result.other_occurrence_count is not None:
+                    metrics[
+                        f"{domain}/token_weight/loss_ratio_other_occurrence_count"
+                    ] = float(result.other_occurrence_count)
+                if result.other_occurrence_mean_abs_loss is not None:
+                    metrics[
+                        f"{domain}/token_weight/"
+                        "loss_ratio_other_occurrence_mean_abs_loss"
+                    ] = result.other_occurrence_mean_abs_loss
+                if result.raw_selected_to_other_loss_ratio is not None:
+                    metrics[
+                        f"{domain}/token_weight/"
+                        "loss_ratio_raw_selected_to_other"
+                    ] = result.raw_selected_to_other_loss_ratio
+                if result.selected_raw_loss_ratio_weight is not None:
+                    metrics[
+                        f"{domain}/token_weight/loss_ratio_selected_raw_weight"
+                    ] = result.selected_raw_loss_ratio_weight
+                if result.selected_unscaled_loss_ratio_weight is not None:
+                    metrics[
+                        f"{domain}/token_weight/loss_ratio_selected_unscaled_weight"
+                    ] = result.selected_unscaled_loss_ratio_weight
                 for population, distribution in (
                     ("eligible", result.eligible_score_distribution),
                     ("selected", result.selected_score_distribution),

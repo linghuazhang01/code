@@ -442,17 +442,17 @@ candidate construction、loss 公式、runtime constraints 与 metrics 见
 
 ## Online Control-token selection
 
-Online selector 在固定的 domain candidate pools 上提供四种 ranking mode，
+Online selector 在固定的 domain candidate pools 上提供多种 ranking mode，
 并把 token-ID selection 与入选后的 weighting 独立配置：
 
 ```yaml
 audit:
   control_token_loss_weighting_enabled: true
   control_token_online_selection_enabled: true
-  # top_loss | top_speed | top_kl_student_entropy |
+  # top_loss | top_logp_diff | top_speed | top_kl_student_entropy |
   # top_teacher_confidence_student_entropy
   control_token_online_selection_mode: top_kl_student_entropy
-  control_token_online_weight_mode: paired  # fixed | paired
+  control_token_online_weight_mode: paired  # fixed | paired | loss_ratio
   control_token_online_audit_interval_steps: 3
   control_token_online_window_steps: 3
   control_token_online_min_mean_occurrences_per_step: 10.0
@@ -488,6 +488,33 @@ interval 使用历史窗口估计的 `1 + mean(s)`，即 mean
 normalization。`paired` 只允许搭配上述两个 paired-signal selector，因此可形成
 `2 selectors × 2 weight modes` 的四种组合。
 
+`control_token_online_weight_mode=loss_ratio` 只允许搭配 `top_loss`。对每个
+domain 的 source window，设 `S` 为本次入选 token ID 的全部 occurrence，`V` 为
+全部 valid response-token occurrence，则：
+
+\[
+\mu_S=\frac{\sum_{i\in S}|\ell_i|}{|S|},\qquad
+\mu_O=\frac{\sum_{i\in V\setminus S}|\ell_i|}{|V\setminus S|},\qquad
+w_{base}=\operatorname{clip}\left(\frac{\mu_S}{\max(\mu_O,10^{-12})},
+1,\ w_{max}\right).
+\]
+
+这里的 `other` 是同一 domain 中不属于 selected token-ID set 的所有 valid
+occurrence，不限于 candidate pool 或 eligibility gate。`w_max` 复用
+`control_token_loss_weight`（必须至少为 1；例如设为 4 表示 ratio 最多取 4）。
+`control_token_loss_ratio_alpha` 默认为 1，必须有限且大于 0；非 1 值只允许
+`loss_ratio` mode。最终 `w_raw = alpha * w_base`，缩放后不再截断，因而可以超过
+`control_token_loss_weight`。这是 selected 相对强调程度，不是全局 learning rate。
+同一 domain 的所有 selected token ID 使用同一个 `w_raw`，未入选 token 的 raw
+weight 为 1；若任一组为空，则本次 ratio weight 安全回退为 1，不乘 alpha。该值仍然是 detached
+且 one-step lagged：step `t` 的 window 只决定 step `t+1` 起使用的权重。启用
+`control_token_normalize_per_domain` 时，最终 effective weight 会在 raw weight
+之上继续做 domain mean-one normalization。
+
+alpha 写入 selector checkpoint；schema <10 的旧 checkpoint 缺失时按 1 恢复，
+schema >=10 缺少 alpha 则拒绝恢复。恢复时与当前
+配置的 alpha 不一致会拒绝，避免旧 active weights 被混用或重复缩放。
+
 每次 selection audit boundary 都会记录实际 ranking score 的 token-ID-level
 分布。`online_control_selection.jsonl` 包含 eligible/selected 两组完整 summary；
 训练 metrics 使用
@@ -495,11 +522,42 @@ normalization。`paired` 只允许搭配上述两个 paired-signal selector，�
 这里的 score 是 rolling window 内每个 token ID 的 occurrence-mean ranking score，
 不是单个 token occurrence 的原始 score。
 
-四种 mode 共用 occurrence eligibility、audit cadence 和 next-step lag。Top-speed
+各 ranking mode 共用 occurrence eligibility、audit cadence 和 next-step lag。Top-speed
 要求 window 至少包含两个 step，且 token 在至少两个不同 step 有 observation。
 `control_token_speed_weighting_enabled` 是另一套 domain-level speed-to-weight
 controller，不应与 online selector 同时开启。Qwen4B Top-speed profile 位于
 `configs/mopd_qwen4b_30b_a3b_instruct_2507_4gpu_math_code_science_topk32_control_online_topspeed_i3_w3_f10_k30_w4_b525.yaml`。
+
+### Adaptive neighborhood weighting
+
+Adaptive neighborhood 使用当前 step 实际应用的 domain token IDs 作为 center；若与
+online selector 组合，这些 IDs 是上一 selection boundary 产生的 lagged selection。
+对 center 左右最多 `D` 个 response token，使用同一 response 中所有 center 邻域之外
+的 configured-loss lower median `b` 作为 far baseline，并计算
+
+\[
+r_{c,j}=\operatorname{clip}\left(
+\frac{\ell_j-b}{\ell_c-b+\epsilon}, 0, r_{\max}
+\right).
+\]
+
+若一个 token 同时邻近多个 center，使用最大的 pair score。center 始终使用
+`control_token_loss_weight`；通过 threshold 的非-center neighbor 使用相同 raw
+weight。`control_token_adaptive_neighborhood_strict_threshold=true` 时判断为严格
+`r > threshold`，否则保持历史兼容语义 `r >= threshold`。
+
+```yaml
+audit:
+  control_token_adaptive_neighborhood_enabled: true
+  control_token_adaptive_neighborhood_max_distance: 8
+  control_token_adaptive_neighborhood_relative_loss_clip_max: 1.5
+  control_token_adaptive_neighborhood_relative_loss_threshold: 1.0
+  control_token_adaptive_neighborhood_strict_threshold: true
+```
+
+当 `control_token_normalize_per_domain=true` 时，这一路径按 response 对最终 token
+multiplier 做 mean-one normalization。Adaptive metrics 在每个实际 actor optimizer
+step 聚合全部 micro-batches 和 distributed actor ranks 后写入训练 logger。
 
 ## 常用启动
 

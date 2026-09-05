@@ -109,6 +109,28 @@ global 与 per-domain 指标：
 | `<domain>/loss/high_variance_sample_rate` | 该 domain 中 token-level loss 波动较大的样本比例。 | 统计 `sample_loss_cv > high_variance_cv_threshold` 的比例。 |
 | `<domain>/loss/advantage_mean` | audit batch 中 sample-level advantage 均值 sanity check。 | 若 batch 有 `advantages`，每个样本先算 `masked_mean(advantages, response_mask)`，再对 domain 内样本求 mean；否则回退为 `masked_mean(-reverse_kl, response_mask)`。 |
 
+## Adaptive Neighborhood Metrics
+
+启用 `control_token_adaptive_neighborhood_enabled=true` 后，下列 `actor/adaptive_*`
+指标在每个实际 actor optimizer step 记录一次。每个 step 先合并全部 micro-batches，
+再跨 distributed actor ranks 求和，因此比例的分子和分母都对应完整 optimizer step。
+这些指标进入 TensorBoard/W&B training logger；当前不会单独写 adaptive JSONL。
+
+| Metric | 含义 | 计算方式 |
+| --- | --- | --- |
+| `actor/adaptive_threshold_is_strict` | 当前 threshold 是否使用严格大于。 | strict `>` 为 1，兼容模式 `>=` 为 0。 |
+| `actor/adaptive_fixed_d0_token_count` | 当前 step 命中的 taxonomy/online-selected center occurrence 数。 | 对 center mask 求和。 |
+| `actor/adaptive_eligible_neighbor_token_count` | 具有有效 center denominator 的非-center 邻近 token occurrence 数。 | 对 eligible-neighbor mask 求和。 |
+| `actor/adaptive_extra_weighted_token_count` | relative-loss score 通过 threshold、因而额外加权的邻近 token occurrence 数。 | 对 selected-neighbor mask 求和。 |
+| `actor/adaptive_threshold_pass_token_fraction` | eligible 邻近 token 中通过 threshold 的比例。 | `extra_weighted / eligible_neighbor`。 |
+| `actor/adaptive_threshold_pass_valid_token_fraction` | 额外加权邻近 token 占全部 valid configured-loss token 的比例。 | `extra_weighted / valid_token_count`。 |
+| `actor/adaptive_extra_weighted_token_fraction` | 额外加权邻近 token 占全部 valid token 的比例。 | 当前与 `threshold_pass_valid_token_fraction` 同口径。 |
+| `actor/adaptive_total_weighted_token_fraction` | center 与通过 threshold 的邻近 token 合计占 valid token 的比例。 | `(fixed_d0 + extra_weighted) / valid_token_count`。 |
+| `actor/adaptive_extra_to_d0_ratio` | 额外加权邻近 token occurrence 与 taxonomy center occurrence 的比值。 | `extra_weighted / fixed_d0`。 |
+| `actor/adaptive_filtered_neighbor_fraction` | eligible 邻近 token 中被 threshold 过滤的比例。 | `(eligible_neighbor - extra_weighted) / eligible_neighbor`。 |
+| `actor/adaptive_domain/<domain>/threshold_pass_token_fraction` | 单个 domain 内 eligible 邻近 token 的通过比例。 | domain-local `extra_weighted / eligible_neighbor`。 |
+| `actor/adaptive_domain/<domain>/threshold_pass_valid_token_fraction` | 单个 domain 内额外加权邻近 token 占 valid token 的比例。 | domain-local `extra_weighted / valid_token_count`。 |
+
 ## Gap / Entropy Distribution Metrics
 
 这组 metric 来自 `verl_audit.py`，按当前 training batch 的 train domain 统计有效 response token 分布，并把 raw vector 写入 JSONL，方便后续离线画图。
@@ -409,6 +431,28 @@ TensorBoard tag 的一级层级取决于 validation metric key 能否解析出�
 | `global/cost/tokens_per_second` | training throughput。 | `perf/total_num_tokens / step_seconds`。 |
 | `global/cost/memory_peak_step` | 当前 step 的 peak allocated memory。 | 优先读取 `perf/max_memory_allocated_gb`，否则读取 `perf/max_memory_reserved_gb`。 |
 
+## Online Loss-Ratio Token Weight Metrics
+
+当 `control_token_online_weight_mode=loss_ratio` 时，selector 在 audit boundary
+记录以下指标。它们描述 step `t` 的 source window，并从 step `t+1` 起应用；仅在
+本次 audit 实际形成可定义的 selected/other 两组时写入 domain-level ratio 指标。
+
+| Metric | 含义 | 计算方式 |
+| --- | --- | --- |
+| `global/token_weight/loss_ratio_weighting_enabled` | 当前 online selector 是否启用 loss-ratio weighting。 | `weight_mode == loss_ratio` 时为 1。 |
+| `global/token_weight/loss_ratio_alpha` | selected 动态权重的固定强度系数；默认 1。 | 当前 selector checkpoint 中的 alpha，作用于 base ratio weight 之后。 |
+| `<domain>/token_weight/loss_ratio_selected_occurrence_mean_abs_loss` | 入选 token-ID set 的 occurrence-mean absolute configured loss。 | `selected_abs_loss_sum / selected_occurrence_count`。 |
+| `<domain>/token_weight/loss_ratio_other_occurrence_count` | 未入选的 valid response-token occurrence 数。 | `valid_occurrence_count - selected_occurrence_count`。 |
+| `<domain>/token_weight/loss_ratio_other_occurrence_mean_abs_loss` | 其他 valid token occurrence 的 mean absolute configured loss。 | `(valid_abs_loss_sum - selected_abs_loss_sum) / other_occurrence_count`。 |
+| `<domain>/token_weight/loss_ratio_raw_selected_to_other` | 截断前的 selected/other mean-loss ratio。 | `selected_mean / max(other_mean, 1e-12)`。 |
+| `<domain>/token_weight/loss_ratio_selected_unscaled_weight` | alpha 缩放前的 base weight。 | 将 raw ratio 截断到 `[1, control_token_loss_weight]`；保留旧模式边界。 |
+| `<domain>/token_weight/loss_ratio_selected_raw_weight` | 下一 step 使用的、mean-one normalization 之前的 selected raw weight。 | `alpha * unscaled_weight`，缩放后不再截断；组为空时保持回退 1。 |
+| `<domain>/token_weight/next_selected_raw_weight_mean` | 下一 active set 的平均 raw weight；loss-ratio mode 下同一 domain 的 selected IDs 权重相同。 | 对 checkpoint state 中的 next active token weights 求均值。 |
+
+这里的 `other` 覆盖该 domain 中 selected token-ID set 之外的所有 valid response
+tokens，不限于 candidate pool。若启用 `control_token_normalize_per_domain`，训练实际
+使用的 effective weight 还会对该 domain 的 valid tokens 做 mean-one normalization。
+
 ## JSONL 输出
 
 当前保留的 audit JSONL 文件：
@@ -428,7 +472,7 @@ TensorBoard tag 的一级层级取决于 validation metric key 能否解析出�
 | `entropy_distribution_vectors.jsonl` | 每 step、每 train domain 的 teacher entropy、student entropy、teacher-student cross entropy raw token vectors。 |
 | `entropy_vocab_vectors.jsonl` | 开启 `entropy_vocab_vector_enabled` 后，每 step、每 train domain 的 student entropy 与 teacher-student cross entropy 全词表 dense token-id vectors。 |
 | `token_grad_metrics.jsonl` | 开启 `token_gradient_enabled` 后，每 step、每 train domain 的 top-k token occurrence exact gradient rows，用于定位真实 token-level gradient norm、冲突和投影贡献。 |
-| `online_control_selection.jsonl` | Online Control selector 的 window、ranking mode、candidate/eligible/selected token IDs，以及 selected token 的 occurrence-mean loss、optimization speed 和生效 step。 |
+| `online_control_selection.jsonl` | Online Control selector 的 window、ranking/weight mode、candidate/eligible/selected token IDs，以及 selected token 的 occurrence-mean loss、optimization speed、selected/other loss ratio、alpha、base/scaled raw weights 和生效 step。 |
 | `sample_grad_metrics.jsonl` | 每 step、每样本的 sample grad norm、sample-to-domain cosine、projection share、recompute grad norm 和 `computed_for_cos` 标记。 |
 | `validation_probe.jsonl` | 原始 validation value、previous value、gain，用于复盘 validation gain。 |
 | `validation_gain_variance.jsonl` | validation gain history、mean、variance。 |

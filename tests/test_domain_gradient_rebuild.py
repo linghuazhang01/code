@@ -69,6 +69,7 @@ class DomainGradientConfigTests(unittest.TestCase):
                 "control_token_adaptive_neighborhood_max_distance": 8,
                 "control_token_adaptive_neighborhood_relative_loss_clip_max": 1.5,
                 "control_token_adaptive_neighborhood_relative_loss_threshold": 0.3,
+                "control_token_adaptive_neighborhood_strict_threshold": True,
                 "control_token_adaptive_neighborhood_min_far_tokens": 2,
             }
         )
@@ -83,6 +84,12 @@ class DomainGradientConfigTests(unittest.TestCase):
             config.control_token_adaptive_neighborhood_relative_loss_threshold,
             0.3,
         )
+        self.assertTrue(
+            config.control_token_adaptive_neighborhood_strict_threshold
+        )
+        spec = config.adaptive_neighborhood_spec()
+        self.assertIsNotNone(spec)
+        self.assertTrue(spec.strict_threshold)
         self.assertEqual(config.control_token_adaptive_neighborhood_min_far_tokens, 2)
 
     def test_adaptive_neighborhood_requires_fixed_ids_or_online_selector(
@@ -159,6 +166,7 @@ class DomainGradientConfigTests(unittest.TestCase):
                     "control_token_adaptive_neighborhood_enabled": True,
                     "control_token_adaptive_neighborhood_max_distance": 6,
                     "control_token_adaptive_neighborhood_relative_loss_threshold": 0.4,
+                    "control_token_adaptive_neighborhood_strict_threshold": True,
                 }
             }
         )
@@ -171,6 +179,9 @@ class DomainGradientConfigTests(unittest.TestCase):
         self.assertEqual(
             config.control_token_adaptive_neighborhood_relative_loss_threshold,
             0.4,
+        )
+        self.assertTrue(
+            config.control_token_adaptive_neighborhood_strict_threshold
         )
 
     def test_current_full_gradient_meta_is_supported(self) -> None:
@@ -448,6 +459,48 @@ class DomainGradientConfigTests(unittest.TestCase):
                     "control_token_online_selection_enabled": True,
                     "control_token_online_selection_mode": "top_loss",
                     "control_token_online_weight_mode": "paired",
+                }
+            )
+
+    def test_loss_ratio_weight_supports_only_top_loss(self) -> None:
+        config = DomainGradientConfig.from_meta(
+            {
+                "domains": ["math"],
+                "control_token_loss_weighting_enabled": True,
+                "control_token_loss_weight": 4.0,
+                "control_token_candidate_ids": [10, 20],
+                "control_token_online_selection_enabled": True,
+                "control_token_online_selection_mode": "top_loss",
+                "control_token_online_weight_mode": "loss_ratio",
+            }
+        )
+
+        self.assertEqual(config.control_token_online_weight_mode, "loss_ratio")
+
+        with self.assertRaisesRegex(ValueError, "loss-ratio.*top-loss"):
+            DomainGradientConfig.from_meta(
+                {
+                    "domains": ["math"],
+                    "control_token_loss_weighting_enabled": True,
+                    "control_token_loss_weight": 4.0,
+                    "control_token_candidate_ids": [10, 20],
+                    "control_token_online_selection_enabled": True,
+                    "control_token_online_selection_mode": "top_logp_diff",
+                    "control_token_online_weight_mode": "loss_ratio",
+                }
+            )
+
+    def test_loss_ratio_weight_requires_cap_at_least_one(self) -> None:
+        with self.assertRaisesRegex(ValueError, "maximum.*at least 1"):
+            DomainGradientConfig.from_meta(
+                {
+                    "domains": ["math"],
+                    "control_token_loss_weighting_enabled": True,
+                    "control_token_loss_weight": 0.5,
+                    "control_token_candidate_ids": [10, 20],
+                    "control_token_online_selection_enabled": True,
+                    "control_token_online_selection_mode": "top_loss",
+                    "control_token_online_weight_mode": "loss_ratio",
                 }
             )
 

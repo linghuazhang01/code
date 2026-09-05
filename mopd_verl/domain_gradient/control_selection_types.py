@@ -10,6 +10,8 @@ DomainStatistics = tuple[tuple[str, tuple[TokenStatistic, ...]], ...]
 StepStatistics = tuple[int, DomainStatistics]
 DomainValidTokenCounts = tuple[tuple[str, int], ...]
 StepValidTokenCounts = tuple[int, DomainValidTokenCounts]
+DomainValidScoreSums = tuple[tuple[str, float], ...]
+StepValidScoreSums = tuple[int, DomainValidScoreSums]
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,12 @@ class DomainSelectionResult:
     selected_tokens: tuple[SelectedControlToken, ...]
     eligible_score_distribution: SelectionScoreDistribution | None
     selected_score_distribution: SelectionScoreDistribution | None
+    selected_occurrence_mean_abs_loss: float | None
+    other_occurrence_count: int | None
+    other_occurrence_mean_abs_loss: float | None
+    raw_selected_to_other_loss_ratio: float | None
+    selected_raw_loss_ratio_weight: float | None
+    selected_unscaled_loss_ratio_weight: float | None = None
 
 
 @dataclass(frozen=True)

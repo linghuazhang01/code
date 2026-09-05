@@ -108,6 +108,20 @@ def test_core_filter_keeps_token_weight_amplification_metrics() -> None:
     assert filter_tensorboard_metrics(metrics, "core") == metrics
 
 
+def test_core_filter_keeps_loss_ratio_weight_metrics() -> None:
+    metrics = {
+        "global/token_weight/loss_ratio_weighting_enabled": 1.0,
+        "math/token_weight/loss_ratio_selected_occurrence_mean_abs_loss": 3.0,
+        "math/token_weight/loss_ratio_other_occurrence_count": 40.0,
+        "math/token_weight/loss_ratio_other_occurrence_mean_abs_loss": 1.0,
+        "math/token_weight/loss_ratio_raw_selected_to_other": 3.0,
+        "math/token_weight/loss_ratio_selected_raw_weight": 3.0,
+        "math/token_weight/next_selected_raw_weight_mean": 3.0,
+    }
+
+    assert filter_tensorboard_metrics(metrics, "core") == metrics
+
+
 def test_core_filter_keeps_control_speed_metrics() -> None:
     metrics = {
         "global/control_speed/enabled": 1.0,

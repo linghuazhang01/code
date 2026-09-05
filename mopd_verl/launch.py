@@ -338,6 +338,8 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"{audit.control_token_online_selection_mode}",
         "+mopd_audit.control_token_online_weight_mode="
         f"{audit.control_token_online_weight_mode}",
+        "+mopd_audit.control_token_loss_ratio_alpha="
+        f"{audit.control_token_loss_ratio_alpha}",
         "+mopd_audit.control_token_adaptive_neighborhood_enabled="
         f"{str(audit.control_token_adaptive_neighborhood_enabled).lower()}",
         "+mopd_audit.control_token_adaptive_neighborhood_max_distance="
@@ -348,6 +350,8 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"{audit.control_token_adaptive_neighborhood_relative_loss_clip_max}",
         "+mopd_audit.control_token_adaptive_neighborhood_relative_loss_threshold="
         f"{audit.control_token_adaptive_neighborhood_relative_loss_threshold}",
+        "+mopd_audit.control_token_adaptive_neighborhood_strict_threshold="
+        f"{str(audit.control_token_adaptive_neighborhood_strict_threshold).lower()}",
         "+mopd_audit.control_token_adaptive_neighborhood_min_far_tokens="
         f"{audit.control_token_adaptive_neighborhood_min_far_tokens}",
         "+mopd_audit.control_token_phase_gate_enabled="

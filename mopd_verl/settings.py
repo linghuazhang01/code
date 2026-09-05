@@ -11,6 +11,7 @@ from typing import Any
 from mopd_verl.config_profiles import load_raw_config
 from mopd_verl.domain_gradient.control_selection_scoring import (
     FIXED_ONLINE_WEIGHT_MODE,
+    LOSS_RATIO_ONLINE_WEIGHT_MODE,
     ONLINE_CONTROL_BUDGET_MODES,
     ONLINE_CONTROL_SELECTION_MODES,
     ONLINE_CONTROL_WEIGHT_MODES,
@@ -20,6 +21,7 @@ from mopd_verl.domain_gradient.control_selection_scoring import (
     TOP_K_BUDGET_MODE,
     TOP_LOSS_SELECTION_MODE,
     TOP_SPEED_SELECTION_MODE,
+    validate_loss_ratio_alpha,
 )
 from mopd_verl.domain_budgeting_config import (
     DomainBudgetingConfig,
@@ -322,11 +324,13 @@ class AuditConfig:
     control_token_online_top_p: float = 1.0
     control_token_online_selection_mode: str = TOP_LOSS_SELECTION_MODE
     control_token_online_weight_mode: str = FIXED_ONLINE_WEIGHT_MODE
+    control_token_loss_ratio_alpha: float = 1.0
     control_token_adaptive_neighborhood_enabled: bool = False
     control_token_adaptive_neighborhood_max_distance: int = 8
     control_token_adaptive_neighborhood_epsilon: float = 1e-8
     control_token_adaptive_neighborhood_relative_loss_clip_max: float = 1.5
     control_token_adaptive_neighborhood_relative_loss_threshold: float = 0.30
+    control_token_adaptive_neighborhood_strict_threshold: bool = False
     control_token_adaptive_neighborhood_min_far_tokens: int = 1
     control_token_phase_gate_enabled: bool = False
     control_token_span_weighting_enabled: bool = False
@@ -1174,6 +1178,10 @@ def load_config(path: str | Path) -> MOPDConfig:
             "audit.control_token_online_weight_mode must be one of: "
             f"{allowed}."
         )
+    validate_loss_ratio_alpha(
+        audit.control_token_loss_ratio_alpha,
+        weight_mode=audit.control_token_online_weight_mode,
+    )
     if (
         audit.control_token_online_weight_mode == PAIRED_ONLINE_WEIGHT_MODE
         and audit.control_token_online_selection_mode
@@ -1182,6 +1190,22 @@ def load_config(path: str | Path) -> MOPDConfig:
         raise ValueError(
             "audit.control_token_online_weight_mode=paired requires a "
             "paired-signal selection mode."
+        )
+    if (
+        audit.control_token_online_weight_mode == LOSS_RATIO_ONLINE_WEIGHT_MODE
+        and audit.control_token_online_selection_mode != TOP_LOSS_SELECTION_MODE
+    ):
+        raise ValueError(
+            "audit.control_token_online_weight_mode=loss_ratio requires "
+            "audit.control_token_online_selection_mode=top_loss."
+        )
+    if (
+        audit.control_token_online_weight_mode == LOSS_RATIO_ONLINE_WEIGHT_MODE
+        and audit.control_token_loss_weight < 1.0
+    ):
+        raise ValueError(
+            "Loss-ratio weighting uses audit.control_token_loss_weight as its "
+            "maximum and requires it to be at least 1."
         )
     if (
         audit.control_token_online_selection_mode == TOP_SPEED_SELECTION_MODE

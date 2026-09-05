@@ -1,0 +1,26 @@
+# Five-GPU Top-P=0.075 loss-ratio weighting overlay for Math FullTaxonomy.
+# Topology: 4 actor/student GPUs + 1 ref/teacher GPU; global batch size 256.
+# At each audit, the selected-token occurrence mean absolute loss is divided by
+# the mean over all other valid token occurrences. The resulting next-step raw
+# weight is clipped to [1, control_token_loss_weight] before domain normalization.
+extends: top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_5gpu_b256.yaml
+
+runtime:
+  wandb_run_id: q1p7b-math-top32kl-topp075-lossratio-5g4a1t-b256
+
+audit:
+  output_dir: audit/q1p7b-math-top32kl-topp075-lossratio-5g4a1t-b256
+  control_token_online_top_p: 0.075
+  control_token_online_weight_mode: loss_ratio
+  control_token_loss_weight: 4.0
+  control_token_adaptive_neighborhood_enabled: false
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-top32kl-topp075-lossratio-5g4a1t-b256
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-top32kl-topp075-lossratio-5g4a1t-b256
+
+trainer:
+  experiment_name: q1p7b-math-top32kl-topp075-lossratio-5g4a1t-b256
+  default_local_dir: checkpoints/MOPD/q1p7b-math-top32kl-topp075-lossratio-5g4a1t-b256

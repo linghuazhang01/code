@@ -10,6 +10,7 @@ from mopd_verl.domain_gradient.control_top_loss import (
 from mopd_verl.domain_gradient.control_selection_scoring import (
     occurrence_weighted_optimization_speed,
     paired_selection_bonus,
+    selected_to_other_loss_ratio_weight,
 )
 
 
@@ -31,6 +32,41 @@ def _statistics(
 
 
 class OnlineControlSelectionTests(unittest.TestCase):
+    def test_loss_ratio_weight_uses_occurrence_means_and_clips(self) -> None:
+        ratio = selected_to_other_loss_ratio_weight(
+            selected_loss_abs_sum=30.0,
+            selected_occurrence_count=10,
+            valid_loss_abs_sum=50.0,
+            valid_occurrence_count=30,
+            max_weight=4.0,
+        )
+        capped = selected_to_other_loss_ratio_weight(
+            selected_loss_abs_sum=30.0,
+            selected_occurrence_count=10,
+            valid_loss_abs_sum=30.0,
+            valid_occurrence_count=30,
+            max_weight=4.0,
+        )
+
+        self.assertEqual(ratio.other_occurrence_count, 20)
+        self.assertEqual(ratio.selected_mean_abs_loss, 3.0)
+        self.assertEqual(ratio.other_mean_abs_loss, 1.0)
+        self.assertEqual(ratio.raw_ratio, 3.0)
+        self.assertEqual(ratio.clipped_weight, 3.0)
+        self.assertEqual(capped.other_mean_abs_loss, 0.0)
+        self.assertGreater(capped.raw_ratio or 0.0, 4.0)
+        self.assertEqual(capped.clipped_weight, 4.0)
+
+    def test_loss_ratio_weight_rejects_non_subset_loss_mass(self) -> None:
+        with self.assertRaisesRegex(ValueError, "cannot exceed"):
+            selected_to_other_loss_ratio_weight(
+                selected_loss_abs_sum=11.0,
+                selected_occurrence_count=1,
+                valid_loss_abs_sum=10.0,
+                valid_occurrence_count=2,
+                max_weight=4.0,
+            )
+
     def test_paired_selection_bonus_supports_both_primary_signals(self) -> None:
         try:
             import torch
@@ -587,6 +623,97 @@ class OnlineControlSelectionTests(unittest.TestCase):
         self.assertEqual(state.active_map()["math"], (10,))
         self.assertEqual(state.active_weight_map()["math"], {})
 
+    def test_loss_ratio_mode_stores_selected_vs_other_weight(self) -> None:
+        state = self._state(
+            window_steps=1,
+            audit_interval_steps=1,
+            minimum_frequency=1.0,
+            top_k=1,
+            selection_mode="top_loss",
+            weight_mode="loss_ratio",
+        )
+        outcome, state = update_online_control_selection(
+            state,
+            _statistics(
+                ("math", 10, 30.0, 10),
+                ("math", 20, 20.0, 20),
+            ),
+            step=1,
+            valid_token_counts={"math": 50, "code": 10},
+            valid_score_sums={"math": 70.0, "code": 5.0},
+            loss_ratio_max_weight=4.0,
+        )
+
+        self.assertTrue(outcome.audit_triggered)
+        self.assertEqual(state.active_map()["math"], (10,))
+        self.assertEqual(state.active_weight_map()["math"], {10: 3.0})
+        math_result = next(
+            result for result in outcome.domain_results if result.domain == "math"
+        )
+        self.assertEqual(math_result.selected_occurrence_mean_abs_loss, 3.0)
+        self.assertEqual(math_result.other_occurrence_count, 40)
+        self.assertEqual(math_result.other_occurrence_mean_abs_loss, 1.0)
+        self.assertEqual(math_result.raw_selected_to_other_loss_ratio, 3.0)
+        self.assertEqual(math_result.selected_raw_loss_ratio_weight, 3.0)
+        self.assertEqual(
+            OnlineControlSelectionState.from_mapping(state.as_dict()),
+            state,
+        )
+
+    def test_loss_ratio_mode_requires_valid_score_sums(self) -> None:
+        state = self._state(
+            window_steps=1,
+            audit_interval_steps=1,
+            minimum_frequency=1.0,
+            top_k=1,
+            weight_mode="loss_ratio",
+        )
+
+        with self.assertRaisesRegex(ValueError, "valid_score_sums"):
+            update_online_control_selection(
+                state,
+                _statistics(("math", 10, 3.0, 1)),
+                step=1,
+                valid_token_counts={"math": 2, "code": 0},
+            )
+
+        with self.assertRaisesRegex(ValueError, "valid_token_counts"):
+            update_online_control_selection(
+                state,
+                _statistics(("math", 10, 3.0, 1)),
+                step=1,
+                valid_score_sums={"math": 4.0, "code": 0.0},
+            )
+
+    def test_step_gap_clears_loss_ratio_history_ids_and_weights(self) -> None:
+        state = self._state(
+            window_steps=2,
+            audit_interval_steps=2,
+            minimum_frequency=1.0,
+            top_k=1,
+            weight_mode="loss_ratio",
+        )
+        for step in (1, 2):
+            _, state = update_online_control_selection(
+                state,
+                _statistics(("math", 10, 3.0, 1)),
+                step=step,
+                valid_token_counts={"math": 2, "code": 0},
+                valid_score_sums={"math": 4.0, "code": 0.0},
+            )
+        outcome, state = update_online_control_selection(
+            state,
+            _statistics(("math", 20, 2.0, 1)),
+            step=4,
+            valid_token_counts={"math": 2, "code": 0},
+            valid_score_sums={"math": 3.0, "code": 0.0},
+        )
+
+        self.assertTrue(outcome.history_reset)
+        self.assertEqual(state.active_map(), {"math": (), "code": ()})
+        self.assertEqual(state.active_weight_map(), {"math": {}, "code": {}})
+        self.assertEqual(tuple(item[0] for item in state.valid_score_sum_history), (4,))
+
     def test_step_gap_clears_paired_ids_and_weights(self) -> None:
         state = self._state(
             window_steps=2,
@@ -945,6 +1072,28 @@ class OnlineControlSelectionTests(unittest.TestCase):
         self.assertEqual(migrated.valid_token_count_history, ())
         self.assertEqual(migrated.active_map(), {"math": (), "code": ()})
 
+    def test_v8_fixed_checkpoint_restores_without_valid_score_sums(self) -> None:
+        state = self._state(
+            window_steps=2,
+            audit_interval_steps=2,
+            minimum_frequency=1.0,
+        )
+        _, state = update_online_control_selection(
+            state,
+            _statistics(("math", 10, 2.0, 1)),
+            step=1,
+        )
+        legacy = state.as_dict()
+        legacy.pop("valid_score_sum_history")
+        legacy["schema_version"] = 8
+
+        migrated = OnlineControlSelectionState.from_mapping(legacy)
+
+        self.assertEqual(
+            migrated.valid_score_sum_history,
+            ((1, (("math", 0.0), ("code", 0.0))),),
+        )
+
     def test_checkpoint_rejects_invalid_top_p_budget(self) -> None:
         serialized = self._state(budget_mode="top_p", top_p=0.8).as_dict()
         serialized["top_p"] = float("nan")
@@ -1011,6 +1160,7 @@ class OnlineControlSelectionTests(unittest.TestCase):
         self.assertEqual(statistics["math"], {10: (2.0, 1), 20: (3.0, 1)})
         self.assertEqual(statistics["code"], {10: (6.0, 1), 20: (4.0, 1)})
         self.assertEqual(result.valid_token_counts, {"math": 3, "code": 2})
+        self.assertEqual(result.valid_score_sums, {"math": 105.0, "code": 10.0})
 
     def test_runtime_accepts_top_logp_diff_as_absolute_score(self) -> None:
         try:

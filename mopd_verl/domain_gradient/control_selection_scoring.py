@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import struct
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -41,9 +42,16 @@ ONLINE_CONTROL_BUDGET_MODES = frozenset(
 
 FIXED_ONLINE_WEIGHT_MODE = "fixed"
 PAIRED_ONLINE_WEIGHT_MODE = "paired"
+LOSS_RATIO_ONLINE_WEIGHT_MODE = "loss_ratio"
 ONLINE_CONTROL_WEIGHT_MODES = frozenset(
-    {FIXED_ONLINE_WEIGHT_MODE, PAIRED_ONLINE_WEIGHT_MODE}
+    {
+        FIXED_ONLINE_WEIGHT_MODE,
+        PAIRED_ONLINE_WEIGHT_MODE,
+        LOSS_RATIO_ONLINE_WEIGHT_MODE,
+    }
 )
+
+LOSS_RATIO_EPSILON = 1e-12
 
 
 @dataclass(frozen=True)
@@ -52,6 +60,125 @@ class OptimizationSpeed:
 
     value: float
     observed_step_count: int
+
+
+@dataclass(frozen=True)
+class LossRatioWeight:
+    """One selected-versus-other occurrence-level loss-ratio estimate."""
+
+    selected_occurrence_count: int
+    other_occurrence_count: int
+    selected_mean_abs_loss: float | None
+    other_mean_abs_loss: float | None
+    raw_ratio: float | None
+    clipped_weight: float
+    scaled_weight: float
+
+
+def validate_loss_ratio_alpha(
+    alpha: float,
+    *,
+    weight_mode: str = LOSS_RATIO_ONLINE_WEIGHT_MODE,
+) -> None:
+    """Reject invalid or inactive loss-ratio strength overrides."""
+
+    if not math.isfinite(alpha) or alpha <= 0.0:
+        raise ValueError("control_token_loss_ratio_alpha must be finite and positive.")
+    if alpha != 1.0 and weight_mode != LOSS_RATIO_ONLINE_WEIGHT_MODE:
+        raise ValueError(
+            "Non-default control_token_loss_ratio_alpha requires loss_ratio mode."
+        )
+
+
+def selected_to_other_loss_ratio_weight(
+    *,
+    selected_loss_abs_sum: float,
+    selected_occurrence_count: int,
+    valid_loss_abs_sum: float,
+    valid_occurrence_count: int,
+    max_weight: float,
+    epsilon: float = LOSS_RATIO_EPSILON,
+    alpha: float = 1.0,
+) -> LossRatioWeight:
+    """Scale the legacy bounded ratio without clipping the scaled weight."""
+
+    validate_loss_ratio_alpha(alpha)
+    values = (
+        selected_loss_abs_sum,
+        valid_loss_abs_sum,
+        max_weight,
+        epsilon,
+    )
+    if any(not math.isfinite(float(value)) for value in values):
+        raise ValueError("Loss-ratio inputs must be finite.")
+    if selected_loss_abs_sum < 0.0 or valid_loss_abs_sum < 0.0:
+        raise ValueError("Loss-ratio loss sums must be non-negative.")
+    if selected_occurrence_count < 0 or valid_occurrence_count < 0:
+        raise ValueError("Loss-ratio occurrence counts must be non-negative.")
+    if selected_occurrence_count > valid_occurrence_count:
+        raise ValueError(
+            "Selected occurrence count cannot exceed valid occurrence count."
+        )
+    if max_weight < 1.0:
+        raise ValueError("Loss-ratio maximum weight must be at least 1.0.")
+    if epsilon <= 0.0:
+        raise ValueError("Loss-ratio epsilon must be positive.")
+
+    other_occurrence_count = valid_occurrence_count - selected_occurrence_count
+    if selected_occurrence_count == 0 or other_occurrence_count == 0:
+        return LossRatioWeight(
+            selected_occurrence_count=selected_occurrence_count,
+            other_occurrence_count=other_occurrence_count,
+            selected_mean_abs_loss=None,
+            other_mean_abs_loss=None,
+            raw_ratio=None,
+            clipped_weight=1.0,
+            scaled_weight=1.0,
+        )
+
+    subtraction_tolerance = 1e-9 * max(
+        1.0,
+        selected_loss_abs_sum,
+        valid_loss_abs_sum,
+    )
+    other_loss_abs_sum = valid_loss_abs_sum - selected_loss_abs_sum
+    if other_loss_abs_sum < -subtraction_tolerance:
+        raise ValueError(
+            "Selected loss mass cannot exceed all-valid loss mass."
+        )
+    other_loss_abs_sum = max(other_loss_abs_sum, 0.0)
+    selected_mean = selected_loss_abs_sum / selected_occurrence_count
+    other_mean = other_loss_abs_sum / other_occurrence_count
+    raw_ratio = selected_mean / max(other_mean, epsilon)
+    if not math.isfinite(raw_ratio):
+        raw_ratio = max_weight
+    clipped_weight = min(max(raw_ratio, 1.0), max_weight)
+    scaled_weight = alpha * clipped_weight
+    validate_scaled_loss_ratio_weight(scaled_weight)
+    return LossRatioWeight(
+        selected_occurrence_count=selected_occurrence_count,
+        other_occurrence_count=other_occurrence_count,
+        selected_mean_abs_loss=float(selected_mean),
+        other_mean_abs_loss=float(other_mean),
+        raw_ratio=float(raw_ratio),
+        clipped_weight=float(clipped_weight),
+        scaled_weight=float(scaled_weight),
+    )
+
+
+def validate_scaled_loss_ratio_weight(weight: float) -> None:
+    """Require positive finite weights in the runtime float32 buffer."""
+
+    # Torch checks the original scalar range before conversion, unlike struct.
+    float32_max = float.fromhex("0x1.fffffep+127")
+    if weight > float32_max:
+        raise ValueError("Scaled loss-ratio weight must be finite in float32.")
+    try:
+        represented = struct.unpack("f", struct.pack("f", weight))[0]
+    except OverflowError as exc:
+        raise ValueError("Scaled loss-ratio weight must be finite in float32.") from exc
+    if not math.isfinite(represented) or represented <= 0.0:
+        raise ValueError("Scaled loss-ratio weight must be finite and positive in float32.")
 
 
 def normalize_selection_mode(value: object) -> str:

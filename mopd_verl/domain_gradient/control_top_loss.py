@@ -18,6 +18,7 @@ from mopd_verl.domain_gradient.control_selection_distribution import (
 )
 from mopd_verl.domain_gradient.control_selection_scoring import (
     FIXED_ONLINE_WEIGHT_MODE,
+    LOSS_RATIO_ONLINE_WEIGHT_MODE,
     PAIRED_ONLINE_WEIGHT_MODE,
     PAIRED_SIGNAL_SELECTION_MODES,
     TOP_K_BUDGET_MODE,
@@ -28,13 +29,15 @@ from mopd_verl.domain_gradient.control_selection_scoring import (
     normalize_online_weight_mode,
     normalize_selection_mode,
     occurrence_weighted_optimization_speed,
+    selected_to_other_loss_ratio_weight,
+    validate_loss_ratio_alpha,
 )
 from mopd_verl.domain_gradient.control_selection_types import (
     DomainSelectionResult,
-    DomainStatistics,
     OnlineControlSelectionOutcome,
     SelectedControlToken,
     StepStatistics,
+    StepValidScoreSums,
     StepValidTokenCounts,
 )
 
@@ -56,6 +59,7 @@ class OnlineControlSelectionState:
     weight_mode: str
     history: tuple[StepStatistics, ...]
     valid_token_count_history: tuple[StepValidTokenCounts, ...]
+    valid_score_sum_history: tuple[StepValidScoreSums, ...]
     active_token_ids: tuple[tuple[str, tuple[int, ...]], ...]
     active_token_weights: tuple[
         tuple[str, tuple[tuple[int, float], ...]], ...
@@ -67,6 +71,7 @@ class OnlineControlSelectionState:
         tuple[str, tuple[tuple[str, tuple[int, ...]], ...]], ...
     ] = ()
     top_k_per_group: int | None = None
+    loss_ratio_alpha: float = 1.0
 
     def active_map(self) -> dict[str, tuple[int, ...]]:
         return dict(self.active_token_ids)
@@ -102,7 +107,7 @@ class OnlineControlSelectionState:
 
     def as_dict(self) -> dict[str, object]:
         return {
-            "schema_version": 8,
+            "schema_version": 10,
             "domains": self.domains,
             "domain_candidate_token_ids": self.domain_candidate_token_ids,
             "audit_interval_steps": self.audit_interval_steps,
@@ -116,8 +121,10 @@ class OnlineControlSelectionState:
             "top_k_per_group": self.top_k_per_group,
             "selection_mode": self.selection_mode,
             "weight_mode": self.weight_mode,
+            "loss_ratio_alpha": self.loss_ratio_alpha,
             "history": self.history,
             "valid_token_count_history": self.valid_token_count_history,
+            "valid_score_sum_history": self.valid_score_sum_history,
             "active_token_ids": self.active_token_ids,
             "active_token_weights": self.active_token_weights,
             "last_observed_step": self.last_observed_step,
@@ -130,204 +137,11 @@ class OnlineControlSelectionState:
         cls,
         value: Mapping[str, Any],
     ) -> OnlineControlSelectionState:
-        domains = tuple(str(item) for item in value.get("domains", ()))
-        raw_domain_candidates = value.get("domain_candidate_token_ids")
-        if raw_domain_candidates is None:
-            legacy_candidates = tuple(
-                int(item) for item in value.get("candidate_token_ids", ())
-            )
-            domain_candidates = tuple((domain, legacy_candidates) for domain in domains)
-        else:
-            domain_candidates = tuple(
-                (
-                    str(domain),
-                    tuple(int(token_id) for token_id in token_ids),
-                )
-                for domain, token_ids in raw_domain_candidates
-            )
-        raw_candidate_groups = value.get("domain_candidate_token_groups", ())
-        domain_candidate_groups = tuple(
-            (
-                str(domain),
-                tuple(
-                    (
-                        str(group),
-                        tuple(int(token_id) for token_id in token_ids),
-                    )
-                    for group, token_ids in groups
-                ),
-            )
-            for domain, groups in raw_candidate_groups
+        from mopd_verl.domain_gradient.control_top_loss_checkpoint import (
+            restore_online_control_selection_state,
         )
-        budget_mode = normalize_online_budget_mode(
-            value.get("budget_mode", TOP_K_BUDGET_MODE)
-        )
-        history = tuple(
-            (
-                int(step),
-                tuple(
-                    (
-                        str(domain),
-                        tuple(
-                            (int(token_id), float(loss_sum), int(count))
-                            for token_id, loss_sum, count in statistics
-                        ),
-                    )
-                    for domain, statistics in domain_rows
-                ),
-            )
-            for step, domain_rows in value.get("history", ())
-        )
-        raw_valid_token_count_history = value.get("valid_token_count_history")
-        valid_token_count_history = tuple(
-            (
-                int(step),
-                tuple(
-                    (str(domain), int(count))
-                    for domain, count in domain_counts
-                ),
-            )
-            for step, domain_counts in (raw_valid_token_count_history or ())
-        )
-        reset_legacy_top_p_history = bool(
-            history
-            and raw_valid_token_count_history is None
-            and budget_mode == TOP_P_BUDGET_MODE
-        )
-        if reset_legacy_top_p_history:
-            history = ()
-        elif history and raw_valid_token_count_history is None:
-            valid_token_count_history = tuple(
-                (step, tuple((domain, 0) for domain in domains))
-                for step, _ in history
-            )
-        active = tuple(
-            (
-                str(domain),
-                tuple(int(token_id) for token_id in token_ids),
-            )
-            for domain, token_ids in value.get("active_token_ids", ())
-        )
-        raw_active_weights = value.get("active_token_weights")
-        active_weights = (
-            tuple((domain, ()) for domain in domains)
-            if raw_active_weights is None
-            else tuple(
-                (
-                    str(domain),
-                    tuple(
-                        (int(token_id), float(weight))
-                        for token_id, weight in token_weights
-                    ),
-                )
-                for domain, token_weights in raw_active_weights
-            )
-        )
-        if reset_legacy_top_p_history:
-            active = tuple((domain, ()) for domain in domains)
-            active_weights = tuple((domain, ()) for domain in domains)
-        raw_observed = value.get("last_observed_step")
-        raw_audit = value.get("last_audit_step")
-        state = cls(
-            domains=domains,
-            domain_candidate_token_ids=domain_candidates,
-            audit_interval_steps=int(value.get("audit_interval_steps", 0)),
-            window_steps=int(value.get("window_steps", 0)),
-            min_mean_occurrences_per_step=float(
-                value.get("min_mean_occurrences_per_step", 0.0)
-            ),
-            strict_occurrence_gate=bool(value.get("strict_occurrence_gate", False)),
-            top_k=int(value.get("top_k", 0)),
-            budget_mode=budget_mode,
-            top_p=float(value.get("top_p", 1.0)),
-            selection_mode=normalize_selection_mode(
-                value.get("selection_mode", TOP_LOSS_SELECTION_MODE)
-            ),
-            weight_mode=normalize_online_weight_mode(
-                value.get("weight_mode", FIXED_ONLINE_WEIGHT_MODE)
-            ),
-            history=history,
-            valid_token_count_history=valid_token_count_history,
-            active_token_ids=active,
-            active_token_weights=active_weights,
-            last_observed_step=(None if raw_observed is None else int(raw_observed)),
-            last_audit_step=None if raw_audit is None else int(raw_audit),
-            update_count=int(value.get("update_count", 0)),
-            domain_candidate_token_groups=domain_candidate_groups,
-            top_k_per_group=(
-                None
-                if value.get("top_k_per_group") is None
-                else int(value["top_k_per_group"])
-            ),
-        )
-        if len(state.history) != len(state.valid_token_count_history) or any(
-            history_step != count_step
-            for (history_step, _), (count_step, _) in zip(
-                state.history,
-                state.valid_token_count_history,
-                strict=True,
-            )
-        ):
-            raise ValueError(
-                "Checkpointed online Control valid-token history must align "
-                "with selector history."
-            )
-        if any(
-            len(domain_counts) != len(state.domains)
-            or {domain for domain, _ in domain_counts} != set(state.domains)
-            or any(count < 0 for _, count in domain_counts)
-            for _, domain_counts in state.valid_token_count_history
-        ):
-            raise ValueError(
-                "Checkpointed online Control valid-token counts must be "
-                "non-negative and exactly match domains."
-            )
-        if (
-            raw_valid_token_count_history is not None
-            and state.budget_mode == TOP_P_BUDGET_MODE
-        ):
-            for (_, domain_statistics), (_, domain_counts) in zip(
-                state.history,
-                state.valid_token_count_history,
-                strict=True,
-            ):
-                normalize_valid_token_counts(
-                    domains=state.domains,
-                    budget_mode=state.budget_mode,
-                    valid_token_counts=dict(domain_counts),
-                    statistics=domain_statistics,
-                )
-        if not math.isfinite(state.top_p) or not 0.0 < state.top_p <= 1.0:
-            raise ValueError(
-                "Checkpointed online Control top_p must be finite and in (0, 1]."
-            )
-        if (
-            state.budget_mode == TOP_P_BUDGET_MODE
-            and state.top_k_per_group is not None
-        ):
-            raise ValueError(
-                "Checkpointed online Control top_k_per_group requires Top-K mode."
-            )
-        if state.weight_mode == PAIRED_ONLINE_WEIGHT_MODE:
-            active_map = state.active_map()
-            weight_map = state.active_weight_map()
-            for domain in state.domains:
-                if set(active_map.get(domain, ())) != set(
-                    weight_map.get(domain, {})
-                ):
-                    raise ValueError(
-                        "Checkpointed paired online Control weights must "
-                        "exactly match active token IDs."
-                    )
-                if any(
-                    not math.isfinite(weight) or not 1.0 <= weight <= 4.0
-                    for weight in weight_map.get(domain, {}).values()
-                ):
-                    raise ValueError(
-                        "Checkpointed paired online Control weights must be "
-                        "finite and in [1, 4]."
-                    )
-        return state
+
+        return restore_online_control_selection_state(cls, value)
 
 
 def initial_online_control_selection_state(
@@ -347,6 +161,7 @@ def initial_online_control_selection_state(
     top_k_per_group: int | None = None,
     selection_mode: str = TOP_LOSS_SELECTION_MODE,
     weight_mode: str = FIXED_ONLINE_WEIGHT_MODE,
+    loss_ratio_alpha: float = 1.0,
 ) -> OnlineControlSelectionState:
     """Create an empty selector state with a frozen configuration signature."""
 
@@ -451,6 +266,7 @@ def initial_online_control_selection_state(
         )
     normalized_selection_mode = normalize_selection_mode(selection_mode)
     normalized_weight_mode = normalize_online_weight_mode(weight_mode)
+    validate_loss_ratio_alpha(loss_ratio_alpha, weight_mode=normalized_weight_mode)
     if normalized_selection_mode == TOP_SPEED_SELECTION_MODE and window_steps < 2:
         raise ValueError(
             "Online top-speed selection requires window_steps to be at least 2."
@@ -461,6 +277,13 @@ def initial_online_control_selection_state(
     ):
         raise ValueError(
             "Online paired weight mode requires a paired-signal selection mode."
+        )
+    if (
+        normalized_weight_mode == LOSS_RATIO_ONLINE_WEIGHT_MODE
+        and normalized_selection_mode != TOP_LOSS_SELECTION_MODE
+    ):
+        raise ValueError(
+            "Online loss-ratio weight mode requires top-loss selection mode."
         )
     if (
         not math.isfinite(min_mean_occurrences_per_step)
@@ -481,8 +304,10 @@ def initial_online_control_selection_state(
         top_p=float(top_p),
         selection_mode=normalized_selection_mode,
         weight_mode=normalized_weight_mode,
+        loss_ratio_alpha=float(loss_ratio_alpha),
         history=(),
         valid_token_count_history=(),
+        valid_score_sum_history=(),
         active_token_ids=tuple((domain, ()) for domain in normalized_domains),
         active_token_weights=tuple((domain, ()) for domain in normalized_domains),
         domain_candidate_token_groups=domain_candidate_groups,
@@ -505,6 +330,9 @@ def _select_from_history(
     state: OnlineControlSelectionState,
     history: Sequence[StepStatistics],
     valid_token_count_history: Sequence[StepValidTokenCounts],
+    valid_score_sum_history: Sequence[StepValidScoreSums],
+    *,
+    loss_ratio_max_weight: float,
 ) -> tuple[
     tuple[tuple[str, tuple[int, ...]], ...],
     tuple[tuple[str, tuple[tuple[int, float], ...]], ...],
@@ -517,6 +345,7 @@ def _select_from_history(
         domain: {} for domain in state.domains
     }
     valid_token_totals = {domain: 0 for domain in state.domains}
+    valid_score_totals = {domain: 0.0 for domain in state.domains}
     for step, domain_rows in history:
         for domain, statistics in domain_rows:
             for token_id, loss_sum, count in statistics:
@@ -531,6 +360,9 @@ def _select_from_history(
     for _, domain_counts in valid_token_count_history:
         for domain, count in domain_counts:
             valid_token_totals[domain] += count
+    for _, domain_sums in valid_score_sum_history:
+        for domain, score_sum in domain_sums:
+            valid_score_totals[domain] += score_sum
 
     active: list[tuple[str, tuple[int, ...]]] = []
     active_weights: list[tuple[str, tuple[tuple[int, float], ...]]] = []
@@ -628,6 +460,20 @@ def _select_from_history(
         selected_occurrence_count = sum(
             item.occurrence_count for item in selected
         )
+        loss_ratio = None
+        if state.weight_mode == LOSS_RATIO_ONLINE_WEIGHT_MODE:
+            selected_loss_abs_sum = sum(
+                totals[domain][item.token_id][0]
+                for item in selected
+            )
+            loss_ratio = selected_to_other_loss_ratio_weight(
+                selected_loss_abs_sum=selected_loss_abs_sum,
+                selected_occurrence_count=selected_occurrence_count,
+                valid_loss_abs_sum=valid_score_totals[domain],
+                valid_occurrence_count=valid_token_totals[domain],
+                max_weight=loss_ratio_max_weight,
+                alpha=state.loss_ratio_alpha,
+            )
         top_p_target = (
             top_p_target_occurrence_count(
                 state.top_p,
@@ -637,17 +483,22 @@ def _select_from_history(
             else None
         )
         active.append((domain, tuple(item.token_id for item in selected)))
+        if state.weight_mode == PAIRED_ONLINE_WEIGHT_MODE:
+            domain_active_weights = tuple(
+                (item.token_id, 1.0 + item.mean_selection_score)
+                for item in selected
+            )
+        elif loss_ratio is not None:
+            domain_active_weights = tuple(
+                (item.token_id, loss_ratio.scaled_weight)
+                for item in selected
+            )
+        else:
+            domain_active_weights = ()
         active_weights.append(
             (
                 domain,
-                (
-                    tuple(
-                        (item.token_id, 1.0 + item.mean_selection_score)
-                        for item in selected
-                    )
-                    if state.weight_mode == PAIRED_ONLINE_WEIGHT_MODE
-                    else ()
-                ),
+                domain_active_weights,
             )
         )
         results.append(
@@ -681,6 +532,26 @@ def _select_from_history(
                 selected_score_distribution=selection_score_distribution(
                     selected_ranking_scores
                 ),
+                selected_occurrence_mean_abs_loss=(
+                    None
+                    if loss_ratio is None
+                    else loss_ratio.selected_mean_abs_loss
+                ),
+                other_occurrence_count=(
+                    None if loss_ratio is None else loss_ratio.other_occurrence_count
+                ),
+                other_occurrence_mean_abs_loss=(
+                    None if loss_ratio is None else loss_ratio.other_mean_abs_loss
+                ),
+                raw_selected_to_other_loss_ratio=(
+                    None if loss_ratio is None else loss_ratio.raw_ratio
+                ),
+                selected_raw_loss_ratio_weight=(
+                    None if loss_ratio is None else loss_ratio.scaled_weight
+                ),
+                selected_unscaled_loss_ratio_weight=(
+                    None if loss_ratio is None else loss_ratio.clipped_weight
+                ),
             )
         )
     return tuple(active), tuple(active_weights), tuple(results)
@@ -692,6 +563,8 @@ def update_online_control_selection(
     *,
     step: int,
     valid_token_counts: Mapping[str, int] | None = None,
+    valid_score_sums: Mapping[str, float] | None = None,
+    loss_ratio_max_weight: float = 4.0,
 ) -> tuple[OnlineControlSelectionOutcome, OnlineControlSelectionState]:
     """Ingest one complete step and update active IDs only at audit boundaries."""
 
@@ -717,6 +590,9 @@ def update_online_control_selection(
     valid_token_count_history = (
         () if history_reset else state.valid_token_count_history
     )
+    valid_score_sum_history = (
+        () if history_reset else state.valid_score_sum_history
+    )
     active = (
         tuple((domain, ()) for domain in state.domains)
         if history_reset
@@ -732,12 +608,53 @@ def update_online_control_selection(
         domain_candidate_token_ids=state.candidate_map(),
         statistics=statistics,
     )
+    if (
+        state.weight_mode == LOSS_RATIO_ONLINE_WEIGHT_MODE
+        and valid_token_counts is None
+    ):
+        raise ValueError(
+            "Online loss-ratio weighting requires valid_token_counts."
+        )
     normalized_valid_token_counts = normalize_valid_token_counts(
         domains=state.domains,
         budget_mode=state.budget_mode,
         valid_token_counts=valid_token_counts,
         statistics=normalized_statistics,
     )
+    if valid_score_sums is None:
+        if state.weight_mode == LOSS_RATIO_ONLINE_WEIGHT_MODE:
+            raise ValueError(
+                "Online loss-ratio weighting requires valid_score_sums."
+            )
+        normalized_valid_score_sums = tuple(
+            (domain, 0.0) for domain in state.domains
+        )
+    else:
+        if set(valid_score_sums) != set(state.domains):
+            raise ValueError(
+                "Online Control valid score sums must exactly match domains."
+            )
+        normalized_valid_score_sums = tuple(
+            (domain, float(valid_score_sums[domain]))
+            for domain in state.domains
+        )
+        if any(
+            not math.isfinite(score_sum) or score_sum < 0.0
+            for _, score_sum in normalized_valid_score_sums
+        ):
+            raise ValueError(
+                "Online Control valid score sums must be finite and non-negative."
+            )
+    if (
+        state.weight_mode == LOSS_RATIO_ONLINE_WEIGHT_MODE
+        and (
+            not math.isfinite(loss_ratio_max_weight)
+            or loss_ratio_max_weight < 1.0
+        )
+    ):
+        raise ValueError(
+            "Online loss-ratio maximum weight must be finite and at least 1."
+        )
     history = (
         *history,
         (step, normalized_statistics),
@@ -745,6 +662,10 @@ def update_online_control_selection(
     valid_token_count_history = (
         *valid_token_count_history,
         (step, normalized_valid_token_counts),
+    )[-state.window_steps :]
+    valid_score_sum_history = (
+        *valid_score_sum_history,
+        (step, normalized_valid_score_sums),
     )[-state.window_steps :]
     audit_triggered = (
         len(history) == state.window_steps and step % state.audit_interval_steps == 0
@@ -757,6 +678,8 @@ def update_online_control_selection(
             state,
             history,
             valid_token_count_history,
+            valid_score_sum_history,
+            loss_ratio_max_weight=loss_ratio_max_weight,
         )
         last_audit_step = step
         update_count += 1
@@ -773,8 +696,10 @@ def update_online_control_selection(
         top_p=state.top_p,
         selection_mode=state.selection_mode,
         weight_mode=state.weight_mode,
+        loss_ratio_alpha=state.loss_ratio_alpha,
         history=tuple(history),
         valid_token_count_history=tuple(valid_token_count_history),
+        valid_score_sum_history=tuple(valid_score_sum_history),
         active_token_ids=active,
         active_token_weights=active_weights,
         last_observed_step=step,

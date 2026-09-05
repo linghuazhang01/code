@@ -1,0 +1,38 @@
+# 7-GPU resource overlay: 5 actor/rollout + 2 sharded teacher GPUs.
+# Match the existing taxonomy topology; batch 255 is divisible by 5 actors.
+extends: top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_lossratio_alpha1p75_5gpu_4a1t_b256.yaml
+
+runtime:
+  slurm_allocation_gpus: 7
+  wandb_run_id: q1p7b-math-top32kl-topp05-lossratio-a1p75-7g5a2t-b255
+
+data:
+  train_batch_size: 255
+
+actor:
+  ppo_mini_batch_size: 255
+
+worker_placement:
+  actor_rollout: {n_gpus_per_node: 5, nnodes: 1}
+  ref_policy: {n_gpus_per_node: 2, nnodes: 1}
+
+extra_overrides:
+  - custom_reward_function.path=mopd_verl/mixed_reward.py
+  - custom_reward_function.name=compute_score
+  - trainer.resume_mode=disable
+  - actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+  - actor_rollout_ref.ref.fsdp_config.fsdp_size=2
+
+audit:
+  output_dir: audit/q1p7b-math-top32kl-topp05-lossratio-a1p75-7g5a2t-b255
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-top32kl-topp05-lossratio-a1p75-7g5a2t-b255
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-top32kl-topp05-lossratio-a1p75-7g5a2t-b255
+
+trainer:
+  experiment_name: q1p7b-math-top32kl-topp05-lossratio-a1p75-7g5a2t-b255
+  n_gpus_per_node: 5
+  default_local_dir: checkpoints/MOPD/q1p7b-math-top32kl-topp05-lossratio-a1p75-7g5a2t-b255

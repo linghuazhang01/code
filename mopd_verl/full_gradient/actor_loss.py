@@ -426,6 +426,9 @@ def build_actor_micro_batch_loss(
                         threshold=adaptive_neighborhood_spec.threshold,
                         labels=labels,
                         domains=adaptive_neighborhood_spec.domains,
+                        strict_threshold=(
+                            adaptive_neighborhood_spec.strict_threshold
+                        ),
                     )
                 )
         topk_loss = agg_loss(

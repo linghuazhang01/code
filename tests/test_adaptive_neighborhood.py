@@ -191,6 +191,43 @@ class PerTokenAdaptiveNeighborhoodTests(unittest.TestCase):
         torch.testing.assert_close(result.multiplier[0, 0], center_multiplier)
         torch.testing.assert_close(result.multiplier[0, 2], center_multiplier)
 
+    def test_strict_threshold_requires_score_above_boundary(self) -> None:
+        token_ids = torch.tensor([[1, 10, 2, 3]])
+        valid = torch.ones_like(token_ids, dtype=torch.bool)
+
+        exact = build_per_token_adaptive_neighborhood(
+            torch.tensor([[0.7, 1.4, 1.4, 0.4]]),
+            valid,
+            token_ids,
+            valid,
+            ("math",),
+            _spec(threshold=1.0, strict_threshold=True),
+        )
+        above = build_per_token_adaptive_neighborhood(
+            torch.tensor([[0.7, 1.4, 1.5, 0.4]]),
+            valid,
+            token_ids,
+            valid,
+            ("math",),
+            _spec(threshold=1.0, strict_threshold=True),
+        )
+
+        self.assertEqual(float(exact.relative_scores[0, 2]), 1.0)
+        self.assertFalse(exact.selected_neighbor_mask[0, 2])
+        self.assertGreater(float(above.relative_scores[0, 2]), 1.0)
+        self.assertTrue(above.selected_neighbor_mask[0, 2])
+        components = adaptive_neighborhood_metric_components(
+            above,
+            valid,
+            threshold=1.0,
+            strict_threshold=True,
+        )
+        metrics = aggregate_adaptive_neighborhood_metrics(
+            (components,),
+            reduce_distributed=False,
+        )
+        self.assertEqual(metrics["actor/adaptive_threshold_is_strict"], 1.0)
+
     def test_zero_threshold_does_not_select_zero_score_neighbors(self) -> None:
         losses = torch.tensor([[0.4, 1.4, 0.4, 0.4]])
         token_ids = torch.tensor([[1, 10, 2, 3]])
@@ -238,6 +275,7 @@ class PerTokenAdaptiveNeighborhoodTests(unittest.TestCase):
         )
         self.assertEqual(metrics["actor/adaptive_filtered_neighbor_token_count"], 0.0)
         self.assertEqual(metrics["actor/adaptive_extra_to_d0_ratio"], 2.0)
+        self.assertEqual(metrics["actor/adaptive_threshold_is_strict"], 0.0)
         self.assertAlmostEqual(
             metrics["actor/adaptive_total_weighted_token_fraction"],
             3.0 / 7.0,

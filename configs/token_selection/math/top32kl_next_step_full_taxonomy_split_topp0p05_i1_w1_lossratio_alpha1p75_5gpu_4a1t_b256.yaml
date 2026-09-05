@@ -1,0 +1,24 @@
+# Only the loss-ratio strength and run/output identities differ from the parent.
+# Reference: q1p7b-math-top32kl-topp05-lossratio-5g4a1t-b256.
+# Alpha 1.75 is explicitly user-selected, replacing the calibrated 1.510088.
+# Preserve the parent's selected/other configured-loss ratio and legacy bounds;
+# apply alpha AFTER those bounds, with no additional post-scale clipping.
+# Reference replay mean is about 4.63549; new-run weights may differ.
+extends: top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_lossratio_5gpu_4a1t_b256.yaml
+
+runtime:
+  wandb_run_id: q1p7b-math-top32kl-topp05-lossratio-a1p75-5g4a1t-b256
+
+audit:
+  output_dir: audit/q1p7b-math-top32kl-topp05-lossratio-a1p75-5g4a1t-b256
+  control_token_loss_ratio_alpha: 1.75
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-top32kl-topp05-lossratio-a1p75-5g4a1t-b256
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-top32kl-topp05-lossratio-a1p75-5g4a1t-b256
+
+trainer:
+  experiment_name: q1p7b-math-top32kl-topp05-lossratio-a1p75-5g4a1t-b256
+  default_local_dir: checkpoints/MOPD/q1p7b-math-top32kl-topp05-lossratio-a1p75-5g4a1t-b256

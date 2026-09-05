@@ -1,0 +1,31 @@
+# Five-GPU Top-P=0.02 configured-loss / loss-ratio overlay for ExpandedPruned-V3.
+# Keep the 115-token unified Math pool (85 Control + 30 Structure), i1/w1,
+# and 4 actor/rollout + 1 ref/teacher topology with global batch size 256.
+# Rank token IDs by occurrence-mean absolute configured Top-32 reverse-KL loss.
+# Divide selected occurrence-mean absolute loss by the mean over all other
+# valid response-token occurrences; clip the next-step raw weight to [1, 4]
+# before the existing per-domain normalization. No adaptive neighbors.
+extends: a_next_step_expanded_pruned_v3_unified_i1_w1_k25_5gpu_4a1t_b256.yaml
+
+audit:
+  output_dir: audit/q1p7b-math-top32kl-ns-v3-u-topp0p02-lossratio-i1w1-5g4a1t-b256
+  control_token_online_selection_mode: top_loss
+  control_token_online_weight_mode: loss_ratio
+  control_token_loss_weight: 4.0
+  control_token_online_budget_mode: top_p
+  control_token_online_top_p: 0.02
+  control_token_online_top_k_per_group: null
+  control_token_adaptive_neighborhood_enabled: false
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-top32kl-ns-v3-u-topp0p02-lossratio-i1w1-5g4a1t-b256
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-top32kl-ns-v3-u-topp0p02-lossratio-i1w1-5g4a1t-b256
+
+trainer:
+  experiment_name: q1p7b-math-top32kl-ns-v3-u-topp0p02-lossratio-i1w1-5g4a1t-b256
+  default_local_dir: checkpoints/MOPD/q1p7b-math-top32kl-ns-v3-u-topp0p02-lossratio-i1w1-5g4a1t-b256
+
+runtime:
+  wandb_run_id: q1p7b-math-top32kl-ns-v3-u-topp0p02-lossratio-i1w1-5g4a1t-b256

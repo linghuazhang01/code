@@ -32,6 +32,7 @@ class GlobalCandidateLossStatistics:
 
     by_domain: dict[str, dict[int, tuple[float, int]]]
     valid_token_counts: dict[str, int]
+    valid_score_sums: dict[str, float]
 
 
 def global_candidate_loss_statistics_with_valid_counts(
@@ -171,6 +172,7 @@ def global_candidate_loss_statistics_with_valid_counts(
                 dtype=torch.bool,
             ).unsqueeze(-1)
             selected_mask = valid & rows
+            packed[domain_index, 0, -1].add_(score_values[selected_mask].sum())
             packed[domain_index, 1, -1].add_(selected_mask.sum())
             selected_ids = ids[selected_mask]
             if selected_ids.numel() == 0:
@@ -215,6 +217,10 @@ def global_candidate_loss_statistics_with_valid_counts(
         },
         valid_token_counts={
             domain: int(packed_cpu[domain_index, 1, -1])
+            for domain_index, domain in enumerate(normalized_domains)
+        },
+        valid_score_sums={
+            domain: float(packed_cpu[domain_index, 0, -1])
             for domain_index, domain in enumerate(normalized_domains)
         },
     )
@@ -289,6 +295,7 @@ def append_online_control_selection_jsonl(
         "top_p_basis": "selected_occurrences_over_valid_tokens",
         "selection_mode": state.selection_mode,
         "weight_mode": state.weight_mode,
+        "loss_ratio_alpha": state.loss_ratio_alpha,
         "candidate_token_count": len(state.candidate_token_ids),
         "candidate_union_count": len(state.candidate_token_ids),
         "domain_candidate_token_counts": {
@@ -353,6 +360,22 @@ def append_online_control_selection_jsonl(
                     _score_distribution_record(
                         result.selected_score_distribution
                     )
+                ),
+                "selected_occurrence_mean_abs_loss": (
+                    result.selected_occurrence_mean_abs_loss
+                ),
+                "other_occurrence_count": result.other_occurrence_count,
+                "other_occurrence_mean_abs_loss": (
+                    result.other_occurrence_mean_abs_loss
+                ),
+                "raw_selected_to_other_loss_ratio": (
+                    result.raw_selected_to_other_loss_ratio
+                ),
+                "selected_raw_loss_ratio_weight": (
+                    result.selected_raw_loss_ratio_weight
+                ),
+                "selected_unscaled_loss_ratio_weight": (
+                    result.selected_unscaled_loss_ratio_weight
                 ),
                 "selected_tokens": [
                     {
