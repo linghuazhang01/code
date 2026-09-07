@@ -22,6 +22,7 @@ from mopd_verl.domain_gradient.control_selection_scoring import (
     TOP_LOSS_SELECTION_MODE,
     TOP_SPEED_SELECTION_MODE,
     validate_loss_ratio_alpha,
+    validate_q_selection_contract,
 )
 from mopd_verl.domain_budgeting_config import (
     DomainBudgetingConfig,
@@ -29,6 +30,10 @@ from mopd_verl.domain_budgeting_config import (
     validate_domain_budgeting_config,
 )
 from mopd_verl.huggingface_checkpoint import HuggingFaceCheckpointConfig
+from mopd_verl.teacher_performance_config import (
+    TeacherPerformanceConfig,
+    parse_teacher_performance,
+)
 from mopd_verl.region_dpo_config import (
     RegionDPOConfig,
     parse_region_dpo_config,
@@ -163,7 +168,7 @@ class RolloutConfig:
     n: int = 1
     max_num_batched_tokens: int = 32768
     max_model_len: int | None = None
-    max_num_seqs: int = 1024
+    max_num_seqs: int = 64
     num_gpu_blocks_override: int | None = None
     do_sample: bool = True
     temperature: float = 1.0
@@ -460,6 +465,7 @@ class MOPDConfig:
     model: ModelConfig
     actor: ActorConfig = field(default_factory=ActorConfig)
     rollout: RolloutConfig = field(default_factory=RolloutConfig)
+    teacher_performance: TeacherPerformanceConfig = field(default_factory=TeacherPerformanceConfig)
     rollout_correction: RolloutCorrectionConfig = field(
         default_factory=RolloutCorrectionConfig
     )
@@ -775,6 +781,9 @@ def load_config(path: str | Path) -> MOPDConfig:
     )
     actor = ActorConfig(**_expect_mapping(root.get("actor", {}), "actor"))
     rollout = RolloutConfig(**_expect_mapping(root.get("rollout", {}), "rollout"))
+    teacher_performance = parse_teacher_performance(
+        _expect_mapping(root.get("teacher_performance", {}), "teacher_performance")
+    )
     rollout_correction = RolloutCorrectionConfig(
         **_expect_mapping(root.get("rollout_correction", {}), "rollout_correction")
     )
@@ -1178,6 +1187,10 @@ def load_config(path: str | Path) -> MOPDConfig:
             "audit.control_token_online_weight_mode must be one of: "
             f"{allowed}."
         )
+    validate_q_selection_contract(
+        audit.control_token_online_selection_mode, audit.control_token_online_weight_mode,
+        audit.control_token_online_audit_interval_steps, audit.control_token_online_window_steps,
+    )
     validate_loss_ratio_alpha(
         audit.control_token_loss_ratio_alpha,
         weight_mode=audit.control_token_online_weight_mode,
@@ -1495,6 +1508,7 @@ def load_config(path: str | Path) -> MOPDConfig:
         model=model,
         actor=actor,
         rollout=rollout,
+        teacher_performance=teacher_performance,
         rollout_correction=rollout_correction,
         worker_placement=worker_placement,
         audit=audit,

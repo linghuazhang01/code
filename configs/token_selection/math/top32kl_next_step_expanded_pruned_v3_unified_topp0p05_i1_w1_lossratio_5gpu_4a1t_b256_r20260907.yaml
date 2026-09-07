@@ -1,0 +1,14 @@
+# Fresh run after the Q/Fixed4 Step60 checkpoint; only output identities differ.
+extends: top32kl_next_step_expanded_pruned_v3_unified_topp0p05_i1_w1_lossratio_5gpu_4a1t_b256.yaml
+
+audit:
+  output_dir: audit/q1p7b-v3-topp05-lossratio-i1w1-5g4a1t-b256-r20260907
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-v3-topp05-lossratio-i1w1-5g4a1t-b256-r20260907
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-v3-topp05-lossratio-i1w1-5g4a1t-b256-r20260907
+trainer:
+  experiment_name: q1p7b-v3-topp05-lossratio-i1w1-5g4a1t-b256-r20260907
+  default_local_dir: checkpoints/MOPD/q1p7b-v3-topp05-lossratio-i1w1-5g4a1t-b256-r20260907
+runtime:
+  wandb_run_id: q1p7b-v3-topp05-lossratio-i1w1-5g4a1t-b256-r20260907

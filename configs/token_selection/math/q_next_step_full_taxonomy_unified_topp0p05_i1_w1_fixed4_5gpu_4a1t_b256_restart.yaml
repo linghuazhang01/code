@@ -1,0 +1,6 @@
+# Restart the failed pre-checkpoint R2 attempt in its existing W&B record.
+# This resumes logging only; inherited trainer.resume_mode=disable is retained.
+extends: q_next_step_full_taxonomy_unified_topp0p05_i1_w1_fixed4_5gpu_4a1t_b256.yaml
+
+runtime:
+  wandb_resume: must

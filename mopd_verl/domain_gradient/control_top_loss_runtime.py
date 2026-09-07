@@ -20,6 +20,7 @@ from mopd_verl.domain_gradient.control_selection_types import (
 from mopd_verl.domain_gradient.control_selection_scoring import (
     PAIRED_SIGNAL_SELECTION_MODES,
     TOP_LOSS_SELECTION_MODE,
+    TOP_Q_LOSS_ENTROPY_SELECTION_MODE,
     TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE,
     normalize_selection_mode,
     paired_selection_bonus,
@@ -33,6 +34,7 @@ class GlobalCandidateLossStatistics:
     by_domain: dict[str, dict[int, tuple[float, int]]]
     valid_token_counts: dict[str, int]
     valid_score_sums: dict[str, float]
+    q_normalization_stats: dict[str, dict[str, float]] | None = None
 
 
 def global_candidate_loss_statistics_with_valid_counts(
@@ -103,6 +105,17 @@ def global_candidate_loss_statistics_with_valid_counts(
     )
     if not candidates:
         raise ValueError("Online Control candidates must be non-empty.")
+    if mode == TOP_Q_LOSS_ENTROPY_SELECTION_MODE:
+        from mopd_verl.domain_gradient.control_q_statistics import global_q_statistics
+
+        q = global_q_statistics(
+            token_id_batches, loss_batches, mask_batches, label_batches,
+            domains=normalized_domains, domain_candidates=domain_candidates,
+            student_entropy_batches=student_entropy_batches,
+        )
+        return GlobalCandidateLossStatistics(
+            q.by_domain, q.valid_token_counts, q.valid_score_sums, q.normalization
+        )
     device = loss_batches[0].device
     packed = torch.zeros(
         (len(normalized_domains), 2, len(candidates) + 1),
@@ -267,6 +280,7 @@ def append_online_control_selection_jsonl(
     applied_token_weights: Mapping[str, Mapping[int, float]],
     applied_token_occurrence_counts: Mapping[str, int],
     valid_token_counts: Mapping[str, int],
+    q_normalization_stats: Mapping[str, Mapping[str, float]] | None = None,
 ) -> None:
     """Persist exact current- and next-step online selector membership."""
 
@@ -279,6 +293,7 @@ def append_online_control_selection_jsonl(
     destination = step_jsonl_dir(output_dir, outcome.observed_step, create=True)
     record: dict[str, Any] = {
         "observed_step": outcome.observed_step,
+        "q_normalization_stats": q_normalization_stats,
         "applies_from_step": outcome.observed_step + 1,
         "audit_triggered": outcome.audit_triggered,
         "duplicate_step": outcome.duplicate_step,

@@ -22,6 +22,7 @@ from mopd_verl.domain_gradient.control_selection_scoring import (
     TOP_LOSS_SELECTION_MODE,
     TOP_SPEED_SELECTION_MODE,
     validate_loss_ratio_alpha,
+    validate_q_selection_contract,
 )
 from mopd_verl.domain_gradient.token_weighting_state import (
     PER_STEP_MEAN_ABS_LOSS_SELECTION,
@@ -837,6 +838,10 @@ class DomainGradientConfig:
             raise ValueError(
                 "Online Control weight mode must be one of: " f"{allowed}."
             )
+        validate_q_selection_contract(
+            self.control_token_online_selection_mode, self.control_token_online_weight_mode,
+            self.control_token_online_audit_interval_steps, self.control_token_online_window_steps,
+        )
         validate_loss_ratio_alpha(
             self.control_token_loss_ratio_alpha,
             weight_mode=self.control_token_online_weight_mode,

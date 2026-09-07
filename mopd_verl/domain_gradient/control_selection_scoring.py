@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 TOP_LOSS_SELECTION_MODE = "top_loss"
 TOP_LOGP_DIFF_SELECTION_MODE = "top_logp_diff"
 TOP_SPEED_SELECTION_MODE = "top_speed"
+TOP_Q_LOSS_ENTROPY_SELECTION_MODE = "top_q_loss_entropy"
 TOP_KL_STUDENT_ENTROPY_SELECTION_MODE = "top_kl_student_entropy"
 TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE = (
     "top_teacher_confidence_student_entropy"
@@ -30,6 +31,7 @@ ONLINE_CONTROL_SELECTION_MODES = frozenset(
         TOP_LOSS_SELECTION_MODE,
         TOP_LOGP_DIFF_SELECTION_MODE,
         TOP_SPEED_SELECTION_MODE,
+        TOP_Q_LOSS_ENTROPY_SELECTION_MODE,
         *PAIRED_SIGNAL_SELECTION_MODES,
     }
 )
@@ -52,6 +54,16 @@ ONLINE_CONTROL_WEIGHT_MODES = frozenset(
 )
 
 LOSS_RATIO_EPSILON = 1e-12
+
+
+def validate_q_selection_contract(
+    selection_mode: str, weight_mode: str, interval: int, window: int
+) -> None:
+    """Freeze the initial Q implementation to step-global selection, fixed weights."""
+    if selection_mode == TOP_Q_LOSS_ENTROPY_SELECTION_MODE and (
+        weight_mode != FIXED_ONLINE_WEIGHT_MODE or interval != 1 or window != 1
+    ):
+        raise ValueError("Q selection requires fixed weighting and interval=window=1.")
 
 
 @dataclass(frozen=True)

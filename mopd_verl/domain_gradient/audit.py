@@ -26,6 +26,7 @@ from mopd_verl.domain_gradient.control_selection_scoring import (
     PAIRED_ONLINE_WEIGHT_MODE,
     PAIRED_SIGNAL_SELECTION_MODES,
     TOP_KL_STUDENT_ENTROPY_SELECTION_MODE,
+    TOP_Q_LOSS_ENTROPY_SELECTION_MODE,
     TOP_LOGP_DIFF_SELECTION_MODE,
     TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE,
     TOP_SPEED_SELECTION_MODE,
@@ -1673,7 +1674,7 @@ class DomainGradientAudit:
         teacher_entropy_batches: list[torch.Tensor] = []
         paired_mode = (
             self.config.control_token_online_selection_mode
-            in PAIRED_SIGNAL_SELECTION_MODES
+            in {*PAIRED_SIGNAL_SELECTION_MODES, TOP_Q_LOSS_ENTROPY_SELECTION_MODE}
         )
         teacher_confidence_mode = (
             self.config.control_token_online_selection_mode
@@ -1773,6 +1774,8 @@ class DomainGradientAudit:
             ),
         )
         statistics = global_statistics.by_domain
+        for domain, normalization in (global_statistics.q_normalization_stats or {}).items():
+            metrics.update({f"{domain}/token_weight/{key}": value for key, value in normalization.items()})
         applied_occurrence_counts = {
             domain: sum(
                 statistics.get(domain, {}).get(token_id, (0.0, 0))[1]
@@ -1802,6 +1805,7 @@ class DomainGradientAudit:
             applied_token_weights=self._applied_online_control_token_weights,
             applied_token_occurrence_counts=applied_occurrence_counts,
             valid_token_counts=global_statistics.valid_token_counts,
+            q_normalization_stats=global_statistics.q_normalization_stats,
         )
 
         metrics.update(

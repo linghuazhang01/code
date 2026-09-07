@@ -10,6 +10,7 @@ credentials.json
 settings.json
 *_secret*
 *_token*
+!/configs/baselines/canonical/fire_token_topk32.yaml
 !third_party/verl/tests/workers/rollout/test_sglang_async_rollout_w_tools_token_out.py
 
 # Python

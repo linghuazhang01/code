@@ -13,6 +13,7 @@ from pathlib import Path
 
 from mopd_verl.reproducibility import GLOBAL_SEED_ENV, PYTHON_HASH_SEED_ENV
 from mopd_verl.settings import MOPDConfig, WorkerPoolPlacementConfig, load_config
+from mopd_verl.teacher_performance_config import teacher_performance_overrides
 
 
 def _bool(value: bool) -> str:
@@ -654,6 +655,7 @@ def build_overrides(config: MOPDConfig) -> list[str]:
         f"actor_rollout_ref.rollout.val_kwargs.top_p={rollout.val_top_p}",
         f"actor_rollout_ref.rollout.val_kwargs.n={rollout.val_n}",
         "actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1",
+        *teacher_performance_overrides(config.teacher_performance),
         "actor_rollout_ref.ref.fsdp_config.param_offload=True",
         "actor_rollout_ref.ref.fsdp_config.model_dtype=bfloat16",
         "algorithm.use_kl_in_reward=False",

@@ -271,6 +271,9 @@ CORE_DYNAMIC_WEIGHT = {
     "weighted_grad_norm",
 }
 CORE_TOKEN_WEIGHT = {
+    "q_all_valid_mean_abs_loss",
+    "q_all_valid_mean_student_entropy",
+    "q_all_valid_mean_score",
     "active_token_count",
     "audit_triggered",
     "all_domain_shared_token_type_count",

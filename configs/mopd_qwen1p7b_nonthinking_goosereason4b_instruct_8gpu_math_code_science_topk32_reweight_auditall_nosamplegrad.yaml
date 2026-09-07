@@ -131,12 +131,12 @@ rollout:
   name: vllm
   mode: sync
   gpu_memory_utilization: 0.6
-  enforce_eager: true
+  enforce_eager: false
   enable_chunked_prefill: false
   n: 1
   max_num_batched_tokens: 32768
   max_model_len: 18432
-  max_num_seqs: 24
+  max_num_seqs: 64
   do_sample: true
   temperature: 1.0
   top_p: 1.0
@@ -312,3 +312,11 @@ ray_kwargs:
   ray_init:
     include_dashboard: false
     num_cpus: 32
+
+teacher_performance:
+  enabled: true
+  topk_logprob_chunk_size: 1024
+  max_micro_batch_size: 32
+  max_tokens: 57344
+  moe_dispatch: stable_sort
+  memory_margin_gib: 12.0

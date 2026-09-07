@@ -52,7 +52,7 @@ rollout:
   n: 1
   max_num_batched_tokens: 1024
   max_model_len: 768
-  max_num_seqs: 16
+  max_num_seqs: 64
   temperature: 1.0
   top_p: 1.0
   seed: 42
@@ -101,3 +101,11 @@ ray_kwargs:
   ray_init:
     include_dashboard: false
     num_cpus: 16
+
+teacher_performance:
+  enabled: true
+  topk_logprob_chunk_size: 1024
+  max_micro_batch_size: 32
+  max_tokens: 57344
+  moe_dispatch: stable_sort
+  memory_margin_gib: 12.0

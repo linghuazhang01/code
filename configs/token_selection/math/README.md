@@ -1,5 +1,25 @@
 # Math-only online token-selector configs
 
+## R2: exact Q selector + Fixed4 (5 GPUs)
+
+[R2 config](q_next_step_full_taxonomy_unified_topp0p05_i1_w1_fixed4_5gpu_4a1t_b256.yaml)
+inherits FullTaxonomy TopP5% Fixed4; resolved differences are only selector and
+six run/output identifiers. It keeps 4 actor + 1 teacher, batch256, seed42, 70steps.
+
+`top_q_loss_entropy`: L=abs(configured loss), H=pre-update full-vocabulary student
+entropy, A=L/mean_all_valid(L), B=H/mean_all_valid(H), Q=A+B+A*B. Means pool ALL
+valid occurrences per domain/source step across microbatches and actor ranks.
+Reduce sum(L), sum(H), sum(L*H), N before normalization; never substitute products
+of token-ID means for the occurrence crossmoment. Rank eligible IDs by mean Q
+with unchanged joint TopP5%, strict count>20, tie rules and t→t+1 lag.
+
+Q is detached and unclipped; selected raw weights stay4, others1, with inherited
+mean-one normalization. No alpha1.75 or Q-ratio weighting. Initial scope is
+i1/w1 + fixed weights; actor requires one optimizer minibatch/epoch and cached
+entropy. Invalid entropy, empty domains or zero denominators fail explicitly.
+This requires the new selector code, not just YAML on an older checkout.
+CPU tests and two-rank witnesses pass; GPU smoke has not been run.
+
 All configs use Qwen3-1.7B, teacher Top-32 reverse-KL training, and the strict
 source gate `occurrence >20` at every source-window step. Selected-token raw
 weight is fixed at 4 unless the profile explicitly uses `lossratio` weighting.

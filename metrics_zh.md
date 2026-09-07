@@ -455,6 +455,11 @@ tokens，不限于 candidate pool。若启用 `control_token_normalize_per_domai
 
 ## JSONL 输出
 
+R2 Q selector额外输出 `<domain>/token_weight/q_all_valid_mean_abs_loss`、
+`q_all_valid_mean_student_entropy`、`q_all_valid_mean_score`，分别为整个source
+step跨microbatch/rank的occurrence-mean L/H/Q，不是训练权重。同值写入selector
+JSONL的`q_normalization_stats`；入选ID的mean Q使用既有`mean_selection_score`。
+
 当前保留的 audit JSONL 文件：
 
 | 文件 | 内容 |

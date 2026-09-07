@@ -287,7 +287,7 @@ class Qwen30BInstruct2507ProfileTests(unittest.TestCase):
                     "attn_implementation=flash_attention_2",
                     rendered,
                 )
-                self.assertIn("actor_rollout_ref.rollout.enforce_eager=True", rendered)
+                self.assertIn("actor_rollout_ref.rollout.enforce_eager=False", rendered)
                 self.assertNotIn(
                     "+actor_rollout_ref.model.override_config.attn_implementation=eager",
                     rendered,

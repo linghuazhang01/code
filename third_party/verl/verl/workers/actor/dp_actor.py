@@ -29,6 +29,7 @@ from mopd_verl.domain_gradient.adaptive_neighborhood_metrics import (
 from mopd_verl.domain_gradient.control_selection_scoring import (
     PAIRED_SIGNAL_SELECTION_MODES,
     TOP_KL_STUDENT_ENTROPY_SELECTION_MODE,
+    TOP_Q_LOSS_ENTROPY_SELECTION_MODE,
     TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE,
 )
 from mopd_verl.full_gradient.actor_loss import build_actor_micro_batch_loss
@@ -752,13 +753,19 @@ class DataParallelPPOActor(BasePPOActor):
         if (
             audit.config.control_token_online_selection_enabled
             and audit.config.control_token_online_selection_mode
-            in PAIRED_SIGNAL_SELECTION_MODES
+            in {*PAIRED_SIGNAL_SELECTION_MODES, TOP_Q_LOSS_ENTROPY_SELECTION_MODE}
             and "student_entropy" not in data.batch
         ):
             raise ValueError(
                 "Paired online Control selection requires cached Student "
                 "entropy before the optimizer step."
             )
+        if (
+            audit.config.control_token_online_selection_enabled
+            and audit.config.control_token_online_selection_mode == TOP_Q_LOSS_ENTROPY_SELECTION_MODE
+            and not on_policy
+        ):
+            raise ValueError("Q selection requires one PPO epoch and one optimizer mini-batch.")
         if (
             audit.config.control_token_online_selection_enabled
             and audit.config.control_token_online_selection_mode

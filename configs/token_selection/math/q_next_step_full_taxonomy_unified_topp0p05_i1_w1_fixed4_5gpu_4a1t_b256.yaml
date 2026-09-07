@@ -1,0 +1,33 @@
+# R2: only replace the configured-loss selector with exact occurrence Q.
+# Q = L/mean_all(L) + H/mean_all(H) + L*H/(mean_all(L)*mean_all(H)).
+# L = abs(configured loss); H = full-vocabulary student entropy.
+# Means pool all valid domain occurrences across source-step microbatches/ranks.
+# Joint taxonomy TopP5%; selected raw weight stays Fixed4, other stays 1.
+extends: top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_5gpu_b256.yaml
+
+extra_overrides:
+  # Q requires non-negative entropy: use the existing stable FP32 kernel.
+  - actor_rollout_ref.actor.entropy_from_logits_with_chunking=true
+  - custom_reward_function.path=mopd_verl/mixed_reward.py
+  - custom_reward_function.name=compute_score
+  - trainer.resume_mode=disable
+  - actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+
+runtime:
+  wandb_run_id: q1p7b-math-top32kl-taxonomy-topp05-qsel-w4-5g4a1t-b256
+
+audit:
+  control_token_online_selection_mode: top_q_loss_entropy
+  control_token_online_weight_mode: fixed
+  control_token_loss_weight: 4.0
+  output_dir: audit/q1p7b-math-top32kl-taxonomy-topp05-qsel-w4-5g4a1t-b256
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-top32kl-taxonomy-topp05-qsel-w4-5g4a1t-b256
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-top32kl-taxonomy-topp05-qsel-w4-5g4a1t-b256
+
+trainer:
+  experiment_name: q1p7b-math-top32kl-taxonomy-topp05-qsel-w4-5g4a1t-b256
+  default_local_dir: checkpoints/MOPD/q1p7b-math-top32kl-taxonomy-topp05-qsel-w4-5g4a1t-b256

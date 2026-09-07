@@ -854,6 +854,18 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 self.config.ref.use_remove_padding = use_remove_padding
                 self.config.ref.use_fused_kernels = use_fused_kernels
             self.ref_policy = DataParallelPPOActor(config=self.config.ref, actor_module=self.ref_module_fsdp)
+            from mopd_verl.teacher_performance import configure_teacher_performance
+
+            configure_teacher_performance(
+                self.ref_policy,
+                self.config.ref.get("teacher_performance", {}),
+                world_size=self.world_size,
+                teacher_model_device=teacher_model_device,
+                dedicated_teacher=(
+                    not self._is_actor and not self._is_rollout
+                    and bool(OmegaConf.select(self.config, "worker_placement.separate_ref_policy", default=False))
+                ),
+            )
 
         # Initialize base models for corrected reward computation
         # Actor's base model (for computing base_log_prob)

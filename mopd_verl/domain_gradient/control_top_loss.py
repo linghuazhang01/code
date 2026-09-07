@@ -31,6 +31,7 @@ from mopd_verl.domain_gradient.control_selection_scoring import (
     occurrence_weighted_optimization_speed,
     selected_to_other_loss_ratio_weight,
     validate_loss_ratio_alpha,
+    validate_q_selection_contract,
 )
 from mopd_verl.domain_gradient.control_selection_types import (
     DomainSelectionResult,
@@ -165,6 +166,10 @@ def initial_online_control_selection_state(
 ) -> OnlineControlSelectionState:
     """Create an empty selector state with a frozen configuration signature."""
 
+    validate_q_selection_contract(
+        normalize_selection_mode(selection_mode), normalize_online_weight_mode(weight_mode),
+        audit_interval_steps, window_steps,
+    )
     normalized_domains = tuple(dict.fromkeys(str(domain) for domain in domains))
     if not normalized_domains:
         raise ValueError("Online Control selection requires at least one domain.")

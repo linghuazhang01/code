@@ -281,6 +281,10 @@ class ConfigProfileTests(unittest.TestCase):
                     "b16_4step_3gpu_smoke.yaml"
                 ),
                 "mopd_grad_reliability_qwen0p6b_8b_matrix.yaml",
+                "mopd_domain_weighting_qwen0p6b_8b_matrix.yaml",
+                "mopd_feature_coverage_qwen0p6b_8b_aw2_fsdpsize2_top_partial_prefix_ppo2_b8_2step_smoke.yaml",
+                "mopd_dynamic_weight_qwen0p6b_8b_aw2_fsdpsize2_tail_topp1_b16_4step_smoke.yaml",
+                "mopd_topk32_reweight_qwen0p6b_8b_aw4_fsdpsize2_topp0p1_b24_5step_5gpu_smoke.yaml",
             },
         )
 

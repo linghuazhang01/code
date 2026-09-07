@@ -442,6 +442,13 @@ candidate construction、loss 公式、runtime constraints 与 metrics 见
 
 ## Online Control-token selection
 
+R2 的 `top_q_loss_entropy` selector 使用 `L=abs(configured loss)`、student
+full-vocabulary entropy H，按同source step/domain全部valid occurrences定义
+`A=L/mean(L)`、`B=H/mean(H)`、`Q=A+B+A*B`。跨microbatch/rank先汇总
+sumL/sumH/sumLH/N再计算每个ID的mean Q，非逐response max、非均值乘积proxy。
+当前只支持i1/w1和fixed weighting；R2配置为联合TopP5% + Fixed4。Q不截断、
+不反向传播，零/空分母或负/非有限entropy显式报错。旧paired selector语义保持。
+
 Online selector 在固定的 domain candidate pools 上提供多种 ranking mode，
 并把 token-ID selection 与入选后的 weighting 独立配置：
 
@@ -625,3 +632,11 @@ bash scripts/run_mopd.sh --dry-run \
 
 EOPD 的公式语义、论文参数与本项目参数差异见
 [docs/eopd-baseline.md](docs/eopd-baseline.md)。
+
+
+## GPU 性能配置
+
+rollout 的 CUDA Graph/并发数与 teacher 的 chunk、batch、token budget 可独立配置。
+字段定义、适用布局、显存保护、复现实测及恢复要求见
+[GPU performance configuration](docs/gpu-performance-tuning.md)。
+性能配置不改变 Flash Attention、全局训练 batch 或 selector/weighting 公式。

@@ -20,6 +20,7 @@ from mopd_verl.domain_gradient.control_selection_scoring import (
     normalize_online_weight_mode,
     normalize_selection_mode,
     validate_loss_ratio_alpha,
+    validate_q_selection_contract,
     validate_scaled_loss_ratio_weight,
 )
 
@@ -195,6 +196,9 @@ def _validate_restored_state(
 ) -> None:
     """Validate history alignment, budgets, and variable token weights."""
 
+    validate_q_selection_contract(
+        state.selection_mode, state.weight_mode, state.audit_interval_steps, state.window_steps
+    )
     validate_loss_ratio_alpha(state.loss_ratio_alpha, weight_mode=state.weight_mode)
     history_steps = tuple(step for step, _ in state.history)
     count_steps = tuple(step for step, _ in state.valid_token_count_history)
