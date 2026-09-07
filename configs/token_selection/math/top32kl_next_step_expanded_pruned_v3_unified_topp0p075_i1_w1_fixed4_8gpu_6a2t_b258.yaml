@@ -1,0 +1,38 @@
+# V3 Math pool: 115 unified tokens (85 Control + 30 Structure).
+# Rank candidate types by occurrence-mean absolute configured Top32 KL loss.
+# Use the existing top_loss selector; selected weights are fixed, not loss-ratio weights.
+# Top-P=0.075 is all-valid-token occurrence coverage, with strict >20 and i1/w1.
+# Selected raw weight remains fixed4 (others1), before domain normalization.
+# Retain Top32 reverse-KL, 6 actor + 2 teacher GPUs, and batch258.
+extends: a_next_step_expanded_pruned_v3_unified_i1_w1_k25_8gpu_6a2t_b258.yaml
+
+runtime:
+  wandb_run_id: q1p7b-math-top32kl-v3-topp075-w4-8g6a2t-b258
+
+audit:
+  control_token_online_selection_mode: top_loss
+  control_token_online_budget_mode: top_p
+  control_token_online_top_p: 0.075
+  control_token_online_top_k_per_group: null
+  control_token_online_weight_mode: fixed
+  control_token_loss_weight: 4.0
+  control_token_loss_ratio_alpha: 1.0
+  output_dir: audit/q1p7b-math-top32kl-v3-topp075-w4-8g6a2t-b258
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-top32kl-v3-topp075-w4-8g6a2t-b258
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-top32kl-v3-topp075-w4-8g6a2t-b258
+
+trainer:
+  experiment_name: q1p7b-math-top32kl-v3-topp075-w4-8g6a2t-b258
+  default_local_dir: checkpoints/MOPD/q1p7b-math-top32kl-v3-topp075-w4-8g6a2t-b258
+
+# Preserve the original reference run reward path while changing the token pool.
+extra_overrides:
+  - custom_reward_function.path=mopd_verl/mixed_reward.py
+  - custom_reward_function.name=compute_score
+  - trainer.resume_mode=disable
+  - actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+  - actor_rollout_ref.ref.fsdp_config.fsdp_size=2

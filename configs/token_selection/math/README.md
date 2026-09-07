@@ -1,5 +1,39 @@
 # Math-only online token-selector configs
 
+## V3 Top-Loss + Top-P 7.5% + Fixed4 (8 GPUs)
+
+[Top-Loss Fixed4 config](top32kl_next_step_expanded_pruned_v3_unified_topp0p075_i1_w1_fixed4_8gpu_6a2t_b258.yaml)
+uses the existing `top_loss` selector and the ExpandedPruned-V3 Math pool:
+115 unified token IDs (85 Control + 30 Structure). It retains Top32 reverse-KL,
+the reference reward path and 6-actor/2-teacher topology with batch258.
+
+Rank eligible token types by their occurrence-mean absolute configured loss,
+using globally reduced loss sums/counts. Break ties by token ID. The strict
+occurrence count >20 gate and i1/w1 next-step activation remain unchanged.
+Accumulate selected types until their occurrences cover at least 7.5% of all
+valid domain tokens. Whole types may overshoot; insufficient coverage retains
+the existing shortfall report. This Top-P does not change rollout sampling.
+
+Selected/other raw weights are fixed4/1, followed by the inherited per-domain
+mean-one normalization. Both ranking and weighting use existing code; no new
+selector implementation is required. The new run has separate output paths
+and inherits the rollout/teacher performance settings.
+
+Submit from the synchronized repository root on the Slurm host (training
+Python must be available through `MOPD_LAUNCH_PYTHON`):
+
+```bash
+bash scripts/run_mopd.sh \
+  configs/token_selection/math/top32kl_next_step_expanded_pruned_v3_unified_topp0p075_i1_w1_fixed4_8gpu_6a2t_b258.yaml \
+  --slurm --slurm-args "--mem=800G"
+```
+
+Append `--dry-run` to inspect resource allocation without submitting. Submit
+normally without that flag to start training. The launcher derives 8 GPUs and
+64 CPUs from this profile; 800 GiB follows the 100 GiB/GPU host-memory budget.
+The profile starts a fresh run with 70 training steps; HF model uploads are
+configured for steps55/60/65/70 under its own run prefix.
+
 ## R2: exact Q selector + Fixed4 (5 GPUs)
 
 [R2 config](q_next_step_full_taxonomy_unified_topp0p05_i1_w1_fixed4_5gpu_4a1t_b256.yaml)
