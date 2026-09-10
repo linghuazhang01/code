@@ -1,0 +1,53 @@
+# Three-domain loss-selection MOPD, fixed raw selected:other weight = 2:1.
+# Topology: 6 actor/rollout (Student) GPUs + 2 ref/teacher GPUs.
+# The global batch is 768, which gives approximately 256 samples/domain under
+# the equal Math/Code/Science sampling weights.
+# Selection ranks each domain's existing Control-token candidate taxonomy by
+# token-level configured loss, then uses Top-P=5% valid-token occurrence
+# coverage. The selected-token raw weight is 2.0 before domain normalization.
+extends: mopd_qwen1p7b_30b_a3b_instruct_2507_8gpu_math_code_science_topk32_control_online_toploss_i3_w3_f20_k30_w4_b528.yaml
+
+runtime:
+  slurm_allocation_gpus: 8
+  wandb_run_id: q1p7b-8g-mcs-toploss-topp05-fixed2-b768-s60
+  wandb_resume: never
+
+data:
+  train_batch_size: 768
+
+actor:
+  ppo_mini_batch_size: 768
+
+extra_overrides:
+  - custom_reward_function.path=mopd_verl/mixed_reward.py
+  - custom_reward_function.name=compute_score
+  - trainer.resume_mode=disable
+  - actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+  - actor_rollout_ref.ref.fsdp_config.fsdp_size=2
+
+audit:
+  control_token_online_selection_mode: top_loss
+  control_token_online_weight_mode: fixed
+  control_token_online_budget_mode: top_p
+  control_token_online_top_p: 0.05
+  control_token_online_top_k_per_group: null
+  control_token_loss_weight: 2.0
+  output_dir: audit/q1p7b-8g-mcs-toploss-topp05-fixed2-b768-s60
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-8g-mcs-toploss-topp05-fixed2-b768-s60
+
+huggingface_checkpoint:
+  enabled: true
+  steps: [60]
+  repo_id: icemoon28/opd-checkpoints
+  private: false
+  path_prefix: checkpoints/mopd/q1p7b-8g-mcs-toploss-topp05-fixed2-b768-s60
+  token_env_var: HF_TOKEN
+  env_file: null
+
+trainer:
+  experiment_name: q1p7b-8g-mcs-toploss-topp05-fixed2-b768-s60
+  n_gpus_per_node: 6
+  total_training_steps: 60
+  default_local_dir: checkpoints/MOPD/q1p7b-8g-mcs-toploss-topp05-fixed2-b768-s60
