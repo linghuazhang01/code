@@ -13,8 +13,13 @@ from mopd_verl.settings import load_config
 
 
 CONFIG_DIR = (
-    Path(__file__).resolve().parents[1] / "configs" / "token_selection" / "math"
+    Path(__file__).resolve().parents[1]
+    / "configs"
+    / "token_selection"
+    / "math"
+    / "v3"
 )
+TAXONOMY_CONFIG_DIR = CONFIG_DIR.parent / "taxonomy"
 BASE_FILENAME = "a_next_step_expanded_pruned_v3_unified_i1_w1_k25_5gpu_4a1t_b256.yaml"
 CASES = (
     ("0p01", 0.01),
@@ -119,7 +124,7 @@ def test_v3_loss_ratio_paths_are_isolated_from_existing_profiles() -> None:
     configs = [load_config(path) for path in sorted(paths)]
     existing_paths = (
         set(CONFIG_DIR.glob("*expanded_pruned_v3*.yaml"))
-        | set(CONFIG_DIR.glob("*full_taxonomy*lossratio*.yaml"))
+        | set(TAXONOMY_CONFIG_DIR.glob("*full_taxonomy*lossratio*.yaml"))
     ) - paths
     existing = [load_config(path) for path in sorted(existing_paths)]
 

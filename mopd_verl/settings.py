@@ -24,6 +24,9 @@ from mopd_verl.domain_gradient.control_selection_scoring import (
     validate_loss_ratio_alpha,
     validate_q_selection_contract,
 )
+from mopd_verl.domain_gradient.control_selection_budget import (
+    normalize_top_p_by_domain,
+)
 from mopd_verl.domain_budgeting_config import (
     DomainBudgetingConfig,
     parse_domain_budgeting_config,
@@ -327,6 +330,9 @@ class AuditConfig:
     control_token_online_top_k_per_group: int | None = None
     control_token_online_budget_mode: str = TOP_K_BUDGET_MODE
     control_token_online_top_p: float = 1.0
+    control_token_online_top_p_by_domain: dict[str, float] = field(
+        default_factory=dict
+    )
     control_token_online_selection_mode: str = TOP_LOSS_SELECTION_MODE
     control_token_online_weight_mode: str = FIXED_ONLINE_WEIGHT_MODE
     control_token_loss_ratio_alpha: float = 1.0
@@ -1149,6 +1155,10 @@ def load_config(path: str | Path) -> MOPDConfig:
         raise ValueError(
             "audit.control_token_online_top_p must be finite and in (0, 1]."
         )
+    normalize_top_p_by_domain(
+        audit.domains,
+        audit.control_token_online_top_p_by_domain,
+    )
     if (
         domain_candidate_groups
         and audit.control_token_online_budget_mode == TOP_K_BUDGET_MODE

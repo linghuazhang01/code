@@ -23,11 +23,11 @@ from mopd_verl.verl_audit import MOPDAuditLogger
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = (
     ROOT
-    / "configs/token_selection/math/q_next_step_full_taxonomy_unified_topp0p05_i1_w1_fixed4_5gpu_4a1t_b256.yaml"
+    / "configs/token_selection/math/taxonomy/q_next_step_full_taxonomy_unified_topp0p05_i1_w1_fixed4_5gpu_4a1t_b256.yaml"
 )
 BASE = (
     ROOT
-    / "configs/token_selection/math/top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_5gpu_b256.yaml"
+    / "configs/token_selection/math/taxonomy/top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_5gpu_b256.yaml"
 )
 MODE = "top_q_loss_entropy"
 

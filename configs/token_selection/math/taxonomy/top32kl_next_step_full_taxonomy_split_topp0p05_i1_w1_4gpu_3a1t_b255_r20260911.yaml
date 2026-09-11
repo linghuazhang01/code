@@ -1,0 +1,33 @@
+# Four-GPU rerun of the best observed Top32-KL Taxonomy Split configuration.
+# Preserve the linked selector and fixed weight=4 semantics; use 3 actor/rollout
+# GPUs plus 1 teacher/ref GPU, with a batch divisible by the actor count.
+extends: top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_5gpu_b256.yaml
+
+runtime:
+  slurm_allocation_gpus: 4
+  wandb_run_id: q1p7b-split-topp05-4g3a1t-b255-r260911
+  wandb_resume: never
+
+data:
+  train_batch_size: 255
+
+actor:
+  ppo_mini_batch_size: 255
+
+worker_placement:
+  actor_rollout: {n_gpus_per_node: 3, nnodes: 1}
+  ref_policy: {n_gpus_per_node: 1, nnodes: 1}
+
+audit:
+  output_dir: audit/q1p7b-math-top32kl-ns-taxonomy-split-topp0p05-i1w1-4gpu-3a1t-b255-r20260911
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-top32kl-ns-taxonomy-split-topp0p05-i1w1-4gpu-3a1t-b255-r20260911
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-top32kl-ns-taxonomy-split-topp0p05-i1w1-4gpu-3a1t-b255-r20260911
+
+trainer:
+  experiment_name: q1p7b-math-top32kl-ns-taxonomy-split-topp0p05-i1w1-4gpu-3a1t-b255-r20260911
+  n_gpus_per_node: 3
+  default_local_dir: checkpoints/MOPD/q1p7b-math-top32kl-ns-taxonomy-split-topp0p05-i1w1-4gpu-3a1t-b255-r20260911

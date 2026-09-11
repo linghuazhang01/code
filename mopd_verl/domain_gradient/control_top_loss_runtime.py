@@ -307,6 +307,7 @@ def append_online_control_selection_jsonl(
         "top_k_per_group": state.top_k_per_group,
         "budget_mode": state.budget_mode,
         "top_p": state.top_p,
+        "top_p_by_domain": state.top_p_map(),
         "top_p_basis": "selected_occurrences_over_valid_tokens",
         "selection_mode": state.selection_mode,
         "weight_mode": state.weight_mode,
@@ -355,6 +356,7 @@ def append_online_control_selection_jsonl(
         "next_active_token_weights": state.active_weight_map(),
         "domains": {
             result.domain: {
+                "top_p": state.top_p_for_domain(result.domain),
                 "valid_token_count": result.valid_token_count,
                 "eligible_token_count": result.eligible_token_count,
                 "selected_occurrence_count": result.selected_occurrence_count,

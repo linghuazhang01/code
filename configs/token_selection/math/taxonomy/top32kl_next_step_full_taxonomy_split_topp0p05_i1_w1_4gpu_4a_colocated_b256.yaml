@@ -1,0 +1,53 @@
+# Four-GPU co-located Top-P profile for the Math FullTaxonomy next-step selector.
+# Topology: four actor/rollout workers with the ref/teacher role co-located in
+# the same four Ray workers; global batch size 256.
+# The teacher remains a single logical model sharded by FSDP across the four
+# worker ranks. This profile preserves the actor world size and batch of the
+# original 5GPU run while fitting the worker pools into four physical GPUs.
+extends: top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_5gpu_b256.yaml
+
+runtime:
+  slurm_allocation_gpus: 4
+  wandb_run_id: q1p7b-math-topp05-4g4a-coloc-b256-r260911
+  wandb_resume: never
+
+data:
+  train_batch_size: 256
+
+actor:
+  ppo_mini_batch_size: 256
+
+rollout:
+  # Match the recorded C01 rollout path for the topology bridge.
+  enforce_eager: true
+  max_num_seqs: 24
+
+teacher_performance:
+  # The optimized wrapper requires a single-rank reference worker. In this
+  # co-located profile the reference model is four-rank FSDP, so use the stock
+  # path explicitly instead of relying on a runtime fallback.
+  enabled: false
+
+worker_placement:
+  separate_ref_policy: false
+  actor_rollout: {n_gpus_per_node: 4, nnodes: 1}
+  # No independent ref pool: ref/teacher is bound to actor_rollout workers.
+  ref_policy: {n_gpus_per_node: null, nnodes: null, process_on_nodes: null}
+
+audit:
+  output_dir: audit/q1p7b-math-top32kl-ns-taxonomy-topp0p05-4gpu-4a-colocated-b256-r20260911
+  control_token_online_budget_mode: top_p
+  control_token_online_top_p: 0.05
+  control_token_online_top_k_per_group: null
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-top32kl-ns-taxonomy-topp0p05-4gpu-4a-colocated-b256-r20260911
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-top32kl-ns-taxonomy-topp0p05-4gpu-4a-colocated-b256-r20260911
+
+trainer:
+  experiment_name: q1p7b-math-top32kl-ns-taxonomy-topp0p05-4gpu-4a-colocated-b256-r20260911
+  n_gpus_per_node: 4
+  test_freq: 20
+  default_local_dir: checkpoints/MOPD/q1p7b-math-top32kl-ns-taxonomy-topp0p05-4gpu-4a-colocated-b256-r20260911

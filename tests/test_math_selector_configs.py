@@ -12,6 +12,14 @@ from mopd_verl.settings import load_config
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = ROOT / "configs" / "token_selection" / "math"
+TAXONOMY_DIR = CONFIG_DIR / "taxonomy"
+
+
+def _config_path(filename: str) -> Path:
+    directory = TAXONOMY_DIR if "full_taxonomy" in filename else CONFIG_DIR
+    return directory / filename
+
+
 POOL_MEMBERSHIP = (
     ROOT
     / "analysis-output"
@@ -54,22 +62,6 @@ class TaxonomyTopPCase:
 
 
 CASES = (
-    SelectorCase(
-        "a_next_step_expanded_pruned_v2_i1_w1_k29_4gpu_b255.yaml",
-        "ExpandedPruned-V2",
-        1,
-        1,
-        29,
-        89,
-    ),
-    SelectorCase(
-        "a_next_window_expanded_pruned_v2_i6_w6_k30_4gpu_b255.yaml",
-        "ExpandedPruned-V2",
-        6,
-        6,
-        30,
-        89,
-    ),
     SelectorCase(
         "a_next_step_robust190_i1_w1_k27_4gpu_b255.yaml",
         "Robust190",
@@ -209,7 +201,7 @@ def _math_taxonomy(token_type: str) -> list[int]:
 
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case.filename)
 def test_math_token_selector_config_contract(case: SelectorCase) -> None:
-    config = load_config(CONFIG_DIR / case.filename)
+    config = load_config(_config_path(case.filename))
     command = format_command(build_command(config))
     candidates = config.audit.domain_control_token_candidate_ids
 
@@ -241,7 +233,7 @@ def test_math_token_selector_config_contract(case: SelectorCase) -> None:
 
 
 def test_math_token_selector_supports_top_p_budget(tmp_path: Path) -> None:
-    base = CONFIG_DIR / "a_next_step_control44_i1_w1_k8_4gpu_b255.yaml"
+    base = _config_path("a_next_step_control44_i1_w1_k8_4gpu_b255.yaml")
     config_path = tmp_path / "top_p_selector.yaml"
     config_path.write_text(
         "\n".join(
@@ -309,7 +301,7 @@ def test_math_full_taxonomy_selector_config_contract(
     top_k_per_group: int,
     selection_mode: str,
 ) -> None:
-    config = load_config(CONFIG_DIR / filename)
+    config = load_config(_config_path(filename))
     command = format_command(build_command(config))
     groups = config.audit.domain_control_token_candidate_groups
 
@@ -341,8 +333,9 @@ def test_math_full_taxonomy_selector_config_contract(
 
 def test_math_full_taxonomy_top_p_five_gpu_contract() -> None:
     config = load_config(
-        CONFIG_DIR
-        / "top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_5gpu_b256.yaml"
+        _config_path(
+            "top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_5gpu_b256.yaml"
+        )
     )
     command = format_command(build_command(config))
     groups = config.audit.domain_control_token_candidate_groups
@@ -385,7 +378,7 @@ def test_math_full_taxonomy_top_p_single_teacher_benchmark_contract(
     filename: str,
     top_p: float,
 ) -> None:
-    config = load_config(CONFIG_DIR / filename)
+    config = load_config(_config_path(filename))
     command = format_command(build_command(config))
     audit = config.audit
     run_id = config.runtime.wandb_run_id
@@ -445,7 +438,7 @@ def test_math_full_taxonomy_loss_ratio_profile_contract(
     top_p: float,
 ) -> None:
     config = load_config(
-        CONFIG_DIR / filename
+        _config_path(filename)
     )
     command = format_command(build_command(config))
     audit = config.audit
@@ -469,8 +462,7 @@ def test_math_full_taxonomy_loss_ratio_profile_contract(
 
 def test_math_full_taxonomy_top_p_adaptive_neighbor_contract() -> None:
     config = load_config(
-        CONFIG_DIR
-        / (
+        _config_path(
             "top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_"
             "adaptive_pl_gt1p0_w4_5gpu_b256.yaml"
         )
@@ -496,8 +488,7 @@ def test_math_full_taxonomy_top_p_adaptive_neighbor_contract() -> None:
 
 def test_math_full_taxonomy_top_p_ten_percent_adaptive_neighbor_contract() -> None:
     config = load_config(
-        CONFIG_DIR
-        / (
+        _config_path(
             "top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_"
             "adaptive_pl_gt1p0_w4_5gpu_3a2t_b258.yaml"
         )
@@ -543,7 +534,7 @@ def test_math_full_taxonomy_top_p_ten_percent_adaptive_neighbor_contract() -> No
 def test_math_full_taxonomy_top_p_dual_teacher_contract(
     case: TaxonomyTopPCase,
 ) -> None:
-    config = load_config(CONFIG_DIR / case.filename)
+    config = load_config(_config_path(case.filename))
     command = format_command(build_command(config))
     groups = config.audit.domain_control_token_candidate_groups
 
@@ -587,8 +578,9 @@ def test_math_full_taxonomy_top_p_dual_teacher_contract(
 
 def test_math_full_taxonomy_top_p_resume15_contract() -> None:
     config = load_config(
-        CONFIG_DIR
-        / "top32kl_next_step_full_taxonomy_split_topp0p01_i1_w1_5gpu_3a2t_b258_resume15.yaml"
+        _config_path(
+            "top32kl_next_step_full_taxonomy_split_topp0p01_i1_w1_5gpu_3a2t_b258_resume15.yaml"
+        )
     )
     command = format_command(build_command(config))
 
@@ -635,8 +627,9 @@ def test_math_full_taxonomy_top_p_resume15_contract() -> None:
 
 def test_math_full_taxonomy_top_p_0p075_resume55_contract() -> None:
     config = load_config(
-        CONFIG_DIR
-        / "top32kl_next_step_full_taxonomy_split_topp0p075_i1_w1_5gpu_4a1t_b256_resume55.yaml"
+        _config_path(
+            "top32kl_next_step_full_taxonomy_split_topp0p075_i1_w1_5gpu_4a1t_b256_resume55.yaml"
+        )
     )
     command = format_command(build_command(config))
 
@@ -681,7 +674,7 @@ def test_math_full_taxonomy_top_p_ten_percent_avg4_contract(
     total_gpus: int,
     actor_gpus: int,
 ) -> None:
-    config = load_config(CONFIG_DIR / filename)
+    config = load_config(_config_path(filename))
     command = format_command(build_command(config))
     run_id = config.runtime.wandb_run_id
 

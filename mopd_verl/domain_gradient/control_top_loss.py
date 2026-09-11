@@ -9,6 +9,7 @@ from typing import Any, cast
 
 from mopd_verl.domain_gradient.control_selection_budget import (
     normalize_candidate_statistics,
+    normalize_top_p_by_domain,
     normalize_valid_token_counts,
     select_ranked_tokens,
     top_p_target_occurrence_count,
@@ -73,6 +74,7 @@ class OnlineControlSelectionState:
     ] = ()
     top_k_per_group: int | None = None
     loss_ratio_alpha: float = 1.0
+    top_p_by_domain: tuple[tuple[str, float], ...] = ()
 
     def active_map(self) -> dict[str, tuple[int, ...]]:
         return dict(self.active_token_ids)
@@ -84,6 +86,19 @@ class OnlineControlSelectionState:
         return {
             domain: dict(groups)
             for domain, groups in self.domain_candidate_token_groups
+        }
+
+    def top_p_for_domain(self, domain: str) -> float:
+        """Return the configured Top-P budget for one domain."""
+
+        return dict(self.top_p_by_domain).get(str(domain), self.top_p)
+
+    def top_p_map(self) -> dict[str, float]:
+        """Return the effective Top-P budget for every configured domain."""
+
+        return {
+            domain: self.top_p_for_domain(domain)
+            for domain in self.domains
         }
 
     def active_weight_map(self) -> dict[str, dict[int, float]]:
@@ -118,6 +133,7 @@ class OnlineControlSelectionState:
             "top_k": self.top_k,
             "budget_mode": self.budget_mode,
             "top_p": self.top_p,
+            "top_p_by_domain": self.top_p_by_domain,
             "domain_candidate_token_groups": self.domain_candidate_token_groups,
             "top_k_per_group": self.top_k_per_group,
             "selection_mode": self.selection_mode,
@@ -156,6 +172,9 @@ def initial_online_control_selection_state(
     top_k: int,
     budget_mode: str = TOP_K_BUDGET_MODE,
     top_p: float = 1.0,
+    top_p_by_domain: Mapping[str, float]
+    | Sequence[tuple[str, float]]
+    | None = None,
     candidate_token_groups: (
         Mapping[str, Mapping[str, Sequence[int]]] | None
     ) = None,
@@ -251,6 +270,10 @@ def initial_online_control_selection_state(
     normalized_budget_mode = normalize_online_budget_mode(budget_mode)
     if not math.isfinite(top_p) or not 0.0 < top_p <= 1.0:
         raise ValueError("Online Control top_p must be finite and in (0, 1].")
+    normalized_top_p_by_domain = normalize_top_p_by_domain(
+        normalized_domains,
+        top_p_by_domain,
+    )
     if domain_candidate_groups and normalized_budget_mode == TOP_K_BUDGET_MODE:
         if top_k_per_group is None or top_k_per_group < 1:
             raise ValueError(
@@ -307,6 +330,7 @@ def initial_online_control_selection_state(
         top_k=int(top_k),
         budget_mode=normalized_budget_mode,
         top_p=float(top_p),
+        top_p_by_domain=normalized_top_p_by_domain,
         selection_mode=normalized_selection_mode,
         weight_mode=normalized_weight_mode,
         loss_ratio_alpha=float(loss_ratio_alpha),
@@ -373,6 +397,7 @@ def _select_from_history(
     active_weights: list[tuple[str, tuple[tuple[int, float], ...]]] = []
     results: list[DomainSelectionResult] = []
     for domain in state.domains:
+        top_p = state.top_p_for_domain(domain)
         eligible: list[SelectedControlToken] = []
         for token_id, (loss_sum, count) in totals[domain].items():
             frequency = count / float(state.window_steps)
@@ -442,7 +467,7 @@ def _select_from_history(
                         tuple(item for item in ranked if item.token_id in group_ids),
                         budget_mode=state.budget_mode,
                         top_k=top_k_per_group,
-                        top_p=state.top_p,
+                        top_p=top_p,
                     )
                 )
             selected = tuple(grouped_selected)
@@ -451,7 +476,7 @@ def _select_from_history(
                 ranked,
                 budget_mode=state.budget_mode,
                 top_k=state.top_k,
-                top_p=state.top_p,
+                top_p=top_p,
                 valid_token_count=valid_token_totals[domain],
             )
         eligible_ranking_scores = tuple(
@@ -481,7 +506,7 @@ def _select_from_history(
             )
         top_p_target = (
             top_p_target_occurrence_count(
-                state.top_p,
+                top_p,
                 valid_token_totals[domain],
             )
             if state.budget_mode == TOP_P_BUDGET_MODE
@@ -699,6 +724,7 @@ def update_online_control_selection(
         top_k=state.top_k,
         budget_mode=state.budget_mode,
         top_p=state.top_p,
+        top_p_by_domain=state.top_p_by_domain,
         selection_mode=state.selection_mode,
         weight_mode=state.weight_mode,
         loss_ratio_alpha=state.loss_ratio_alpha,

@@ -10,6 +10,9 @@ from typing import Any
 from mopd_verl.domain_gradient.adaptive_neighborhood import (
     PerTokenAdaptiveNeighborhoodSpec,
 )
+from mopd_verl.domain_gradient.control_selection_budget import (
+    normalize_top_p_by_domain,
+)
 from mopd_verl.domain_gradient.control_selection_scoring import (
     FIXED_ONLINE_WEIGHT_MODE,
     LOSS_RATIO_ONLINE_WEIGHT_MODE,
@@ -176,6 +179,7 @@ class DomainGradientConfig:
     control_token_online_top_k_per_group: int | None
     control_token_online_budget_mode: str
     control_token_online_top_p: float
+    control_token_online_top_p_by_domain: tuple[tuple[str, float], ...]
     control_token_online_selection_mode: str
     control_token_online_weight_mode: str
     control_token_loss_ratio_alpha: float
@@ -477,6 +481,10 @@ class DomainGradientConfig:
             .lower(),
             control_token_online_top_p=float(
                 _get(meta, "control_token_online_top_p", 1.0)
+            ),
+            control_token_online_top_p_by_domain=normalize_top_p_by_domain(
+                domains,
+                _get(meta, "control_token_online_top_p_by_domain", {}),
             ),
             control_token_online_selection_mode=str(
                 _get(
@@ -799,6 +807,10 @@ class DomainGradientConfig:
             raise ValueError(
                 "control_token_online_top_p must be finite and in (0, 1]."
             )
+        normalize_top_p_by_domain(
+            self.domains,
+            self.control_token_online_top_p_by_domain,
+        )
         if (
             domain_candidate_groups
             and self.control_token_online_budget_mode == TOP_K_BUDGET_MODE

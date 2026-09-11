@@ -1,0 +1,23 @@
+# Restart profile for the scalar Top-P 5% experiment with the latest code.
+# The training semantics match the original 4GPU co-located profile; only
+# run/output identifiers are changed to avoid reusing the previous W&B run.
+extends: mopd_qwen1p7b_30b_a3b_instruct_2507_4gpu_math_code_science_toploss_topp05_fixed4_b528_colocated.yaml
+
+runtime:
+  wandb_run_id: q1p7b-4g-mcs-topp05-f4-b528-r2-s60
+  wandb_resume: never
+
+audit:
+  control_token_online_top_p: 0.05
+  control_token_online_top_p_by_domain: {}
+  output_dir: audit/q1p7b-4g-mcs-topp05-f4-b528-r2-s60
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-4g-mcs-topp05-f4-b528-r2-s60
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/mopd/q1p7b-4g-mcs-topp05-f4-b528-r2-s60
+
+trainer:
+  experiment_name: q1p7b-4g-mcs-topp05-f4-b528-r2-s60
+  default_local_dir: checkpoints/MOPD/q1p7b-4g-mcs-topp05-f4-b528-r2-s60

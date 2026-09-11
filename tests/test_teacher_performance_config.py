@@ -21,7 +21,7 @@ def test_invalid_tuning_fails_before_launch(values: dict) -> None:
 
 
 def test_teacher_settings_reach_ref_without_changing_actor() -> None:
-    config = load_config("configs/token_selection/math/"
+    config = load_config("configs/token_selection/math/v3/"
         "top32kl_next_step_expanded_pruned_v3_unified_topp0p05_i1_w1_lossratio_5gpu_4a1t_b256_r20260907.yaml")
     overrides = build_overrides(config)
     assert "actor_rollout_ref.rollout.enforce_eager=False" in overrides

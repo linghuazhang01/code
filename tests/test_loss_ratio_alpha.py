@@ -24,7 +24,7 @@ from mopd_verl.settings import AuditConfig, load_config
 
 
 BASE_CONFIG = Path(__file__).resolve().parents[1] / (
-    "configs/token_selection/math/"
+    "configs/token_selection/math/v3/"
     "a_next_step_expanded_pruned_v3_unified_i1_w1_k25_5gpu_4a1t_b256.yaml"
 )
 INVALID_ALPHA = (0.0, -0.5, float("nan"), float("inf"), -float("inf"))

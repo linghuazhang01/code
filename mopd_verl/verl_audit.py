@@ -30,6 +30,9 @@ from mopd_verl.audit_scalar_logging import (
     log_validation_metrics as _log_validation_metrics,
 )
 from mopd_verl.audit_vector_cosine import iter_pairwise_domain_cosines
+from mopd_verl.domain_gradient.control_selection_budget import (
+    normalize_top_p_by_domain,
+)
 from mopd_verl.tensorboard_filter import (
     filter_tensorboard_metrics as _filter_tensorboard_metrics,
     is_direct_audit_metric_key,
@@ -1105,6 +1108,16 @@ class MOPDAuditLogger:
         self.control_token_online_top_p = float(
             _cfg_get(audit_config, "control_token_online_top_p", 1.0)
         )
+        self.control_token_online_top_p_by_domain = dict(
+            normalize_top_p_by_domain(
+                self.domains,
+                _cfg_get(
+                    audit_config,
+                    "control_token_online_top_p_by_domain",
+                    {},
+                ),
+            )
+        )
         self.control_token_online_selection_mode = str(
             _cfg_get(
                 audit_config,
@@ -1751,6 +1764,9 @@ class MOPDAuditLogger:
                     self.control_token_online_budget_mode
                 ),
                 "control_token_online_top_p": self.control_token_online_top_p,
+                "control_token_online_top_p_by_domain": (
+                    self.control_token_online_top_p_by_domain
+                ),
                 "control_token_online_selection_mode": (
                     self.control_token_online_selection_mode
                 ),

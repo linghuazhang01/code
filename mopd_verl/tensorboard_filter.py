@@ -623,7 +623,7 @@ def _keep_global(category: str, metric: str, parts: list[str]) -> bool:
     if category == "dynamic_weight":
         return metric in CORE_DYNAMIC_WEIGHT
     if category == "token_weight":
-        return metric in CORE_TOKEN_WEIGHT
+        return metric in CORE_TOKEN_WEIGHT or metric.startswith("amplified_source_")
     if category == "control_speed":
         return metric in CORE_CONTROL_SPEED
     if category == "full_grad_cost":
@@ -688,7 +688,7 @@ def _keep_domain(category: str, metric: str, parts: list[str]) -> bool:
     if category == "dynamic_weight":
         return metric in CORE_DYNAMIC_WEIGHT
     if category == "token_weight":
-        return metric in CORE_TOKEN_WEIGHT
+        return metric in CORE_TOKEN_WEIGHT or metric.startswith("amplified_source_")
     if category == "control_speed":
         return metric in CORE_CONTROL_SPEED
     if category == "advantage":

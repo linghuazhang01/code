@@ -15,7 +15,7 @@ from mopd_verl.settings import load_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG_DIR = ROOT / "configs" / "token_selection" / "math"
+CONFIG_DIR = ROOT / "configs" / "token_selection" / "math" / "taxonomy"
 PARENT = (
     "top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_lossratio_5gpu_4a1t_b256.yaml"
 )

@@ -12,7 +12,7 @@ from mopd_verl.settings import load_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG_DIR = ROOT / "configs" / "token_selection" / "math"
+CONFIG_DIR = ROOT / "configs" / "token_selection" / "math" / "v3"
 EXPECTED_MATH_V3_POOL_SIZE = 115
 EXPECTED_MATH_V3_POOL_SHA256 = (
     "ab3b17d65320ef778dbe5c6f6f475012658735711c41314ced618f78b80a3bb0"

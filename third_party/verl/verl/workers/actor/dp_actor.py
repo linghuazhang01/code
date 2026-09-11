@@ -899,6 +899,13 @@ class DataParallelPPOActor(BasePPOActor):
                         return_configured_token_loss=(
                             return_configured_token_loss
                         ),
+                        return_token_source_mask=(
+                            (
+                                audit.config.control_token_weighting_enabled
+                                and not audit.config.control_token_adaptive_neighborhood_enabled
+                            )
+                            or audit.config.all_domain_shared_token_weighting_enabled
+                        ),
                         adaptive_neighborhood_spec=(
                             audit.adaptive_neighborhood_spec()
                         ),

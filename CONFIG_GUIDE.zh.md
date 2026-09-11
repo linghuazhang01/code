@@ -495,6 +495,25 @@ interval 使用历史窗口估计的 `1 + mean(s)`，即 mean
 normalization。`paired` 只允许搭配上述两个 paired-signal selector，因此可形成
 `2 selectors × 2 weight modes` 的四种组合。
 
+`control_token_online_top_p` 是兼容旧 config 的默认值。需要为不同 domain
+设置不同 occurrence budget 时，使用 `control_token_online_top_p_by_domain`，且
+key 必须完整覆盖 `domains`：
+
+```yaml
+audit:
+  domains: [math, code, science]
+  control_token_online_budget_mode: top_p
+  control_token_online_top_p: 0.05
+  control_token_online_top_p_by_domain:
+    math: 0.02
+    code: 0.05
+    science: 0.10
+```
+
+非空 map 会按 domain 覆盖 scalar；Top-P 仍按各 domain 的 valid
+response-token occurrences 计算，并不影响 rollout sampling 的
+`actor_rollout_ref.rollout.top_p`。
+
 `control_token_online_weight_mode=loss_ratio` 只允许搭配 `top_loss`。对每个
 domain 的 source window，设 `S` 为本次入选 token ID 的全部 occurrence，`V` 为
 全部 valid response-token occurrence，则：

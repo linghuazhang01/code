@@ -1,0 +1,20 @@
+# Fresh FullTaxonomy Q run after job224 Step60 is safely saved.
+# TopP5% counts all-valid occurrences; Fixed4 is raw 4:1 before normalization.
+extends: q_next_step_full_taxonomy_unified_topp0p05_i1_w1_fixed4_5gpu_4a1t_b256.yaml
+
+runtime:
+  wandb_run_id: q1p7b-taxonomy-q-topp05-fixed4-5g4a1t-b256-r20260908
+  wandb_resume: never
+
+audit:
+  output_dir: audit/q1p7b-taxonomy-q-topp05-fixed4-5g4a1t-b256-r20260908
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-taxonomy-q-topp05-fixed4-5g4a1t-b256-r20260908
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-taxonomy-q-topp05-fixed4-5g4a1t-b256-r20260908
+
+trainer:
+  experiment_name: q1p7b-taxonomy-q-topp05-fixed4-5g4a1t-b256-r20260908
+  default_local_dir: checkpoints/MOPD/q1p7b-taxonomy-q-topp05-fixed4-5g4a1t-b256-r20260908

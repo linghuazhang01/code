@@ -87,6 +87,7 @@ from mopd_verl.domain_gradient.token_weighting_metrics import (
     local_loss_amplification_statistics,
     reduce_loss_amplification_statistics,
 )
+from mopd_verl.domain_gradient.token_source_metrics import amplified_token_source_metrics
 from mopd_verl.domain_gradient.token_weighting_state import (
     CUMULATIVE_ABS_LOSS_SELECTION,
     CumulativeTokenLossState,
@@ -261,6 +262,9 @@ class DomainGradientAudit:
                 ),
                 budget_mode=self.config.control_token_online_budget_mode,
                 top_p=self.config.control_token_online_top_p,
+                top_p_by_domain=(
+                    self.config.control_token_online_top_p_by_domain
+                ),
                 selection_mode=(
                     self.config.control_token_online_selection_mode
                 ),
@@ -287,6 +291,8 @@ class DomainGradientAudit:
                 != expected_state.top_k_per_group
                 or online_state.budget_mode != expected_state.budget_mode
                 or online_state.top_p != expected_state.top_p
+                or online_state.top_p_by_domain
+                != expected_state.top_p_by_domain
                 or online_state.selection_mode != expected_state.selection_mode
                 or online_state.weight_mode != expected_state.weight_mode
                 or online_state.loss_ratio_alpha != expected_state.loss_ratio_alpha
@@ -1625,6 +1631,35 @@ class DomainGradientAudit:
         """Update lagged token controllers after a successful optimizer step."""
 
         metrics: dict[str, float] = {}
+        if (
+            self.config.control_token_weighting_enabled
+            and not self.config.control_token_adaptive_neighborhood_enabled
+        ) or self.config.all_domain_shared_token_weighting_enabled:
+            source_ids = []
+            source_labels = []
+            source_masks = []
+            for batch, valid_mask in zip(
+                micro_batches, configured_loss_mask_batches, strict=True
+            ):
+                inputs = {**batch.batch, **batch.non_tensor_batch}
+                ids = aligned_response_token_ids(inputs, valid_mask)
+                mask = self.training_gradient_mask(batch)
+                if ids is None or mask is None:
+                    raise ValueError("Token source metrics require production IDs and masks.")
+                source_ids.append(ids)
+                source_labels.append(_labels_from_mapping(inputs, int(ids.shape[0])))
+                source_masks.append(mask)
+            metrics.update(amplified_token_source_metrics(
+                source_ids, configured_loss_mask_batches, source_masks, source_labels,
+                domains=self.config.domains,
+                domain_weights=(
+                    self._weight_state.weight_map()
+                    if self.config.dynamic_weighting_enabled else {}
+                ),
+                sequence_parallel_size=getattr(
+                    self.actor, "ulysses_sequence_parallel_size", 1
+                ),
+            ))
         if not self.config.control_token_online_selection_enabled:
             return metrics
         state = self._online_control_selection_state

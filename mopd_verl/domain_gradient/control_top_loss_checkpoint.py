@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from typing import Any, TypeVar, cast
 
 from mopd_verl.domain_gradient.control_selection_budget import (
+    normalize_top_p_by_domain,
     normalize_valid_token_counts,
 )
 from mopd_verl.domain_gradient.control_selection_scoring import (
@@ -69,6 +70,10 @@ def restore_online_control_selection_state(
     )
     budget_mode = normalize_online_budget_mode(
         value.get("budget_mode", TOP_K_BUDGET_MODE)
+    )
+    top_p_by_domain = normalize_top_p_by_domain(
+        domains,
+        value.get("top_p_by_domain", ()),
     )
     history = tuple(
         (
@@ -157,6 +162,7 @@ def restore_online_control_selection_state(
         top_k=int(value.get("top_k", 0)),
         budget_mode=budget_mode,
         top_p=float(value.get("top_p", 1.0)),
+        top_p_by_domain=top_p_by_domain,
         selection_mode=normalize_selection_mode(
             value.get("selection_mode", TOP_LOSS_SELECTION_MODE)
         ),
@@ -249,6 +255,14 @@ def _validate_restored_state(
     if not math.isfinite(state.top_p) or not 0.0 < state.top_p <= 1.0:
         raise ValueError(
             "Checkpointed online Control top_p must be finite and in (0, 1]."
+        )
+    normalized_top_p_by_domain = normalize_top_p_by_domain(
+        state.domains,
+        state.top_p_by_domain,
+    )
+    if normalized_top_p_by_domain != state.top_p_by_domain:
+        raise ValueError(
+            "Checkpointed online Control per-domain Top-P map is not normalized."
         )
     if state.budget_mode == TOP_P_BUDGET_MODE and state.top_k_per_group is not None:
         raise ValueError(

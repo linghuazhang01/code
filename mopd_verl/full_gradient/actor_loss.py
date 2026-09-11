@@ -90,6 +90,7 @@ def build_actor_micro_batch_loss(
     include_metrics: bool = False,
     return_teacher_student_cross_entropy: bool = False,
     return_configured_token_loss: bool = False,
+    return_token_source_mask: bool = False,
     adaptive_neighborhood_spec: PerTokenAdaptiveNeighborhoodSpec | None = None,
     temperature: float | None = None,
 ) -> ActorMicroBatchLossResult:
@@ -607,6 +608,8 @@ def build_actor_micro_batch_loss(
         metrics["actor/pg_loss"] = pg_loss.detach().item() * float(loss_scale_factor)
     configured_token_loss = None
     configured_token_loss_mask = None
+    if return_token_source_mask:
+        configured_token_loss_mask = loss_token_mask.detach().float()
     selector_token_loss = None
     selector_token_loss_mask = None
     if return_configured_token_loss:

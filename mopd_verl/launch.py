@@ -335,6 +335,8 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"{audit.control_token_online_budget_mode}",
         "+mopd_audit.control_token_online_top_p="
         f"{audit.control_token_online_top_p}",
+        "+mopd_audit.control_token_online_top_p_by_domain="
+        f"{_hydra_float_dict(audit.control_token_online_top_p_by_domain)}",
         "+mopd_audit.control_token_online_selection_mode="
         f"{audit.control_token_online_selection_mode}",
         "+mopd_audit.control_token_online_weight_mode="

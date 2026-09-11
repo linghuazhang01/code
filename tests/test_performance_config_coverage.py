@@ -16,7 +16,7 @@ class PerformanceConfigCoverageTests(unittest.TestCase):
         repo = Path(__file__).resolve().parents[1]
         abstract_profiles = {
             "configs/token_selection/math/_common.yaml",
-            "configs/token_selection/math/_full_taxonomy.yaml",
+            "configs/token_selection/math/taxonomy/_full_taxonomy.yaml",
         }
         legacy_invalid_profiles = {
             f"configs/baselines/{student}_30b_eopd_native_{placement}.yaml"

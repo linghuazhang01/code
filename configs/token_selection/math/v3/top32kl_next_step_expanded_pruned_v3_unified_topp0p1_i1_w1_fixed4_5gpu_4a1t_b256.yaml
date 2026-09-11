@@ -1,0 +1,25 @@
+# V3 Math: 115 unified candidate token IDs (85 Control + 30 Structure).
+# Rank by occurrence-mean absolute configured Top32 KL loss, i1/w1, strict >20.
+# Top-P=0.1 targets all-valid-token occurrence coverage, not 10% of token IDs.
+# Selected raw weight=4, other raw weight=1, before existing domain normalization.
+# Fresh run: 4 actor/rollout + 1 teacher GPUs, batch256; request 500G host memory.
+extends: top32kl_next_step_expanded_pruned_v3_unified_topp0p1_i1_w1_lossratio_5gpu_4a1t_b256.yaml
+
+audit:
+  control_token_online_weight_mode: fixed
+  control_token_loss_weight: 4.0
+  control_token_loss_ratio_alpha: 1.0
+  output_dir: audit/q1p7b-math-top32kl-v3-topp1-w4-5g4a1t-b256
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-top32kl-v3-topp1-w4-5g4a1t-b256
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-top32kl-v3-topp1-w4-5g4a1t-b256
+
+trainer:
+  experiment_name: q1p7b-math-top32kl-v3-topp1-w4-5g4a1t-b256
+  default_local_dir: checkpoints/MOPD/q1p7b-math-top32kl-v3-topp1-w4-5g4a1t-b256
+
+runtime:
+  wandb_run_id: q1p7b-math-top32kl-v3-topp1-w4-5g4a1t-b256

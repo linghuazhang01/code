@@ -2,7 +2,7 @@
 
 ## V3 Top-Loss + Top-P 7.5% + Fixed4 (8 GPUs)
 
-[Top-Loss Fixed4 config](top32kl_next_step_expanded_pruned_v3_unified_topp0p075_i1_w1_fixed4_8gpu_6a2t_b258.yaml)
+[Top-Loss Fixed4 config](v3/top32kl_next_step_expanded_pruned_v3_unified_topp0p075_i1_w1_fixed4_8gpu_6a2t_b258.yaml)
 uses the existing `top_loss` selector and the ExpandedPruned-V3 Math pool:
 115 unified token IDs (85 Control + 30 Structure). It retains Top32 reverse-KL,
 the reference reward path and 6-actor/2-teacher topology with batch258.
@@ -24,7 +24,7 @@ Python must be available through `MOPD_LAUNCH_PYTHON`):
 
 ```bash
 bash scripts/run_mopd.sh \
-  configs/token_selection/math/top32kl_next_step_expanded_pruned_v3_unified_topp0p075_i1_w1_fixed4_8gpu_6a2t_b258.yaml \
+  configs/token_selection/math/v3/top32kl_next_step_expanded_pruned_v3_unified_topp0p075_i1_w1_fixed4_8gpu_6a2t_b258.yaml \
   --slurm --slurm-args "--mem=800G"
 ```
 
@@ -36,7 +36,7 @@ configured for steps55/60/65/70 under its own run prefix.
 
 ## R2: exact Q selector + Fixed4 (5 GPUs)
 
-[R2 config](q_next_step_full_taxonomy_unified_topp0p05_i1_w1_fixed4_5gpu_4a1t_b256.yaml)
+[R2 config](taxonomy/q_next_step_full_taxonomy_unified_topp0p05_i1_w1_fixed4_5gpu_4a1t_b256.yaml)
 inherits FullTaxonomy TopP5% Fixed4; resolved differences are only selector and
 six run/output identifiers. It keeps 4 actor + 1 teacher, batch256, seed42, 70steps.
 
@@ -58,44 +58,41 @@ All configs use Qwen3-1.7B, teacher Top-32 reverse-KL training, and the strict
 source gate `occurrence >20` at every source-window step. Selected-token raw
 weight is fixed at 4 unless the profile explicitly uses `lossratio` weighting.
 The default resource profile uses 4 GPUs (3 actor/rollout + 1
-ref/teacher) and global batch size 255. The ExpandedPruned-V2 and V3 5-GPU
-overlays use 4 actor/rollout GPUs + 1 ref/teacher GPU and global batch size 256.
+ref/teacher) and global batch size 255. The V3 5-GPU overlays use 4 actor/rollout GPUs + 1 ref/teacher GPU and
+global batch size 256.
 The FullTaxonomy dual-teacher profiles use 3/4/5/6 actor GPUs for 5/6/7/8 total
 GPUs, with the 30B teacher FSDP-sharded across the two-GPU ref-policy pool. The
 offline-optimum configs use Metric A (`top_logp_diff`); the explicitly named
 Top-32-KL variants use `top_loss`.
 
-The three compact candidate pools use the Math-domain effective intersections
+The two compact candidate pools use the Math-domain effective intersections
 recorded in `candidate-pool-membership.csv`. FullTaxonomy uses the frozen Math
 subset in `domain-subsets.csv`: 124 Control and 266 Structure token IDs.
 
 | Target used to tune parameters | Candidate pool | Effective Math pool | Runtime parameters | Config |
 |---|---|---:|---|---|
-| next-step | ExpandedPruned-V2 | 89 | i1 / w1 / K29 | `a_next_step_expanded_pruned_v2_i1_w1_k29_4gpu_b255.yaml` |
-| next-step, 5-GPU resource overlay | ExpandedPruned-V2 | 89 | i1 / w1 / K29 | `a_next_step_expanded_pruned_v2_i1_w1_k29_5gpu_b256.yaml` |
 | next-step | Robust190 | 66 | i1 / w1 / K27 | `a_next_step_robust190_i1_w1_k27_4gpu_b255.yaml` |
 | next-step | Control-44 | 40 | i1 / w1 / K8 | `a_next_step_control44_i1_w1_k8_4gpu_b255.yaml` |
-| next-step | FullTaxonomy split | 124 Control + 266 Structure | i3 / w1 / K21 per type (42 total) | `a_next_step_full_taxonomy_split_i3_w1_k21_per_type_4gpu_b255.yaml` |
-| next-step, Top-32 KL selector variant | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / K21 per type (42 total) | `top32kl_next_step_full_taxonomy_split_i1_w1_k21_per_type_4gpu_b255.yaml` |
-| next-step, Top-32 KL, 5-GPU Top-P variant | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 5% valid-token occurrence coverage | `top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_5gpu_b256.yaml` |
-| next-step, Top-32 KL, 5-GPU 4A+1T loss-ratio weighting | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 5% coverage; selected/other mean-loss ratio capped at 4 | `top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_lossratio_5gpu_4a1t_b256.yaml` |
-| next-step, Top-32 KL, 5-GPU Top-P + adaptive neighbors | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 5% coverage; neighbor relative-loss score strictly >1 | `top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_adaptive_pl_gt1p0_w4_5gpu_b256.yaml` |
-| next-step, Top-32 KL, 5-GPU 4A+1T benchmark-aligned | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 7.5% valid-token occurrence coverage; no adaptive neighbors | `top32kl_next_step_full_taxonomy_split_topp0p075_i1_w1_5gpu_4a1t_b256.yaml` |
-| next-step, Top-32 KL, 5-GPU 4A+1T loss-ratio weighting | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 7.5% coverage; selected/other mean-loss ratio capped at 4 | `top32kl_next_step_full_taxonomy_split_topp0p075_i1_w1_lossratio_5gpu_4a1t_b256.yaml` |
-| next-step, Top-32 KL, 5-GPU dual-teacher Avg@4 | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 10% valid-token occurrence coverage | `top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_5gpu_3a2t_b258.yaml` |
-| next-step, Top-32 KL, 5-GPU dual-teacher Avg@4 + adaptive neighbors | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 10% coverage; neighbor relative-loss score strictly >1 | `top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_adaptive_pl_gt1p0_w4_5gpu_3a2t_b258.yaml` |
-| next-step, Top-32 KL, 5-GPU 4A+1T benchmark-aligned | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 15% valid-token occurrence coverage; no adaptive neighbors | `top32kl_next_step_full_taxonomy_split_topp0p15_i1_w1_5gpu_4a1t_b256.yaml` |
-| next-step, Top-32 KL, 5-GPU 4A+1T benchmark-aligned | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 20% valid-token occurrence coverage; no adaptive neighbors | `top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_5gpu_4a1t_b256.yaml` |
-| next-step, Top-32 KL, 6-GPU dual-teacher | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 10% valid-token occurrence coverage | `top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_6gpu_4a2t_b256.yaml` |
-| next-step, Top-32 KL, 7-GPU dual-teacher | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 10% valid-token occurrence coverage | `top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_7gpu_5a2t_b255.yaml` |
-| next-step, Top-32 KL, 8-GPU dual-teacher Avg@4 | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 10% valid-token occurrence coverage | `top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_8gpu_6a2t_b258.yaml` |
-| next-step, Top-32 KL, 6-GPU dual-teacher | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 20% valid-token occurrence coverage | `top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_6gpu_4a2t_b256.yaml` |
-| next-step, Top-32 KL, 7-GPU dual-teacher | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 20% valid-token occurrence coverage | `top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_7gpu_5a2t_b255.yaml` |
-| next-step, Top-32 KL, 8-GPU dual-teacher | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 20% valid-token occurrence coverage | `top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_8gpu_6a2t_b258.yaml` |
-| next-window | ExpandedPruned-V2 | 89 | i6 / w6 / K30 | `a_next_window_expanded_pruned_v2_i6_w6_k30_4gpu_b255.yaml` |
+| next-step | FullTaxonomy split | 124 Control + 266 Structure | i3 / w1 / K21 per type (42 total) | `taxonomy/a_next_step_full_taxonomy_split_i3_w1_k21_per_type_4gpu_b255.yaml` |
+| next-step, Top-32 KL selector variant | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / K21 per type (42 total) | `taxonomy/top32kl_next_step_full_taxonomy_split_i1_w1_k21_per_type_4gpu_b255.yaml` |
+| next-step, Top-32 KL, 5-GPU Top-P variant | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 5% valid-token occurrence coverage | `taxonomy/top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_5gpu_b256.yaml` |
+| next-step, Top-32 KL, 5-GPU 4A+1T loss-ratio weighting | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 5% coverage; selected/other mean-loss ratio capped at 4 | `taxonomy/top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_lossratio_5gpu_4a1t_b256.yaml` |
+| next-step, Top-32 KL, 5-GPU Top-P + adaptive neighbors | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 5% coverage; neighbor relative-loss score strictly >1 | `taxonomy/top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_adaptive_pl_gt1p0_w4_5gpu_b256.yaml` |
+| next-step, Top-32 KL, 5-GPU 4A+1T benchmark-aligned | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 7.5% valid-token occurrence coverage; no adaptive neighbors | `taxonomy/top32kl_next_step_full_taxonomy_split_topp0p075_i1_w1_5gpu_4a1t_b256.yaml` |
+| next-step, Top-32 KL, 5-GPU 4A+1T loss-ratio weighting | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 7.5% coverage; selected/other mean-loss ratio capped at 4 | `taxonomy/top32kl_next_step_full_taxonomy_split_topp0p075_i1_w1_lossratio_5gpu_4a1t_b256.yaml` |
+| next-step, Top-32 KL, 5-GPU dual-teacher Avg@4 | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 10% valid-token occurrence coverage | `taxonomy/top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_5gpu_3a2t_b258.yaml` |
+| next-step, Top-32 KL, 5-GPU dual-teacher Avg@4 + adaptive neighbors | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 10% coverage; neighbor relative-loss score strictly >1 | `taxonomy/top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_adaptive_pl_gt1p0_w4_5gpu_3a2t_b258.yaml` |
+| next-step, Top-32 KL, 5-GPU 4A+1T benchmark-aligned | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 15% valid-token occurrence coverage; no adaptive neighbors | `taxonomy/top32kl_next_step_full_taxonomy_split_topp0p15_i1_w1_5gpu_4a1t_b256.yaml` |
+| next-step, Top-32 KL, 5-GPU 4A+1T benchmark-aligned | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 20% valid-token occurrence coverage; no adaptive neighbors | `taxonomy/top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_5gpu_4a1t_b256.yaml` |
+| next-step, Top-32 KL, 6-GPU dual-teacher | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 10% valid-token occurrence coverage | `taxonomy/top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_6gpu_4a2t_b256.yaml` |
+| next-step, Top-32 KL, 7-GPU dual-teacher | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 10% valid-token occurrence coverage | `taxonomy/top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_7gpu_5a2t_b255.yaml` |
+| next-step, Top-32 KL, 8-GPU dual-teacher Avg@4 | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 10% valid-token occurrence coverage | `taxonomy/top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_8gpu_6a2t_b258.yaml` |
+| next-step, Top-32 KL, 6-GPU dual-teacher | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 20% valid-token occurrence coverage | `taxonomy/top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_6gpu_4a2t_b256.yaml` |
+| next-step, Top-32 KL, 7-GPU dual-teacher | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 20% valid-token occurrence coverage | `taxonomy/top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_7gpu_5a2t_b255.yaml` |
+| next-step, Top-32 KL, 8-GPU dual-teacher | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 20% valid-token occurrence coverage | `taxonomy/top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_8gpu_6a2t_b258.yaml` |
 | next-window | Robust190 | 66 | i6 / w6 / K30 | `a_next_window_robust190_i6_w6_k30_4gpu_b255.yaml` |
 | next-window | Control-44 | 40 | i7 / w7 / K8 | `a_next_window_control44_i7_w7_k8_4gpu_b255.yaml` |
-| next-window | FullTaxonomy split | 124 Control + 266 Structure | i6 / w6 / K32 per type (64 total) | `a_next_window_full_taxonomy_split_i6_w6_k32_per_type_4gpu_b255.yaml` |
+| next-window | FullTaxonomy split | 124 Control + 266 Structure | i6 / w6 / K32 per type (64 total) | `taxonomy/a_next_window_full_taxonomy_split_i6_w6_k32_per_type_4gpu_b255.yaml` |
 
 The FullTaxonomy rows reproduce the four-baseline offline Type-F1 optima. The
 split metrics are macro-averaged over the Control/Structure cells, so the
@@ -165,11 +162,11 @@ top_loss` and set `control_token_online_weight_mode: loss_ratio`. The existing
 
 | Target occurrence share | Dynamic-weight config |
 |---:|---|
-| 1% | [top32kl_next_step_expanded_pruned_v3_unified_topp0p01_i1_w1_lossratio_5gpu_4a1t_b256.yaml](top32kl_next_step_expanded_pruned_v3_unified_topp0p01_i1_w1_lossratio_5gpu_4a1t_b256.yaml) |
-| 2% | [top32kl_next_step_expanded_pruned_v3_unified_topp0p02_i1_w1_lossratio_5gpu_4a1t_b256.yaml](top32kl_next_step_expanded_pruned_v3_unified_topp0p02_i1_w1_lossratio_5gpu_4a1t_b256.yaml) |
-| 5% | [top32kl_next_step_expanded_pruned_v3_unified_topp0p05_i1_w1_lossratio_5gpu_4a1t_b256.yaml](top32kl_next_step_expanded_pruned_v3_unified_topp0p05_i1_w1_lossratio_5gpu_4a1t_b256.yaml) |
-| 7.5% | [top32kl_next_step_expanded_pruned_v3_unified_topp0p075_i1_w1_lossratio_5gpu_4a1t_b256.yaml](top32kl_next_step_expanded_pruned_v3_unified_topp0p075_i1_w1_lossratio_5gpu_4a1t_b256.yaml) |
-| 10% | [top32kl_next_step_expanded_pruned_v3_unified_topp0p1_i1_w1_lossratio_5gpu_4a1t_b256.yaml](top32kl_next_step_expanded_pruned_v3_unified_topp0p1_i1_w1_lossratio_5gpu_4a1t_b256.yaml) |
+| 1% | [v3/top32kl_next_step_expanded_pruned_v3_unified_topp0p01_i1_w1_lossratio_5gpu_4a1t_b256.yaml](v3/top32kl_next_step_expanded_pruned_v3_unified_topp0p01_i1_w1_lossratio_5gpu_4a1t_b256.yaml) |
+| 2% | [v3/top32kl_next_step_expanded_pruned_v3_unified_topp0p02_i1_w1_lossratio_5gpu_4a1t_b256.yaml](v3/top32kl_next_step_expanded_pruned_v3_unified_topp0p02_i1_w1_lossratio_5gpu_4a1t_b256.yaml) |
+| 5% | [v3/top32kl_next_step_expanded_pruned_v3_unified_topp0p05_i1_w1_lossratio_5gpu_4a1t_b256.yaml](v3/top32kl_next_step_expanded_pruned_v3_unified_topp0p05_i1_w1_lossratio_5gpu_4a1t_b256.yaml) |
+| 7.5% | [v3/top32kl_next_step_expanded_pruned_v3_unified_topp0p075_i1_w1_lossratio_5gpu_4a1t_b256.yaml](v3/top32kl_next_step_expanded_pruned_v3_unified_topp0p075_i1_w1_lossratio_5gpu_4a1t_b256.yaml) |
+| 10% | [v3/top32kl_next_step_expanded_pruned_v3_unified_topp0p1_i1_w1_lossratio_5gpu_4a1t_b256.yaml](v3/top32kl_next_step_expanded_pruned_v3_unified_topp0p1_i1_w1_lossratio_5gpu_4a1t_b256.yaml) |
 
 All five inherit the same 115 candidate IDs (85 Control + 30 Structure),
 pre-update i1/w1 source, strict occurrence >20 gate, 4 actor/rollout + 1
@@ -263,10 +260,10 @@ to 1 for all existing profiles and is checkpointed to reject resume mismatches.
 
 | GPUs (actor + teacher) | Batch | Alpha 1.75 profile |
 |---|---:|---|
-| 5 (4 + 1) | 256 | [5-GPU config](top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_lossratio_alpha1p75_5gpu_4a1t_b256.yaml) |
-| 6 (4 + 2) | 256 | [6-GPU config](top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_lossratio_alpha1p75_6gpu_4a2t_b256.yaml) |
-| 7 (5 + 2) | 255 | [7-GPU config](top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_lossratio_alpha1p75_7gpu_5a2t_b255.yaml) |
-| 8 (6 + 2) | 258 | [8-GPU config](top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_lossratio_alpha1p75_8gpu_6a2t_b258.yaml) |
+| 5 (4 + 1) | 256 | [5-GPU config](taxonomy/top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_lossratio_alpha1p75_5gpu_4a1t_b256.yaml) |
+| 6 (4 + 2) | 256 | [6-GPU config](taxonomy/top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_lossratio_alpha1p75_6gpu_4a2t_b256.yaml) |
+| 7 (5 + 2) | 255 | [7-GPU config](taxonomy/top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_lossratio_alpha1p75_7gpu_5a2t_b255.yaml) |
+| 8 (6 + 2) | 258 | [8-GPU config](taxonomy/top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_lossratio_alpha1p75_8gpu_6a2t_b258.yaml) |
 
 Use 100G host memory per allocated GPU when submitting. Resource profiles
 retain 70 training steps; calibration to applied step 60 does not shorten training.
@@ -275,17 +272,17 @@ Launch a resolved profile directly through `start.sh` in non-Slurm mode. For
 example, the V3 4-GPU next-step profile is:
 
 ```bash
-GPU_IDS=0,1,2,3 bash start.sh --local --config configs/token_selection/math/a_next_step_expanded_pruned_v3_unified_i1_w1_k25_4gpu_3a1t_b255.yaml
+GPU_IDS=0,1,2,3 bash start.sh --local --config configs/token_selection/math/v3/a_next_step_expanded_pruned_v3_unified_i1_w1_k25_4gpu_3a1t_b255.yaml
 ```
 
 Additional FullTaxonomy examples:
 
 ```bash
-GPU_IDS=0,1,2,3,4,5 bash start.sh --local --config configs/token_selection/math/top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_6gpu_4a2t_b256.yaml
-GPU_IDS=0,1,2,3,4,5,6 bash start.sh --local --config configs/token_selection/math/top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_7gpu_5a2t_b255.yaml
-GPU_IDS=0,1,2,3,4,5,6,7 bash start.sh --local --config configs/token_selection/math/top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_8gpu_6a2t_b258.yaml
+GPU_IDS=0,1,2,3,4,5 bash start.sh --local --config configs/token_selection/math/taxonomy/top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_6gpu_4a2t_b256.yaml
+GPU_IDS=0,1,2,3,4,5,6 bash start.sh --local --config configs/token_selection/math/taxonomy/top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_7gpu_5a2t_b255.yaml
+GPU_IDS=0,1,2,3,4,5,6,7 bash start.sh --local --config configs/token_selection/math/taxonomy/top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_8gpu_6a2t_b258.yaml
 
-GPU_IDS=0,1,2,3,4,5 bash start.sh --local --config configs/token_selection/math/top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_6gpu_4a2t_b256.yaml
-GPU_IDS=0,1,2,3,4,5,6 bash start.sh --local --config configs/token_selection/math/top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_7gpu_5a2t_b255.yaml
-GPU_IDS=0,1,2,3,4,5,6,7 bash start.sh --local --config configs/token_selection/math/top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_8gpu_6a2t_b258.yaml
+GPU_IDS=0,1,2,3,4,5 bash start.sh --local --config configs/token_selection/math/taxonomy/top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_6gpu_4a2t_b256.yaml
+GPU_IDS=0,1,2,3,4,5,6 bash start.sh --local --config configs/token_selection/math/taxonomy/top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_7gpu_5a2t_b255.yaml
+GPU_IDS=0,1,2,3,4,5,6,7 bash start.sh --local --config configs/token_selection/math/taxonomy/top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_8gpu_6a2t_b258.yaml
 ```

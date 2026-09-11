@@ -1,0 +1,23 @@
+# Math FullTaxonomy TopLoss TopP5%, raw Fixed6 (selected:other = 6:1).
+# Preserve domain normalization, i1/w1, strict >20, batch256 and 4actor+1teacher.
+extends: top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_5gpu_b256.yaml
+
+runtime:
+  wandb_run_id: q1p7b-taxonomy-toploss-topp05-fixed6-5g4a1t-b256-r20260908
+  wandb_resume: never
+
+audit:
+  control_token_online_selection_mode: top_loss
+  control_token_online_weight_mode: fixed
+  control_token_loss_weight: 6.0
+  output_dir: audit/q1p7b-taxonomy-toploss-topp05-fixed6-5g4a1t-b256-r20260908
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-taxonomy-toploss-topp05-fixed6-5g4a1t-b256-r20260908
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-taxonomy-toploss-topp05-fixed6-5g4a1t-b256-r20260908
+
+trainer:
+  experiment_name: q1p7b-taxonomy-toploss-topp05-fixed6-5g4a1t-b256-r20260908
+  default_local_dir: checkpoints/MOPD/q1p7b-taxonomy-toploss-topp05-fixed6-5g4a1t-b256-r20260908

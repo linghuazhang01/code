@@ -1,0 +1,31 @@
+# Fresh Step-0 restart of job229 on 3 actor/rollout + 1 teacher GPUs.
+extends: top32kl_next_step_full_taxonomy_unified_topp0p05_i1_w1_fixed6_5gpu_4a1t_b256_r20260908.yaml
+
+runtime:
+  slurm_allocation_gpus: 4
+  wandb_run_id: q1p7b-taxonomy-toploss-topp05-fixed6-4g3a1t-b255-r20260909
+  wandb_resume: never
+
+data:
+  train_batch_size: 255
+
+actor:
+  ppo_mini_batch_size: 255
+
+worker_placement:
+  actor_rollout: {n_gpus_per_node: 3, nnodes: 1}
+  ref_policy: {n_gpus_per_node: 1, nnodes: 1}
+
+audit:
+  output_dir: audit/q1p7b-taxonomy-toploss-topp05-fixed6-4g3a1t-b255-r20260909
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-taxonomy-toploss-topp05-fixed6-4g3a1t-b255-r20260909
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-taxonomy-toploss-topp05-fixed6-4g3a1t-b255-r20260909
+
+trainer:
+  n_gpus_per_node: 3
+  experiment_name: q1p7b-taxonomy-toploss-topp05-fixed6-4g3a1t-b255-r20260909
+  default_local_dir: checkpoints/MOPD/q1p7b-taxonomy-toploss-topp05-fixed6-4g3a1t-b255-r20260909

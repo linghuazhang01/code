@@ -89,6 +89,69 @@ def normalize_valid_token_counts(
     return tuple(normalized)
 
 
+def normalize_top_p_by_domain(
+    domains: Sequence[str],
+    value: Mapping[str, float]
+    | Sequence[tuple[str, float]]
+    | None,
+) -> tuple[tuple[str, float], ...]:
+    """Validate optional per-domain Top-P overrides."""
+
+    if value is None:
+        return ()
+    if isinstance(value, Mapping):
+        items = tuple(value.items())
+    elif isinstance(value, (str, bytes)):
+        raise TypeError(
+            "control_token_online_top_p_by_domain must be a mapping."
+        )
+    else:
+        try:
+            items = tuple(value)
+        except TypeError as exc:
+            raise TypeError(
+                "control_token_online_top_p_by_domain must be a mapping."
+            ) from exc
+    if not items:
+        return ()
+
+    normalized_domains = tuple(dict.fromkeys(str(domain) for domain in domains))
+    normalized: dict[str, float] = {}
+    for item in items:
+        try:
+            raw_domain, raw_top_p = item
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "control_token_online_top_p_by_domain entries must be "
+                "(domain, value) pairs."
+            ) from exc
+        domain = str(raw_domain)
+        if domain in normalized:
+            raise ValueError(
+                "control_token_online_top_p_by_domain must not contain "
+                f"duplicate domain {domain!r}."
+            )
+        try:
+            top_p = float(raw_top_p)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "control_token_online_top_p_by_domain values must be "
+                "finite and in (0, 1]."
+            ) from exc
+        if not math.isfinite(top_p) or not 0.0 < top_p <= 1.0:
+            raise ValueError(
+                "control_token_online_top_p_by_domain values must be "
+                "finite and in (0, 1]."
+            )
+        normalized[domain] = top_p
+    if set(normalized) != set(normalized_domains):
+        raise ValueError(
+            "control_token_online_top_p_by_domain keys must exactly match "
+            "domains."
+        )
+    return tuple((domain, normalized[domain]) for domain in normalized_domains)
+
+
 def select_ranked_tokens(
     ranked: Sequence[SelectedControlToken],
     *,

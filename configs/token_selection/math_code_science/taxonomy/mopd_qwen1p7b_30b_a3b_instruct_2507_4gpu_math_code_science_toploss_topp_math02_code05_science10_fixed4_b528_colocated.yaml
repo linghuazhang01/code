@@ -1,0 +1,24 @@
+# Four-GPU co-located MOPD taxonomy selector with per-domain Top-P budgets.
+# Ordered as math=2%, code=5%, science=10%; student and teacher share GPUs.
+extends: mopd_qwen1p7b_30b_a3b_instruct_2507_4gpu_math_code_science_toploss_topp05_fixed4_b528_colocated.yaml
+
+runtime:
+  wandb_run_id: q1p7b-4g-mcs-pd-m02-c05-s10-f4-b528-coloc-s60
+  wandb_resume: never
+
+audit:
+  control_token_online_top_p_by_domain:
+    math: 0.02
+    code: 0.05
+    science: 0.10
+  output_dir: audit/q1p7b-4g-mcs-taxonomy-toploss-topp-m02-c05-s10-fixed4-b528-colocated-s60
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-4g-mcs-taxonomy-toploss-topp-m02-c05-s10-fixed4-b528-colocated-s60
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/mopd/q1p7b-4g-mcs-taxonomy-toploss-topp-m02-c05-s10-fixed4-b528-colocated-s60
+
+trainer:
+  experiment_name: q1p7b-4g-mcs-taxonomy-toploss-topp-m02-c05-s10-fixed4-b528-colocated-s60
+  default_local_dir: checkpoints/MOPD/q1p7b-4g-mcs-taxonomy-toploss-topp-m02-c05-s10-fixed4-b528-colocated-s60
