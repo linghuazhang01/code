@@ -230,7 +230,7 @@ class StartScriptTests(unittest.TestCase):
             env = os.environ.copy()
             env.update(
                 {
-                    "MOPD_LAUNCH_PYTHON": str(fake_python),
+                    "PYTHON": str(fake_python),
                     "PATH": f"{temp_path}:{env['PATH']}",
                     "SLURM_LOG_DIR": str(log_dir),
                 }
@@ -291,22 +291,15 @@ class StartScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("Invalid Slurm directive", result.stderr)
 
-    def test_run_mopd_slurm_derives_path_from_runtime_python(self) -> None:
+    def test_run_mopd_slurm_derives_path_from_python_override(self) -> None:
         run_mopd_script = ROOT / "scripts" / "run_mopd.sh"
-        cases = (
-            (
-                "/opt/mopd-env/bin/python",
-                "export PATH=/opt/mopd-env/bin:${PATH:-}",
-            ),
-            (
-                ".venv/bin/python",
-                "export PATH=.venv/bin:${PATH:-}",
-            ),
-            ("python", None),
+        cases = ("/opt/mopd-env/bin/python", ".venv/bin/python", "python")
+        expected_export = (
+            f"export PATH={Path(sys.executable).parent}:${{PATH:-}}"
         )
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
-            for index, (python_bin, expected_export) in enumerate(cases):
+            for index, python_bin in enumerate(cases):
                 with self.subTest(python_bin=python_bin):
                     config_path = temp_path / f"runtime-path-{index}.yaml"
                     config_path.write_text(
@@ -330,7 +323,7 @@ class StartScriptTests(unittest.TestCase):
                     env = os.environ.copy()
                     env.update(
                         {
-                            "MOPD_LAUNCH_PYTHON": sys.executable,
+                            "PYTHON": sys.executable,
                             "SLURM_LOG_DIR": str(log_dir),
                         }
                     )
@@ -355,10 +348,7 @@ class StartScriptTests(unittest.TestCase):
                     self.assertEqual(len(generated_scripts), 1)
                     source = generated_scripts[0].read_text(encoding="utf-8")
 
-                    if expected_export is None:
-                        self.assertNotIn("\nexport PATH=", source)
-                    else:
-                        self.assertIn(expected_export, source)
+                    self.assertIn(expected_export, source)
 
     def test_run_mopd_rejects_unsafe_slurm_directive_contracts(self) -> None:
         cases = (

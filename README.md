@@ -324,7 +324,7 @@ can hold the complete student, gradients, and optimizer state.
 The root launcher defaults to local execution for backward compatibility. Use
 `--slurm` to submit, or set `MOPD_LAUNCH_MODE=auto` to select Slurm when
 `sbatch` is on `PATH`. Activate the training environment before submission, or
-set `MOPD_LAUNCH_PYTHON` to its absolute Python path. Inspect the generated
+set `PYTHON` to the desired Python executable. Inspect the generated
 single-node sbatch script without submitting:
 
 ```bash

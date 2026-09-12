@@ -8,7 +8,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 CODE_DIR="${SLURM_SUBMIT_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd -P)}"
 CODE_DIR="$(cd "${CODE_DIR}" && pwd -P)"
 REMOTE_ROOT="$(cd "${CODE_DIR}/.." && pwd -P)"
-PYTHON_BIN="${SLURM_EVAL_PYTHON:-/home/shuang_qiu/env/miniconda3/envs/mopd-verl/bin/python}"
+PYTHON_BIN="${PYTHON:-python3}"
+if [[ "${PYTHON_BIN}" == */* ]]; then
+  [[ -x "${PYTHON_BIN}" ]] || {
+    echo "Python executable is not runnable: ${PYTHON_BIN}" >&2
+    exit 2
+  }
+else
+  PYTHON_BIN="$(command -v "${PYTHON_BIN}" || true)"
+  [[ -n "${PYTHON_BIN}" ]] || {
+    echo "Python executable is not available on PATH" >&2
+    exit 2
+  }
+fi
+export PYTHON="${PYTHON_BIN}"
 G_OPD_DIR="${G_OPD_DIR:-${REMOTE_ROOT}/G-OPD}"
 
 fail() {

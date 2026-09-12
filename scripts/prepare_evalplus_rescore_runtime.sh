@@ -4,7 +4,14 @@ set -euo pipefail
 REPO_ROOT="${1:-/home/shuang_qiu/mopd_code}"
 GOPD_REPO="${GOPD_REPO:-/home/shuang_qiu/mopd/code/data/G-OPD-Training-Data/.eval-source/G-OPD}"
 GOPD_COMMIT="${GOPD_COMMIT:-37371a4c31ad7947746200d234161769191f4748}"
-BASE_PYTHON="${BASE_PYTHON:-/home/shuang_qiu/env/miniconda3/envs/mopd-verl/bin/python}"
+BASE_PYTHON="${PYTHON:-python3}"
+if [[ "${BASE_PYTHON}" != */* ]]; then
+  BASE_PYTHON="$(command -v "${BASE_PYTHON}" || true)"
+fi
+[[ -x "${BASE_PYTHON}" ]] || {
+  echo "Python executable is not runnable: ${BASE_PYTHON}" >&2
+  exit 2
+}
 RUNTIME_ROOT="${EVALPLUS_RUNTIME_ROOT:-${REPO_ROOT}/.runtime/evalplus-gopd-${GOPD_COMMIT}}"
 SOURCE_ROOT="${RUNTIME_ROOT}/source"
 VENV_ROOT="${RUNTIME_ROOT}/venv"

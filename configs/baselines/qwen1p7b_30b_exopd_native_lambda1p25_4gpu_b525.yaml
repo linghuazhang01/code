@@ -7,7 +7,7 @@
 extends: opd_baselines.yaml::exopd_native_lambda1p25
 
 runtime:
-  python_bin: /home/shuang_qiu/env/miniconda3/envs/mopd-verl/bin/python
+  python_bin: python3
   wandb_resume: never
   slurm_allocation_gpus: 4
   cuda_visible_devices: null

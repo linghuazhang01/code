@@ -361,7 +361,7 @@ class TrainingSetupAssetScriptTests(unittest.TestCase):
             env = os.environ.copy()
             env.update(
                 {
-                    "MOPD_LAUNCH_PYTHON": sys.executable,
+                    "PYTHON": sys.executable,
                     "PATH": f"{bin_dir}:{env['PATH']}",
                     "SLURM_LOG_DIR": str(log_dir),
                 }
@@ -431,7 +431,7 @@ class TrainingSetupAssetScriptTests(unittest.TestCase):
             env = os.environ.copy()
             env.update(
                 {
-                    "MOPD_LAUNCH_PYTHON": sys.executable,
+                    "PYTHON": sys.executable,
                     "PATH": f"{bin_dir}:{env['PATH']}",
                     "SLURM_LOG_DIR": str(log_dir),
                 }

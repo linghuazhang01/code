@@ -25,7 +25,7 @@ Examples:
 Environment:
   MOPD_CONFIG=<default config when config arg is omitted>
   VERL_RUNTIME_DIR=<vendored verl runtime dir>
-  MOPD_LAUNCH_PYTHON=<python executable for this launcher, default: python3>
+  PYTHON=<python executable for this launcher and training subprocess, default: python3>
   SLURM_LOG_DIR=<Slurm script/log directory, default: CODE_DIR/logs/slurm>
   SLURM_EXTRA_ENV=<space-separated sbatch directives, alternative to --slurm-args>
 USAGE
@@ -33,6 +33,21 @@ USAGE
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PYTHON="${PYTHON:-python3}"
+
+if [[ "${PYTHON}" == */* ]]; then
+  [[ -x "${PYTHON}" ]] || {
+    echo "Python executable is not runnable: ${PYTHON}" >&2
+    exit 2
+  }
+else
+  command -v "${PYTHON}" >/dev/null 2>&1 || {
+    echo "Python executable is not available on PATH: ${PYTHON}" >&2
+    exit 2
+  }
+fi
+export PYTHON
+
 DEFAULT_CONFIG="${CODE_DIR}/configs/mopd_formal_audit_all_2gpu.yaml"
 CONFIG_PATH="${MOPD_CONFIG:-${DEFAULT_CONFIG}}"
 VERL_RUNTIME_DIR="${VERL_RUNTIME_DIR:-${CODE_DIR}/third_party/verl}"
@@ -164,7 +179,7 @@ fi
 if [[ "${SLURM_FLAG}" == "1" ]]; then
   # Derive the Slurm resources from the selected config's worker pools.
   SLURM_RESOURCE_LINE="$(
-    "${MOPD_LAUNCH_PYTHON:-python3}" - \
+    "${PYTHON}" - \
       "${CONFIG_REFERENCE}" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} <<'PY'
 import os
 import re
@@ -342,7 +357,7 @@ raw_experiment_name = str(trainer.get("experiment_name", "mopd_training"))
 experiment_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw_experiment_name)
 experiment_name = experiment_name.strip("-.")[:100] or "mopd_training"
 gpu_ids = ",".join(str(gpu_id) for gpu_id in selected_gpu_ids)
-runtime_python = str(runtime.get("python_bin") or "python").strip()
+runtime_python = os.environ.get("PYTHON") or sys.executable
 runtime_bin_dir = (
     os.path.dirname(runtime_python)
     if os.path.sep in runtime_python
@@ -377,6 +392,7 @@ PY
   if [[ "${SLURM_RUNTIME_BIN_DIR}" != "-" ]]; then
     SLURM_RUNTIME_PATH_EXPORT="export PATH=$(printf '%q' "${SLURM_RUNTIME_BIN_DIR}"):\${PATH:-}"
   fi
+  PYTHON_SHELL="$(printf '%q' "${PYTHON}")"
 
   SBATCH_SCRIPT="${SLURM_LOG_DIR}/${JOB_NAME}_$$.sbatch"
   cat > "${SBATCH_SCRIPT}" <<SBATCH
@@ -393,6 +409,7 @@ $(for _arg in "${SLURM_EXTRA_DIRECTIVES[@]}"; do echo "#SBATCH ${_arg}"; done)
 cd "${CODE_DIR}"
 export PYTHONPATH="${CODE_DIR}:${VERL_RUNTIME_DIR}:\${PYTHONPATH:-}"
 export PYTHONINTMAXSTRDIGITS="${PYTHONINTMAXSTRDIGITS:-0}"
+export PYTHON=${PYTHON_SHELL}
 ${SLURM_RUNTIME_PATH_EXPORT}
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 if [[ "${SLURM_FORCE_GPU_IDS}" == "1" ]]; then
@@ -403,7 +420,7 @@ fi
 # Unset ROCR_VISIBLE_DEVICES to avoid conflict with CUDA_VISIBLE_DEVICES.
 unset ROCR_VISIBLE_DEVICES
 
-exec "${MOPD_LAUNCH_PYTHON:-python3}" -m mopd_verl.launch ${LAUNCH_ARGS[*]}
+exec ${PYTHON_SHELL} -m mopd_verl.launch ${LAUNCH_ARGS[*]}
 SBATCH
 
   chmod +x "${SBATCH_SCRIPT}"
@@ -444,4 +461,4 @@ SBATCH
   exit 0
 fi
 
-exec "${MOPD_LAUNCH_PYTHON:-python3}" -m mopd_verl.launch "${ARGS[@]}"
+exec "${PYTHON}" -m mopd_verl.launch "${ARGS[@]}"

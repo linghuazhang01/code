@@ -18,7 +18,7 @@
 # (84 per GPU). Rollout TP=2 creates three replicas across the six H200s.
 
 runtime:
-  python_bin: /home/shuang_qiu/env/miniconda3/envs/mopd-verl/bin/python
+  python_bin: python3
   verl_module: verl.trainer.main_ppo
   wandb_mode: online
   wandb_entity: null

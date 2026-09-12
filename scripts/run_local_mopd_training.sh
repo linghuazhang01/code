@@ -29,6 +29,7 @@ Notes:
     unless mopd_audit.output_dir is explicitly passed after '--'.
 
 Environment:
+  PYTHON=<python executable, default: python3>
   LOCAL_ROOT=<parent of OPD-code>
   CONDA_ROOT=$HOME/miniconda3
   ENV_NAME=mopd-verl
@@ -82,6 +83,20 @@ SCREEN_SESSION_NAME_MAX_LENGTH=80
 if [[ -d "${MOPD_LOCAL_CONDA_ENV}/bin" ]]; then
   export PATH="${MOPD_LOCAL_CONDA_ENV}/bin:${MOPD_LOCAL_CONDA_ROOT}/bin:${PATH:-}"
 fi
+
+PYTHON="${PYTHON:-python3}"
+if [[ "${PYTHON}" == */* ]]; then
+  [[ -x "${PYTHON}" ]] || {
+    echo "Python executable is not runnable: ${PYTHON}" >&2
+    exit 2
+  }
+else
+  command -v "${PYTHON}" >/dev/null 2>&1 || {
+    echo "Python executable is not available on PATH: ${PYTHON}" >&2
+    exit 2
+  }
+fi
+export PYTHON
 
 GPU_IDS="${GPU_IDS//$'\t'/,}"
 GPU_IDS="${GPU_IDS// /,}"
@@ -220,7 +235,7 @@ fi
 export PYTHONPATH="${CODE_DIR}:${VERL_RUNTIME_DIR}:${PYTHONPATH:-}"
 
 echo "[1/6] Validating config data and model paths..."
-python - "${CONFIG_REFERENCE}" "${CODE_DIR}" 2>&1 <<'PY'
+"${PYTHON}" - "${CONFIG_REFERENCE}" "${CODE_DIR}" 2>&1 <<'PY'
 from pathlib import Path
 import sys
 
@@ -279,7 +294,7 @@ if missing:
     raise SystemExit(2)
 PY
 
-REQUIRED_GPUS="$(python - "${CONFIG_REFERENCE}" "${EXTRA_ARGS[@]}" <<'PY'
+REQUIRED_GPUS="$("${PYTHON}" - "${CONFIG_REFERENCE}" "${EXTRA_ARGS[@]}" <<'PY'
 import sys
 
 from mopd_verl.config_profiles import load_raw_config
@@ -426,7 +441,7 @@ fi
 echo "[6/6] Resolving audit config..."
 AUDIT_OUTPUT_DIR=""
 if ! has_hydra_override "mopd_audit.output_dir"; then
-  AUDIT_CONFIG_INFO="$(python - "${CONFIG_REFERENCE}" 2>&1 <<'PY'
+  AUDIT_CONFIG_INFO="$("${PYTHON}" - "${CONFIG_REFERENCE}" 2>&1 <<'PY'
 import sys
 
 from mopd_verl.config_profiles import load_raw_config
@@ -483,6 +498,7 @@ export PYTHONUNBUFFERED=1
 export PYTHONINTMAXSTRDIGITS=0
 export VERL_RUNTIME_DIR=$(quote "${VERL_RUNTIME_DIR}")
 export PYTHONPATH=$(quote "${CODE_DIR}"):$(quote "${VERL_RUNTIME_DIR}"):\${PYTHONPATH:-}
+export PYTHON=$(quote "${PYTHON}")
 export TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS=\${OMP_NUM_THREADS:-8}
 export USED_MODEL=\${USED_MODEL:-no_api}
@@ -506,8 +522,8 @@ trap 'kill \${GPU_MONITOR_PID} 2>/dev/null || true' EXIT
   echo LOG_FILE=$(quote "${LOG_FILE}")
   echo AUDIT_OUTPUT_DIR=$(quote "${AUDIT_OUTPUT_DIR:-manual_or_disabled}")
   echo START_TS=\$(date -Is)
-  echo PYTHON_BIN=\$(command -v python)
-  python --version
+  echo PYTHON_BIN=\$(command -v "\${PYTHON}")
+  "\${PYTHON}" --version
   $(printf "%s" "${DRY_RUN_ENV}")bash scripts/run_mopd.sh $(quote "${CONFIG_REFERENCE}")${RUN_MOPD_EXTRA_ARGS_Q}
 } 2>&1 | tee -a $(quote "${LOG_FILE}")
 LAUNCH

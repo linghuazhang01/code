@@ -1,7 +1,7 @@
 # Standalone resolved config: Top-32 reverse-KL selector variant of the FullTaxonomy next-step run.
 # Same i3/w1/K21-per-type schedule as the Metric-A run; this KL variant is not an offline optimum claim.
 runtime:
-  python_bin: /home/shuang_qiu/env/miniconda3/envs/mopd-verl/bin/python
+  python_bin: python3
   verl_module: verl.trainer.main_ppo
   wandb_mode: online
   wandb_entity: lz101-rice-university

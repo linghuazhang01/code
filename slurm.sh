@@ -26,7 +26,7 @@ The config must live inside the local code/ directory. A normal run performs:
 Optional environment overrides:
   MOPD_SSH_HELPER       default: <project-root>/ssh.sh
   MOPD_REMOTE_DIR       default: /home/shuang_qiu/mopd_code
-  MOPD_REMOTE_PYTHON    default: /home/shuang_qiu/env/miniconda3/envs/mopd-verl/bin/python
+  PYTHON                default: python3 on the remote cluster
   MOPD_SLURM_PARTITION  default: compute
   MOPD_SLURM_MEMORY     default: 600G
   MOPD_SLURM_TIME       default: 72:00:00
@@ -273,7 +273,8 @@ CODE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT_DIR="$(cd "${CODE_DIR}/.." && pwd -P)"
 SSH_HELPER="${MOPD_SSH_HELPER:-${ROOT_DIR}/ssh.sh}"
 REMOTE_DIR="${MOPD_REMOTE_DIR:-/home/shuang_qiu/mopd_code}"
-REMOTE_PYTHON="${MOPD_REMOTE_PYTHON:-/home/shuang_qiu/env/miniconda3/envs/mopd-verl/bin/python}"
+PYTHON="${PYTHON:-python3}"
+REMOTE_PYTHON="${PYTHON}"
 SLURM_PARTITION="${MOPD_SLURM_PARTITION:-compute}"
 SLURM_MEMORY="${MOPD_SLURM_MEMORY:-600G}"
 SLURM_TIME="${MOPD_SLURM_TIME:-72:00:00}"
@@ -354,10 +355,10 @@ esac
 case "${REMOTE_DIR}/" in
   *"//"*|*"/../"*|*"/./"*) fail "MOPD_REMOTE_DIR contains an unsafe segment" ;;
 esac
-[[ "$REMOTE_PYTHON" =~ ^/[A-Za-z0-9._/-]+$ ]] || \
-  fail "MOPD_REMOTE_PYTHON must be an absolute path without spaces or shell metacharacters"
+[[ "$REMOTE_PYTHON" =~ ^[A-Za-z0-9._/-]+$ ]] || \
+  fail "PYTHON must be a command or path without spaces or shell metacharacters"
 case "${REMOTE_PYTHON}/" in
-  *"//"*|*"/../"*|*"/./"*) fail "MOPD_REMOTE_PYTHON contains an unsafe segment" ;;
+  *"//"*|*"/../"*|*"/./"*) fail "PYTHON contains an unsafe path segment" ;;
 esac
 [[ "$SLURM_PARTITION" =~ ^[A-Za-z0-9_.-]+$ ]] || \
   fail "MOPD_SLURM_PARTITION contains unsupported characters"
@@ -382,9 +383,13 @@ printf 'Slurm: partition=%s mem=%s time=%s priority=%s\n' \
 quoted_remote_dir="$(quote_shell "$REMOTE_DIR")"
 quoted_remote_python="$(quote_shell "$REMOTE_PYTHON")"
 quoted_remote_parent="$(quote_shell "$REMOTE_CONFIG_PARENT")"
+REMOTE_PYTHON_CHECK="command -v ${quoted_remote_python} >/dev/null"
+if [[ "${REMOTE_PYTHON}" == */* ]]; then
+  REMOTE_PYTHON_CHECK="test -x ${quoted_remote_python}"
+fi
 
 printf '\n[1/5] Remote preflight\n'
-remote_exec "set -eu; test -d ${quoted_remote_dir}; test -d ${quoted_remote_parent}; test -x ${quoted_remote_python}; test -x ${quoted_remote_dir}/scripts/run_mopd.sh; export PATH=$(quote_shell "$(dirname "$REMOTE_PYTHON")"):\$PATH; command -v sbatch >/dev/null; command -v ninja >/dev/null; nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv,noheader; squeue -h -u \$USER -o '%i|%T|%M|%j'"
+remote_exec "set -eu; test -d ${quoted_remote_dir}; test -d ${quoted_remote_parent}; ${REMOTE_PYTHON_CHECK}; test -x ${quoted_remote_dir}/scripts/run_mopd.sh; command -v sbatch >/dev/null; command -v ninja >/dev/null; nvidia-smi --query-gpu=index,memory.used,memory.total --format=csv,noheader; squeue -h -u \$USER -o '%i|%T|%M|%j'"
 
 printf '\n[2/5] rsync preview\n'
 rsync_config 1
@@ -408,7 +413,7 @@ REMOTE_HASH="$(
 )"
 [[ -n "$REMOTE_HASH" ]] || fail "could not parse remote SHA-256 output"
 [[ "$LOCAL_HASH" == "$REMOTE_HASH" ]] || fail "local/remote SHA-256 mismatch"
-remote_exec "set -eu; cd ${quoted_remote_dir}; export PYTHONPATH=${quoted_remote_dir}:${quoted_remote_dir}/third_party/verl:\${PYTHONPATH:-}; ${quoted_remote_python} -m mopd_verl.launch --config ${quoted_remote_reference} --dry-run >/dev/null"
+remote_exec "set -eu; cd ${quoted_remote_dir}; export PYTHONPATH=${quoted_remote_dir}:${quoted_remote_dir}/third_party/verl:\${PYTHONPATH:-}; PYTHON=${quoted_remote_python} ${quoted_remote_python} -m mopd_verl.launch --config ${quoted_remote_reference} --dry-run >/dev/null"
 printf 'SHA-256 verified: %s\n' "$LOCAL_HASH"
 if [[ "$CHECK_ONLY" == "1" ]]; then
   printf '\nCheck-only complete; no Slurm job was submitted.\n'
@@ -416,4 +421,4 @@ if [[ "$CHECK_ONLY" == "1" ]]; then
 fi
 
 printf '\n[5/5] Submit Slurm job\n'
-remote_exec "set -eu; cd ${quoted_remote_dir}; export PATH=$(quote_shell "$(dirname "$REMOTE_PYTHON")"):\$PATH; MOPD_LAUNCH_PYTHON=${quoted_remote_python} scripts/run_mopd.sh ${quoted_remote_reference} --slurm --slurm-args $(quote_shell "--partition=${SLURM_PARTITION}") --slurm-args $(quote_shell "--mem=${SLURM_MEMORY}") --slurm-args $(quote_shell "--time=${SLURM_TIME}") --slurm-args $(quote_shell "--priority=${SLURM_PRIORITY}")"
+remote_exec "set -eu; cd ${quoted_remote_dir}; PYTHON=${quoted_remote_python} scripts/run_mopd.sh ${quoted_remote_reference} --slurm --slurm-args $(quote_shell "--partition=${SLURM_PARTITION}") --slurm-args $(quote_shell "--mem=${SLURM_MEMORY}") --slurm-args $(quote_shell "--time=${SLURM_TIME}") --slurm-args $(quote_shell "--priority=${SLURM_PRIORITY}")"

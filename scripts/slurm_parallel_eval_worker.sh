@@ -7,7 +7,6 @@ export LC_ALL=C
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 CODE_DIR="${SLURM_SUBMIT_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd -P)}"
 CODE_DIR="$(cd "${CODE_DIR}" && pwd -P)"
-REMOTE_PYTHON_DEFAULT="/home/shuang_qiu/env/miniconda3/envs/mopd-verl/bin/python"
 
 fail() {
   printf 'Error: %s\n' "$*" >&2
@@ -66,7 +65,14 @@ validate_positive_integer "--shards_per_dataset" "${SHARDS_PER_DATASET}"
 validate_positive_integer "--min_rows_per_shard" "${MIN_ROWS_PER_SHARD}"
 [[ -z "${MAX_SAMPLES}" ]] || validate_positive_integer "--max_samples" "${MAX_SAMPLES}"
 
-PYTHON_BIN="${SLURM_EVAL_PYTHON:-${REMOTE_PYTHON_DEFAULT}}"
+PYTHON_BIN="${PYTHON:-python3}"
+if [[ "${PYTHON_BIN}" == */* ]]; then
+  [[ -x "${PYTHON_BIN}" ]] || fail "Python executable is not runnable: ${PYTHON_BIN}"
+else
+  PYTHON_BIN="$(command -v "${PYTHON_BIN}" || true)"
+  [[ -n "${PYTHON_BIN}" ]] || fail "Python executable is not available on PATH"
+fi
+export PYTHON="${PYTHON_BIN}"
 [[ -x "${PYTHON_BIN}" ]] || fail "Python executable is not runnable: ${PYTHON_BIN}"
 export PATH="$(dirname "${PYTHON_BIN}"):${PATH}"
 export PYTHONPATH="${CODE_DIR}:${CODE_DIR}/third_party/verl:${PYTHONPATH:-}"

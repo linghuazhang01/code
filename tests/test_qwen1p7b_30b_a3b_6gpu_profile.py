@@ -21,7 +21,7 @@ class Qwen1p7bFrom30bA3bSixGpuProfileTests(unittest.TestCase):
 
         self.assertEqual(
             config.runtime.python_bin,
-            "/home/shuang_qiu/env/miniconda3/envs/mopd-verl/bin/python",
+            "python3",
         )
         self.assertEqual(config.runtime.env_file, ".env.local")
         self.assertIsNone(config.runtime.wandb_run_id)

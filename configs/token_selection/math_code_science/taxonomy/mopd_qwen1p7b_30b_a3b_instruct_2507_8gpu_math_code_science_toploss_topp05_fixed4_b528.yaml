@@ -159,8 +159,8 @@ audit:
       ]
   control_token_normalize_per_domain: true
   control_token_online_selection_enabled: true
-  control_token_online_audit_interval_steps: 3
-  control_token_online_window_steps: 3
+  control_token_online_audit_interval_steps: 1
+  control_token_online_window_steps: 1
   control_token_online_min_mean_occurrences_per_step: 20.0
   control_token_online_strict_occurrence_gate: true
   control_token_online_top_k: 30

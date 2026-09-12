@@ -146,7 +146,7 @@ class SlurmEvalScriptTest(unittest.TestCase):
                 {
                     "CUDA_VISIBLE_DEVICES": "5",
                     "EVAL_CALLS_PATH": str(calls_path),
-                    "SLURM_EVAL_PYTHON": str(fake_python),
+                    "PYTHON": str(fake_python),
                     "SLURM_JOB_ID": "999",
                     "SLURM_SUBMIT_DIR": str(fixture),
                 }
@@ -215,7 +215,7 @@ class SlurmEvalScriptTest(unittest.TestCase):
                 {
                     "CUDA_VISIBLE_DEVICES": "5",
                     "EVAL_CALLS_PATH": str(calls_path),
-                    "SLURM_EVAL_PYTHON": str(fake_python),
+                    "PYTHON": str(fake_python),
                     "SLURM_JOB_ID": "1000",
                     "SLURM_SUBMIT_DIR": str(fixture),
                 }

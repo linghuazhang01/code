@@ -16,7 +16,7 @@ def test_six_gpu_three_domain_baseline_contract() -> None:
     config = load_config(CONFIG_PATH)
 
     assert config.runtime.python_bin == (
-        "/home/shuang_qiu/env/miniconda3/envs/mopd-verl/bin/python"
+        "python3"
     )
     assert config.data.train_batch_size == 525
     assert config.actor.ppo_mini_batch_size == 525

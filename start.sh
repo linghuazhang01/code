@@ -5,6 +5,7 @@
 # MOPD_LAUNCH_MODE=auto to select Slurm when sbatch is available.
 #
 # Environment variables:
+#   PYTHON        Python executable used by all training launchers (default: python3).
 #   GPU_IDS       Comma-separated physical GPU indices (local mode only).
 #   MOPD_SEED     Random seed (default: 42).
 #   SLURM_MEM     Memory per node for Slurm jobs (default: 700G).
@@ -26,7 +27,10 @@ if [[ "${1:-}" == "--slurm" && "${2:-}" == "--eval" ]]; then
 fi
 
 DEFAULT_CONFIG_PATH="${SCRIPT_DIR}/configs/mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math_code_science_topk32.yaml"
+PYTHON="${PYTHON:-python3}"
 MOPD_SEED="${MOPD_SEED:-42}"
+
+export PYTHON
 
 usage() {
   cat <<'USAGE'

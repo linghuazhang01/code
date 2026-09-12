@@ -47,7 +47,7 @@ Environment overrides:
   SLURM_EVAL_TIME           default: 48:00:00
   SLURM_EVAL_MEMORY         default: 24G
   SLURM_EVAL_CPUS           default: 8
-  SLURM_EVAL_PYTHON         default: mopd-verl Python on the remote cluster
+  PYTHON                     default: python3 on the remote cluster
   SLURM_EVAL_MAX_TOKENS     default: 16384
   SLURM_EVAL_TEMPERATURE    default: 1.0
   SLURM_EVAL_TOP_P          default: 1.0

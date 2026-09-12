@@ -718,7 +718,10 @@ def build_overrides(config: MOPDConfig) -> list[str]:
 def build_command(
     config: MOPDConfig, extra_args: Sequence[str] | None = None
 ) -> list[str]:
-    command = [config.runtime.python_bin, "-m", config.runtime.verl_module]
+    # Keep machine-specific interpreter paths out of YAML configs.  Launchers
+    # can override the current interpreter through the shared PYTHON variable.
+    python_bin = os.environ.get("PYTHON") or sys.executable
+    command = [python_bin, "-m", config.runtime.verl_module]
     command.extend(build_overrides(config))
     command.extend(extra_args or [])
     return command

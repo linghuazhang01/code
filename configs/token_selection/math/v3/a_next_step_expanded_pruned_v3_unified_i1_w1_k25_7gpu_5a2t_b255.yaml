@@ -485,7 +485,7 @@ ray_kwargs:
     include_dashboard: false
     num_cpus: 24
 runtime:
-  python_bin: /home/shuang_qiu/env/miniconda3/envs/mopd-verl/bin/python
+  python_bin: python3
   verl_module: verl.trainer.main_ppo
   wandb_mode: online
   wandb_entity: lz101-rice-university

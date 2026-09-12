@@ -309,7 +309,7 @@ gradient 和 optimizer state。
 
 为保持向后兼容，根目录 `start.sh` 默认仍走 local；使用 `--slurm` 提交，
 或设置 `MOPD_LAUNCH_MODE=auto`，在 `PATH` 中存在 `sbatch` 时自动选择
-Slurm。提交前应先激活训练环境，或把 `MOPD_LAUNCH_PYTHON` 设为该环境
+Slurm。提交前应先激活训练环境，或把 `PYTHON` 设为该环境
 Python 的绝对路径。先生成并检查单节点 sbatch 脚本、但不提交任务：
 
 ```bash

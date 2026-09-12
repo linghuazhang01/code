@@ -20,7 +20,7 @@ selector implementation is required. The new run has separate output paths
 and inherits the rollout/teacher performance settings.
 
 Submit from the synchronized repository root on the Slurm host (training
-Python must be available through `MOPD_LAUNCH_PYTHON`):
+Python must be selected through the `PYTHON` environment variable):
 
 ```bash
 bash scripts/run_mopd.sh \

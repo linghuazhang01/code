@@ -50,7 +50,7 @@ merged_model_is_reusable() {
 }
 
 MODEL_PATH=""
-PYTHON_BIN="${SLURM_EVAL_PYTHON:-python3}"
+PYTHON_BIN="${PYTHON:-python3}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --model-path) MODEL_PATH="${2:?--model-path requires a value}"; shift 2 ;;

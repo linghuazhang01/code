@@ -1,7 +1,7 @@
 # Standalone resolved config: no extends. Four-baseline FullTaxonomy next-window Type-F1 optimum.
 # Metric A, cadence=6, window=6, K=32 independently for Control and Structure.
 runtime:
-  python_bin: /home/shuang_qiu/env/miniconda3/envs/mopd-verl/bin/python
+  python_bin: python3
   verl_module: verl.trainer.main_ppo
   wandb_mode: online
   wandb_entity: lz101-rice-university

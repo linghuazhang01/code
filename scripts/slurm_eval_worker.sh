@@ -7,7 +7,6 @@ export LC_ALL=C
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 CODE_DIR="${SLURM_SUBMIT_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd -P)}"
 CODE_DIR="$(cd "${CODE_DIR}" && pwd -P)"
-REMOTE_PYTHON_DEFAULT="/home/shuang_qiu/env/miniconda3/envs/mopd-verl/bin/python"
 ACTIVE_MERGE_DIR=""
 
 fail() {
@@ -268,7 +267,14 @@ validate_positive_integer "SLURM_EVAL_CODE_SAMPLES" "${CODE_SAMPLES}"
 validate_positive_integer "SLURM_EVAL_SCIENCE_SAMPLES" "${SCIENCE_SAMPLES}"
 validate_non_negative_integer "SLURM_EVAL_SEED" "${EVAL_SEED}"
 
-PYTHON_BIN="${SLURM_EVAL_PYTHON:-${REMOTE_PYTHON_DEFAULT}}"
+PYTHON_BIN="${PYTHON:-python3}"
+if [[ "${PYTHON_BIN}" == */* ]]; then
+  [[ -x "${PYTHON_BIN}" ]] || fail "Python executable is not runnable: ${PYTHON_BIN}"
+else
+  PYTHON_BIN="$(command -v "${PYTHON_BIN}" || true)"
+  [[ -n "${PYTHON_BIN}" ]] || fail "Python executable is not available on PATH"
+fi
+export PYTHON="${PYTHON_BIN}"
 VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}"
 IFS=',' read -r -a VISIBLE_DEVICE_ARRAY <<<"${VISIBLE_DEVICES}"
 [[ -n "${VISIBLE_DEVICES}" && "${#VISIBLE_DEVICE_ARRAY[@]}" == "1" ]] \

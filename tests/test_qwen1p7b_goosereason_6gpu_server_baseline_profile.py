@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
+import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from mopd_verl.domain_sampling import allocate_domain_batch_counts
 from mopd_verl.launch import build_command, format_command
@@ -20,7 +23,7 @@ EIGHT_GPU_CONFIG_PATH = (
     / "mopd_qwen1p7b_nonthinking_goosereason4b_instruct_8gpu_"
     "math_code_science_topk32_reverse_kl_baseline.yaml"
 )
-PYTHON_PATH = "/home/shuang_qiu/env/miniconda3/envs/mopd-verl/bin/python"
+PYTHON_PATH = "python3"
 DATA_PREFIX = "../mopd/code/data/"
 MODEL_PREFIX = "../mopd/models/"
 
@@ -133,9 +136,10 @@ class Qwen1p7BGooseReason6GpuServerBaselineTests(unittest.TestCase):
 
     def test_rendered_command_matches_server_contract(self) -> None:
         config = load_config(CONFIG_PATH)
-        rendered = format_command(build_command(config))
+        with patch.dict(os.environ, {"PYTHON": sys.executable}):
+            rendered = format_command(build_command(config))
 
-        self.assertTrue(rendered.startswith(PYTHON_PATH))
+        self.assertTrue(rendered.startswith(sys.executable))
         self.assertIn("algorithm.rollout_correction.rollout_is=null", rendered)
         self.assertIn(
             "actor_rollout_ref.actor.policy_loss.distill_mode="

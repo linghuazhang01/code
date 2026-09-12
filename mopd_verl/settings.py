@@ -424,6 +424,7 @@ class RayKwargsConfig:
 
 @dataclass(frozen=True)
 class RuntimeConfig:
+    # Kept for YAML compatibility; the launcher uses PYTHON or sys.executable.
     python_bin: str = "python3"
     verl_module: str = "verl.trainer.main_ppo"
     wandb_mode: str = "online"

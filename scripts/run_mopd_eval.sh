@@ -25,7 +25,7 @@ Notes:
 
 Environment:
   VERL_RUNTIME_DIR=<vendored verl runtime dir>
-  MOPD_LAUNCH_PYTHON=<python executable for this launcher, default: python3>
+  PYTHON=<python executable for this launcher, default: python3>
 USAGE
 }
 
@@ -100,4 +100,4 @@ if [[ "${#EXTRA_ARGS[@]}" -gt 0 ]]; then
   CMD+=(-- "${EXTRA_ARGS[@]}")
 fi
 
-exec "${MOPD_LAUNCH_PYTHON:-python3}" -m mopd_verl.eval_launch "${CMD[@]}"
+exec "${PYTHON:-python3}" -m mopd_verl.eval_launch "${CMD[@]}"
