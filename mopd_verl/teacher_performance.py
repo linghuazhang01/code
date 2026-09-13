@@ -2,6 +2,8 @@
 
 The guard is a conservative heuristic, not an OOM guarantee. Unsupported worker
 layouts retain their original path, including their collective call ordering.
+The independent expandable_segments setting applies before model construction
+on dedicated CUDA teachers, including multi-rank workers with batching disabled.
 """
 
 import functools
@@ -123,9 +125,26 @@ def _chunk_wrapper(
     return forward
 
 
+def configure_teacher_allocator(
+    config: Mapping[str, Any], *, teacher_model_device: str, dedicated_teacher: bool,
+) -> bool:
+    """Apply the allocator opt-in before loading a dedicated GPU teacher model.
+
+    This setting is independent of performance.enabled and world size. A false
+    result leaves the process allocator unchanged, including environment settings.
+    """
+    requested = parse_teacher_performance(config)
+    if not requested.expandable_segments or not dedicated_teacher:
+        return False
+    if teacher_model_device not in {"gpu", "cuda"} or not torch.cuda.is_available():
+        return False
+    torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+    return True
+
+
 def configure_teacher_performance(
     policy: Any, config: Mapping[str, Any], *, world_size: int,
-    teacher_model_device: str, dedicated_teacher: bool = False,
+    teacher_model_device: str,
 ) -> dict[str, Any]:
     """Install policy-local defaults once, after the reference model is built."""
     if not config.get("enabled", False):
@@ -154,9 +173,6 @@ def configure_teacher_performance(
         max_tokens=requested.max_tokens,
         margin_bytes=int(requested.memory_margin_gib * 1024**3),
     )
-    # This allocator setting is process-wide; never change a co-located rollout worker.
-    if dedicated_teacher:
-        torch.cuda.memory._set_allocator_settings("expandable_segments:True")
     mode = requested.moe_dispatch
     vocab = int(model_config.vocab_size)
     policy._forward_micro_batch = _chunk_wrapper(policy._forward_micro_batch, tuning, vocab)
@@ -164,7 +180,7 @@ def configure_teacher_performance(
     blocks = install_moe_dispatch(policy.actor_module, mode)
     state = {"enabled": True, "chunk": tuning.chunk, "max_micro_batch_size": tuning.max_sequences,
              "max_tokens": tuning.max_tokens, "memory_margin_bytes": tuning.margin_bytes,
-             "moe_blocks": blocks, "expandable_segments": dedicated_teacher}
+             "moe_blocks": blocks}
     policy._teacher_performance_config = state
     logging.getLogger(__name__).info("Teacher performance configured: %s", state)
     return state

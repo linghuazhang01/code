@@ -7,7 +7,12 @@ from typing import Any, Mapping
 
 @dataclass(frozen=True)
 class TeacherPerformanceConfig:
-    """Requested caps; the worker checks topology, model and available memory."""
+    """Requested caps; the worker checks topology, model and available memory.
+
+    expandable_segments independently enables the allocator on dedicated CUDA
+    teachers before model loading, even when enabled is false or world size > 1.
+    Setting it false leaves the process allocator unchanged.
+    """
 
     enabled: bool = True
     topk_logprob_chunk_size: int = 1024
@@ -15,10 +20,13 @@ class TeacherPerformanceConfig:
     max_tokens: int = 57344
     moe_dispatch: str = "stable_sort"
     memory_margin_gib: float = 12.0
+    expandable_segments: bool = True
 
     def __post_init__(self) -> None:
         if type(self.enabled) is not bool:
             raise ValueError("teacher_performance.enabled must be a boolean")
+        if type(self.expandable_segments) is not bool:
+            raise ValueError("teacher_performance.expandable_segments must be a boolean")
         bounds = {"topk_logprob_chunk_size": 1024, "max_micro_batch_size": 32,
                   "max_tokens": 57344}
         for name, upper in bounds.items():

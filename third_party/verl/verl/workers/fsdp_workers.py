@@ -834,6 +834,22 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             if teacher_model_device not in {"cpu", "gpu"}:
                 raise ValueError("teacher_model_device must be 'cpu', 'gpu', or 'cuda'.")
 
+            from mopd_verl.teacher_performance import configure_teacher_allocator, configure_teacher_performance
+
+            allocator_configured = configure_teacher_allocator(
+                self.config.ref.get("teacher_performance", {}),
+                teacher_model_device=teacher_model_device,
+                dedicated_teacher=(
+                    not self._is_actor and not self._is_rollout
+                    and bool(OmegaConf.select(self.config, "worker_placement.separate_ref_policy", default=False))
+                ),
+            )
+            print(
+                f"Teacher allocator: rank={self.rank} world_size={self.world_size} "
+                f"expandable_segments_applied={allocator_configured}",
+                flush=True,
+            )
+
             if self.rank == 0:
                 print("reference model:", ref_model_path)
             local_path = copy_to_local(ref_model_path, use_shm=use_shm)
@@ -854,17 +870,11 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 self.config.ref.use_remove_padding = use_remove_padding
                 self.config.ref.use_fused_kernels = use_fused_kernels
             self.ref_policy = DataParallelPPOActor(config=self.config.ref, actor_module=self.ref_module_fsdp)
-            from mopd_verl.teacher_performance import configure_teacher_performance
-
             configure_teacher_performance(
                 self.ref_policy,
                 self.config.ref.get("teacher_performance", {}),
                 world_size=self.world_size,
                 teacher_model_device=teacher_model_device,
-                dedicated_teacher=(
-                    not self._is_actor and not self._is_rollout
-                    and bool(OmegaConf.select(self.config, "worker_placement.separate_ref_policy", default=False))
-                ),
             )
 
         # Initialize base models for corrected reward computation

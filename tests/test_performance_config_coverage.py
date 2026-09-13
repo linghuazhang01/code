@@ -54,8 +54,9 @@ class PerformanceConfigCoverageTests(unittest.TestCase):
                         config = load_config(reference)
                         self.assertFalse(config.rollout.enforce_eager)
                         self.assertEqual(config.rollout.max_num_seqs, 64)
-                        self.assertEqual(asdict(config.teacher_performance), expected_teacher)
+                        self.assertEqual(asdict(config.teacher_performance), dict(expected_teacher, expandable_segments=True))
                         overrides = build_overrides(config)
+                        self.assertIn("+actor_rollout_ref.ref.teacher_performance.expandable_segments=true", overrides)
                         self.assertIn("actor_rollout_ref.rollout.enforce_eager=False", overrides)
                         self.assertIn("actor_rollout_ref.rollout.max_num_seqs=64", overrides)
                         for key, value in expected_teacher.items():

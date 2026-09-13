@@ -1,5 +1,7 @@
 """Teacher performance routing, memory fallback, and output preservation."""
 
+import ast
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -141,8 +143,7 @@ def test_production_moe_preserves_routing_and_accumulation(top_k: int, normalize
     assert torch.equal(actual_router, router)
 
 
-@pytest.mark.parametrize("dedicated_teacher", [False, True])
-def test_configuration_installs_once_and_passes_caps(monkeypatch: pytest.MonkeyPatch, dedicated_teacher: bool) -> None:
+def test_configuration_installs_once_and_passes_caps(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     allocator_calls = []
     monkeypatch.setattr(torch.cuda.memory, "_set_allocator_settings", allocator_calls.append)
@@ -157,14 +158,108 @@ def test_configuration_installs_once_and_passes_caps(monkeypatch: pytest.MonkeyP
         use_remove_padding=True, ulysses_sequence_parallel_size=1, actor_optimizer=None,
         actor_module=SimpleNamespace(config=SimpleNamespace(torch_dtype=torch.bfloat16, vocab_size=100)),
     )
-    state = perf.configure_teacher_performance(policy, {"enabled": True}, world_size=1, teacher_model_device="gpu", dedicated_teacher=dedicated_teacher)
+    state = perf.configure_teacher_performance(policy, {"enabled": True}, world_size=1, teacher_model_device="gpu")
     installed = policy.compute_log_prob
     assert state["enabled"] and state["chunk"] == 1024 and state["moe_blocks"] == 48
     assert state["max_tokens"] == 57344 and state["max_micro_batch_size"] == 32
     assert perf.configure_teacher_performance(
         policy, {"enabled": True}, world_size=1, teacher_model_device="gpu") is state
     assert policy.compute_log_prob is installed and seen == ["stable_sort"]
-    assert allocator_calls == (["expandable_segments:True"] if dedicated_teacher else [])
+    assert allocator_calls == []
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize("device", ["gpu", "cuda"])
+def test_allocator_is_independent_of_batching(
+    monkeypatch: pytest.MonkeyPatch, enabled: bool, device: str,
+) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    calls = []
+    monkeypatch.setattr(torch.cuda.memory, "_set_allocator_settings", calls.append)
+    assert perf.configure_teacher_allocator(
+        {"enabled": enabled}, teacher_model_device=device, dedicated_teacher=True,
+    )
+    assert calls == ["expandable_segments:True"]
+
+
+@pytest.mark.parametrize("config,device,dedicated,available", [
+    ({"expandable_segments": False}, "gpu", True, True),
+    ({}, "gpu", False, True),
+    ({}, "cpu", True, True),
+    ({}, "gpu", True, False),
+])
+def test_allocator_skips_without_changing_process_settings(
+    monkeypatch: pytest.MonkeyPatch, config: dict, device: str, dedicated: bool, available: bool,
+) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: available)
+    calls = []
+    monkeypatch.setattr(torch.cuda.memory, "_set_allocator_settings", calls.append)
+    assert not perf.configure_teacher_allocator(
+        config, teacher_model_device=device, dedicated_teacher=dedicated,
+    )
+    assert calls == []
+
+
+def test_allocator_failure_is_not_reported_as_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+
+    def unsupported(settings: str) -> None:
+        raise RuntimeError("allocator unavailable")
+
+    monkeypatch.setattr(torch.cuda.memory, "_set_allocator_settings", unsupported)
+    with pytest.raises(RuntimeError, match="allocator unavailable"):
+        perf.configure_teacher_allocator({}, teacher_model_device="gpu", dedicated_teacher=True)
+
+
+@pytest.mark.parametrize("rank", [0, 1])
+@pytest.mark.parametrize("enabled", [True, False])
+def test_ref_initialization_sets_allocator_before_build_on_each_rank(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, rank: int, enabled: bool,
+) -> None:
+    from omegaconf import OmegaConf, open_dict
+
+    source = Path(__file__).resolve().parents[1] / "third_party/verl/verl/workers/fsdp_workers.py"
+    tree = ast.parse(source.read_text())
+    init_method = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "init_model")
+    ref_block = next(
+        node for node in init_method.body
+        if isinstance(node, ast.If) and isinstance(node.test, ast.Attribute) and node.test.attr == "_is_ref"
+    )
+    events = []
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda.memory, "_set_allocator_settings", lambda value: events.append(value))
+    forward, compute = object(), object()
+    policy = SimpleNamespace(
+        _forward_micro_batch=forward, compute_log_prob=compute, use_fused_kernels=False,
+        use_remove_padding=True, ulysses_sequence_parallel_size=1, actor_optimizer=None,
+        actor_module=SimpleNamespace(config=SimpleNamespace(torch_dtype=torch.bfloat16)),
+    )
+
+    def build_model(**kwargs: object) -> tuple:
+        assert events == ["expandable_segments:True"]
+        events.append("build")
+        return (object(),)
+
+    worker = SimpleNamespace(
+        _is_ref=True, _is_actor=False, _is_rollout=False, rank=rank, world_size=2,
+        _build_model_optimizer=build_model,
+        config=OmegaConf.create({
+            "model": {"path": "student"},
+            "ref": {"model": {"path": "teacher", "teacher_model_device": "gpu"},
+                    "fsdp_config": {}, "teacher_performance": {"enabled": enabled}},
+            "worker_placement": {"separate_ref_policy": True},
+        }),
+    )
+    namespace = dict(
+        self=worker, OmegaConf=OmegaConf, open_dict=open_dict, use_shm=False,
+        override_model_config={}, use_remove_padding=True, use_fused_kernels=False,
+        copy_to_local=lambda path, **kwargs: path, omega_conf_to_dataclass=lambda value: value,
+        DataParallelPPOActor=lambda **kwargs: policy,
+    )
+    exec(compile(ast.Module(body=[ref_block], type_ignores=[]), str(source), "exec"), namespace)
+    assert events == ["expandable_segments:True", "build"]
+    assert policy._forward_micro_batch is forward and policy.compute_log_prob is compute
+    assert f"rank={rank} world_size=2 expandable_segments_applied=True" in capsys.readouterr().out
 
 
 def test_multimodal_forward_retains_original_without_memory_probe(monkeypatch: pytest.MonkeyPatch) -> None:
