@@ -33,9 +33,12 @@ initialization installs the wrappers in `teacher_performance.py`.
 - Teacher input rows are grouped contiguously, up to 32 sequences and 57,344
   non-padding input tokens. Output row order and optional output tensors are
   preserved. Each group is reduced further when the memory estimate requires it.
-- Optimization requires a single-rank CUDA-resident BF16 reference model,
-  remove-padding, sequence parallel size one, no optimizer and unfused execution.
-  Unsupported layouts retain the original computation path and log the reason.
+- Optimization requires a CUDA-resident BF16 reference model, remove-padding,
+  sequence parallel size one, no optimizer and unfused execution. A dedicated
+  multi-rank FSDP reference worker is supported: it synchronizes rank-local
+  batch boundaries using the minimum available capacity before entering the
+  model, preserving collective call order. Colocated or otherwise unsupported
+  layouts retain the original computation path and log the reason.
 - The memory budget estimates logits and chunk workspace using free and cached
   memory while retaining at least 12 GiB headroom. It is a heuristic, not an OOM
   guarantee: cached bytes may not all be immediately reusable contiguous memory.
@@ -51,6 +54,9 @@ initialization installs the wrappers in `teacher_performance.py`.
 
 Caps are intentionally limited to the tested upper bounds: chunk 1024,
 32 sequences, 57,344 tokens; the memory margin must be finite and at least 12 GiB.
+For a dedicated multi-rank reference worker, the effective batch capacity is the
+minimum across ranks, so adding reference GPUs does not silently create uneven
+collective schedules.
 Use `teacher_performance.enabled: false` to retain the original teacher path,
 or `moe_dispatch: stock` to disable only the MoE dispatch replacement.
 

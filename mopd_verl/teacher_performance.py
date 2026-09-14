@@ -1,9 +1,11 @@
-"""Memory-aware, single-rank teacher batching and TopK postprocessing defaults.
+"""Memory-aware teacher batching and TopK postprocessing defaults.
 
-The guard is a conservative heuristic, not an OOM guarantee. Unsupported worker
-layouts retain their original path, including their collective call ordering.
-The independent expandable_segments setting applies before model construction
-on dedicated CUDA teachers, including multi-rank workers with batching disabled.
+The guard is a conservative heuristic, not an OOM guarantee. Dedicated
+multi-rank reference workers synchronize batch boundaries before entering the
+model, while unsupported worker layouts retain their original path, including
+their collective call ordering. The independent expandable_segments setting
+applies before model construction on dedicated CUDA teachers, including
+multi-rank workers with batching disabled.
 """
 
 import functools
@@ -35,6 +37,28 @@ def _available(tuning: _Tuning) -> int:
     free, _ = torch.cuda.mem_get_info()
     cache = max(0, torch.cuda.memory_reserved() - torch.cuda.memory_allocated())
     return int(free + cache - tuning.margin_bytes)
+
+
+def _distributed_min(value: int, world_size: int) -> int:
+    """Reduce a small integer on the reference process group when required."""
+
+    if world_size <= 1:
+        return int(value)
+    if not torch.distributed.is_initialized():
+        raise RuntimeError(
+            "Distributed teacher batching requires an initialized process group."
+        )
+    if torch.distributed.get_world_size() != world_size:
+        raise RuntimeError(
+            "Distributed teacher batching received a stale process-group size."
+        )
+    value_tensor = torch.tensor(
+        [int(value)],
+        dtype=torch.int64,
+        device=torch.device("cuda", torch.cuda.current_device()),
+    )
+    torch.distributed.all_reduce(value_tensor, op=torch.distributed.ReduceOp.MIN)
+    return int(value_tensor.item())
 
 
 def _lengths(data: Any) -> list[int]:
@@ -69,19 +93,53 @@ def next_group(lengths: list[int], start: int, rows: int, token_limit: int) -> l
 
 def _batch_wrapper(
     original: Callable[..., Any], tuning: _Tuning, vocab_size: int,
+    distributed_world_size: int = 1,
 ) -> Callable[..., Any]:
     @functools.wraps(original)
     def compute(*args: Any, **kwargs: Any) -> Any:
         data = kwargs.get("data", args[0] if args else None)
+        local_size = 0 if data is None else len(data)
+        if distributed_world_size > 1:
+            minimum_size = _distributed_min(local_size, distributed_world_size)
+            maximum_size = -_distributed_min(-local_size, distributed_world_size)
+            if minimum_size != maximum_size:
+                logging.getLogger(__name__).warning(
+                    "Teacher memory guard: retaining original batching for uneven "
+                    "rank-local batch sizes (%d..%d)",
+                    minimum_size,
+                    maximum_size,
+                )
+                return original(*args, **kwargs)
         if data is None or len(data) == 0:
             return original(*args, **kwargs)
         lengths = _lengths(data)
-        if any(length <= 0 for length in lengths) or "multi_modal_inputs" in data.non_tensor_batch:
+        locally_supported = int(
+            not any(length <= 0 for length in lengths)
+            and "multi_modal_inputs" not in data.non_tensor_batch
+        )
+        if distributed_world_size > 1:
+            supported = _distributed_min(locally_supported, distributed_world_size)
+        else:
+            supported = locally_supported
+        if not supported:
             return original(*args, **kwargs)
         parts, start = [], 0
         while start < len(lengths):
-            capacity = min(tuning.max_tokens, token_capacity(_available(tuning), vocab_size, tuning.chunk))
-            indices = next_group(lengths, start, tuning.max_sequences, capacity)
+            local_capacity = min(
+                tuning.max_tokens,
+                token_capacity(_available(tuning), vocab_size, tuning.chunk),
+            )
+            capacity = _distributed_min(local_capacity, distributed_world_size)
+            local_indices = next_group(
+                lengths, start, tuning.max_sequences, capacity
+            )
+            if distributed_world_size > 1:
+                group_size = _distributed_min(
+                    len(local_indices), distributed_world_size
+                )
+                indices = list(range(start, start + group_size))
+            else:
+                indices = local_indices
             piece = data.select_idxs(indices)
             piece.meta_info = dict(data.meta_info)
             piece.meta_info.update(micro_batch_size=len(indices), use_dynamic_bsz=False)
@@ -144,7 +202,7 @@ def configure_teacher_allocator(
 
 def configure_teacher_performance(
     policy: Any, config: Mapping[str, Any], *, world_size: int,
-    teacher_model_device: str,
+    teacher_model_device: str, dedicated_teacher: bool = False,
 ) -> dict[str, Any]:
     """Install policy-local defaults once, after the reference model is built."""
     if not config.get("enabled", False):
@@ -152,7 +210,7 @@ def configure_teacher_performance(
     if hasattr(policy, "_teacher_performance_config"):
         return policy._teacher_performance_config
     reasons = []
-    if world_size != 1:
+    if world_size != 1 and not dedicated_teacher:
         reasons.append("multi-rank collective ordering")
     if teacher_model_device not in {"gpu", "cuda"} or not torch.cuda.is_available():
         reasons.append("CPU/offloaded or non-CUDA teacher")
@@ -175,12 +233,26 @@ def configure_teacher_performance(
     )
     mode = requested.moe_dispatch
     vocab = int(model_config.vocab_size)
-    policy._forward_micro_batch = _chunk_wrapper(policy._forward_micro_batch, tuning, vocab)
-    policy.compute_log_prob = _batch_wrapper(policy.compute_log_prob, tuning, vocab)
+    policy._forward_micro_batch = _chunk_wrapper(
+        policy._forward_micro_batch, tuning, vocab
+    )
+    policy.compute_log_prob = _batch_wrapper(
+        policy.compute_log_prob,
+        tuning,
+        vocab,
+        distributed_world_size=world_size if dedicated_teacher else 1,
+    )
     blocks = install_moe_dispatch(policy.actor_module, mode)
-    state = {"enabled": True, "chunk": tuning.chunk, "max_micro_batch_size": tuning.max_sequences,
-             "max_tokens": tuning.max_tokens, "memory_margin_bytes": tuning.margin_bytes,
-             "moe_blocks": blocks}
+    state = {
+        "enabled": True,
+        "chunk": tuning.chunk,
+        "max_micro_batch_size": tuning.max_sequences,
+        "max_tokens": tuning.max_tokens,
+        "memory_margin_bytes": tuning.margin_bytes,
+        "moe_blocks": blocks,
+        "distributed_batch_sync": dedicated_teacher and world_size > 1,
+        "world_size": world_size,
+    }
     policy._teacher_performance_config = state
     logging.getLogger(__name__).info("Teacher performance configured: %s", state)
     return state

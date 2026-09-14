@@ -71,6 +71,34 @@ def test_batch_preserves_order_kwargs_optional_outputs_and_input(
     assert data.meta_info["micro_batch_size"] == 1 and data.meta_info["use_dynamic_bsz"] is True
 
 
+def test_multi_rank_batching_uses_the_synchronized_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(perf, "_available", lambda tuning: 8000 + 16 * 100 * 16)
+    monkeypatch.setattr(perf, "_distributed_min", lambda value, world_size: int(value))
+    tuning = perf._Tuning(chunk=16, max_sequences=3, max_tokens=10, margin_bytes=12 * 1024**3)
+    calls = []
+
+    def original(data: Batch, calculate_entropy: bool) -> tuple:
+        calls.append(data)
+        assert data.meta_info["micro_batch_size"] == len(data)
+        assert data.meta_info["use_dynamic_bsz"] is False
+        return data.ids, data.ids + 1 if calculate_entropy else None
+
+    data = Batch(torch.arange(4)[:, None], [5, 3, 30, 1])
+    wrapped = perf._batch_wrapper(
+        original,
+        tuning,
+        100,
+        distributed_world_size=2,
+    )
+    result = wrapped(data=data, calculate_entropy=True)
+
+    assert [len(call) for call in calls] == [2, 1, 1]
+    assert torch.equal(result[0], data.ids)
+    assert torch.equal(result[1], data.ids + 1)
+
+
 @pytest.mark.parametrize("available,expected", [(10**10, 1024), (0, None)])
 def test_forward_guard_falls_back_without_rejecting_single_row(
     monkeypatch: pytest.MonkeyPatch, available: int, expected: int | None,
@@ -228,11 +256,22 @@ def test_ref_initialization_sets_allocator_before_build_on_each_rank(
     events = []
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda.memory, "_set_allocator_settings", lambda value: events.append(value))
+    monkeypatch.setattr(perf, "install_moe_dispatch", lambda model, mode: 0)
     forward, compute = object(), object()
+
+    def forward_fn(micro_batch: dict, topk_logprob_chunk_size: int | None = None) -> None:
+        return None
+
+    def compute_fn(data: object) -> tuple[object]:
+        return (data,)
+
+    forward, compute = forward_fn, compute_fn
     policy = SimpleNamespace(
         _forward_micro_batch=forward, compute_log_prob=compute, use_fused_kernels=False,
         use_remove_padding=True, ulysses_sequence_parallel_size=1, actor_optimizer=None,
-        actor_module=SimpleNamespace(config=SimpleNamespace(torch_dtype=torch.bfloat16)),
+        actor_module=SimpleNamespace(
+            config=SimpleNamespace(torch_dtype=torch.bfloat16, vocab_size=100)
+        ),
     )
 
     def build_model(**kwargs: object) -> tuple:
@@ -258,8 +297,47 @@ def test_ref_initialization_sets_allocator_before_build_on_each_rank(
     )
     exec(compile(ast.Module(body=[ref_block], type_ignores=[]), str(source), "exec"), namespace)
     assert events == ["expandable_segments:True", "build"]
-    assert policy._forward_micro_batch is forward and policy.compute_log_prob is compute
+    if enabled:
+        assert policy._forward_micro_batch is not forward
+        assert policy.compute_log_prob is not compute
+    else:
+        assert policy._forward_micro_batch is forward
+        assert policy.compute_log_prob is compute
     assert f"rank={rank} world_size=2 expandable_segments_applied=True" in capsys.readouterr().out
+
+
+def test_dedicated_multi_rank_teacher_enables_performance_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda.memory, "_set_allocator_settings", lambda _: None)
+    monkeypatch.setattr(perf, "install_moe_dispatch", lambda model, mode: 48)
+
+    def forward(micro_batch: dict, topk_logprob_chunk_size: int | None = None) -> None:
+        return None
+
+    policy = SimpleNamespace(
+        _forward_micro_batch=forward,
+        compute_log_prob=lambda data: (data,),
+        use_fused_kernels=False,
+        use_remove_padding=True,
+        ulysses_sequence_parallel_size=1,
+        actor_optimizer=None,
+        actor_module=SimpleNamespace(
+            config=SimpleNamespace(torch_dtype=torch.bfloat16, vocab_size=100)
+        ),
+    )
+    state = perf.configure_teacher_performance(
+        policy,
+        {"enabled": True},
+        world_size=2,
+        teacher_model_device="gpu",
+        dedicated_teacher=True,
+    )
+
+    assert state["enabled"]
+    assert state["distributed_batch_sync"]
+    assert state["world_size"] == 2
 
 
 def test_multimodal_forward_retains_original_without_memory_probe(monkeypatch: pytest.MonkeyPatch) -> None:

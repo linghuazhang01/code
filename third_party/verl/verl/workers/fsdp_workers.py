@@ -836,13 +836,21 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
             from mopd_verl.teacher_performance import configure_teacher_allocator, configure_teacher_performance
 
+            dedicated_teacher = (
+                not self._is_actor
+                and not self._is_rollout
+                and bool(
+                    OmegaConf.select(
+                        self.config,
+                        "worker_placement.separate_ref_policy",
+                        default=False,
+                    )
+                )
+            )
             allocator_configured = configure_teacher_allocator(
                 self.config.ref.get("teacher_performance", {}),
                 teacher_model_device=teacher_model_device,
-                dedicated_teacher=(
-                    not self._is_actor and not self._is_rollout
-                    and bool(OmegaConf.select(self.config, "worker_placement.separate_ref_policy", default=False))
-                ),
+                dedicated_teacher=dedicated_teacher,
             )
             print(
                 f"Teacher allocator: rank={self.rank} world_size={self.world_size} "
@@ -875,6 +883,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 self.config.ref.get("teacher_performance", {}),
                 world_size=self.world_size,
                 teacher_model_device=teacher_model_device,
+                dedicated_teacher=dedicated_teacher,
             )
 
         # Initialize base models for corrected reward computation

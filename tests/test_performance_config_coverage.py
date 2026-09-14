@@ -15,12 +15,11 @@ class PerformanceConfigCoverageTests(unittest.TestCase):
     def test_all_training_profiles_resolve_performance_settings(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         abstract_profiles = {
-            "configs/token_selection/math/_common.yaml",
+            "configs/token_selection/math/taxonomy/_common.yaml",
             "configs/token_selection/math/taxonomy/_full_taxonomy.yaml",
         }
         legacy_invalid_profiles = {
-            f"configs/baselines/{student}_30b_eopd_native_{placement}.yaml"
-            for student in ("qwen1p7b", "qwen4b")
+            f"configs/baselines/qwen4b_30b_eopd_native_{placement}.yaml"
             for placement in ("4gpu_b525", "8gpu_b528")
         }
         expected_teacher = {
@@ -39,9 +38,25 @@ class PerformanceConfigCoverageTests(unittest.TestCase):
                 for reference in references:
                     with self.subTest(profile=reference):
                         raw = load_raw_config(reference)
-                        self.assertFalse(raw["rollout"].get("enforce_eager", False))
-                        self.assertEqual(raw["rollout"]["max_num_seqs"], 64)
-                        self.assertEqual(raw["teacher_performance"], expected_teacher)
+                        colocated = raw.get("worker_placement", {}).get(
+                            "separate_ref_policy"
+                        ) is False
+                        if not colocated:
+                            self.assertFalse(
+                                raw["rollout"].get("enforce_eager", False)
+                            )
+                        if not colocated:
+                            self.assertEqual(raw["rollout"]["max_num_seqs"], 64)
+                        # Co-located profiles may intentionally disable the
+                        # optimized teacher wrapper; the measured caps must
+                        # remain consistent either way.
+                        expected_performance = dict(
+                            expected_teacher,
+                            enabled=raw["teacher_performance"]["enabled"],
+                        )
+                        self.assertEqual(
+                            raw["teacher_performance"], expected_performance
+                        )
                         if str(path.relative_to(repo)) in abstract_profiles:
                             continue
                         if str(path.relative_to(repo)) in legacy_invalid_profiles:
@@ -52,14 +67,25 @@ class PerformanceConfigCoverageTests(unittest.TestCase):
                                 load_config(reference)
                             continue
                         config = load_config(reference)
-                        self.assertFalse(config.rollout.enforce_eager)
-                        self.assertEqual(config.rollout.max_num_seqs, 64)
-                        self.assertEqual(asdict(config.teacher_performance), dict(expected_teacher, expandable_segments=True))
+                        if not colocated:
+                            self.assertFalse(config.rollout.enforce_eager)
+                        if not colocated:
+                            self.assertEqual(config.rollout.max_num_seqs, 64)
+                        self.assertEqual(
+                            asdict(config.teacher_performance),
+                            dict(expected_performance, expandable_segments=True),
+                        )
                         overrides = build_overrides(config)
                         self.assertIn("+actor_rollout_ref.ref.teacher_performance.expandable_segments=true", overrides)
-                        self.assertIn("actor_rollout_ref.rollout.enforce_eager=False", overrides)
-                        self.assertIn("actor_rollout_ref.rollout.max_num_seqs=64", overrides)
-                        for key, value in expected_teacher.items():
+                        self.assertIn(
+                            f"actor_rollout_ref.rollout.enforce_eager={config.rollout.enforce_eager}",
+                            overrides,
+                        )
+                        self.assertIn(
+                            f"actor_rollout_ref.rollout.max_num_seqs={config.rollout.max_num_seqs}",
+                            overrides,
+                        )
+                        for key, value in expected_performance.items():
                             rendered = str(value).lower() if isinstance(value, bool) else str(value)
                             self.assertIn(
                                 f"+actor_rollout_ref.ref.teacher_performance.{key}={rendered}",

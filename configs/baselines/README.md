@@ -84,3 +84,47 @@ FiRE-OPD, scalable TIP-TopK32, and EOPD. Its 4/5/6/7/8-GPU profiles use global
 batches 255/256/255/258/259 respectively, with one H200 teacher GPU and the
 remaining GPUs assigned to the actor. See `math/README.md` for the complete
 matrix and launch commands.
+
+## Four-GPU co-located native suite
+
+The following profiles provide a matched three-way comparison for the
+Qwen3-1.7B student and Qwen3-30B-A3B-Instruct-2507 teacher:
+
+- `qwen1p7b_30b_opd_native_4gpu_b528_colocated.yaml`
+- `qwen1p7b_30b_eopd_native_4gpu_b528_colocated.yaml`
+- `qwen1p7b_30b_fire_opd_native_4gpu_b528_colocated.yaml`
+
+All three use four actor/rollout workers and initialize the teacher as a
+four-rank FSDP reference model on those same workers (`separate_ref_policy:
+false`). The global batch is `528 = 4 * 132`, a nearby batch divisible by four
+for the existing `525` profile. The EOPD profile also disables rollout IS, as
+required by the native EOPD contract.
+
+Launch one profile with:
+
+```bash
+python -m mopd_verl.launch \
+  --config configs/baselines/qwen1p7b_30b_eopd_native_4gpu_b528_colocated.yaml
+```
+
+## Eight-GPU 6+2 native suite
+
+The following profiles provide the same three-way comparison with six
+actor/student GPUs and two dedicated ref/teacher GPUs:
+
+- `qwen1p7b_30b_opd_native_8gpu_b528.yaml`
+- `qwen1p7b_30b_eopd_native_8gpu_b528.yaml`
+- `qwen1p7b_30b_fire_opd_native_8gpu_b528.yaml`
+
+All three use global batch `528 = 6 * 88`, a nearby batch divisible by six for
+the requested `525` profile. The dedicated two-GPU teacher uses
+`teacher_performance.topk_logprob_chunk_size: 1024`, `max_micro_batch_size: 32`,
+and `max_tokens: 57344`. EOPD disables rollout IS as required by its native
+objective contract.
+
+Launch one profile with:
+
+```bash
+python -m mopd_verl.launch \
+  --config configs/baselines/qwen1p7b_30b_opd_native_8gpu_b528.yaml
+```
