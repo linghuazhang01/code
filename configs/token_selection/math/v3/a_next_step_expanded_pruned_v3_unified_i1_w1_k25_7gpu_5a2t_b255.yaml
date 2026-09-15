@@ -457,7 +457,6 @@ huggingface_checkpoint:
   - 55
   - 60
   - 65
-  - 70
   repo_id: icemoon28/opd-checkpoints
   private: false
   path_prefix: checkpoints/math/q1p7b-math-a-ns-v3-u-i1w1k25-7gpu_5a2t_b255
@@ -474,7 +473,7 @@ trainer:
   default_local_dir: checkpoints/MOPD/q1p7b-math-a-ns-v3-u-i1w1k25-7gpu_5a2t_b255
   test_freq: 20
   total_epochs: 3
-  total_training_steps: 70
+  total_training_steps: 65
   max_actor_ckpt_to_keep: 4
   max_critic_ckpt_to_keep: 1
   critic_warmup: 0

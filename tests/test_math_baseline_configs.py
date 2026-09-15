@@ -25,7 +25,7 @@ MODEL_VARIANTS = {
     "qwen1p7b": (CONFIG_DIR, "../mopd/models/Qwen3-1.7B"),
     "qwen4b": (QWEN4B_CONFIG_DIR, "../mopd/models/Qwen3-4B"),
 }
-HF_CHECKPOINT_STEPS = (55, 60, 65, 70)
+HF_CHECKPOINT_STEPS = (55, 60, 65)
 HF_REPO_ID = "icemoon28/opd-checkpoints"
 HF_MODEL_SAVE_OVERRIDE = (
     "actor_rollout_ref.actor.checkpoint.save_contents="
@@ -155,7 +155,7 @@ def test_math_baseline_resource_and_data_contract(
     assert batch_size % actor_gpus == 0
     assert abs(batch_size - 256) <= 3
     assert f"data.train_batch_size={batch_size}" in command
-    assert config.trainer.total_training_steps == 70
+    assert config.trainer.total_training_steps == 65
     assert config.trainer.max_actor_ckpt_to_keep == 4
 
     huggingface = config.huggingface_checkpoint
@@ -301,7 +301,7 @@ def test_legacy_math_configs_upload_selected_checkpoints(filename: str) -> None:
     huggingface = config.huggingface_checkpoint
 
     assert set(config.data.domain_train_files) == {"math"}
-    assert config.trainer.total_training_steps == 70
+    assert config.trainer.total_training_steps == 65
     assert config.trainer.max_actor_ckpt_to_keep == 4
     assert huggingface.enabled
     assert huggingface.steps == HF_CHECKPOINT_STEPS

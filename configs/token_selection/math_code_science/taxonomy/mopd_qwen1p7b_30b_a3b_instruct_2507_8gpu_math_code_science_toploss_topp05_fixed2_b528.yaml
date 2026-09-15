@@ -1,0 +1,23 @@
+# Eight-GPU three-domain MOPD taxonomy selector: uniform Top-P 5% with Fixed2 weighting.
+# Uses 6 student actor/rollout GPUs and 2 teacher/reference GPUs.
+extends: mopd_qwen1p7b_30b_a3b_instruct_2507_8gpu_math_code_science_toploss_topp05_fixed4_b528.yaml
+
+runtime:
+  wandb_run_id: q1p7b-8g-mcs-taxonomy-toploss-topp05-fixed2-b528-s60
+  wandb_resume: never
+
+audit:
+  control_token_online_top_p: 0.05
+  control_token_online_top_p_by_domain: {}
+  control_token_loss_weight: 2.0
+  output_dir: audit/q1p7b-8g-mcs-taxonomy-toploss-topp05-fixed2-b528-s60
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-8g-mcs-taxonomy-toploss-topp05-fixed2-b528-s60
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/mopd/q1p7b-8g-mcs-taxonomy-toploss-topp05-fixed2-b528-s60
+
+trainer:
+  experiment_name: q1p7b-8g-mcs-taxonomy-toploss-topp05-fixed2-b528-s60
+  default_local_dir: checkpoints/MOPD/q1p7b-8g-mcs-taxonomy-toploss-topp05-fixed2-b528-s60

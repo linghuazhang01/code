@@ -38,7 +38,7 @@ class MOPDProfileTests(unittest.TestCase):
         config_path = Path(__file__).resolve().parents[1] / "configs" / config_name
         config = load_config(config_path)
         rendered = format_command(build_command(config))
-        expected_steps = 200
+        expected_steps = 65
         expected_save_freq = 5
 
         self.assertEqual(config.data.train_batch_size, train_batch_size)

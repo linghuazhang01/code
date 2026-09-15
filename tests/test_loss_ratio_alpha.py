@@ -182,7 +182,7 @@ def test_state_checkpoint_next_update_scales_once(alpha: float) -> None:
     assert result.selected_raw_loss_ratio_weight == pytest.approx(3 * alpha)
     assert state.active_weight_map() == {"math": {10: 3 * alpha}}
     payload = json.loads(json.dumps(state.as_dict()))
-    assert payload["schema_version"] == 10
+    assert payload["schema_version"] == 12
     assert payload["loss_ratio_alpha"] == alpha
     restored = OnlineControlSelectionState.from_mapping(payload)
     assert restored == state
@@ -204,7 +204,7 @@ def test_legacy_checkpoint_missing_alpha_defaults_to_one(schema: int) -> None:
     restored = OnlineControlSelectionState.from_mapping(payload)
     assert restored.loss_ratio_alpha == 1.0
     assert restored.active_weight_map() == {"math": {10: 3.0}}
-    assert restored.as_dict()["schema_version"] == 10
+    assert restored.as_dict()["schema_version"] == 12
     _, next_state = _advance(restored, 2, selected_mean=2.0)
     assert next_state.active_weight_map() == {"math": {10: 2.0}}
     assert next_state.loss_ratio_alpha == 1.0

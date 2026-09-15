@@ -11,6 +11,28 @@ auto_sync: true
 ---
 # 项目记忆: opd
 
+## 2026-09-15：Math-only full-vocabulary Top-Loss 两种拓扑配置完成
+
+- 新增两份 `Math-only / full_vocabulary / Top-Loss / Top-P=5% / i1-w1 /
+  Fixed4 / 70 steps` 配置：4-GPU student/teacher co-located（batch256）与
+  8-GPU 6 actor/student + 2 FSDP teacher（batch258）。
+- 两份配置均直接继承无 taxonomy candidate groups 的 Math `_common`，并显式清空
+  candidate IDs/groups，避免 Control/Structure pool 经 YAML deep merge 残留。
+- 配置解析、launcher contract 和 topology/output identity 测试共 12 passed；尚未启动
+  训练、未 commit/push。详情见 Obsidian
+  `Experiments/Taxonomy-Loss-Entropy-Score-Ratio.md`。
+
+## 2026-09-15：Step60 后续 heartbeat 已激活
+
+- 当前远端 Fire OPD co-located run `qwen1p7b-30b-fire-opd-native-4gpu-b528-colocated`
+  初始实时观测约为 `step49/200`，`global_step_60` 尚不存在；远端磁盘可用约 2.3T。
+- 用户授权 Step60 checkpoint 完整后先做 canonical 三 domain/10-dataset K=8 评测，再
+  启动 4GPU co-located full-vocabulary Top-Loss Top-P5% Fixed4 训练；评测与新训练串行，
+  默认只使用 GPU0–3。
+- 已创建 hourly automation `step60-fullvocab`，包含精确 run/checkpoint gate、查重、
+  非 delete 全代码同步和 500G 磁盘门禁。详细状态见
+  `plan/step60-fullvocab-20260915/STATUS.md`。
+
 ## 2026-09-07 14:17：Q/Fixed4 Step60 Math4结果已归档
 
 - job219 COMPLETED/0:0，完整结果、日志下载并checksum验收通过；120题×8rollouts、64shards完整。
@@ -692,3 +714,23 @@ W&B最新batch summary字段写入后未能独立读回；当前有效设置以f
 - `experiments_records` 中已归档的三域训练记录显示 per-domain 实际采样为 `175–176`，对应 global batch `525–528`；同为 8GPU、6 actor/rollout + 2 ref/teacher 的记录使用 Math/Code/Science 各 `176`、global `528`。
 - 新提交的 TopLoss + TopP5% Fixed2/4/6 配置已统一为 `data.train_batch_size=528`、`actor.ppo_mini_batch_size=528`，等权三域由 sampler 分配为 `176/176/176`；文件名及运行、审计、评测、checkpoint 标识同步为 `b528`。
 - 本地 config load、domain allocation、launcher dry-run 和 `tests/test_mopd_profiles.py`（9 passed）通过，未提交或启动远端任务。
+
+## 2026-09-14：新增三域四卡 co-located taxonomy 配置
+
+- 新增 `configs/token_selection/math_code_science/taxonomy/mopd_qwen1p7b_30b_a3b_instruct_2507_4gpu_math_code_science_toploss_topp_m05_c02_s05_code_structure_only_fixed4_b528_colocated.yaml`。
+- 配置为 4 GPU teacher/student co-located，启用 math/code/science 三域，Top-P 分别为 5%/2%/5%，`interval=1`、`window=1`，Code taxonomy 仅保留 `Structure`，沿用 Fixed4 与 batch 528。
+- resolved config 检查和 launcher `--dry-run` 通过；未启动训练、未提交或推送。
+
+## 2026-09-15：Full-vocabulary Top-Loss Top-P 5% 对照已实现
+
+- 现有 taxonomy selector 的 `top_p=0.05` 分母是全部 valid response occurrences，
+  但候选仅为配置的 Control/Structure pool；现已新增显式
+  `control_token_online_candidate_scope=full_vocabulary`。
+- 全集模式按 domain/token-ID 聚合 `abs(configured token loss)`，跨 rank FP64
+  all-reduce；严格 `count > 20` 后按 occurrence mean 排序，取覆盖至少 5% valid
+  occurrences 的最小完整 token-type 前缀，结果从下一 step 生效。
+- 新配置：`configs/token_selection/math_code_science/full_vocabulary/mopd_qwen1p7b_30b_a3b_instruct_2507_4gpu_math_code_science_fullvocab_toploss_topp05_fixed4_b528_colocated.yaml`。
+- selector state/checkpoint 升至 schema 12，旧 schema 默认迁移为 `configured`；JSONL
+  记录 scope、tokenizer universe 与 observed/effective candidate counts。
+- 相关测试 `206 passed`（含真实 two-rank CPU/Gloo all-reduce），compile/diff check
+  通过；尚未启动训练、commit 或 push。

@@ -7,7 +7,9 @@ from collections.abc import Mapping, Sequence
 from decimal import ROUND_CEILING, Decimal
 
 from mopd_verl.domain_gradient.control_selection_scoring import (
+    TOP_LOSS_SELECTION_MODE,
     TOP_P_BUDGET_MODE,
+    TOP_SPEED_SELECTION_MODE,
 )
 from mopd_verl.domain_gradient.control_selection_types import (
     DomainStatistics,
@@ -17,14 +19,90 @@ from mopd_verl.domain_gradient.control_selection_types import (
 )
 
 
+CONFIGURED_CANDIDATE_SCOPE = "configured"
+FULL_VOCABULARY_CANDIDATE_SCOPE = "full_vocabulary"
+ONLINE_CONTROL_CANDIDATE_SCOPES = frozenset(
+    {CONFIGURED_CANDIDATE_SCOPE, FULL_VOCABULARY_CANDIDATE_SCOPE}
+)
+
+
+def normalize_candidate_scope(value: object) -> str:
+    """Return one validated online-selector candidate-universe label."""
+
+    scope = str(value).strip().lower()
+    if scope not in ONLINE_CONTROL_CANDIDATE_SCOPES:
+        allowed = ", ".join(sorted(ONLINE_CONTROL_CANDIDATE_SCOPES))
+        raise ValueError(
+            "Online Control candidate scope must be one of: " f"{allowed}."
+        )
+    return scope
+
+
+def validate_candidate_scope_contract(
+    value: object,
+    *,
+    candidate_source_count: int,
+    selection_modes: Sequence[str],
+    candidate_vocab_size: int | None,
+    top_k_per_group: int | None,
+    require_full_vocab_size: bool,
+) -> str:
+    """Validate configured-pool versus full-tokenizer-vocabulary selection."""
+
+    scope = normalize_candidate_scope(value)
+    if candidate_vocab_size is not None and candidate_vocab_size < 1:
+        raise ValueError("Online Control candidate vocabulary size must be positive.")
+    if scope == CONFIGURED_CANDIDATE_SCOPE:
+        if candidate_source_count != 1:
+            raise ValueError(
+                "Configured online Control candidate scope requires exactly "
+                "one non-empty candidate ID source."
+            )
+        if candidate_vocab_size is not None:
+            raise ValueError(
+                "Configured online Control candidate scope cannot set a "
+                "candidate vocabulary size."
+            )
+        return scope
+
+    if candidate_source_count:
+        raise ValueError(
+            "Full-vocabulary online Control candidate scope cannot be combined "
+            "with configured candidate IDs or groups."
+        )
+    if top_k_per_group is not None:
+        raise ValueError(
+            "Full-vocabulary online Control candidate scope cannot use "
+            "top_k_per_group."
+        )
+    unsupported_modes = set(selection_modes) - {
+        TOP_LOSS_SELECTION_MODE,
+        TOP_SPEED_SELECTION_MODE,
+    }
+    if unsupported_modes:
+        raise ValueError(
+            "Full-vocabulary online Control candidate scope currently supports "
+            "only top_loss and top_speed selection."
+        )
+    if require_full_vocab_size and candidate_vocab_size is None:
+        raise ValueError(
+            "Full-vocabulary online Control candidate scope requires a "
+            "tokenizer vocabulary size."
+        )
+    return scope
+
+
 def normalize_candidate_statistics(
     *,
     domains: Sequence[str],
     domain_candidate_token_ids: Mapping[str, Sequence[int]],
     statistics: Mapping[str, Mapping[int, tuple[float, int]]],
+    candidate_scope: str = CONFIGURED_CANDIDATE_SCOPE,
+    candidate_vocab_size: int | None = None,
 ) -> DomainStatistics:
     """Return finite, positive-count statistics for configured candidates."""
 
+    normalized_scope = normalize_candidate_scope(candidate_scope)
     unknown_domains = set(statistics) - set(domains)
     if unknown_domains:
         raise ValueError(
@@ -42,13 +120,27 @@ def normalize_candidate_statistics(
             token_id = int(token_id)
             loss_sum = float(loss_sum)
             count = int(count)
-            if token_id not in candidates_by_domain[domain] or count == 0:
+            if count == 0:
                 continue
-            if count < 0 or not math.isfinite(loss_sum) or loss_sum < 0.0:
+            if (
+                token_id < 0
+                or (
+                    candidate_vocab_size is not None
+                    and token_id >= candidate_vocab_size
+                )
+                or count < 0
+                or not math.isfinite(loss_sum)
+                or loss_sum < 0.0
+            ):
                 raise ValueError(
                     "Online Control statistics require finite non-negative "
-                    "selection-score sums and counts."
+                    "selection-score sums, in-range token IDs, and counts."
                 )
+            if (
+                normalized_scope == CONFIGURED_CANDIDATE_SCOPE
+                and token_id not in candidates_by_domain[domain]
+            ):
+                continue
             normalized.append((token_id, loss_sum, count))
         rows.append((domain, tuple(sorted(normalized))))
     return tuple(rows)

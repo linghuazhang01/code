@@ -167,8 +167,8 @@ trainer:
     # Destination model repository, for example "organization/experiment"
     repo_id: null
 
-    # Create the destination repository as private when it does not exist
-    private: true
+    # Create the destination repository as public when it does not exist
+    private: false
 
     # Parent directory used inside the Hub repository
     path_prefix: checkpoints

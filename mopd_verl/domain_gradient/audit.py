@@ -21,11 +21,15 @@ from mopd_verl.domain_gradient.control_speed import (
     piecewise_linear_weight,
     update_control_speed_state,
 )
+from mopd_verl.domain_gradient.control_selection_budget import (
+    FULL_VOCABULARY_CANDIDATE_SCOPE,
+)
 from mopd_verl.domain_gradient.control_selection_scoring import (
     LOSS_RATIO_ONLINE_WEIGHT_MODE,
     PAIRED_ONLINE_WEIGHT_MODE,
     PAIRED_SIGNAL_SELECTION_MODES,
     TOP_KL_STUDENT_ENTROPY_SELECTION_MODE,
+    TOP_LOSS_TEACHER_CONFIDENCE_SELECTION_MODE,
     TOP_Q_LOSS_ENTROPY_SELECTION_MODE,
     TOP_LOGP_DIFF_SELECTION_MODE,
     TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE,
@@ -87,7 +91,9 @@ from mopd_verl.domain_gradient.token_weighting_metrics import (
     local_loss_amplification_statistics,
     reduce_loss_amplification_statistics,
 )
-from mopd_verl.domain_gradient.token_source_metrics import amplified_token_source_metrics
+from mopd_verl.domain_gradient.token_source_metrics import (
+    amplified_token_source_metrics,
+)
 from mopd_verl.domain_gradient.token_weighting_state import (
     CUMULATIVE_ABS_LOSS_SELECTION,
     CumulativeTokenLossState,
@@ -254,21 +260,24 @@ class DomainGradientAudit:
                 ),
                 top_k=self.config.control_token_online_top_k,
                 candidate_token_groups=(
-                    self.config.effective_domain_candidate_group_map()
-                    or None
+                    self.config.effective_domain_candidate_group_map() or None
                 ),
-                top_k_per_group=(
-                    self.config.control_token_online_top_k_per_group
+                candidate_scope=self.config.control_token_online_candidate_scope,
+                candidate_vocab_size=(
+                    self.config.control_token_online_candidate_vocab_size
                 ),
+                top_k_per_group=(self.config.control_token_online_top_k_per_group),
                 budget_mode=self.config.control_token_online_budget_mode,
                 top_p=self.config.control_token_online_top_p,
-                top_p_by_domain=(
-                    self.config.control_token_online_top_p_by_domain
-                ),
-                selection_mode=(
-                    self.config.control_token_online_selection_mode
-                ),
+                top_p_by_domain=(self.config.control_token_online_top_p_by_domain),
+                selection_mode=(self.config.control_token_online_selection_mode),
                 weight_mode=self.config.control_token_online_weight_mode,
+                selection_mode_by_domain=(
+                    self.config.control_token_online_selection_mode_by_domain
+                ),
+                weight_mode_by_domain=(
+                    self.config.control_token_online_weight_mode_by_domain
+                ),
                 loss_ratio_alpha=self.config.control_token_loss_ratio_alpha,
             )
             if online_state is None:
@@ -279,6 +288,9 @@ class DomainGradientAudit:
                 != expected_state.domain_candidate_token_ids
                 or online_state.domain_candidate_token_groups
                 != expected_state.domain_candidate_token_groups
+                or online_state.candidate_scope != expected_state.candidate_scope
+                or online_state.candidate_vocab_size
+                != expected_state.candidate_vocab_size
                 or online_state.audit_interval_steps
                 != expected_state.audit_interval_steps
                 or online_state.window_steps != expected_state.window_steps
@@ -287,14 +299,16 @@ class DomainGradientAudit:
                 or online_state.strict_occurrence_gate
                 != expected_state.strict_occurrence_gate
                 or online_state.top_k != expected_state.top_k
-                or online_state.top_k_per_group
-                != expected_state.top_k_per_group
+                or online_state.top_k_per_group != expected_state.top_k_per_group
                 or online_state.budget_mode != expected_state.budget_mode
                 or online_state.top_p != expected_state.top_p
-                or online_state.top_p_by_domain
-                != expected_state.top_p_by_domain
+                or online_state.top_p_by_domain != expected_state.top_p_by_domain
                 or online_state.selection_mode != expected_state.selection_mode
                 or online_state.weight_mode != expected_state.weight_mode
+                or online_state.selection_mode_by_domain
+                != expected_state.selection_mode_by_domain
+                or online_state.weight_mode_by_domain
+                != expected_state.weight_mode_by_domain
                 or online_state.loss_ratio_alpha != expected_state.loss_ratio_alpha
             ):
                 raise ValueError(
@@ -532,12 +546,9 @@ class DomainGradientAudit:
         """Return current domain and token production gradient multipliers."""
 
         token_weighting_enabled = (
-            (
-                self.config.control_token_weighting_enabled
-                and not self.config.control_token_adaptive_neighborhood_enabled
-            )
-            or self.config.all_domain_shared_token_weighting_enabled
-        )
+            self.config.control_token_weighting_enabled
+            and not self.config.control_token_adaptive_neighborhood_enabled
+        ) or self.config.all_domain_shared_token_weighting_enabled
         if not self.config.dynamic_weighting_enabled and not token_weighting_enabled:
             return None
         model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
@@ -577,24 +588,71 @@ class DomainGradientAudit:
                 or self._applied_online_control_token_ids
             ):
                 domain_token_ids = self._domain_control_token_tensor_map(token_ids)
-                if (
-                    self.config.control_token_online_selection_enabled
-                    and self.config.control_token_online_weight_mode
-                    in {
-                        PAIRED_ONLINE_WEIGHT_MODE,
-                        LOSS_RATIO_ONLINE_WEIGHT_MODE,
+                if self.config.control_token_online_selection_enabled:
+                    weight_modes = self.config.online_weight_mode_map()
+                    variable_domains = {
+                        domain
+                        for domain, mode in weight_modes.items()
+                        if mode
+                        in {
+                            PAIRED_ONLINE_WEIGHT_MODE,
+                            LOSS_RATIO_ONLINE_WEIGHT_MODE,
+                        }
                     }
-                ):
-                    token_weights = online_token_score_weights(
+                    fixed_domains = set(self.config.domains) - variable_domains
+                    fixed_token_ids = {
+                        domain: domain_token_ids.get(domain, ())
+                        for domain in fixed_domains
+                    }
+                    variable_token_weights = {
+                        domain: self._applied_online_control_token_weights.get(
+                            domain, {}
+                        )
+                        for domain in variable_domains
+                    }
+                    fixed_token_weights = phase_token_weights(
                         token_ids,
                         response_mask,
                         labels,
-                        domain_token_weights=(
-                            self._applied_online_control_token_weights
-                        ),
+                        domain_token_ids=fixed_token_ids,
+                        control_weight=self.config.control_token_weight,
+                        phase_enabled=False,
+                        span_enabled=False,
+                        phase_gates={},
+                        span_length=self.config.control_token_span_length,
+                        span_decay_tau=self.config.control_token_span_decay_tau,
                         normalize_per_domain=(
                             self.config.control_token_normalize_per_domain
                         ),
+                    )
+                    variable_weights = online_token_score_weights(
+                        token_ids,
+                        response_mask,
+                        labels,
+                        domain_token_weights=variable_token_weights,
+                        normalize_per_domain=(
+                            self.config.control_token_normalize_per_domain
+                        ),
+                    )
+                    fixed_rows = torch.tensor(
+                        [str(label) in fixed_domains for label in labels],
+                        device=response_mask.device,
+                        dtype=torch.bool,
+                    ).unsqueeze(-1)
+                    variable_rows = torch.tensor(
+                        [str(label) in variable_domains for label in labels],
+                        device=response_mask.device,
+                        dtype=torch.bool,
+                    ).unsqueeze(-1)
+                    token_weights = torch.where(
+                        fixed_rows,
+                        fixed_token_weights,
+                        torch.ones_like(fixed_token_weights),
+                    )
+                    token_weights = torch.where(
+                        variable_rows,
+                        variable_weights,
+                        token_weights,
                     )
                 elif self.config.control_token_speed_weighting_enabled:
                     token_weights = domain_control_token_weights(
@@ -663,11 +721,13 @@ class DomainGradientAudit:
         )
         if self.config.control_token_adaptive_neighborhood_enabled:
             return tuple(
-                mask
-                if mask is not None
-                else torch.ones_like(
-                    micro_batch.batch["response_mask"],
-                    dtype=torch.float32,
+                (
+                    mask
+                    if mask is not None
+                    else torch.ones_like(
+                        micro_batch.batch["response_mask"],
+                        dtype=torch.float32,
+                    )
                 )
                 for micro_batch, mask in zip(
                     micro_batches,
@@ -811,9 +871,7 @@ class DomainGradientAudit:
                 gradient_mask_override=gradient_mask,
                 include_metrics=False,
                 return_configured_token_loss=collect_loss_abs_candidates,
-                adaptive_neighborhood_spec=(
-                    self.adaptive_neighborhood_spec()
-                ),
+                adaptive_neighborhood_spec=(self.adaptive_neighborhood_spec()),
                 temperature=temperature,
             )
             if self.actor.scaler is not None:
@@ -986,9 +1044,7 @@ class DomainGradientAudit:
                     on_policy=on_policy,
                     include_metrics=False,
                     return_configured_token_loss=True,
-                    adaptive_neighborhood_spec=(
-                        self.adaptive_neighborhood_spec()
-                    ),
+                    adaptive_neighborhood_spec=(self.adaptive_neighborhood_spec()),
                     temperature=temperature,
                 )
             micro_candidates, mask_template = self._loss_abs_candidates_for_micro_batch(
@@ -1645,21 +1701,29 @@ class DomainGradientAudit:
                 ids = aligned_response_token_ids(inputs, valid_mask)
                 mask = self.training_gradient_mask(batch)
                 if ids is None or mask is None:
-                    raise ValueError("Token source metrics require production IDs and masks.")
+                    raise ValueError(
+                        "Token source metrics require production IDs and masks."
+                    )
                 source_ids.append(ids)
                 source_labels.append(_labels_from_mapping(inputs, int(ids.shape[0])))
                 source_masks.append(mask)
-            metrics.update(amplified_token_source_metrics(
-                source_ids, configured_loss_mask_batches, source_masks, source_labels,
-                domains=self.config.domains,
-                domain_weights=(
-                    self._weight_state.weight_map()
-                    if self.config.dynamic_weighting_enabled else {}
-                ),
-                sequence_parallel_size=getattr(
-                    self.actor, "ulysses_sequence_parallel_size", 1
-                ),
-            ))
+            metrics.update(
+                amplified_token_source_metrics(
+                    source_ids,
+                    configured_loss_mask_batches,
+                    source_masks,
+                    source_labels,
+                    domains=self.config.domains,
+                    domain_weights=(
+                        self._weight_state.weight_map()
+                        if self.config.dynamic_weighting_enabled
+                        else {}
+                    ),
+                    sequence_parallel_size=getattr(
+                        self.actor, "ulysses_sequence_parallel_size", 1
+                    ),
+                )
+            )
         if not self.config.control_token_online_selection_enabled:
             return metrics
         state = self._online_control_selection_state
@@ -1674,11 +1738,31 @@ class DomainGradientAudit:
                 "Online Control configured-loss outputs must align with "
                 "production micro-batches."
             )
-        kl_entropy_mode = (
-            self.config.control_token_online_selection_mode
-            == TOP_KL_STUDENT_ENTROPY_SELECTION_MODE
+        selection_modes = self.config.online_selection_mode_map()
+        kl_entropy_domains = {
+            domain
+            for domain, mode in selection_modes.items()
+            if mode == TOP_KL_STUDENT_ENTROPY_SELECTION_MODE
+        }
+        logp_diff_domains = {
+            domain
+            for domain, mode in selection_modes.items()
+            if mode == TOP_LOGP_DIFF_SELECTION_MODE
+        }
+        loss_teacher_confidence_mode = any(
+            mode == TOP_LOSS_TEACHER_CONFIDENCE_SELECTION_MODE
+            for mode in selection_modes.values()
         )
-        if kl_entropy_mode and (
+        student_entropy_mode = any(
+            mode in {*PAIRED_SIGNAL_SELECTION_MODES, TOP_Q_LOSS_ENTROPY_SELECTION_MODE}
+            for mode in selection_modes.values()
+        )
+        teacher_entropy_mode = any(
+            mode == TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE
+            for mode in selection_modes.values()
+        )
+        logp_diff_mode = bool(logp_diff_domains)
+        if kl_entropy_domains and (
             selector_token_loss_batches is None
             or len(selector_token_loss_batches) != len(micro_batches)
             or selector_token_loss_mask_batches is None
@@ -1688,40 +1772,28 @@ class DomainGradientAudit:
                 "KL + Student-entropy selection requires one detached raw "
                 "Top-K loss matrix per production micro-batch."
             )
-        selection_loss_batches = (
-            selector_token_loss_batches
-            if kl_entropy_mode
-            else configured_loss_batches
-        )
-        if selection_loss_batches is None:
-            raise RuntimeError("Online Control selection loss batches are missing.")
-        selection_loss_mask_batches = (
-            selector_token_loss_mask_batches
-            if kl_entropy_mode
-            else configured_loss_mask_batches
-        )
-        if selection_loss_mask_batches is None:
-            raise RuntimeError("Online Control selection masks are missing.")
+        selection_loss_batches_by_domain: dict[str, Sequence[torch.Tensor]] = {}
+        selection_loss_mask_batches_by_domain: dict[str, Sequence[torch.Tensor]] = {}
+        if kl_entropy_domains:
+            if (
+                selector_token_loss_batches is None
+                or selector_token_loss_mask_batches is None
+            ):
+                raise RuntimeError("Online Control raw selector batches are missing.")
+            for domain in kl_entropy_domains:
+                selection_loss_batches_by_domain[domain] = selector_token_loss_batches
+                selection_loss_mask_batches_by_domain[domain] = (
+                    selector_token_loss_mask_batches
+                )
 
         token_id_batches: list[torch.Tensor] = []
         label_batches: list[Sequence[str]] = []
         student_entropy_batches: list[torch.Tensor] = []
         teacher_entropy_batches: list[torch.Tensor] = []
-        paired_mode = (
-            self.config.control_token_online_selection_mode
-            in {*PAIRED_SIGNAL_SELECTION_MODES, TOP_Q_LOSS_ENTROPY_SELECTION_MODE}
-        )
-        teacher_confidence_mode = (
-            self.config.control_token_online_selection_mode
-            == TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE
-        )
-        logp_diff_mode = (
-            self.config.control_token_online_selection_mode
-            == TOP_LOGP_DIFF_SELECTION_MODE
-        )
+        teacher_log_prob_batches: list[torch.Tensor] = []
         policy_loss_cfg = (
             _cfg_get(getattr(self.actor, "config", {}), "policy_loss", {})
-            if teacher_confidence_mode or logp_diff_mode
+            if teacher_entropy_mode or loss_teacher_confidence_mode or logp_diff_mode
             else {}
         )
         if logp_diff_mode:
@@ -1732,20 +1804,23 @@ class DomainGradientAudit:
                 }
                 for micro_batch in micro_batches
             )
-            selection_loss_batches = tuple(
+            logp_diff_batches = tuple(
                 (
                     selected_teacher_log_prob(model_inputs, policy_loss_cfg)
                     - model_inputs["old_log_probs"]
                 )
                 .detach()
                 .float()
-                .abs()
                 for model_inputs in selector_inputs
             )
-            selection_loss_mask_batches = configured_loss_mask_batches
+            for domain in logp_diff_domains:
+                selection_loss_batches_by_domain[domain] = logp_diff_batches
+                selection_loss_mask_batches_by_domain[domain] = (
+                    configured_loss_mask_batches
+                )
         for micro_batch, configured_loss in zip(
             micro_batches,
-            selection_loss_batches,
+            configured_loss_batches,
             strict=True,
         ):
             model_inputs = {
@@ -1767,7 +1842,7 @@ class DomainGradientAudit:
                     int(configured_loss.shape[0]),
                 )
             )
-            if paired_mode:
+            if student_entropy_mode:
                 student_entropy = model_inputs.get("student_entropy")
                 if student_entropy is None:
                     raise ValueError(
@@ -1780,7 +1855,7 @@ class DomainGradientAudit:
                         "configured token loss."
                     )
                 student_entropy_batches.append(student_entropy.detach())
-            if teacher_confidence_mode:
+            if teacher_entropy_mode:
                 teacher_entropy = selected_teacher_entropy(
                     model_inputs,
                     policy_loss_cfg,
@@ -1791,26 +1866,60 @@ class DomainGradientAudit:
                         "configured token loss."
                     )
                 teacher_entropy_batches.append(teacher_entropy.detach())
+            if loss_teacher_confidence_mode:
+                teacher_log_prob = selected_teacher_log_prob(
+                    model_inputs,
+                    policy_loss_cfg,
+                )
+                if teacher_log_prob.shape != configured_loss.shape:
+                    raise ValueError(
+                        "Online Control Teacher chosen-token log-probability "
+                        "must align with the configured token loss."
+                    )
+                teacher_log_prob_batches.append(teacher_log_prob.detach())
         global_statistics = global_candidate_loss_statistics_with_valid_counts(
             token_id_batches,
-            selection_loss_batches,
-            selection_loss_mask_batches,
+            configured_loss_batches,
+            configured_loss_mask_batches,
             label_batches,
             domains=self.config.domains,
             domain_candidate_token_ids=(self.config.effective_domain_candidate_map()),
             selection_mode=self.config.control_token_online_selection_mode,
+            selection_mode_by_domain=selection_modes,
+            selection_loss_batches_by_domain=selection_loss_batches_by_domain,
+            selection_loss_mask_batches_by_domain=selection_loss_mask_batches_by_domain,
             student_entropy_batches=(
-                tuple(student_entropy_batches) if paired_mode else None
+                tuple(student_entropy_batches) if student_entropy_mode else None
             ),
             teacher_entropy_batches=(
-                tuple(teacher_entropy_batches)
-                if teacher_confidence_mode
+                tuple(teacher_entropy_batches) if teacher_entropy_mode else None
+            ),
+            teacher_log_prob_batches=(
+                tuple(teacher_log_prob_batches)
+                if loss_teacher_confidence_mode
                 else None
+            ),
+            normalization_min_occurrences=(
+                self.config.control_token_online_min_mean_occurrences_per_step
+            ),
+            normalization_strict_occurrence_gate=(
+                self.config.control_token_online_strict_occurrence_gate
+            ),
+            candidate_scope=self.config.control_token_online_candidate_scope,
+            candidate_vocab_size=(
+                self.config.control_token_online_candidate_vocab_size
             ),
         )
         statistics = global_statistics.by_domain
-        for domain, normalization in (global_statistics.q_normalization_stats or {}).items():
-            metrics.update({f"{domain}/token_weight/{key}": value for key, value in normalization.items()})
+        for domain, normalization in (
+            global_statistics.q_normalization_stats or {}
+        ).items():
+            metrics.update(
+                {
+                    f"{domain}/token_weight/{key}": value
+                    for key, value in normalization.items()
+                }
+            )
         applied_occurrence_counts = {
             domain: sum(
                 statistics.get(domain, {}).get(token_id, (0.0, 0))[1]
@@ -1841,8 +1950,22 @@ class DomainGradientAudit:
             applied_token_occurrence_counts=applied_occurrence_counts,
             valid_token_counts=global_statistics.valid_token_counts,
             q_normalization_stats=global_statistics.q_normalization_stats,
+            observed_candidate_token_ids={
+                domain: tuple(domain_statistics)
+                for domain, domain_statistics in statistics.items()
+            },
         )
 
+        effective_candidate_map = (
+            state.window_candidate_map()
+            if state.candidate_scope == FULL_VOCABULARY_CANDIDATE_SCOPE
+            else state.candidate_map()
+        )
+        effective_candidate_union = {
+            token_id
+            for domain_statistics in effective_candidate_map.values()
+            for token_id in domain_statistics
+        }
         metrics.update(
             {
                 "global/token_weight/audit_triggered": float(outcome.audit_triggered),
@@ -1851,16 +1974,22 @@ class DomainGradientAudit:
                     outcome.window_fill_steps
                 ),
                 "global/token_weight/candidate_token_count": float(
-                    len(state.candidate_token_ids)
+                    len(effective_candidate_union)
+                ),
+                "global/token_weight/full_vocabulary_candidate_scope_enabled": float(
+                    state.candidate_scope == FULL_VOCABULARY_CANDIDATE_SCOPE
                 ),
                 "global/token_weight/top_speed_selection_enabled": float(
-                    state.selection_mode == TOP_SPEED_SELECTION_MODE
+                    any(
+                        mode == TOP_SPEED_SELECTION_MODE
+                        for mode in state.selection_mode_map().values()
+                    )
                 ),
                 "global/token_weight/paired_score_weighting_enabled": float(
-                    state.weight_mode == PAIRED_ONLINE_WEIGHT_MODE
+                    state.has_weight_mode(PAIRED_ONLINE_WEIGHT_MODE)
                 ),
                 "global/token_weight/loss_ratio_weighting_enabled": float(
-                    state.weight_mode == LOSS_RATIO_ONLINE_WEIGHT_MODE
+                    state.has_weight_mode(LOSS_RATIO_ONLINE_WEIGHT_MODE)
                 ),
                 "global/token_weight/loss_ratio_alpha": state.loss_ratio_alpha,
             }
@@ -1873,9 +2002,7 @@ class DomainGradientAudit:
         metrics["global/token_weight/online_control_occurrence_count"] = (
             global_applied_occurrences
         )
-        metrics["global/token_weight/online_valid_token_count"] = (
-            global_valid_tokens
-        )
+        metrics["global/token_weight/online_valid_token_count"] = global_valid_tokens
         metrics["global/token_weight/online_control_occurrence_fraction"] = (
             global_applied_occurrences / global_valid_tokens
             if global_valid_tokens > 0.0
@@ -1884,7 +2011,7 @@ class DomainGradientAudit:
         for domain in self.config.domains:
             result = result_map.get(domain)
             metrics[f"{domain}/token_weight/candidate_token_count"] = float(
-                len(state.candidate_map()[domain])
+                len(effective_candidate_map.get(domain, {}))
             )
             metrics[f"{domain}/token_weight/active_token_count"] = float(
                 len(self._applied_online_control_token_ids.get(domain, ()))
@@ -1892,30 +2019,26 @@ class DomainGradientAudit:
             metrics[f"{domain}/token_weight/next_active_token_count"] = float(
                 len(next_active.get(domain, ()))
             )
-            domain_applied_occurrences = float(
-                applied_occurrence_counts.get(domain, 0)
-            )
+            domain_applied_occurrences = float(applied_occurrence_counts.get(domain, 0))
             domain_valid_tokens = float(
                 global_statistics.valid_token_counts.get(domain, 0)
             )
-            metrics[
-                f"{domain}/token_weight/online_control_occurrence_count"
-            ] = domain_applied_occurrences
+            metrics[f"{domain}/token_weight/online_control_occurrence_count"] = (
+                domain_applied_occurrences
+            )
             metrics[f"{domain}/token_weight/online_valid_token_count"] = (
                 domain_valid_tokens
             )
-            metrics[
-                f"{domain}/token_weight/online_control_occurrence_fraction"
-            ] = (
+            metrics[f"{domain}/token_weight/online_control_occurrence_fraction"] = (
                 domain_applied_occurrences / domain_valid_tokens
                 if domain_valid_tokens > 0.0
                 else 0.0
             )
             next_weights = tuple(next_active_weights.get(domain, {}).values())
             if next_weights:
-                metrics[
-                    f"{domain}/token_weight/next_selected_raw_weight_mean"
-                ] = sum(next_weights) / len(next_weights)
+                metrics[f"{domain}/token_weight/next_selected_raw_weight_mean"] = sum(
+                    next_weights
+                ) / len(next_weights)
             if result is not None:
                 metrics[f"{domain}/token_weight/eligible_token_count"] = float(
                     result.eligible_token_count
@@ -1936,13 +2059,12 @@ class DomainGradientAudit:
                     ] = result.other_occurrence_mean_abs_loss
                 if result.raw_selected_to_other_loss_ratio is not None:
                     metrics[
-                        f"{domain}/token_weight/"
-                        "loss_ratio_raw_selected_to_other"
+                        f"{domain}/token_weight/" "loss_ratio_raw_selected_to_other"
                     ] = result.raw_selected_to_other_loss_ratio
                 if result.selected_raw_loss_ratio_weight is not None:
-                    metrics[
-                        f"{domain}/token_weight/loss_ratio_selected_raw_weight"
-                    ] = result.selected_raw_loss_ratio_weight
+                    metrics[f"{domain}/token_weight/loss_ratio_selected_raw_weight"] = (
+                        result.selected_raw_loss_ratio_weight
+                    )
                 if result.selected_unscaled_loss_ratio_weight is not None:
                     metrics[
                         f"{domain}/token_weight/loss_ratio_selected_unscaled_weight"
@@ -1953,10 +2075,7 @@ class DomainGradientAudit:
                 ):
                     if distribution is None:
                         continue
-                    prefix = (
-                        f"{domain}/token_weight/"
-                        f"{population}_selection_score_"
-                    )
+                    prefix = f"{domain}/token_weight/" f"{population}_selection_score_"
                     metrics[f"{prefix}count"] = float(distribution.count)
                     metrics[f"{prefix}mean"] = distribution.mean
                     metrics[f"{prefix}std"] = distribution.std
@@ -1975,11 +2094,8 @@ class DomainGradientAudit:
                         f"{domain}/token_weight/selected_optimization_speed_mean"
                     ] = sum(selected_speeds) / len(selected_speeds)
                 if result.selected_tokens:
-                    metrics[
-                        f"{domain}/token_weight/selected_score_mean"
-                    ] = sum(
-                        item.mean_selection_score
-                        for item in result.selected_tokens
+                    metrics[f"{domain}/token_weight/selected_score_mean"] = sum(
+                        item.mean_selection_score for item in result.selected_tokens
                     ) / len(result.selected_tokens)
         return metrics
 
@@ -2128,12 +2244,9 @@ class DomainGradientAudit:
         phase_control_metrics = self._update_phase_control(micro_batches)
         control_speed_metrics = self._update_control_speed(micro_batches)
         legacy_token_weighting_active = (
-            (
-                self.config.control_token_weighting_enabled
-                and not self.config.control_token_adaptive_neighborhood_enabled
-            )
-            or self.config.all_domain_shared_token_weighting_enabled
-        )
+            self.config.control_token_weighting_enabled
+            and not self.config.control_token_adaptive_neighborhood_enabled
+        ) or self.config.all_domain_shared_token_weighting_enabled
         shared_token_active = self.config.all_domain_shared_token_weighting_enabled
         token_gradient_active = self.config.token_gradient_enabled and (
             self.config.token_gradient_tail_enabled

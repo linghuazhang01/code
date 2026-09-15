@@ -289,7 +289,7 @@ trainer:
   save_freq: 5
   test_freq: -1
   total_epochs: 3
-  total_training_steps: 200
+  total_training_steps: 65
   default_local_dir: checkpoints/MOPD/qwen4b-from-30b-a3b-instruct-2507-5gpu-math-code-science-topk32-baseline-b528
   critic_warmup: 0
   val_before_train: false

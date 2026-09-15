@@ -70,9 +70,9 @@ Transformers 加载的模型：
 ```yaml
 huggingface_checkpoint:
   enabled: true
-  steps: [20, 50, 100]
+  steps: [55, 60, 65]
   repo_id: your-hf-account/opd-checkpoints
-  private: true
+  private: false
   path_prefix: checkpoints
   token_env_var: HF_TOKEN
 ```
@@ -449,8 +449,26 @@ sumL/sumH/sumLH/N再计算每个ID的mean Q，非逐response max、非均值乘�
 当前只支持i1/w1和fixed weighting；R2配置为联合TopP5% + Fixed4。Q不截断、
 不反向传播，零/空分母或负/非有限entropy显式报错。旧paired selector语义保持。
 
-Online selector 在固定的 domain candidate pools 上提供多种 ranking mode，
-并把 token-ID selection 与入选后的 weighting 独立配置：
+Online selector 默认在固定的 domain candidate pools 上提供多种 ranking mode，
+并把 token-ID selection 与入选后的 weighting 独立配置。若要做全集候选对照，
+可把候选范围切到 tokenizer vocabulary；此时不再配置 candidate IDs/groups：
+
+```yaml
+audit:
+  control_token_candidate_ids: []
+  domain_control_token_candidate_ids: {}
+  domain_control_token_candidate_groups: {}
+  control_token_online_candidate_scope: full_vocabulary  # configured | full_vocabulary
+  control_token_online_candidate_vocab_size: null  # null = len(tokenizer)
+```
+
+`full_vocabulary` 表示所有通过 configured-loss mask 的 valid response token
+occurrences；prompt、padding 和 masked positions 不进入候选或 Top-P 分母。候选轴按
+`len(tokenizer)` 构造，并校验 model vocabulary 不小于该值；只把当前 window 中实际
+出现的 token IDs 写入 selector state/history。当前该 scope 只支持 `top_loss` 与
+`top_speed`，不支持 grouped candidates 或 paired/Q selectors。
+
+常规 configured-pool 示例：
 
 ```yaml
 audit:
@@ -513,6 +531,12 @@ audit:
 非空 map 会按 domain 覆盖 scalar；Top-P 仍按各 domain 的 valid
 response-token occurrences 计算，并不影响 rollout sampling 的
 `actor_rollout_ref.rollout.top_p`。
+
+因此 `control_token_online_top_p: 0.05` 的精确定义不是“选 5% token
+types”，而是按 token type 的 occurrence-mean selection score 排序，选择覆盖至少
+5% valid response occurrences 的最小前缀。最后一个完整 token type 不能拆分，实际
+coverage 可能超过 5%。当 `strict_occurrence_gate: true` 且阈值为 20 时，资格条件为
+rolling-window mean count 严格大于 20，而不是大于等于 20。
 
 `control_token_online_weight_mode=loss_ratio` 只允许搭配 `top_loss`。对每个
 domain 的 source window，设 `S` 为本次入选 token ID 的全部 occurrence，`V` 为

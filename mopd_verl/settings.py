@@ -13,19 +13,17 @@ from mopd_verl.domain_gradient.control_selection_scoring import (
     FIXED_ONLINE_WEIGHT_MODE,
     LOSS_RATIO_ONLINE_WEIGHT_MODE,
     ONLINE_CONTROL_BUDGET_MODES,
-    ONLINE_CONTROL_SELECTION_MODES,
-    ONLINE_CONTROL_WEIGHT_MODES,
-    PAIRED_ONLINE_WEIGHT_MODE,
-    PAIRED_SIGNAL_SELECTION_MODES,
     TOP_KL_STUDENT_ENTROPY_SELECTION_MODE,
     TOP_K_BUDGET_MODE,
     TOP_LOSS_SELECTION_MODE,
-    TOP_SPEED_SELECTION_MODE,
-    validate_loss_ratio_alpha,
-    validate_q_selection_contract,
+    validate_online_control_mode_contracts,
 )
 from mopd_verl.domain_gradient.control_selection_budget import (
+    CONFIGURED_CANDIDATE_SCOPE,
+    FULL_VOCABULARY_CANDIDATE_SCOPE,
+    normalize_candidate_scope,
     normalize_top_p_by_domain,
+    validate_candidate_scope_contract,
 )
 from mopd_verl.domain_budgeting_config import (
     DomainBudgetingConfig,
@@ -317,9 +315,11 @@ class AuditConfig:
     domain_control_token_candidate_ids: dict[str, list[int]] = field(
         default_factory=dict
     )
-    domain_control_token_candidate_groups: dict[
-        str, dict[str, list[int]]
-    ] = field(default_factory=dict)
+    domain_control_token_candidate_groups: dict[str, dict[str, list[int]]] = field(
+        default_factory=dict
+    )
+    control_token_online_candidate_scope: str = CONFIGURED_CANDIDATE_SCOPE
+    control_token_online_candidate_vocab_size: int | None = None
     control_token_normalize_per_domain: bool = False
     control_token_online_selection_enabled: bool = False
     control_token_online_audit_interval_steps: int = 3
@@ -330,11 +330,15 @@ class AuditConfig:
     control_token_online_top_k_per_group: int | None = None
     control_token_online_budget_mode: str = TOP_K_BUDGET_MODE
     control_token_online_top_p: float = 1.0
-    control_token_online_top_p_by_domain: dict[str, float] = field(
-        default_factory=dict
-    )
+    control_token_online_top_p_by_domain: dict[str, float] = field(default_factory=dict)
     control_token_online_selection_mode: str = TOP_LOSS_SELECTION_MODE
     control_token_online_weight_mode: str = FIXED_ONLINE_WEIGHT_MODE
+    control_token_online_selection_mode_by_domain: dict[str, str] = field(
+        default_factory=dict
+    )
+    control_token_online_weight_mode_by_domain: dict[str, str] = field(
+        default_factory=dict
+    )
     control_token_loss_ratio_alpha: float = 1.0
     control_token_adaptive_neighborhood_enabled: bool = False
     control_token_adaptive_neighborhood_max_distance: int = 8
@@ -472,7 +476,9 @@ class MOPDConfig:
     model: ModelConfig
     actor: ActorConfig = field(default_factory=ActorConfig)
     rollout: RolloutConfig = field(default_factory=RolloutConfig)
-    teacher_performance: TeacherPerformanceConfig = field(default_factory=TeacherPerformanceConfig)
+    teacher_performance: TeacherPerformanceConfig = field(
+        default_factory=TeacherPerformanceConfig
+    )
     rollout_correction: RolloutCorrectionConfig = field(
         default_factory=RolloutCorrectionConfig
     )
@@ -760,14 +766,10 @@ def load_config(path: str | Path) -> MOPDConfig:
     model = ModelConfig(
         student_path=str(model_raw["student_path"]),
         student_base_path=(
-            None
-            if legacy_student_base_raw is None
-            else str(legacy_student_base_raw)
+            None if legacy_student_base_raw is None else str(legacy_student_base_raw)
         ),
         gopd_reference_path=(
-            None
-            if gopd_reference_raw is None
-            else str(gopd_reference_raw)
+            None if gopd_reference_raw is None else str(gopd_reference_raw)
         ),
         math_teacher_path=math_teacher_path,
         code_teacher_path=code_teacher_path,
@@ -809,6 +811,24 @@ def load_config(path: str | Path) -> MOPDConfig:
     domain_budgeting = parse_domain_budgeting_config(domain_budgeting_raw)
     normalized_loss_builder = distill_loss_builder(actor)
     topk_distillation_active = uses_topk_distill_loss(actor)
+    effective_online_selection_modes, effective_online_weight_modes = (
+        validate_online_control_mode_contracts(
+            audit.domains,
+            selection_mode=audit.control_token_online_selection_mode,
+            weight_mode=audit.control_token_online_weight_mode,
+            selection_mode_by_domain=(
+                audit.control_token_online_selection_mode_by_domain
+            ),
+            weight_mode_by_domain=audit.control_token_online_weight_mode_by_domain,
+            interval=audit.control_token_online_audit_interval_steps,
+            window=audit.control_token_online_window_steps,
+            loss_ratio_alpha=audit.control_token_loss_ratio_alpha,
+            control_token_weight=audit.control_token_loss_weight,
+        )
+    )
+    online_candidate_scope = normalize_candidate_scope(
+        audit.control_token_online_candidate_scope
+    )
     validate_token_baseline_config(
         actor,
         uses_topk_distillation=topk_distillation_active,
@@ -854,8 +874,7 @@ def load_config(path: str | Path) -> MOPDConfig:
             )
         if actor.ppo_micro_batch_size_per_gpu != 1:
             raise ValueError(
-                "Native TIP currently requires "
-                "actor.ppo_micro_batch_size_per_gpu=1."
+                "Native TIP currently requires " "actor.ppo_micro_batch_size_per_gpu=1."
             )
         if actor.use_dynamic_bsz:
             raise ValueError("Native TIP does not support dynamic micro-batches.")
@@ -910,8 +929,10 @@ def load_config(path: str | Path) -> MOPDConfig:
             )
     if (
         audit.control_token_online_selection_enabled
-        and audit.control_token_online_selection_mode
-        == TOP_KL_STUDENT_ENTROPY_SELECTION_MODE
+        and any(
+            mode == TOP_KL_STUDENT_ENTROPY_SELECTION_MODE
+            for _, mode in effective_online_selection_modes
+        )
         and not topk_distillation_active
     ):
         raise ValueError(
@@ -1015,7 +1036,8 @@ def load_config(path: str | Path) -> MOPDConfig:
         and not (
             audit.control_token_online_selection_enabled
             and (
-                audit.control_token_candidate_ids
+                online_candidate_scope == FULL_VOCABULARY_CANDIDATE_SCOPE
+                or audit.control_token_candidate_ids
                 or audit.domain_control_token_candidate_ids
                 or audit.domain_control_token_candidate_groups
             )
@@ -1062,6 +1084,15 @@ def load_config(path: str | Path) -> MOPDConfig:
             "audit.domain_control_token_candidate_ids or "
             "audit.domain_control_token_candidate_groups, not more than one."
         )
+    if audit.control_token_online_selection_enabled:
+        validate_candidate_scope_contract(
+            online_candidate_scope,
+            candidate_source_count=candidate_source_count,
+            selection_modes=tuple(mode for _, mode in effective_online_selection_modes),
+            candidate_vocab_size=audit.control_token_online_candidate_vocab_size,
+            top_k_per_group=audit.control_token_online_top_k_per_group,
+            require_full_vocab_size=False,
+        )
     if domain_candidates and set(domain_candidates) != set(audit.domains):
         raise ValueError(
             "audit.domain_control_token_candidate_ids keys must exactly "
@@ -1087,9 +1118,7 @@ def load_config(path: str | Path) -> MOPDConfig:
             "audit.domain_control_token_candidate_ids entries must not "
             "contain duplicates."
         )
-    if domain_candidate_groups and set(domain_candidate_groups) != set(
-        audit.domains
-    ):
+    if domain_candidate_groups and set(domain_candidate_groups) != set(audit.domains):
         raise ValueError(
             "audit.domain_control_token_candidate_groups keys must exactly "
             "match audit.domains."
@@ -1146,8 +1175,7 @@ def load_config(path: str | Path) -> MOPDConfig:
     if audit.control_token_online_budget_mode not in ONLINE_CONTROL_BUDGET_MODES:
         allowed = ", ".join(sorted(ONLINE_CONTROL_BUDGET_MODES))
         raise ValueError(
-            "audit.control_token_online_budget_mode must be one of: "
-            f"{allowed}."
+            "audit.control_token_online_budget_mode must be one of: " f"{allowed}."
         )
     if (
         not math.isfinite(audit.control_token_online_top_p)
@@ -1186,57 +1214,16 @@ def load_config(path: str | Path) -> MOPDConfig:
             "audit.control_token_online_top_k_per_group requires grouped "
             "Top-K selection."
         )
-    if audit.control_token_online_selection_mode not in ONLINE_CONTROL_SELECTION_MODES:
-        allowed = ", ".join(sorted(ONLINE_CONTROL_SELECTION_MODES))
-        raise ValueError(
-            "audit.control_token_online_selection_mode must be one of: "
-            f"{allowed}."
-        )
-    if audit.control_token_online_weight_mode not in ONLINE_CONTROL_WEIGHT_MODES:
-        allowed = ", ".join(sorted(ONLINE_CONTROL_WEIGHT_MODES))
-        raise ValueError(
-            "audit.control_token_online_weight_mode must be one of: "
-            f"{allowed}."
-        )
-    validate_q_selection_contract(
-        audit.control_token_online_selection_mode, audit.control_token_online_weight_mode,
-        audit.control_token_online_audit_interval_steps, audit.control_token_online_window_steps,
-    )
-    validate_loss_ratio_alpha(
-        audit.control_token_loss_ratio_alpha,
-        weight_mode=audit.control_token_online_weight_mode,
-    )
     if (
-        audit.control_token_online_weight_mode == PAIRED_ONLINE_WEIGHT_MODE
-        and audit.control_token_online_selection_mode
-        not in PAIRED_SIGNAL_SELECTION_MODES
-    ):
-        raise ValueError(
-            "audit.control_token_online_weight_mode=paired requires a "
-            "paired-signal selection mode."
+        any(
+            weight_mode == LOSS_RATIO_ONLINE_WEIGHT_MODE
+            for _, weight_mode in effective_online_weight_modes
         )
-    if (
-        audit.control_token_online_weight_mode == LOSS_RATIO_ONLINE_WEIGHT_MODE
-        and audit.control_token_online_selection_mode != TOP_LOSS_SELECTION_MODE
-    ):
-        raise ValueError(
-            "audit.control_token_online_weight_mode=loss_ratio requires "
-            "audit.control_token_online_selection_mode=top_loss."
-        )
-    if (
-        audit.control_token_online_weight_mode == LOSS_RATIO_ONLINE_WEIGHT_MODE
         and audit.control_token_loss_weight < 1.0
     ):
         raise ValueError(
             "Loss-ratio weighting uses audit.control_token_loss_weight as its "
             "maximum and requires it to be at least 1."
-        )
-    if (
-        audit.control_token_online_selection_mode == TOP_SPEED_SELECTION_MODE
-        and audit.control_token_online_window_steps < 2
-    ):
-        raise ValueError(
-            "Online top-speed selection requires a window of at least 2 steps."
         )
     if (
         not math.isfinite(audit.control_token_online_min_mean_occurrences_per_step)
@@ -1251,15 +1238,6 @@ def load_config(path: str | Path) -> MOPDConfig:
             raise ValueError(
                 "Online Control selection requires Control-token loss "
                 "weighting to be enabled."
-            )
-        if not (
-            audit.control_token_candidate_ids
-            or audit.domain_control_token_candidate_ids
-            or audit.domain_control_token_candidate_groups
-        ):
-            raise ValueError(
-                "Online Control selection requires "
-                "global or domain candidate token IDs."
             )
         if audit.control_token_ids or audit.domain_control_token_ids:
             raise ValueError(
@@ -1289,21 +1267,14 @@ def load_config(path: str | Path) -> MOPDConfig:
         raise ValueError(
             "audit.control_token_adaptive_neighborhood_epsilon must be positive."
         )
-    adaptive_clip = (
-        audit.control_token_adaptive_neighborhood_relative_loss_clip_max
-    )
+    adaptive_clip = audit.control_token_adaptive_neighborhood_relative_loss_clip_max
     adaptive_threshold = (
         audit.control_token_adaptive_neighborhood_relative_loss_threshold
     )
-    if not all(
-        math.isfinite(value)
-        for value in (adaptive_clip, adaptive_threshold)
-    ):
+    if not all(math.isfinite(value) for value in (adaptive_clip, adaptive_threshold)):
         raise ValueError("Adaptive-neighborhood relative-loss bounds must be finite.")
     if not 0.0 <= adaptive_threshold <= adaptive_clip:
-        raise ValueError(
-            "Adaptive-neighborhood threshold must be in [0, clip_max]."
-        )
+        raise ValueError("Adaptive-neighborhood threshold must be in [0, clip_max].")
     if audit.control_token_adaptive_neighborhood_enabled:
         if audit.token_gradient_enabled:
             raise ValueError(
@@ -1311,10 +1282,9 @@ def load_config(path: str | Path) -> MOPDConfig:
                 "token-gradient replay because the diagnostic ranking does "
                 "not reconstruct the adaptive multiplier."
             )
-        if (
-            not audit.control_token_online_selection_enabled
-            and set(audit.domain_control_token_ids) != set(audit.domains)
-        ):
+        if not audit.control_token_online_selection_enabled and set(
+            audit.domain_control_token_ids
+        ) != set(audit.domains):
             raise ValueError(
                 "Adaptive-neighborhood control requires fixed "
                 "domain_control_token_ids that exactly match audit.domains or "
@@ -1339,10 +1309,9 @@ def load_config(path: str | Path) -> MOPDConfig:
                 "Adaptive-neighborhood control is mutually exclusive with "
                 "global IDs, speed, phase, span, and shared-token modes."
             )
-        if (
-            audit.control_token_online_selection_enabled
-            and audit.control_token_online_weight_mode
-            != FIXED_ONLINE_WEIGHT_MODE
+        if audit.control_token_online_selection_enabled and any(
+            weight_mode != FIXED_ONLINE_WEIGHT_MODE
+            for _, weight_mode in effective_online_weight_modes
         ):
             raise ValueError(
                 "Adaptive-neighborhood online selection requires fixed online "

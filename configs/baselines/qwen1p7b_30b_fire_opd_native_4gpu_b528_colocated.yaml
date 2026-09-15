@@ -7,7 +7,7 @@ extends: qwen1p7b_30b_fire_opd_native_4gpu_b525.yaml
 
 runtime:
   slurm_allocation_gpus: 4
-  wandb_run_id: qwen1p7b-30b-fire-opd-native-4gpu-b528-colocated
+  wandb_run_id: qwen1p7b-30b-fire-opd-native-4gpu-b528-colocated-s60-r2
   wandb_resume: never
 
 data:
@@ -34,7 +34,35 @@ teacher_performance:
   # stock path for the four-rank co-located teacher.
   enabled: false
 
+audit:
+  enabled: true
+  output_dir: audit/qwen1p7b-30b-fire-opd-native-4gpu-b528-colocated
+  domains: [math, code, science]
+  tensorboard_prefix: mopd
+  tensorboard_layout: domain_category
+  tensorboard_prune_mode: core
+  loss_variance_signal: policy_gradient_distillation_signal+fire_opd_token_weighting
+  log_sample_level: false
+  response_level_enabled: false
+  log_validation_metrics: false
+  full_gradient_enabled: false
+  sample_gradient_enabled: false
+  token_gap_enabled: true
+  token_gap_vocab_vector_enabled: true
+  vocab_per_occurrence_mean_vector_enabled: true
+  logp_vocab_per_occurrence_mean_vector_enabled: true
+  logp_abs_vocab_per_occurrence_mean_vector_enabled: true
+  entropy_vocab_per_occurrence_mean_vector_enabled: true
+  entropy_enabled: true
+  entropy_vocab_vector_enabled: true
+  topk_teacher_student_cross_entropy_vocab_enabled: false
+  logp_vector_enabled: false
+  logp_abs_vector_enabled: false
+  token_gradient_enabled: false
+  gradient_fingerprint_enabled: false
+
 trainer:
   experiment_name: qwen1p7b-30b-fire-opd-native-4gpu-b528-colocated
   n_gpus_per_node: 4
+  total_training_steps: 60
   default_local_dir: checkpoints/MOPD/qwen1p7b-30b-fire-opd-native-4gpu-b528-colocated

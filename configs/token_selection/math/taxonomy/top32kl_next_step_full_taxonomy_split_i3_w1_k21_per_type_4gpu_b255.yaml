@@ -578,7 +578,6 @@ huggingface_checkpoint:
   - 55
   - 60
   - 65
-  - 70
   repo_id: icemoon28/opd-checkpoints
   private: false
   token_env_var: HF_TOKEN
@@ -593,7 +592,7 @@ trainer:
   save_freq: 5
   test_freq: -1
   total_epochs: 3
-  total_training_steps: 70
+  total_training_steps: 65
   default_local_dir: checkpoints/MOPD/q1p7b-math-top32kl-ns-taxonomy-split-i3w1k21pt-b255-r1
   critic_warmup: 0
   val_before_train: false

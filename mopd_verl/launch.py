@@ -40,8 +40,7 @@ def _hydra_nested_int_list_dict(
     values: Mapping[str, Mapping[str, Sequence[int]]],
 ) -> str:
     items = ", ".join(
-        f"{domain}: {_hydra_int_list_dict(groups)}"
-        for domain, groups in values.items()
+        f"{domain}: {_hydra_int_list_dict(groups)}" for domain, groups in values.items()
     )
     return "{" + items + "}"
 
@@ -315,6 +314,10 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"{_hydra_int_list_dict(audit.domain_control_token_candidate_ids)}",
         "+mopd_audit.domain_control_token_candidate_groups="
         f"{_hydra_nested_int_list_dict(audit.domain_control_token_candidate_groups)}",
+        "+mopd_audit.control_token_online_candidate_scope="
+        f"{audit.control_token_online_candidate_scope}",
+        "+mopd_audit.control_token_online_candidate_vocab_size="
+        f"{_hydra_scalar(audit.control_token_online_candidate_vocab_size)}",
         "+mopd_audit.control_token_normalize_per_domain="
         f"{str(audit.control_token_normalize_per_domain).lower()}",
         "+mopd_audit.control_token_online_selection_enabled="
@@ -333,14 +336,17 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"{_hydra_scalar(audit.control_token_online_top_k_per_group)}",
         "+mopd_audit.control_token_online_budget_mode="
         f"{audit.control_token_online_budget_mode}",
-        "+mopd_audit.control_token_online_top_p="
-        f"{audit.control_token_online_top_p}",
+        "+mopd_audit.control_token_online_top_p=" f"{audit.control_token_online_top_p}",
         "+mopd_audit.control_token_online_top_p_by_domain="
         f"{_hydra_float_dict(audit.control_token_online_top_p_by_domain)}",
         "+mopd_audit.control_token_online_selection_mode="
         f"{audit.control_token_online_selection_mode}",
         "+mopd_audit.control_token_online_weight_mode="
         f"{audit.control_token_online_weight_mode}",
+        "+mopd_audit.control_token_online_selection_mode_by_domain="
+        f"{_hydra_string_dict(audit.control_token_online_selection_mode_by_domain)}",
+        "+mopd_audit.control_token_online_weight_mode_by_domain="
+        f"{_hydra_string_dict(audit.control_token_online_weight_mode_by_domain)}",
         "+mopd_audit.control_token_loss_ratio_alpha="
         f"{audit.control_token_loss_ratio_alpha}",
         "+mopd_audit.control_token_adaptive_neighborhood_enabled="
@@ -571,8 +577,7 @@ def build_overrides(config: MOPDConfig) -> list[str]:
         f"+data.need_tools_kwargs={_bool(data.need_tools_kwargs)}",
         *model_overrides,
         f"actor_rollout_ref.actor.optim.lr={actor.learning_rate}",
-        "actor_rollout_ref.actor.optim.lr_scheduler_type="
-        f"{actor.lr_scheduler_type}",
+        "actor_rollout_ref.actor.optim.lr_scheduler_type=" f"{actor.lr_scheduler_type}",
         f"actor_rollout_ref.actor.optim.lr_warmup_steps_ratio={actor.lr_warmup_steps_ratio}",
         f"actor_rollout_ref.model.use_remove_padding={_bool(model.use_remove_padding)}",
         f"actor_rollout_ref.actor.policy_loss.only_reverse_kl_advantages={_bool(actor.only_reverse_kl_advantages)}",

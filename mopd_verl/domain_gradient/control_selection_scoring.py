@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import math
 import struct
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     import torch
@@ -16,6 +16,7 @@ TOP_LOSS_SELECTION_MODE = "top_loss"
 TOP_LOGP_DIFF_SELECTION_MODE = "top_logp_diff"
 TOP_SPEED_SELECTION_MODE = "top_speed"
 TOP_Q_LOSS_ENTROPY_SELECTION_MODE = "top_q_loss_entropy"
+TOP_LOSS_TEACHER_CONFIDENCE_SELECTION_MODE = "top_loss_teacher_confidence"
 TOP_KL_STUDENT_ENTROPY_SELECTION_MODE = "top_kl_student_entropy"
 TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE = (
     "top_teacher_confidence_student_entropy"
@@ -32,15 +33,14 @@ ONLINE_CONTROL_SELECTION_MODES = frozenset(
         TOP_LOGP_DIFF_SELECTION_MODE,
         TOP_SPEED_SELECTION_MODE,
         TOP_Q_LOSS_ENTROPY_SELECTION_MODE,
+        TOP_LOSS_TEACHER_CONFIDENCE_SELECTION_MODE,
         *PAIRED_SIGNAL_SELECTION_MODES,
     }
 )
 
 TOP_K_BUDGET_MODE = "top_k"
 TOP_P_BUDGET_MODE = "top_p"
-ONLINE_CONTROL_BUDGET_MODES = frozenset(
-    {TOP_K_BUDGET_MODE, TOP_P_BUDGET_MODE}
-)
+ONLINE_CONTROL_BUDGET_MODES = frozenset({TOP_K_BUDGET_MODE, TOP_P_BUDGET_MODE})
 
 FIXED_ONLINE_WEIGHT_MODE = "fixed"
 PAIRED_ONLINE_WEIGHT_MODE = "paired"
@@ -64,6 +64,23 @@ def validate_q_selection_contract(
         weight_mode != FIXED_ONLINE_WEIGHT_MODE or interval != 1 or window != 1
     ):
         raise ValueError("Q selection requires fixed weighting and interval=window=1.")
+
+
+def validate_loss_teacher_confidence_selection_contract(
+    selection_mode: str,
+    weight_mode: str,
+    interval: int,
+    window: int,
+) -> None:
+    """Require one-step, fixed-weight selection for robust batch normalization."""
+
+    if selection_mode == TOP_LOSS_TEACHER_CONFIDENCE_SELECTION_MODE and (
+        weight_mode != FIXED_ONLINE_WEIGHT_MODE or interval != 1 or window != 1
+    ):
+        raise ValueError(
+            "Loss + teacher-confidence selection requires fixed weighting and "
+            "interval=window=1."
+        )
 
 
 @dataclass(frozen=True)
@@ -155,9 +172,7 @@ def selected_to_other_loss_ratio_weight(
     )
     other_loss_abs_sum = valid_loss_abs_sum - selected_loss_abs_sum
     if other_loss_abs_sum < -subtraction_tolerance:
-        raise ValueError(
-            "Selected loss mass cannot exceed all-valid loss mass."
-        )
+        raise ValueError("Selected loss mass cannot exceed all-valid loss mass.")
     other_loss_abs_sum = max(other_loss_abs_sum, 0.0)
     selected_mean = selected_loss_abs_sum / selected_occurrence_count
     other_mean = other_loss_abs_sum / other_occurrence_count
@@ -190,7 +205,9 @@ def validate_scaled_loss_ratio_weight(weight: float) -> None:
     except OverflowError as exc:
         raise ValueError("Scaled loss-ratio weight must be finite in float32.") from exc
     if not math.isfinite(represented) or represented <= 0.0:
-        raise ValueError("Scaled loss-ratio weight must be finite and positive in float32.")
+        raise ValueError(
+            "Scaled loss-ratio weight must be finite and positive in float32."
+        )
 
 
 def normalize_selection_mode(value: object) -> str:
@@ -199,9 +216,7 @@ def normalize_selection_mode(value: object) -> str:
     mode = str(value).strip().lower()
     if mode not in ONLINE_CONTROL_SELECTION_MODES:
         allowed = ", ".join(sorted(ONLINE_CONTROL_SELECTION_MODES))
-        raise ValueError(
-            "Online Control selection mode must be one of: " f"{allowed}."
-        )
+        raise ValueError("Online Control selection mode must be one of: " f"{allowed}.")
     return mode
 
 
@@ -211,9 +226,7 @@ def normalize_online_budget_mode(value: object) -> str:
     mode = str(value).strip().lower()
     if mode not in ONLINE_CONTROL_BUDGET_MODES:
         allowed = ", ".join(sorted(ONLINE_CONTROL_BUDGET_MODES))
-        raise ValueError(
-            "Online Control budget mode must be one of: " f"{allowed}."
-        )
+        raise ValueError("Online Control budget mode must be one of: " f"{allowed}.")
     return mode
 
 
@@ -223,10 +236,194 @@ def normalize_online_weight_mode(value: object) -> str:
     mode = str(value).strip().lower()
     if mode not in ONLINE_CONTROL_WEIGHT_MODES:
         allowed = ", ".join(sorted(ONLINE_CONTROL_WEIGHT_MODES))
-        raise ValueError(
-            "Online Control weight mode must be one of: " f"{allowed}."
-        )
+        raise ValueError("Online Control weight mode must be one of: " f"{allowed}.")
     return mode
+
+
+def _normalize_online_mode_by_domain(
+    domains: Sequence[str],
+    value: object,
+    *,
+    fallback: object,
+    normalizer: Callable[[object], str],
+    field_name: str,
+) -> tuple[tuple[str, str], ...]:
+    """Normalize an optional complete per-domain mode map.
+
+    An empty map is intentionally treated as the scalar fallback.  Once a
+    map is populated, however, it must name every configured domain so a
+    mixed-domain run cannot silently inherit an unintended mode.
+    """
+
+    normalized_domains = tuple(dict.fromkeys(str(domain) for domain in domains))
+    normalized_fallback = normalizer(fallback)
+    if value is None:
+        raw_items: tuple[tuple[object, object], ...] = ()
+    elif isinstance(value, Mapping):
+        raw_items = tuple(value.items())
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        try:
+            raw_items = tuple(dict(value).items())
+        except (TypeError, ValueError) as exc:
+            raise TypeError(f"{field_name} must be a mapping.") from exc
+    else:
+        raise TypeError(f"{field_name} must be a mapping.")
+    if not raw_items:
+        if not normalized_domains:
+            return ()
+        return tuple((domain, normalized_fallback) for domain in normalized_domains)
+    raw_map = {str(domain): mode for domain, mode in raw_items}
+    if len(raw_map) != len(raw_items) or set(raw_map) != set(normalized_domains):
+        raise ValueError(f"{field_name} keys must exactly match domains.")
+    return tuple((domain, normalizer(raw_map[domain])) for domain in normalized_domains)
+
+
+def normalize_online_selection_mode_by_domain(
+    domains: Sequence[str],
+    value: object,
+    fallback: object = TOP_LOSS_SELECTION_MODE,
+) -> tuple[tuple[str, str], ...]:
+    """Return effective online selection modes for every configured domain."""
+
+    return _normalize_online_mode_by_domain(
+        domains,
+        value,
+        fallback=fallback,
+        normalizer=normalize_selection_mode,
+        field_name="control_token_online_selection_mode_by_domain",
+    )
+
+
+def normalize_online_weight_mode_by_domain(
+    domains: Sequence[str],
+    value: object,
+    fallback: object = FIXED_ONLINE_WEIGHT_MODE,
+) -> tuple[tuple[str, str], ...]:
+    """Return effective online weight modes for every configured domain."""
+
+    return _normalize_online_mode_by_domain(
+        domains,
+        value,
+        fallback=fallback,
+        normalizer=normalize_online_weight_mode,
+        field_name="control_token_online_weight_mode_by_domain",
+    )
+
+
+def validate_online_control_mode_contracts(
+    domains: Sequence[str],
+    *,
+    selection_mode: object,
+    weight_mode: object,
+    selection_mode_by_domain: object = None,
+    weight_mode_by_domain: object = None,
+    interval: int,
+    window: int,
+    loss_ratio_alpha: float = 1.0,
+    control_token_weight: float | None = None,
+) -> tuple[tuple[tuple[str, str], ...], tuple[tuple[str, str], ...]]:
+    """Normalize and validate all per-domain online mode contracts."""
+
+    normalized_selection = normalize_selection_mode(selection_mode)
+    normalized_weight = normalize_online_weight_mode(weight_mode)
+    effective_selection = normalize_online_selection_mode_by_domain(
+        domains,
+        selection_mode_by_domain,
+        normalized_selection,
+    )
+    effective_weight = normalize_online_weight_mode_by_domain(
+        domains,
+        weight_mode_by_domain,
+        normalized_weight,
+    )
+    if not effective_selection:
+        validate_q_selection_contract(
+            normalized_selection,
+            normalized_weight,
+            interval,
+            window,
+        )
+        validate_loss_teacher_confidence_selection_contract(
+            normalized_selection,
+            normalized_weight,
+            interval,
+            window,
+        )
+        if (
+            normalized_weight == PAIRED_ONLINE_WEIGHT_MODE
+            and normalized_selection not in PAIRED_SIGNAL_SELECTION_MODES
+        ):
+            raise ValueError(
+                "Online paired weight mode requires a paired-signal " "selection mode."
+            )
+        if (
+            normalized_weight == LOSS_RATIO_ONLINE_WEIGHT_MODE
+            and normalized_selection != TOP_LOSS_SELECTION_MODE
+        ):
+            raise ValueError(
+                "Online loss-ratio weight mode requires top-loss selection mode."
+            )
+        if normalized_selection == TOP_SPEED_SELECTION_MODE and window < 2:
+            raise ValueError(
+                "Online top-speed selection requires window_steps to be at least 2."
+            )
+        validate_loss_ratio_alpha(loss_ratio_alpha, weight_mode=normalized_weight)
+        if (
+            normalized_weight == LOSS_RATIO_ONLINE_WEIGHT_MODE
+            and control_token_weight is not None
+            and (not math.isfinite(control_token_weight) or control_token_weight < 1.0)
+        ):
+            raise ValueError(
+                "Loss-ratio weighting uses control_token_weight as its maximum "
+                "and requires it to be finite and at least 1."
+            )
+        return effective_selection, effective_weight
+    weight_map = dict(effective_weight)
+    for domain, mode in effective_selection:
+        domain_weight = weight_map[domain]
+        validate_q_selection_contract(mode, domain_weight, interval, window)
+        validate_loss_teacher_confidence_selection_contract(
+            mode,
+            domain_weight,
+            interval,
+            window,
+        )
+        if (
+            domain_weight == PAIRED_ONLINE_WEIGHT_MODE
+            and mode not in PAIRED_SIGNAL_SELECTION_MODES
+        ):
+            raise ValueError(
+                "Online paired weight mode requires a paired-signal " "selection mode."
+            )
+        if (
+            domain_weight == LOSS_RATIO_ONLINE_WEIGHT_MODE
+            and mode != TOP_LOSS_SELECTION_MODE
+        ):
+            raise ValueError(
+                "Online loss-ratio weight mode requires top-loss selection mode."
+            )
+        if mode == TOP_SPEED_SELECTION_MODE and window < 2:
+            raise ValueError(
+                "Online top-speed selection requires window_steps to be at least 2."
+            )
+    any_loss_ratio = any(
+        mode == LOSS_RATIO_ONLINE_WEIGHT_MODE for mode in weight_map.values()
+    )
+    validate_loss_ratio_alpha(
+        loss_ratio_alpha,
+        weight_mode=(
+            LOSS_RATIO_ONLINE_WEIGHT_MODE
+            if any_loss_ratio
+            else FIXED_ONLINE_WEIGHT_MODE
+        ),
+    )
+    if any_loss_ratio and control_token_weight is not None:
+        if not math.isfinite(control_token_weight) or control_token_weight < 1.0:
+            raise ValueError(
+                "Loss-ratio weighting uses control_token_weight as its maximum "
+                "and requires it to be finite and at least 1."
+            )
+    return effective_selection, effective_weight
 
 
 def _masked_sequence_max_normalize(
@@ -329,12 +526,9 @@ def occurrence_weighted_optimization_speed(
     total_weight = float(sum(count for _, _, count in valid))
     mean_step = sum(step * count for step, _, count in valid) / total_weight
     mean_loss = (
-        sum(mean_abs_loss * count for _, mean_abs_loss, count in valid)
-        / total_weight
+        sum(mean_abs_loss * count for _, mean_abs_loss, count in valid) / total_weight
     )
-    time_variance = sum(
-        count * (step - mean_step) ** 2 for step, _, count in valid
-    )
+    time_variance = sum(count * (step - mean_step) ** 2 for step, _, count in valid)
     if time_variance <= 1e-12:
         return None
     covariance = sum(

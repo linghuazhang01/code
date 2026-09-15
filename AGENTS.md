@@ -12,10 +12,14 @@
 - 禁止直接修改远端源码；远端只允许运行、测试、训练和生成运行产物。
 - `../ssh.sh` 第 1 行是 SSH 连接命令，第 2 行是密码。不得修改、打印、提交或整体执行该文件；只执行第 1 行，并在密码提示时输入第 2 行。
 - 默认禁止 `rsync --delete`，不得覆盖远端独有的 dataset、model、logs 或 checkpoints。
-- 后续所有请求 GPU 的远端 Slurm 任务（训练、评测和 smoke）必须按 GPU 数量线性分配 host memory：`1 GPU = 100G`，即 `--mem = GPU_COUNT × 100G`（例如 1/2/5 GPU 分别请求 100G/200G/500G）。提交前必须核对 launcher 输出与 `scontrol` 中的 GPU 数和 `ReqMem`；不得擅自多申请或少申请。只有用户对某个具体任务明确指定例外时才允许偏离该公式，并必须在运行记录中注明。当前 taxonomy job 193 使用 `200G` 是用户明确指定的一次性例外，不得据此改变后续任务的默认公式。
+- **远端任务运行方式（当前默认）**：训练、评测、smoke 及其他 GPU 任务统一通过 SSH 在远端 GPU 节点直接以 local process 启动，不提交 Slurm，不依赖 `sbatch`、`srun`、`squeue` 或 `scontrol`。长任务必须使用 `nohup`/`setsid`/`tee` 等方式保留后台进程、PID 和日志；启动命令必须显式设置并记录 `CUDA_VISIBLE_DEVICES`、Python executable、run directory 和完整日志路径。只有用户针对某个具体任务明确要求 Slurm 时，才允许走 Slurm；此时才适用下述 Slurm 资源申请规则。
+- **训练启动入口**：远端训练必须从同步后的仓库根目录使用 `start.sh --local` 启动，不得直接调用 `python -m mopd_verl.launch` 或绕过 `start.sh` 的训练入口。启动时必须显式传入 config、`GPU_IDS`、实际 Python executable，并设置正确的 conda 环境根目录/`PATH`，确保 `ninja`、FlashInfer 等运行时依赖可见；长任务可在 `start.sh --local --foreground` 外层使用 `nohup`/`setsid`，同时保留 start.sh 生成的 run ID、日志和 GPU 监控文件。
+- **直接运行的评测 provenance**：即使复用历史 `slurm_*` worker 脚本，也只能作为普通 local process 执行，禁止调用 Slurm submit/queue 命令；`RUN_MANIFEST.md` 必须明确记录 `scheduler: direct-local`、实际 GPU IDs、完整 checkpoint path 和日志路径，不得把 synthetic run ID 伪称为 Slurm allocation。
+- **训练步数与 Hugging Face checkpoint 约束**：所有训练配置的 `trainer.total_training_steps` 最大只能为 `65`，禁止运行超过 65 个 training steps；Hugging Face checkpoint steps 必须落在实际训练范围内，默认使用 `[55, 60, 65]`，禁止新增或恢复 `global_step_70` 上传。Hugging Face 必须使用 public repository 传输方式，即明确设置 `huggingface_checkpoint.private: false`；不得改回 `true`。启动前必须核对 resolved command 同时满足 `trainer.total_training_steps<=65`、`trainer.huggingface_checkpoint.private=False`，且所有上传 step 不超过总训练步数。
+- 若用户明确要求 Slurm，远端 Slurm 任务才必须按 GPU 数量线性分配 host memory：`1 GPU = 100G`，即 `--mem = GPU_COUNT × 100G`（例如 1/2/5 GPU 分别请求 100G/200G/500G）。提交前必须核对 launcher 输出与 `scontrol` 中的 GPU 数和 `ReqMem`；不得擅自多申请或少申请。只有用户对某个具体任务明确指定例外时才允许偏离该公式，并必须在运行记录中注明。当前 taxonomy job 193 使用 `200G` 是用户明确指定的一次性例外，不得据此改变后续任务的默认公式。
 - GPU 使用约束：远端 GPU 4、5 属于其他用户，后续训练、评测、smoke 及其他 GPU 任务默认不得使用 GPU 4/5；只有用户针对当前具体任务明确授权时才允许例外。启动任务前必须核对并记录实际 GPU 分配，优先选择项目明确可用的其他 GPU。
 
-- **远端任务启动门槛（磁盘可用空间）**：每次提交或启动远端任务（包括训练、评测、smoke 和重启）前，必须检查任务实际使用的远端文件系统，包括 checkpoint、日志/评测输出及临时目录（如 `/tmp` 或实际 Ray temp 目录）所在挂载点；同一挂载点只检查一次。以 `df` 的 Available 或等效文件系统查询为准，按 `500 GiB` 核验。任一相关文件系统可用空间小于 `500G` 时，不得提交或启动任务，必须提示用户对应路径/挂载点、当前可用空间、500G 门槛及本次未启动的任务；无法读取或确认磁盘可用空间时同样不得启动并说明原因。达到门槛仅允许继续其他资源检查；不得为满足门槛擅自删除文件。此门槛指磁盘可用空间，不是主机 RAM 或 GPU 显存；原有每 GPU 100G 的 Slurm host memory 分配规则仍保留。
+- **远端任务启动门槛（磁盘可用空间）**：每次启动远端任务（包括训练、评测、smoke 和重启）前，必须检查任务实际使用的远端文件系统，包括 checkpoint、日志/评测输出及临时目录（如 `/tmp` 或实际 Ray temp 目录）所在挂载点；同一挂载点只检查一次。以 `df` 的 Available 或等效文件系统查询为准，按 `500 GiB` 核验。任一相关文件系统可用空间小于 `500G` 时，不得启动任务，必须提示用户对应路径/挂载点、当前可用空间、500G 门槛及本次未启动的任务；无法读取或确认磁盘可用空间时同样不得启动并说明原因。达到门槛仅允许继续其他资源检查；不得为满足门槛擅自删除文件。此门槛指磁盘可用空间，不是主机 RAM 或 GPU 显存。
 
 ## MOPD 标准评测与归档规则
 

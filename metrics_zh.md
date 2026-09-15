@@ -437,6 +437,16 @@ TensorBoard tag 的一级层级取决于 validation metric key 能否解析出�
 记录以下指标。它们描述 step `t` 的 source window，并从 step `t+1` 起应用；仅在
 本次 audit 实际形成可定义的 selected/other 两组时写入 domain-level ratio 指标。
 
+所有 online selector 都会输出候选范围与 coverage 指标：
+
+| Metric | 含义 | 计算方式 |
+| --- | --- | --- |
+| `global/token_weight/full_vocabulary_candidate_scope_enabled` | 当前 selector 是否从 tokenizer 全集而非 configured pool 取候选。 | `candidate_scope == full_vocabulary` 时为 1。 |
+| `global/token_weight/candidate_token_count` | 当前候选 token-ID union 大小。 | configured scope 统计冻结 pool；full-vocabulary scope 统计 source window 中实际出现的 IDs，不把未出现的 vocab IDs 计入。 |
+| `<domain>/token_weight/candidate_token_count` | 当前 domain 的候选 token-ID 数。 | configured scope 统计冻结 pool；full-vocabulary scope 统计当前 source window 的 observed IDs。 |
+| `<domain>/token_weight/eligible_token_count` | 通过 occurrence gate 的候选 token-ID 数。 | strict gate 下要求 window mean occurrence 严格大于阈值。 |
+| `<domain>/token_weight/online_control_occurrence_fraction` | 当前 step 正在应用的 selected token-ID occurrences 占 valid response occurrences 的比例。 | `applied_occurrence_count / valid_token_count`。 |
+
 | Metric | 含义 | 计算方式 |
 | --- | --- | --- |
 | `global/token_weight/loss_ratio_weighting_enabled` | 当前 online selector 是否启用 loss-ratio weighting。 | `weight_mode == loss_ratio` 时为 1。 |

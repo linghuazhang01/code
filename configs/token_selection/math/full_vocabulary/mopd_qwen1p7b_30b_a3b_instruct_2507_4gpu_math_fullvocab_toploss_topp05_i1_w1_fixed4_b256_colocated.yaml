@@ -1,0 +1,76 @@
+# Four-GPU Math-only full-tokenizer-vocabulary ablation.
+# Student/actor and ref/teacher share all four workers. At every optimizer step,
+# rank every valid Math response token by mean absolute configured loss, then
+# select token types until they cover at least 5% of valid Math occurrences.
+extends: ../taxonomy/_common.yaml
+
+runtime:
+  slurm_allocation_gpus: 4
+  wandb_run_id: q1p7b-math-fullvocab-tl-p05-i1w1-w4-4g-coloc-b256-s70
+  wandb_resume: never
+
+data:
+  train_batch_size: 256
+
+actor:
+  ppo_mini_batch_size: 256
+
+rollout:
+  enforce_eager: true
+  max_num_seqs: 24
+
+teacher_performance:
+  # The optimized teacher wrapper requires a separate single-rank ref worker.
+  enabled: false
+
+worker_placement:
+  separate_ref_policy: false
+  actor_rollout: {n_gpus_per_node: 4, nnodes: 1}
+  ref_policy: {n_gpus_per_node: null, nnodes: null, process_on_nodes: null}
+
+audit:
+  domains: [math]
+  loss_variance_signal: opd_loss_token
+  control_token_loss_weighting_enabled: true
+  control_token_loss_weight: 4.0
+  control_token_ids: []
+  domain_control_token_ids: {}
+  control_token_candidate_ids: []
+  domain_control_token_candidate_ids: {}
+  domain_control_token_candidate_groups: {}
+  control_token_online_candidate_scope: full_vocabulary
+  # null means infer len(tokenizer); model embeddings must cover that range.
+  control_token_online_candidate_vocab_size: null
+  control_token_normalize_per_domain: true
+  control_token_online_selection_enabled: true
+  control_token_online_audit_interval_steps: 1
+  control_token_online_window_steps: 1
+  control_token_online_min_mean_occurrences_per_step: 20.0
+  control_token_online_strict_occurrence_gate: true
+  control_token_online_top_k: 30
+  control_token_online_top_k_per_group: null
+  control_token_online_budget_mode: top_p
+  control_token_online_top_p: 0.05
+  control_token_online_top_p_by_domain: {}
+  control_token_online_selection_mode: top_loss
+  control_token_online_selection_mode_by_domain: {}
+  control_token_online_weight_mode: fixed
+  control_token_online_weight_mode_by_domain: {}
+  output_dir: audit/q1p7b-math-fullvocab-tl-p05-i1w1-w4-4g-coloc-b256-s70
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-fullvocab-tl-p05-i1w1-w4-4g-coloc-b256-s70
+
+huggingface_checkpoint:
+  enabled: true
+  steps: [55, 60, 65]
+  repo_id: icemoon28/opd-checkpoints
+  private: false
+  path_prefix: checkpoints/math/q1p7b-math-fullvocab-tl-p05-i1w1-w4-4g-coloc-b256-s70
+  token_env_var: HF_TOKEN
+
+trainer:
+  experiment_name: q1p7b-math-fullvocab-tl-p05-i1w1-w4-4g-coloc-b256-s70
+  n_gpus_per_node: 4
+  total_training_steps: 65
+  default_local_dir: checkpoints/MOPD/q1p7b-math-fullvocab-tl-p05-i1w1-w4-4g-coloc-b256-s70

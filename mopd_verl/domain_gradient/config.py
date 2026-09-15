@@ -11,21 +11,22 @@ from mopd_verl.domain_gradient.adaptive_neighborhood import (
     PerTokenAdaptiveNeighborhoodSpec,
 )
 from mopd_verl.domain_gradient.control_selection_budget import (
+    CONFIGURED_CANDIDATE_SCOPE,
+    FULL_VOCABULARY_CANDIDATE_SCOPE,
+    normalize_candidate_scope,
     normalize_top_p_by_domain,
+    validate_candidate_scope_contract,
 )
 from mopd_verl.domain_gradient.control_selection_scoring import (
     FIXED_ONLINE_WEIGHT_MODE,
-    LOSS_RATIO_ONLINE_WEIGHT_MODE,
     ONLINE_CONTROL_BUDGET_MODES,
-    ONLINE_CONTROL_SELECTION_MODES,
-    ONLINE_CONTROL_WEIGHT_MODES,
-    PAIRED_ONLINE_WEIGHT_MODE,
-    PAIRED_SIGNAL_SELECTION_MODES,
     TOP_K_BUDGET_MODE,
     TOP_LOSS_SELECTION_MODE,
-    TOP_SPEED_SELECTION_MODE,
-    validate_loss_ratio_alpha,
-    validate_q_selection_contract,
+    normalize_online_selection_mode_by_domain,
+    normalize_online_weight_mode_by_domain,
+    normalize_online_weight_mode,
+    normalize_selection_mode,
+    validate_online_control_mode_contracts,
 )
 from mopd_verl.domain_gradient.token_weighting_state import (
     PER_STEP_MEAN_ABS_LOSS_SELECTION,
@@ -91,9 +92,7 @@ def _domain_candidate_token_groups(
         return ()
     if not isinstance(value, Mapping):
         raise TypeError("domain_control_token_candidate_groups must be a mapping.")
-    normalized: list[
-        tuple[str, tuple[tuple[str, tuple[int, ...]], ...]]
-    ] = []
+    normalized: list[tuple[str, tuple[tuple[str, tuple[int, ...]], ...]]] = []
     for domain, groups in value.items():
         if not isinstance(groups, Mapping):
             raise TypeError(
@@ -169,6 +168,8 @@ class DomainGradientConfig:
     domain_control_token_candidate_groups: tuple[
         tuple[str, tuple[tuple[str, tuple[int, ...]], ...]], ...
     ]
+    control_token_online_candidate_scope: str
+    control_token_online_candidate_vocab_size: int | None
     control_token_normalize_per_domain: bool
     control_token_online_selection_enabled: bool
     control_token_online_audit_interval_steps: int
@@ -210,6 +211,8 @@ class DomainGradientConfig:
     all_domain_shared_token_selection_mode: str
     all_domain_shared_token_top_k: int | None
     unsupported_modes: tuple[str, ...]
+    control_token_online_selection_mode_by_domain: tuple[tuple[str, str], ...] = ()
+    control_token_online_weight_mode_by_domain: tuple[tuple[str, str], ...] = ()
 
     def effective_domain_candidate_map(self) -> dict[str, tuple[int, ...]]:
         """Return one canonical candidate whitelist for every domain."""
@@ -243,6 +246,38 @@ class DomainGradientConfig:
             for domain, groups in self.domain_control_token_candidate_groups
         }
 
+    def online_selection_mode_map(self) -> dict[str, str]:
+        """Return the effective online selector mode for every domain."""
+
+        normalized = dict(self.control_token_online_selection_mode_by_domain)
+        return {
+            domain: normalized.get(domain, self.control_token_online_selection_mode)
+            for domain in self.domains
+        }
+
+    def online_weight_mode_map(self) -> dict[str, str]:
+        """Return the effective online weight mode for every domain."""
+
+        normalized = dict(self.control_token_online_weight_mode_by_domain)
+        return {
+            domain: normalized.get(domain, self.control_token_online_weight_mode)
+            for domain in self.domains
+        }
+
+    def online_selection_mode_for_domain(self, domain: str) -> str:
+        """Return one domain's selector mode with scalar fallback."""
+
+        return self.online_selection_mode_map().get(
+            str(domain), self.control_token_online_selection_mode
+        )
+
+    def online_weight_mode_for_domain(self, domain: str) -> str:
+        """Return one domain's weight mode with scalar fallback."""
+
+        return self.online_weight_mode_map().get(
+            str(domain), self.control_token_online_weight_mode
+        )
+
     def adaptive_neighborhood_spec(
         self,
         *,
@@ -258,8 +293,7 @@ class DomainGradientConfig:
             token_id_map = dict(_domain_token_ids(domain_token_ids))
             if set(token_id_map) != set(self.domains):
                 raise ValueError(
-                    "Adaptive domain token ID overrides must exactly match "
-                    "domains."
+                    "Adaptive domain token ID overrides must exactly match " "domains."
                 )
             effective_domain_token_ids = tuple(
                 (domain, token_id_map[domain]) for domain in self.domains
@@ -269,18 +303,14 @@ class DomainGradientConfig:
             domain_token_ids=effective_domain_token_ids,
             max_distance=self.control_token_adaptive_neighborhood_max_distance,
             epsilon=self.control_token_adaptive_neighborhood_epsilon,
-            clip_max=(
-                self.control_token_adaptive_neighborhood_relative_loss_clip_max
-            ),
+            clip_max=(self.control_token_adaptive_neighborhood_relative_loss_clip_max),
             threshold=(
                 self.control_token_adaptive_neighborhood_relative_loss_threshold
             ),
             strict_threshold=(
                 self.control_token_adaptive_neighborhood_strict_threshold
             ),
-            min_far_tokens=(
-                self.control_token_adaptive_neighborhood_min_far_tokens
-            ),
+            min_far_tokens=(self.control_token_adaptive_neighborhood_min_far_tokens),
             control_weight=self.control_token_weight,
             normalize_per_response=self.control_token_normalize_per_domain,
         )
@@ -290,6 +320,36 @@ class DomainGradientConfig:
         domains = tuple(
             dict.fromkeys(str(value) for value in _get(meta, "domains", ()))
         )
+        selection_mode = normalize_selection_mode(
+            _get(meta, "control_token_online_selection_mode", TOP_LOSS_SELECTION_MODE)
+        )
+        weight_mode = normalize_online_weight_mode(
+            _get(meta, "control_token_online_weight_mode", FIXED_ONLINE_WEIGHT_MODE)
+        )
+        raw_selection_mode_by_domain = _get(
+            meta, "control_token_online_selection_mode_by_domain", {}
+        )
+        raw_weight_mode_by_domain = _get(
+            meta, "control_token_online_weight_mode_by_domain", {}
+        )
+        if domains:
+            effective_selection_modes = normalize_online_selection_mode_by_domain(
+                domains,
+                raw_selection_mode_by_domain,
+                selection_mode,
+            )
+            effective_weight_modes = normalize_online_weight_mode_by_domain(
+                domains,
+                raw_weight_mode_by_domain,
+                weight_mode,
+            )
+        else:
+            if raw_selection_mode_by_domain or raw_weight_mode_by_domain:
+                raise ValueError(
+                    "Online Control per-domain mode maps require configured domains."
+                )
+            effective_selection_modes = ()
+            effective_weight_modes = ()
         parity_frequency = int(_get(meta, "full_grad_training_parity_freq_steps", 1))
         step = int(_get(meta, "step", 0))
         raw_top_k = _get(meta, "token_gradient_top_k", 100)
@@ -428,6 +488,29 @@ class DomainGradientConfig:
             domain_control_token_candidate_groups=_domain_candidate_token_groups(
                 _get(meta, "domain_control_token_candidate_groups", {})
             ),
+            control_token_online_candidate_scope=normalize_candidate_scope(
+                _get(
+                    meta,
+                    "control_token_online_candidate_scope",
+                    CONFIGURED_CANDIDATE_SCOPE,
+                )
+            ),
+            control_token_online_candidate_vocab_size=(
+                None
+                if _get(
+                    meta,
+                    "control_token_online_candidate_vocab_size",
+                    None,
+                )
+                is None
+                else int(
+                    _get(
+                        meta,
+                        "control_token_online_candidate_vocab_size",
+                        None,
+                    )
+                )
+            ),
             control_token_normalize_per_domain=bool(
                 _get(meta, "control_token_normalize_per_domain", False)
             ),
@@ -486,24 +569,10 @@ class DomainGradientConfig:
                 domains,
                 _get(meta, "control_token_online_top_p_by_domain", {}),
             ),
-            control_token_online_selection_mode=str(
-                _get(
-                    meta,
-                    "control_token_online_selection_mode",
-                    TOP_LOSS_SELECTION_MODE,
-                )
-            )
-            .strip()
-            .lower(),
-            control_token_online_weight_mode=str(
-                _get(
-                    meta,
-                    "control_token_online_weight_mode",
-                    FIXED_ONLINE_WEIGHT_MODE,
-                )
-            )
-            .strip()
-            .lower(),
+            control_token_online_selection_mode=selection_mode,
+            control_token_online_weight_mode=weight_mode,
+            control_token_online_selection_mode_by_domain=effective_selection_modes,
+            control_token_online_weight_mode_by_domain=effective_weight_modes,
             control_token_loss_ratio_alpha=float(
                 _get(meta, "control_token_loss_ratio_alpha", 1.0)
             ),
@@ -691,7 +760,9 @@ class DomainGradientConfig:
             and not (
                 self.control_token_online_selection_enabled
                 and (
-                    self.control_token_candidate_ids
+                    self.control_token_online_candidate_scope
+                    == FULL_VOCABULARY_CANDIDATE_SCOPE
+                    or self.control_token_candidate_ids
                     or self.domain_control_token_candidate_ids
                     or self.domain_control_token_candidate_groups
                 )
@@ -774,9 +845,7 @@ class DomainGradientConfig:
                     "be non-empty."
                 )
             flattened = [
-                token_id
-                for token_ids in groups.values()
-                for token_id in token_ids
+                token_id for token_ids in groups.values() for token_id in token_ids
             ]
             if any(token_id < 0 for token_id in flattened):
                 raise ValueError(
@@ -804,9 +873,7 @@ class DomainGradientConfig:
             not math.isfinite(self.control_token_online_top_p)
             or not 0.0 < self.control_token_online_top_p <= 1.0
         ):
-            raise ValueError(
-                "control_token_online_top_p must be finite and in (0, 1]."
-            )
+            raise ValueError("control_token_online_top_p must be finite and in (0, 1].")
         normalize_top_p_by_domain(
             self.domains,
             self.control_token_online_top_p_by_domain,
@@ -837,58 +904,39 @@ class DomainGradientConfig:
                 "control_token_online_top_k_per_group requires grouped "
                 "Top-K selection."
             )
-        if (
-            self.control_token_online_selection_mode
-            not in ONLINE_CONTROL_SELECTION_MODES
-        ):
-            allowed = ", ".join(sorted(ONLINE_CONTROL_SELECTION_MODES))
-            raise ValueError(
-                "Online Control selection mode must be one of: " f"{allowed}."
+        if self.domains:
+            effective_selection_modes, effective_weight_modes = (
+                validate_online_control_mode_contracts(
+                    self.domains,
+                    selection_mode=self.control_token_online_selection_mode,
+                    weight_mode=self.control_token_online_weight_mode,
+                    selection_mode_by_domain=(
+                        self.control_token_online_selection_mode_by_domain
+                    ),
+                    weight_mode_by_domain=self.control_token_online_weight_mode_by_domain,
+                    interval=self.control_token_online_audit_interval_steps,
+                    window=self.control_token_online_window_steps,
+                    loss_ratio_alpha=self.control_token_loss_ratio_alpha,
+                    control_token_weight=self.control_token_weight,
+                )
             )
-        if self.control_token_online_weight_mode not in ONLINE_CONTROL_WEIGHT_MODES:
-            allowed = ", ".join(sorted(ONLINE_CONTROL_WEIGHT_MODES))
-            raise ValueError(
-                "Online Control weight mode must be one of: " f"{allowed}."
-            )
-        validate_q_selection_contract(
-            self.control_token_online_selection_mode, self.control_token_online_weight_mode,
-            self.control_token_online_audit_interval_steps, self.control_token_online_window_steps,
-        )
-        validate_loss_ratio_alpha(
-            self.control_token_loss_ratio_alpha,
-            weight_mode=self.control_token_online_weight_mode,
-        )
-        if (
-            self.control_token_online_weight_mode == PAIRED_ONLINE_WEIGHT_MODE
-            and self.control_token_online_selection_mode
-            not in PAIRED_SIGNAL_SELECTION_MODES
-        ):
-            raise ValueError(
-                "Online paired weight mode requires a paired-signal "
-                "selection mode."
-            )
-        if (
-            self.control_token_online_weight_mode == LOSS_RATIO_ONLINE_WEIGHT_MODE
-            and self.control_token_online_selection_mode != TOP_LOSS_SELECTION_MODE
-        ):
-            raise ValueError(
-                "Online loss-ratio weight mode requires top-loss selection mode."
-            )
-        if (
-            self.control_token_online_weight_mode == LOSS_RATIO_ONLINE_WEIGHT_MODE
-            and self.control_token_weight < 1.0
-        ):
-            raise ValueError(
-                "Online loss-ratio weighting uses control_token_weight as its "
-                "maximum and requires it to be at least 1."
-            )
-        if (
-            self.control_token_online_selection_mode == TOP_SPEED_SELECTION_MODE
-            and self.control_token_online_window_steps < 2
-        ):
-            raise ValueError(
-                "Online top-speed selection requires a window of at least 2 steps."
-            )
+            if self.control_token_online_selection_mode_by_domain and (
+                effective_selection_modes
+                != self.control_token_online_selection_mode_by_domain
+            ):
+                raise ValueError(
+                    "Online Control per-domain mode maps must be normalized."
+                )
+            if self.control_token_online_weight_mode_by_domain and (
+                effective_weight_modes
+                != self.control_token_online_weight_mode_by_domain
+            ):
+                raise ValueError(
+                    "Online Control per-domain mode maps must be normalized."
+                )
+        else:
+            normalize_selection_mode(self.control_token_online_selection_mode)
+            normalize_online_weight_mode(self.control_token_online_weight_mode)
         if (
             not math.isfinite(self.control_token_online_min_mean_occurrences_per_step)
             or self.control_token_online_min_mean_occurrences_per_step < 0.0
@@ -903,15 +951,14 @@ class DomainGradientConfig:
                     "Online Control selection requires Control-token loss "
                     "weighting to be enabled."
                 )
-            if not (
-                self.control_token_candidate_ids
-                or self.domain_control_token_candidate_ids
-                or self.domain_control_token_candidate_groups
-            ):
-                raise ValueError(
-                    "Online Control selection requires "
-                    "global or domain candidate token IDs."
-                )
+            validate_candidate_scope_contract(
+                self.control_token_online_candidate_scope,
+                candidate_source_count=candidate_source_count,
+                selection_modes=tuple(self.online_selection_mode_map().values()),
+                candidate_vocab_size=(self.control_token_online_candidate_vocab_size),
+                top_k_per_group=self.control_token_online_top_k_per_group,
+                require_full_vocab_size=True,
+            )
             if self.control_token_ids or self.domain_control_token_ids:
                 raise ValueError(
                     "Online Control selection cannot be combined with fixed "
@@ -958,10 +1005,9 @@ class DomainGradientConfig:
                     "does not reconstruct the per-token adaptive multiplier."
                 )
             fixed_domains = dict(self.domain_control_token_ids)
-            if (
-                not self.control_token_online_selection_enabled
-                and set(fixed_domains) != set(self.domains)
-            ):
+            if not self.control_token_online_selection_enabled and set(
+                fixed_domains
+            ) != set(self.domains):
                 raise ValueError(
                     "Adaptive-neighborhood control requires fixed "
                     "domain_control_token_ids that exactly match domains or "
@@ -986,10 +1032,9 @@ class DomainGradientConfig:
                     "Adaptive-neighborhood control is mutually exclusive with "
                     "global IDs, speed, phase, span, and shared-token modes."
                 )
-            if (
-                self.control_token_online_selection_enabled
-                and self.control_token_online_weight_mode
-                != FIXED_ONLINE_WEIGHT_MODE
+            if self.control_token_online_selection_enabled and any(
+                weight_mode != FIXED_ONLINE_WEIGHT_MODE
+                for weight_mode in self.online_weight_mode_map().values()
             ):
                 raise ValueError(
                     "Adaptive-neighborhood online selection requires fixed "

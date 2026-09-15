@@ -21,7 +21,7 @@ class HuggingFaceCheckpointConfig:
     enabled: bool = False
     steps: tuple[int, ...] = field(default_factory=tuple)
     repo_id: str | None = None
-    private: bool = True
+    private: bool = False
     path_prefix: str = "checkpoints"
     token_env_var: str = DEFAULT_HF_TOKEN_ENV_VAR
     env_file: str | None = None
@@ -72,7 +72,7 @@ class HuggingFaceCheckpointConfig:
             enabled=bool(raw.get("enabled", False)),
             steps=tuple(steps),
             repo_id=repo_id,
-            private=bool(raw.get("private", True)),
+            private=bool(raw.get("private", False)),
             path_prefix=str(raw.get("path_prefix", "checkpoints")).strip("/"),
             token_env_var=str(
                 raw.get("token_env_var", DEFAULT_HF_TOKEN_ENV_VAR)

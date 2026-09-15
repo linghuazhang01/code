@@ -31,7 +31,14 @@ from mopd_verl.audit_scalar_logging import (
 )
 from mopd_verl.audit_vector_cosine import iter_pairwise_domain_cosines
 from mopd_verl.domain_gradient.control_selection_budget import (
+    CONFIGURED_CANDIDATE_SCOPE,
+    FULL_VOCABULARY_CANDIDATE_SCOPE,
+    normalize_candidate_scope,
     normalize_top_p_by_domain,
+)
+from mopd_verl.domain_gradient.control_selection_scoring import (
+    normalize_online_selection_mode_by_domain,
+    normalize_online_weight_mode_by_domain,
 )
 from mopd_verl.tensorboard_filter import (
     filter_tensorboard_metrics as _filter_tensorboard_metrics,
@@ -1041,6 +1048,84 @@ class MOPDAuditLogger:
             }
             for domain, groups in raw_domain_control_candidate_groups.items()
         }
+        self.control_token_online_candidate_scope = normalize_candidate_scope(
+            _cfg_get(
+                audit_config,
+                "control_token_online_candidate_scope",
+                CONFIGURED_CANDIDATE_SCOPE,
+            )
+        )
+        raw_candidate_vocab_size = _cfg_get(
+            audit_config,
+            "control_token_online_candidate_vocab_size",
+            None,
+        )
+        if raw_candidate_vocab_size is None or str(
+            raw_candidate_vocab_size
+        ).lower() in {
+            "",
+            "none",
+            "null",
+        }:
+            requested_candidate_vocab_size = None
+        else:
+            requested_candidate_vocab_size = int(raw_candidate_vocab_size)
+            if requested_candidate_vocab_size < 1:
+                raise ValueError(
+                    "control_token_online_candidate_vocab_size must be positive."
+                )
+        should_resolve_candidate_vocab = (
+            self.control_token_online_candidate_scope == FULL_VOCABULARY_CANDIDATE_SCOPE
+            or requested_candidate_vocab_size is not None
+        )
+        tokenizer_vocab_size = (
+            _infer_tokenizer_vocab_size(tokenizer)
+            if should_resolve_candidate_vocab
+            else None
+        )
+        model_vocab_size = (
+            _infer_model_config_vocab_size(config)
+            if should_resolve_candidate_vocab
+            else None
+        )
+        if (
+            requested_candidate_vocab_size is not None
+            and tokenizer_vocab_size is not None
+            and requested_candidate_vocab_size != tokenizer_vocab_size
+        ):
+            raise ValueError(
+                "Configured online candidate vocabulary size does not match "
+                "the tokenizer vocabulary size."
+            )
+        self.control_token_online_candidate_vocab_size = (
+            requested_candidate_vocab_size or tokenizer_vocab_size or model_vocab_size
+        )
+        self.control_token_online_candidate_vocab_size_source = (
+            "config"
+            if requested_candidate_vocab_size is not None
+            else (
+                "tokenizer"
+                if tokenizer_vocab_size is not None
+                else "model_config" if model_vocab_size is not None else "unavailable"
+            )
+        )
+        if (
+            model_vocab_size is not None
+            and self.control_token_online_candidate_vocab_size is not None
+            and model_vocab_size < self.control_token_online_candidate_vocab_size
+        ):
+            raise ValueError(
+                "Model vocabulary size is smaller than the online candidate "
+                "tokenizer vocabulary."
+            )
+        if (
+            self.control_token_online_candidate_scope == FULL_VOCABULARY_CANDIDATE_SCOPE
+            and self.control_token_online_candidate_vocab_size is None
+        ):
+            raise ValueError(
+                "Full-vocabulary online Control selection requires an inferred "
+                "or configured tokenizer vocabulary size."
+            )
         self.control_token_normalize_per_domain = bool(
             _cfg_get(
                 audit_config,
@@ -1098,13 +1183,17 @@ class MOPDAuditLogger:
         self.control_token_online_top_k_per_group = (
             None if raw_top_k_per_group is None else int(raw_top_k_per_group)
         )
-        self.control_token_online_budget_mode = str(
-            _cfg_get(
-                audit_config,
-                "control_token_online_budget_mode",
-                "top_k",
+        self.control_token_online_budget_mode = (
+            str(
+                _cfg_get(
+                    audit_config,
+                    "control_token_online_budget_mode",
+                    "top_k",
+                )
             )
-        ).strip().lower()
+            .strip()
+            .lower()
+        )
         self.control_token_online_top_p = float(
             _cfg_get(audit_config, "control_token_online_top_p", 1.0)
         )
@@ -1118,20 +1207,50 @@ class MOPDAuditLogger:
                 ),
             )
         )
-        self.control_token_online_selection_mode = str(
-            _cfg_get(
-                audit_config,
-                "control_token_online_selection_mode",
-                "top_loss",
+        self.control_token_online_selection_mode = (
+            str(
+                _cfg_get(
+                    audit_config,
+                    "control_token_online_selection_mode",
+                    "top_loss",
+                )
             )
-        ).strip().lower()
-        self.control_token_online_weight_mode = str(
-            _cfg_get(
-                audit_config,
-                "control_token_online_weight_mode",
-                "fixed",
+            .strip()
+            .lower()
+        )
+        self.control_token_online_weight_mode = (
+            str(
+                _cfg_get(
+                    audit_config,
+                    "control_token_online_weight_mode",
+                    "fixed",
+                )
             )
-        ).strip().lower()
+            .strip()
+            .lower()
+        )
+        self.control_token_online_selection_mode_by_domain = dict(
+            normalize_online_selection_mode_by_domain(
+                self.domains,
+                _cfg_get(
+                    audit_config,
+                    "control_token_online_selection_mode_by_domain",
+                    {},
+                ),
+                self.control_token_online_selection_mode,
+            )
+        )
+        self.control_token_online_weight_mode_by_domain = dict(
+            normalize_online_weight_mode_by_domain(
+                self.domains,
+                _cfg_get(
+                    audit_config,
+                    "control_token_online_weight_mode_by_domain",
+                    {},
+                ),
+                self.control_token_online_weight_mode,
+            )
+        )
         self.control_token_loss_ratio_alpha = float(
             _cfg_get(audit_config, "control_token_loss_ratio_alpha", 1.0)
         )
@@ -1738,6 +1857,15 @@ class MOPDAuditLogger:
                 "domain_control_token_candidate_groups": (
                     self.domain_control_token_candidate_groups
                 ),
+                "control_token_online_candidate_scope": (
+                    self.control_token_online_candidate_scope
+                ),
+                "control_token_online_candidate_vocab_size": (
+                    self.control_token_online_candidate_vocab_size
+                ),
+                "control_token_online_candidate_vocab_size_source": (
+                    self.control_token_online_candidate_vocab_size_source
+                ),
                 "control_token_normalize_per_domain": (
                     self.control_token_normalize_per_domain
                 ),
@@ -1773,10 +1901,15 @@ class MOPDAuditLogger:
                 "control_token_online_weight_mode": (
                     self.control_token_online_weight_mode
                 ),
+                "control_token_online_selection_mode_by_domain": (
+                    self.control_token_online_selection_mode_by_domain
+                ),
+                "control_token_online_weight_mode_by_domain": (
+                    self.control_token_online_weight_mode_by_domain
+                ),
                 "control_token_loss_ratio_alpha": self.control_token_loss_ratio_alpha,
                 "control_token_adaptive_neighborhood_enabled": (
-                    self.control_token_adaptive_neighborhood_enabled
-                    and mode == "train"
+                    self.control_token_adaptive_neighborhood_enabled and mode == "train"
                 ),
                 "control_token_adaptive_neighborhood_max_distance": (
                     self.control_token_adaptive_neighborhood_max_distance
@@ -2478,9 +2611,7 @@ class MOPDAuditLogger:
                             self.control_token_adaptive_neighborhood_min_far_tokens
                         ),
                         "overlap": "max",
-                        "neighbor_weight": (
-                            "fixed_control_weight_after_threshold"
-                        ),
+                        "neighbor_weight": ("fixed_control_weight_after_threshold"),
                         "control_weight": self.control_token_loss_weight,
                         "normalize_per_response": (
                             self.control_token_normalize_per_domain
