@@ -1,0 +1,20 @@
+# Explicit stock-dispatch control for fixed-input ABBA measurements. This is
+# required because the patched baseline now recognizes Transformers 4.51.3 and
+# would otherwise activate stable-sort automatically.
+extends: ../../../configs/baselines/qwen1p7b_30b_eopd_native_8gpu_b528.yaml
+
+runtime:
+  wandb_run_id: qwen1p7b-30b-eopd-native-8gpu-b528-ref-stock-control
+  wandb_resume: never
+
+teacher_performance:
+  moe_dispatch: stock
+
+extra_overrides:
+  - custom_reward_function.path=mopd_verl/mixed_reward.py
+  - custom_reward_function.name=compute_score
+  - trainer.resume_mode=disable
+
+trainer:
+  experiment_name: qwen1p7b-30b-eopd-native-8gpu-b528-ref-stock-control
+  default_local_dir: checkpoints/MOPD/qwen1p7b-30b-eopd-native-8gpu-b528-ref-stock-control

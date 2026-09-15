@@ -99,19 +99,118 @@ def test_multi_rank_batching_uses_the_synchronized_path(
     assert torch.equal(result[1], data.ids + 1)
 
 
+def test_adaptive_chunk_prefers_more_rows_then_larger_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    available = 10 * 100 * 8 + 1024 * 100 * 16
+    monkeypatch.setattr(perf, "_available", lambda tuning: available)
+    tuning = perf._Tuning(
+        chunk=1024,
+        max_sequences=3,
+        max_tokens=2000,
+        margin_bytes=12 * 1024**3,
+        adaptive_chunk=256,
+    )
+    chunks = []
+
+    def original(data: Batch, calculate_entropy: bool) -> tuple:
+        chunks.append(data.meta_info.get("topk_logprob_chunk_size"))
+        assert data.meta_info.get("teacher_memory_guarded_chunk") is True
+        return data.ids, data.ids + 1
+
+    data = Batch(torch.arange(4)[:, None], [8, 8, 8, 8])
+    wrapped = perf._batch_wrapper(original, tuning, 100)
+    result = wrapped(
+        data=data,
+        calculate_entropy=True,
+    )
+
+    assert chunks == [256, 1024]
+    assert torch.equal(result[0], data.ids)
+    assert wrapped._teacher_batch_stats == {
+        "rows": 4,
+        "tokens": 32,
+        "micro_batches": 2,
+        "groups": (
+            {"rows": 3, "tokens": 24, "chunk": 256, "guard_fallback": False},
+            {"rows": 1, "tokens": 8, "chunk": 1024, "guard_fallback": False},
+        ),
+    }
+
+
+def test_adaptive_chunk_retains_memory_guard_for_oversized_singleton(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(perf, "_available", lambda tuning: 0)
+    tuning = perf._Tuning(
+        chunk=1024,
+        max_sequences=32,
+        max_tokens=57344,
+        margin_bytes=12 * 1024**3,
+        adaptive_chunk=256,
+    )
+    seen = []
+
+    def original(data: Batch) -> tuple:
+        seen.append(data.meta_info.get("topk_logprob_chunk_size"))
+        return (data.ids,)
+
+    data = Batch(torch.arange(1)[:, None], [30])
+    perf._batch_wrapper(original, tuning, 100)(data=data)
+
+    assert seen == [16]
+
+
 @pytest.mark.parametrize("available,expected", [(10**10, 1024), (0, None)])
 def test_forward_guard_falls_back_without_rejecting_single_row(
     monkeypatch: pytest.MonkeyPatch, available: int, expected: int | None,
 ) -> None:
     monkeypatch.setattr(perf, "_available", lambda tuning: available)
 
-    def original(micro_batch: dict, temperature: float, topk_logprob_chunk_size: int | None = None) -> tuple:
+    def original(
+        micro_batch: dict,
+        temperature: float,
+        topk_logprob_chunk_size: int | None = None,
+        teacher_memory_guarded_chunk: bool = False,
+    ) -> tuple:
         return temperature, topk_logprob_chunk_size
 
     wrapped = perf._chunk_wrapper(original, perf._Tuning(1024, 32, 57344, 12 * 1024**3), 100)
     data = {"attention_mask": torch.ones(1, 20)}
     assert wrapped(data, temperature=0.7) == (0.7, expected)
     assert wrapped(data, 0.7, 128) == (0.7, 128)
+
+
+def test_forward_guard_revalidates_batch_selected_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    available_values = iter([10**10, 0])
+    monkeypatch.setattr(perf, "_available", lambda tuning: next(available_values))
+
+    def original(
+        micro_batch: dict,
+        topk_logprob_chunk_size: int | None = None,
+        teacher_memory_guarded_chunk: bool = False,
+    ) -> int | None:
+        return topk_logprob_chunk_size
+
+    wrapped = perf._chunk_wrapper(
+        original,
+        perf._Tuning(1024, 32, 57344, 12 * 1024**3),
+        100,
+    )
+    data = {"attention_mask": torch.ones(1, 20)}
+
+    assert wrapped(
+        data,
+        topk_logprob_chunk_size=256,
+        teacher_memory_guarded_chunk=True,
+    ) == 256
+    assert wrapped(
+        data,
+        topk_logprob_chunk_size=256,
+        teacher_memory_guarded_chunk=True,
+    ) is None
 
 
 @pytest.mark.parametrize("field,value", [
@@ -338,6 +437,53 @@ def test_dedicated_multi_rank_teacher_enables_performance_path(
     assert state["enabled"]
     assert state["distributed_batch_sync"]
     assert state["world_size"] == 2
+
+
+def test_replicated_teacher_batches_each_rank_independently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(perf, "install_moe_dispatch", lambda model, mode: 48)
+    batch_world_sizes = []
+    original_batch_wrapper = perf._batch_wrapper
+
+    def record_batch_world_size(*args: object, **kwargs: object) -> object:
+        batch_world_sizes.append(kwargs["distributed_world_size"])
+        return original_batch_wrapper(*args, **kwargs)
+
+    monkeypatch.setattr(perf, "_batch_wrapper", record_batch_world_size)
+
+    def forward(
+        micro_batch: dict,
+        topk_logprob_chunk_size: int | None = None,
+    ) -> None:
+        return None
+
+    policy = SimpleNamespace(
+        _forward_micro_batch=forward,
+        compute_log_prob=lambda data: (data,),
+        use_fused_kernels=False,
+        use_remove_padding=True,
+        ulysses_sequence_parallel_size=1,
+        actor_optimizer=None,
+        actor_module=SimpleNamespace(
+            config=SimpleNamespace(torch_dtype=torch.bfloat16, vocab_size=100)
+        ),
+    )
+    state = perf.configure_teacher_performance(
+        policy,
+        {"enabled": True},
+        world_size=2,
+        teacher_model_device="gpu",
+        dedicated_teacher=True,
+        fsdp_size=1,
+    )
+
+    assert state["enabled"]
+    assert state["replicated_teacher"]
+    assert not state["distributed_batch_sync"]
+    assert state["fsdp_size"] == 1
+    assert batch_world_sizes == [1]
 
 
 def test_multimodal_forward_retains_original_without_memory_probe(monkeypatch: pytest.MonkeyPatch) -> None:

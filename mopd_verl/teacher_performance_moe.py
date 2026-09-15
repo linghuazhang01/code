@@ -10,7 +10,11 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-EXPECTED_SOURCE_SHA = "21b88637319fb0e3b5bbb87d98d1f04104d5ce176b9270486d638e6114b1b29a"
+EXPECTED_SOURCE_SHA_BY_VERSION = {
+    # Exact inspect.getsource() hashes for Qwen3MoeSparseMoeBlock.forward.
+    "4.51.3": "c4ae8784c667994091405761b588d9d73f8b4290f5bd4d43dcd5ea3842dc63cb",
+    "4.57.6": "21b88637319fb0e3b5bbb87d98d1f04104d5ce176b9270486d638e6114b1b29a",
+}
 
 
 def qwen3_moe_forward_stable_sort(
@@ -79,18 +83,24 @@ def install_moe_dispatch(model: nn.Module, mode: str) -> int:
         logging.getLogger(__name__).info("Teacher MoE dispatch: no compatible Qwen3 blocks")
         return 0
     try:
-        compatible = version("transformers") == "4.57.6" and len(blocks) == 48
+        transformers_version = version("transformers")
+        expected_source_sha = EXPECTED_SOURCE_SHA_BY_VERSION.get(transformers_version)
+        compatible = expected_source_sha is not None and len(blocks) == 48
         compatible = compatible and all(
             type(block).__module__ == "transformers.models.qwen3_moe.modeling_qwen3_moe"
             and "forward" not in vars(block)
-            and hashlib.sha256(inspect.getsource(type(block).forward).encode()).hexdigest()
-            == EXPECTED_SOURCE_SHA for block in blocks
+            and hashlib.sha256(
+                inspect.getsource(type(block).forward).encode()
+            ).hexdigest()
+            == expected_source_sha
+            for block in blocks
         )
     except (OSError, TypeError):
         compatible = False
     if not compatible:
         logging.getLogger(__name__).warning(
-            "Teacher MoE stable_sort fallback: HF version/source or block layout differs")
+            "Teacher MoE stable_sort fallback: HF version/source or block layout differs"
+        )
         return 0
     for block in blocks:
         block.forward = functools.partial(qwen3_moe_forward_stable_sort, block)

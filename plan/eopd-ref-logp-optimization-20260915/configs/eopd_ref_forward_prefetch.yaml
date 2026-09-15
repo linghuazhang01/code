@@ -1,0 +1,17 @@
+# Single-variable follow-up to the kernel candidate. Benchmark independently;
+# forward prefetch may overlap FSDP all-gather but can raise peak memory.
+extends: eopd_ref_kernel_tuned.yaml
+
+runtime:
+  wandb_run_id: qwen1p7b-30b-eopd-native-8gpu-b528-ref-prefetch
+
+extra_overrides:
+  - custom_reward_function.path=mopd_verl/mixed_reward.py
+  - custom_reward_function.name=compute_score
+  - trainer.resume_mode=disable
+  - actor_rollout_ref.ref.fsdp_config.fsdp_size=2
+  - actor_rollout_ref.ref.fsdp_config.forward_prefetch=True
+
+trainer:
+  experiment_name: qwen1p7b-30b-eopd-native-8gpu-b528-ref-prefetch
+  default_local_dir: checkpoints/MOPD/qwen1p7b-30b-eopd-native-8gpu-b528-ref-prefetch

@@ -73,7 +73,13 @@ class PerformanceConfigCoverageTests(unittest.TestCase):
                             self.assertEqual(config.rollout.max_num_seqs, 64)
                         self.assertEqual(
                             asdict(config.teacher_performance),
-                            dict(expected_performance, expandable_segments=True),
+                            dict(
+                                expected_performance,
+                                expandable_segments=True,
+                                fused_statistics=False,
+                                compact_topk_ids=False,
+                                adaptive_topk_chunk_size=None,
+                            ),
                         )
                         overrides = build_overrides(config)
                         self.assertIn("+actor_rollout_ref.ref.teacher_performance.expandable_segments=true", overrides)

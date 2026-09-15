@@ -26,6 +26,7 @@ class _Tuning:
     max_sequences: int
     max_tokens: int
     margin_bytes: int
+    adaptive_chunk: int | None = None
 
 
 def token_capacity(available: int, vocab_size: int, chunk: int) -> int:
@@ -123,32 +124,72 @@ def _batch_wrapper(
             supported = locally_supported
         if not supported:
             return original(*args, **kwargs)
-        parts, start = [], 0
+        parts, group_stats, start = [], [], 0
         while start < len(lengths):
-            local_capacity = min(
-                tuning.max_tokens,
-                token_capacity(_available(tuning), vocab_size, tuning.chunk),
-            )
-            capacity = _distributed_min(local_capacity, distributed_world_size)
-            local_indices = next_group(
-                lengths, start, tuning.max_sequences, capacity
-            )
-            if distributed_world_size > 1:
-                group_size = _distributed_min(
-                    len(local_indices), distributed_world_size
+            available = _available(tuning)
+            candidate_chunks = [tuning.chunk]
+            if (
+                tuning.adaptive_chunk is not None
+                and tuning.adaptive_chunk < tuning.chunk
+            ):
+                candidate_chunks.append(tuning.adaptive_chunk)
+            candidates = []
+            for chunk in candidate_chunks:
+                capacity = min(
+                    tuning.max_tokens,
+                    token_capacity(available, vocab_size, chunk),
                 )
-                indices = list(range(start, start + group_size))
-            else:
-                indices = local_indices
+                local_indices = next_group(
+                    lengths,
+                    start,
+                    tuning.max_sequences,
+                    capacity,
+                )
+                group_size = _distributed_min(
+                    len(local_indices),
+                    distributed_world_size,
+                )
+                candidates.append((group_size, chunk, capacity))
+            group_size, chunk, capacity = max(
+                candidates,
+                key=lambda candidate: (candidate[0], candidate[1]),
+            )
+            indices = list(range(start, start + group_size))
+            chunk_is_safe = int(
+                sum(lengths[index] for index in indices) <= capacity
+            )
+            chunk_is_safe = _distributed_min(
+                chunk_is_safe,
+                distributed_world_size,
+            )
             piece = data.select_idxs(indices)
             piece.meta_info = dict(data.meta_info)
             piece.meta_info.update(micro_batch_size=len(indices), use_dynamic_bsz=False)
+            effective_chunk = chunk if chunk_is_safe else 16
+            piece.meta_info["topk_logprob_chunk_size"] = effective_chunk
+            piece.meta_info["teacher_memory_guarded_chunk"] = True
+            group_stats.append(
+                {
+                    "rows": len(indices),
+                    "tokens": sum(lengths[index] for index in indices),
+                    "chunk": effective_chunk,
+                    "guard_fallback": not bool(chunk_is_safe),
+                }
+            )
             piece_args = (piece, *args[1:]) if args else args
             piece_kwargs = dict(kwargs)
             if "data" in piece_kwargs:
                 piece_kwargs["data"] = piece
             parts.append(original(*piece_args, **piece_kwargs))
             start += len(indices)
+        stats = {
+            "rows": len(lengths),
+            "tokens": sum(lengths),
+            "micro_batches": len(group_stats),
+            "groups": tuple(group_stats),
+        }
+        setattr(compute, "_teacher_batch_stats", stats)
+        logging.getLogger(__name__).info("Teacher batch plan: %s", stats)
         return _concat(parts)
     return compute
 
@@ -165,13 +206,20 @@ def _chunk_wrapper(
         if "multi_modal_inputs" in micro_batch:
             return original(*args, **kwargs)
         # Explicit call-site overrides keep their original meaning.
-        if bound.arguments.get("topk_logprob_chunk_size") is not None:
+        requested_chunk = bound.arguments.get("topk_logprob_chunk_size")
+        memory_guarded_chunk = bool(
+            bound.arguments.get("teacher_memory_guarded_chunk", False)
+        )
+        if requested_chunk is not None and not memory_guarded_chunk:
             return original(*args, **kwargs)
         key = "ref_attention_mask" if "ref_attention_mask" in micro_batch else "attention_mask"
         tokens = int(micro_batch[key].sum().item())
-        capacity = token_capacity(_available(tuning), vocab_size, tuning.chunk)
+        effective_chunk = (
+            tuning.chunk if requested_chunk is None else int(requested_chunk)
+        )
+        capacity = token_capacity(_available(tuning), vocab_size, effective_chunk)
         if tokens <= min(capacity, tuning.max_tokens):
-            bound.arguments["topk_logprob_chunk_size"] = tuning.chunk
+            bound.arguments["topk_logprob_chunk_size"] = effective_chunk
         else:
             # An oversized single row cannot be split without changing attention.
             # Retain the original chunk, rather than reject otherwise valid work.
@@ -179,6 +227,7 @@ def _chunk_wrapper(
                 "Teacher memory guard: retaining original chunk16 for %d tokens (capacity=%d)",
                 tokens, capacity,
             )
+            bound.arguments["topk_logprob_chunk_size"] = None
         return original(*bound.args, **bound.kwargs)
     return forward
 
@@ -203,6 +252,7 @@ def configure_teacher_allocator(
 def configure_teacher_performance(
     policy: Any, config: Mapping[str, Any], *, world_size: int,
     teacher_model_device: str, dedicated_teacher: bool = False,
+    fsdp_size: int | None = None,
 ) -> dict[str, Any]:
     """Install policy-local defaults once, after the reference model is built."""
     if not config.get("enabled", False):
@@ -230,9 +280,18 @@ def configure_teacher_performance(
         max_sequences=requested.max_micro_batch_size,
         max_tokens=requested.max_tokens,
         margin_bytes=int(requested.memory_margin_gib * 1024**3),
+        adaptive_chunk=requested.adaptive_topk_chunk_size,
     )
     mode = requested.moe_dispatch
     vocab = int(model_config.vocab_size)
+    replicated_teacher = (
+        dedicated_teacher
+        and world_size > 1
+        and fsdp_size == 1
+    )
+    batch_sync_world_size = (
+        world_size if dedicated_teacher and not replicated_teacher else 1
+    )
     policy._forward_micro_batch = _chunk_wrapper(
         policy._forward_micro_batch, tuning, vocab
     )
@@ -240,7 +299,7 @@ def configure_teacher_performance(
         policy.compute_log_prob,
         tuning,
         vocab,
-        distributed_world_size=world_size if dedicated_teacher else 1,
+        distributed_world_size=batch_sync_world_size,
     )
     blocks = install_moe_dispatch(policy.actor_module, mode)
     state = {
@@ -248,9 +307,14 @@ def configure_teacher_performance(
         "chunk": tuning.chunk,
         "max_micro_batch_size": tuning.max_sequences,
         "max_tokens": tuning.max_tokens,
+        "adaptive_topk_chunk_size": tuning.adaptive_chunk,
+        "fused_statistics": requested.fused_statistics,
+        "compact_topk_ids": requested.compact_topk_ids,
         "memory_margin_bytes": tuning.margin_bytes,
         "moe_blocks": blocks,
-        "distributed_batch_sync": dedicated_teacher and world_size > 1,
+        "distributed_batch_sync": batch_sync_world_size > 1,
+        "replicated_teacher": replicated_teacher,
+        "fsdp_size": fsdp_size,
         "world_size": world_size,
     }
     policy._teacher_performance_config = state

@@ -1,0 +1,24 @@
+# High-upside, higher-risk topology experiment. Each teacher GPU owns a full
+# 30B replica, eliminating per-layer FSDP all-gather. Run only after a bounded
+# one-batch L20Y memory smoke; do not use as the first production candidate.
+extends: eopd_ref_kernel_tuned.yaml
+
+runtime:
+  wandb_run_id: qwen1p7b-30b-eopd-native-8gpu-b528-ref-replica
+
+teacher_performance:
+  topk_logprob_chunk_size: 256
+  adaptive_topk_chunk_size: null
+  max_micro_batch_size: 8
+  max_tokens: 16384
+
+extra_overrides:
+  - custom_reward_function.path=mopd_verl/mixed_reward.py
+  - custom_reward_function.name=compute_score
+  - trainer.resume_mode=disable
+  - actor_rollout_ref.ref.fsdp_config.fsdp_size=1
+  - actor_rollout_ref.ref.fsdp_config.param_offload=False
+
+trainer:
+  experiment_name: qwen1p7b-30b-eopd-native-8gpu-b528-ref-replica
+  default_local_dir: checkpoints/MOPD/qwen1p7b-30b-eopd-native-8gpu-b528-ref-replica

@@ -38,6 +38,10 @@ from mopd_verl.full_gradient.loss_support import (
     selected_teacher_entropy,
 )
 from mopd_verl.loss_scaling import global_token_mean_loss_scales
+from mopd_verl.teacher_logprob import (
+    fused_logprob_entropy_topk_from_logits,
+    response_prediction_mask,
+)
 from mopd_verl.token_baseline_runtime import PRECOMPUTED_KEYS
 from mopd_verl.topk_distill import (
     TOPK_LOGPROB_MODE_SPARSE,
@@ -132,6 +136,7 @@ class DataParallelPPOActor(BasePPOActor):
         topk_logprob_chunk_size: int | None = None,
         topk_logprob_mode: str = "sparse",
         return_extra: bool = False,
+        teacher_memory_guarded_chunk: bool = False,
     ) -> tuple[torch.Tensor, ...]:
         """
         Returns:
@@ -146,6 +151,16 @@ class DataParallelPPOActor(BasePPOActor):
             )
         response_length = micro_batch["responses"].size(-1)
         needs_topk_extra = return_extra or topk is not None or gather_topk_ids is not None
+        teacher_performance = getattr(self, "_teacher_performance_config", {})
+        teacher_performance_enabled = bool(teacher_performance.get("enabled", False))
+        fused_teacher_statistics_enabled = bool(
+            teacher_performance_enabled
+            and teacher_performance.get("fused_statistics", False)
+        )
+        compact_teacher_topk_ids = bool(
+            teacher_performance_enabled
+            and teacher_performance.get("compact_topk_ids", False)
+        )
         if needs_topk_extra and self.use_fused_kernels:
             raise ValueError("Top-k distillation requires non-fused logits.")
         if needs_topk_extra and self.use_ulysses_sp:
@@ -244,6 +259,7 @@ class DataParallelPPOActor(BasePPOActor):
                     **extra_args,
                 )  # prevent model thinks we are generating
 
+                statistics_indices = indices
                 if self.use_fused_kernels:
                     log_probs = output.log_probs.squeeze(0)  # (total_nnz,)
                     entropy_rmpad = output.entropy.squeeze(0)  # (total_nnz,)
@@ -252,8 +268,62 @@ class DataParallelPPOActor(BasePPOActor):
                     logits_rmpad = output.logits.squeeze(0)  # (total_nnz, vocab_size)
                     logits_rmpad.div_(temperature)
 
+                    gather_ids_rmpad = None
+                    if gather_topk_ids is not None:
+                        gather_ids = gather_topk_ids.to(device=input_ids.device, dtype=torch.long)
+                        full_gather_ids = torch.zeros(
+                            (batch_size, seqlen, int(gather_ids.shape[-1])),
+                            device=input_ids.device,
+                            dtype=torch.long,
+                        )
+                        full_gather_ids[:, -response_length - 1 : -1, :] = gather_ids
+                        gather_ids_rmpad = index_first_axis(
+                            rearrange(full_gather_ids, "b s k -> (b s) k"),
+                            indices,
+                        )
+                    use_fused_teacher_statistics = (
+                        self.actor_optimizer is None
+                        and fused_teacher_statistics_enabled
+                        and calculate_log_probs
+                        and calculate_entropy
+                        and (topk is not None or gather_topk_ids is not None)
+                        and not self.config.entropy_checkpointing
+                    )
+                    if use_fused_teacher_statistics:
+                        response_positions = response_prediction_mask(
+                            indices,
+                            sequence_length=seqlen,
+                            response_length=response_length,
+                        )
+                        statistics_indices = indices[response_positions]
+                        statistics_logits = logits_rmpad[response_positions]
+                        statistics_labels = input_ids_rmpad_rolled[response_positions]
+                        statistics_gather_ids = (
+                            gather_ids_rmpad[response_positions]
+                            if gather_ids_rmpad is not None
+                            else None
+                        )
+                        (
+                            log_probs,
+                            entropy_rmpad,
+                            topk_ids_rmpad,
+                            topk_log_probs_rmpad,
+                            gathered_log_probs_rmpad,
+                        ) = fused_logprob_entropy_topk_from_logits(
+                            statistics_logits,
+                            statistics_labels,
+                            topk=topk,
+                            gather_topk_ids=statistics_gather_ids,
+                            normalize_gathered=normalize_gathered_topk,
+                            chunk_size=topk_logprob_chunk_size or 16,
+                            logprob_mode=topk_logprob_mode,
+                            entropy_fn=self.compute_entropy_from_logits,
+                        )
+
                     # if use_sp: ((total_nnz / sp) + pad) ; if not use_sp: (batch, seqlen)
-                    if calculate_log_probs:
+                    if not calculate_log_probs:
+                        log_probs = logits_rmpad.new_zeros(input_ids_rmpad_rolled.shape)
+                    elif not use_fused_teacher_statistics:
                         use_inplace_backward = True if inplace_backward is None else bool(inplace_backward)
                         if calculate_entropy or needs_topk_extra:
                             use_inplace_backward = False
@@ -262,11 +332,8 @@ class DataParallelPPOActor(BasePPOActor):
                             labels=input_ids_rmpad_rolled,
                             inplace_backward=use_inplace_backward,
                         )
-                    else:
-                        log_probs = logits_rmpad.new_zeros(input_ids_rmpad_rolled.shape)
-
                     # compute entropy
-                    if calculate_entropy:
+                    if calculate_entropy and not use_fused_teacher_statistics:
                         if not self.config.entropy_checkpointing:
                             entropy_rmpad = self.compute_entropy_from_logits(logits_rmpad)  # ((total_nnz / sp) + pad)
                         else:
@@ -274,20 +341,7 @@ class DataParallelPPOActor(BasePPOActor):
                                 self.compute_entropy_from_logits, logits_rmpad
                             )
 
-                    if needs_topk_extra:
-                        gather_ids_rmpad = None
-                        if gather_topk_ids is not None:
-                            gather_ids = gather_topk_ids.to(device=input_ids.device, dtype=torch.long)
-                            full_gather_ids = torch.zeros(
-                                (batch_size, seqlen, int(gather_ids.shape[-1])),
-                                device=input_ids.device,
-                                dtype=torch.long,
-                            )
-                            full_gather_ids[:, -response_length - 1 : -1, :] = gather_ids
-                            gather_ids_rmpad = index_first_axis(
-                                rearrange(full_gather_ids, "b s k -> (b s) k"),
-                                indices,
-                            )
+                    if needs_topk_extra and not use_fused_teacher_statistics:
                         topk_ids_rmpad, topk_log_probs_rmpad, gathered_log_probs_rmpad = topk_log_probs_from_logits(
                             logits_rmpad,
                             topk=topk,
@@ -317,26 +371,26 @@ class DataParallelPPOActor(BasePPOActor):
                 if calculate_entropy:
                     full_entropy = pad_input(
                         hidden_states=entropy_rmpad.unsqueeze(-1),
-                        indices=indices,
+                        indices=statistics_indices,
                         batch=batch_size,
                         seqlen=seqlen,
                     )
                 full_log_probs = pad_input(
                     hidden_states=log_probs.unsqueeze(-1),
-                    indices=indices,
+                    indices=statistics_indices,
                     batch=batch_size,
                     seqlen=seqlen,
                 )
                 if topk is not None:
                     full_topk_log_probs = pad_input(
                         hidden_states=topk_log_probs_rmpad,
-                        indices=indices,
+                        indices=statistics_indices,
                         batch=batch_size,
                         seqlen=seqlen,
                     )
                     full_topk_ids = pad_input(
                         hidden_states=topk_ids_rmpad,
-                        indices=indices,
+                        indices=statistics_indices,
                         batch=batch_size,
                         seqlen=seqlen,
                     )
@@ -345,7 +399,7 @@ class DataParallelPPOActor(BasePPOActor):
                 if gather_topk_ids is not None:
                     full_gathered_topk_log_probs = pad_input(
                         hidden_states=gathered_log_probs_rmpad,
-                        indices=indices,
+                        indices=statistics_indices,
                         batch=batch_size,
                         seqlen=seqlen,
                     )
@@ -382,7 +436,34 @@ class DataParallelPPOActor(BasePPOActor):
 
                     logits.div_(temperature)
                     logits = logits[:, -response_length - 1 : -1, :]  # (bsz, response_length, vocab_size)
-                    if calculate_log_probs:
+                    use_fused_teacher_statistics = (
+                        self.actor_optimizer is None
+                        and fused_teacher_statistics_enabled
+                        and calculate_log_probs
+                        and calculate_entropy
+                        and (topk is not None or gather_topk_ids is not None)
+                        and not self.config.entropy_checkpointing
+                    )
+                    if use_fused_teacher_statistics:
+                        (
+                            log_probs,
+                            entropy,
+                            topk_ids,
+                            topk_log_probs,
+                            gathered_topk_log_probs,
+                        ) = fused_logprob_entropy_topk_from_logits(
+                            logits,
+                            micro_batch["responses"],
+                            topk=topk,
+                            gather_topk_ids=gather_topk_ids,
+                            normalize_gathered=normalize_gathered_topk,
+                            chunk_size=topk_logprob_chunk_size or 16,
+                            logprob_mode=topk_logprob_mode,
+                            entropy_fn=self.compute_entropy_from_logits,
+                        )
+                    if not calculate_log_probs:
+                        log_probs = logits.new_zeros(logits.shape[:-1])
+                    elif not use_fused_teacher_statistics:
                         use_inplace_backward = True if inplace_backward is None else bool(inplace_backward)
                         if calculate_entropy or needs_topk_extra:
                             use_inplace_backward = False
@@ -391,15 +472,13 @@ class DataParallelPPOActor(BasePPOActor):
                             micro_batch["responses"],
                             inplace_backward=use_inplace_backward,
                         )
-                    else:
-                        log_probs = logits.new_zeros(logits.shape[:-1])
-                    if calculate_entropy:
+                    if calculate_entropy and not use_fused_teacher_statistics:
                         if not self.config.entropy_checkpointing:
                             entropy = verl_F.entropy_from_logits(logits)  # (bsz, response_length)
                         else:
                             entropy = torch.utils.checkpoint.checkpoint(verl_F.entropy_from_logits, logits)
 
-                    if needs_topk_extra:
+                    if needs_topk_extra and not use_fused_teacher_statistics:
                         topk_ids, topk_log_probs, gathered_topk_log_probs = topk_log_probs_from_logits(
                             logits,
                             topk=topk,
@@ -409,6 +488,14 @@ class DataParallelPPOActor(BasePPOActor):
                             logprob_mode=topk_logprob_mode,
                         )
 
+            if (
+                topk_ids is not None
+                and self.actor_optimizer is None
+                and compact_teacher_topk_ids
+            ):
+                # Qwen vocabularies fit safely in int32. The student path casts
+                # support IDs back to long immediately before torch.gather.
+                topk_ids = topk_ids.to(dtype=torch.int32)
             if needs_topk_extra:
                 return entropy, log_probs, topk_ids, topk_log_probs, gathered_topk_log_probs
             return entropy, log_probs
@@ -469,6 +556,12 @@ class DataParallelPPOActor(BasePPOActor):
 
         micro_batch_size = data.meta_info["micro_batch_size"]
         temperature = data.meta_info["temperature"]  # temperature must be in the data.meta_info to avoid silent error
+        topk_logprob_chunk_size_override = data.meta_info.get(
+            "topk_logprob_chunk_size"
+        )
+        teacher_memory_guarded_chunk = bool(
+            data.meta_info.get("teacher_memory_guarded_chunk", False)
+        )
         use_dynamic_bsz = data.meta_info["use_dynamic_bsz"]
         has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
         # Handle reference inputs produced with a different tokenizer.
@@ -508,7 +601,9 @@ class DataParallelPPOActor(BasePPOActor):
                     calculate_entropy=calculate_entropy,
                     topk=topk,
                     gather_topk_ids=gather_topk_ids,
+                    topk_logprob_chunk_size=topk_logprob_chunk_size_override,
                     return_extra=topk is not None or gather_topk_ids is not None,
+                    teacher_memory_guarded_chunk=teacher_memory_guarded_chunk,
                 )
                 if topk is None and gather_topk_ids is None:
                     entropy, log_probs = forward_output

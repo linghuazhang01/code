@@ -1,0 +1,23 @@
+# Primary candidate: preserve the 6 actor + 2 sharded teacher topology while
+# removing duplicated teacher vocabulary work. Requires a fresh process.
+extends: ../../../configs/baselines/qwen1p7b_30b_eopd_native_8gpu_b528.yaml
+
+runtime:
+  wandb_run_id: qwen1p7b-30b-eopd-native-8gpu-b528-ref-kernel
+  wandb_resume: never
+
+teacher_performance:
+  fused_statistics: true
+  compact_topk_ids: true
+  # Prefer chunk1024 when it does not reduce the forward group. Use the
+  # measured chunk256 fallback when its lower workspace admits more rows.
+  adaptive_topk_chunk_size: 256
+
+extra_overrides:
+  - custom_reward_function.path=mopd_verl/mixed_reward.py
+  - custom_reward_function.name=compute_score
+  - trainer.resume_mode=disable
+
+trainer:
+  experiment_name: qwen1p7b-30b-eopd-native-8gpu-b528-ref-kernel
+  default_local_dir: checkpoints/MOPD/qwen1p7b-30b-eopd-native-8gpu-b528-ref-kernel

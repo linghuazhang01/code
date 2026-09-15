@@ -884,6 +884,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 world_size=self.world_size,
                 teacher_model_device=teacher_model_device,
                 dedicated_teacher=dedicated_teacher,
+                fsdp_size=int(self.config.ref.fsdp_config.get("fsdp_size", -1)),
             )
 
         # Initialize base models for corrected reward computation

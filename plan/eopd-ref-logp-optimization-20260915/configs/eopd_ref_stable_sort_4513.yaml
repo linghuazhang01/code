@@ -1,0 +1,16 @@
+# P0 candidate: isolate the newly allowlisted Transformers 4.51.3 stable-sort
+# MoE dispatch. Training/data/topology and existing teacher caps are unchanged.
+extends: ../../../configs/baselines/qwen1p7b_30b_eopd_native_8gpu_b528.yaml
+
+runtime:
+  wandb_run_id: qwen1p7b-30b-eopd-native-8gpu-b528-ref-stable4513
+  wandb_resume: never
+
+extra_overrides:
+  - custom_reward_function.path=mopd_verl/mixed_reward.py
+  - custom_reward_function.name=compute_score
+  - trainer.resume_mode=disable
+
+trainer:
+  experiment_name: qwen1p7b-30b-eopd-native-8gpu-b528-ref-stable4513
+  default_local_dir: checkpoints/MOPD/qwen1p7b-30b-eopd-native-8gpu-b528-ref-stable4513

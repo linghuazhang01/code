@@ -14,6 +14,9 @@ from mopd_verl.teacher_performance_config import TeacherPerformanceConfig
     {"expandable_segments": 1}, {"topk_logprob_chunk_size": 0},
     {"topk_logprob_chunk_size": True}, {"max_micro_batch_size": 33},
     {"max_tokens": 57345}, {"memory_margin_gib": 0},
+    {"fused_statistics": 1}, {"compact_topk_ids": "true"},
+    {"adaptive_topk_chunk_size": 0},
+    {"topk_logprob_chunk_size": 64, "adaptive_topk_chunk_size": 65},
     {"memory_margin_gib": float("nan")}, {"moe_dispatch": "unknown"},
 ])
 def test_invalid_tuning_fails_before_launch(values: dict) -> None:
@@ -31,6 +34,9 @@ def test_teacher_settings_reach_ref_without_changing_actor() -> None:
     assert "+actor_rollout_ref.ref.teacher_performance.max_micro_batch_size=32" in overrides
     assert "+actor_rollout_ref.ref.teacher_performance.max_tokens=57344" in overrides
     assert "+actor_rollout_ref.ref.teacher_performance.expandable_segments=true" in overrides
+    assert "+actor_rollout_ref.ref.teacher_performance.fused_statistics=false" in overrides
+    assert "+actor_rollout_ref.ref.teacher_performance.compact_topk_ids=false" in overrides
+    assert "+actor_rollout_ref.ref.teacher_performance.adaptive_topk_chunk_size=null" in overrides
     changed = replace(config, teacher_performance=replace(config.teacher_performance, enabled=False))
     original_actor = [value for value in overrides if value.startswith("actor_rollout_ref.actor.")]
     changed_actor = [value for value in build_overrides(changed) if value.startswith("actor_rollout_ref.actor.")]
