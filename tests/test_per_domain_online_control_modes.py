@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ import yaml
 
 from mopd_verl.domain_gradient.config import DomainGradientConfig
 from mopd_verl.domain_gradient.control_selection_scoring import (
+    TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE,
     normalize_online_selection_mode_by_domain,
     normalize_online_weight_mode_by_domain,
     validate_online_control_mode_contracts,
@@ -27,6 +29,58 @@ from mopd_verl.domain_gradient.control_top_loss_runtime import (
 from mopd_verl.launch import build_command
 from mopd_verl.settings import load_config
 from mopd_verl.verl_audit import MOPDAuditLogger
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("domain_override", [False, True])
+def test_trainer_requests_teacher_entropy_for_domain_override(
+    enabled: bool, domain_override: bool
+) -> None:
+    trainer_path = Path(__file__).resolve().parents[1] / (
+        "third_party/verl/verl/trainer/ppo/ray_trainer.py"
+    )
+    tree = ast.parse(trainer_path.read_text())
+    assignments = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Subscript)
+            and isinstance(target.slice, ast.Constant)
+            and target.slice.value == "mopd_compute_teacher_entropy"
+            for target in node.targets
+        )
+    ]
+    assert len(assignments) == 1
+    logger = SimpleNamespace(
+        control_token_online_selection_enabled=enabled,
+        control_token_online_selection_mode="top_loss",
+        control_token_online_selection_mode_by_domain={
+            "math": "top_loss",
+            "science": (
+                TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE
+                if domain_override
+                else "top_loss"
+            ),
+        },
+        should_log_entropy=lambda step: False,
+        should_log_entropy_vocab_vector=lambda step: False,
+        should_log_response_level=lambda step: False,
+    )
+    expression = ast.Expression(body=assignments[0].value)
+    result = eval(
+        compile(expression, str(trainer_path), "eval"),
+        {
+            "self": SimpleNamespace(mopd_audit_logger=logger, global_steps=1),
+            "policy_loss_config": {},
+            "uses_eopd_loss": lambda config: False,
+            "token_baseline_requires_teacher_entropy": lambda config: False,
+            "TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE": (
+                TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE
+            ),
+        },
+    )
+    assert result is (enabled and domain_override)
 
 
 BASE_CONFIG = Path(__file__).resolve().parents[1] / (

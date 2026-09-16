@@ -836,6 +836,7 @@ class DataParallelPPOActor(BasePPOActor):
         adaptive_center_mask_batches = []
         adaptive_threshold_pass_mask_batches = []
         audit = DomainGradientAudit(self, data.meta_info.get("mopd_full_gradient", {}))
+        online_selection_modes = set(audit.config.online_selection_mode_map().values())
         if self.ulysses_sequence_parallel_size > 1 and (
             audit.config.control_token_online_selection_enabled
             or audit.config.control_token_adaptive_neighborhood_enabled
@@ -847,8 +848,9 @@ class DataParallelPPOActor(BasePPOActor):
             )
         if (
             audit.config.control_token_online_selection_enabled
-            and audit.config.control_token_online_selection_mode
-            in {*PAIRED_SIGNAL_SELECTION_MODES, TOP_Q_LOSS_ENTROPY_SELECTION_MODE}
+            and online_selection_modes.intersection(
+                {*PAIRED_SIGNAL_SELECTION_MODES, TOP_Q_LOSS_ENTROPY_SELECTION_MODE}
+            )
             and "student_entropy" not in data.batch
         ):
             raise ValueError(
@@ -857,14 +859,13 @@ class DataParallelPPOActor(BasePPOActor):
             )
         if (
             audit.config.control_token_online_selection_enabled
-            and audit.config.control_token_online_selection_mode == TOP_Q_LOSS_ENTROPY_SELECTION_MODE
+            and TOP_Q_LOSS_ENTROPY_SELECTION_MODE in online_selection_modes
             and not on_policy
         ):
             raise ValueError("Q selection requires one PPO epoch and one optimizer mini-batch.")
         if (
             audit.config.control_token_online_selection_enabled
-            and audit.config.control_token_online_selection_mode
-            == TOP_KL_STUDENT_ENTROPY_SELECTION_MODE
+            and TOP_KL_STUDENT_ENTROPY_SELECTION_MODE in online_selection_modes
             and not uses_topk_distill_loss(self.config.policy_loss)
         ):
             raise ValueError(
@@ -873,8 +874,8 @@ class DataParallelPPOActor(BasePPOActor):
             )
         if (
             audit.config.control_token_online_selection_enabled
-            and audit.config.control_token_online_selection_mode
-            == TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE
+            and TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE
+            in online_selection_modes
         ):
             selected_teacher_entropy(
                 {**data.batch, **data.non_tensor_batch},
@@ -1137,14 +1138,14 @@ class DataParallelPPOActor(BasePPOActor):
                             micro_batch_configured_token_loss_mask,
                             selector_token_loss_batches=(
                                 micro_batch_selector_token_loss
-                                if audit.config.control_token_online_selection_mode
-                                == TOP_KL_STUDENT_ENTROPY_SELECTION_MODE
+                                if TOP_KL_STUDENT_ENTROPY_SELECTION_MODE
+                                in online_selection_modes
                                 else None
                             ),
                             selector_token_loss_mask_batches=(
                                 micro_batch_selector_token_loss_mask
-                                if audit.config.control_token_online_selection_mode
-                                == TOP_KL_STUDENT_ENTROPY_SELECTION_MODE
+                                if TOP_KL_STUDENT_ENTROPY_SELECTION_MODE
+                                in online_selection_modes
                                 else None
                             ),
                         ),

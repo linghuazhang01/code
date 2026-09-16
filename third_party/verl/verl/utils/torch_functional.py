@@ -117,20 +117,32 @@ def logprobs_from_logits_v2(logits: torch.FloatTensor, labels):
     """
     A memory efficient implementation of logprobs_from_logits
     """
-    if logits.dtype in [torch.float32, torch.float64]:
-        logits_labels = torch.gather(logits, dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)
-        # loop to reduce peak mem consumption
-        logsumexp_values = torch.stack([torch.logsumexp(logit, dim=-1) for logit in logits])
-        logprobs_labels = logits_labels - logsumexp_values  # log_softmax(x_i) = x_i - logsumexp(x)
-    else:
-        # logsumexp approach is unstable with bfloat16, fall back to slightly less efficent approach
-        logprobs_labels = []
-        for row_logits, row_labels in zip(logits, labels, strict=True):  # loop to reduce peak mem consumption
-            row_logprobs = F.log_softmax(row_logits, dim=-1)
-            row_logprobs_labels = row_logprobs.gather(dim=-1, index=row_labels.unsqueeze(-1)).squeeze(-1)
-            logprobs_labels.append(row_logprobs_labels)
-        logprobs_labels = torch.stack(logprobs_labels)
-    return logprobs_labels
+    original_shape = logits.shape[:-1]
+    flat_logits = logits.reshape(-1, logits.shape[-1])
+    flat_labels = labels.reshape(-1)
+    if flat_logits.numel() == 0:
+        return flat_logits.new_empty(original_shape)
+
+    token_chunk_size = 1024
+    logprobs_labels = []
+    for start in range(0, flat_logits.shape[0], token_chunk_size):
+        end = min(start + token_chunk_size, flat_logits.shape[0])
+        logits_chunk = flat_logits[start:end]
+        labels_chunk = flat_labels[start:end]
+        if logits.dtype in [torch.float32, torch.float64]:
+            logits_labels = torch.gather(
+                logits_chunk, dim=-1, index=labels_chunk.unsqueeze(-1)
+            ).squeeze(-1)
+            logsumexp_values = torch.logsumexp(logits_chunk, dim=-1)
+            logprobs_labels.append(logits_labels - logsumexp_values)
+        else:
+            log_probs_chunk = F.log_softmax(logits_chunk, dim=-1)
+            logprobs_labels.append(
+                log_probs_chunk.gather(
+                    dim=-1, index=labels_chunk.unsqueeze(-1)
+                ).squeeze(-1)
+            )
+    return torch.cat(logprobs_labels, dim=0).view(original_shape)
 
 
 def clip_by_value(x, tensor_min, tensor_max):

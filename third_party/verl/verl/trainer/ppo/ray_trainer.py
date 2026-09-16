@@ -1868,8 +1868,8 @@ class RayPPOTrainer:
                         )
                         or (
                             self.mopd_audit_logger.control_token_online_selection_enabled
-                            and self.mopd_audit_logger.control_token_online_selection_mode
-                            == TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE
+                            and TOP_TEACHER_CONFIDENCE_STUDENT_ENTROPY_SELECTION_MODE
+                            in self.mopd_audit_logger.control_token_online_selection_mode_by_domain.values()
                         )
                         or self.mopd_audit_logger.should_log_entropy(
                             self.global_steps

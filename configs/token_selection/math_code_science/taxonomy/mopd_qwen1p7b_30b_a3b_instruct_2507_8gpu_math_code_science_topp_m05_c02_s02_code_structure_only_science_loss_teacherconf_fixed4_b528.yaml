@@ -1,0 +1,51 @@
+extends: mopd_qwen1p7b_30b_a3b_instruct_2507_4gpu_math_code_science_topp_m05_c02_s02_code_structure_only_science_loss_teacherconf_fixed4_b528_colocated.yaml
+
+runtime:
+  slurm_allocation_gpus: 8
+  wandb_run_id: q1p7b-8g-mcs-mtl05-ctl02-sltc02-f4-b528-s60
+  wandb_resume: never
+
+data:
+  domain_train_files:
+    math: [data/G-OPD-Training-Data/DeepMath-103K/train_filtered_level6.parquet]
+    code: [data/G-OPD-Training-Data/Eurus/code_train.parquet]
+    science: [data/G-OPD-Training-Data/Science/train.parquet]
+  val_files:
+    - data/eval_data/math/AIME24/test.parquet
+    - data/eval_data/math/AIME25/test.parquet
+    - data/eval_data/math/HMMT25Feb/test.parquet
+    - data/eval_data/math/HMMT25Nov/test.parquet
+    - data/eval_data/code/HumanEvalPlus/test.parquet
+    - data/eval_data/code/MBPPPlus/test.parquet
+    - data/eval_data/science/GPQA/test.parquet
+
+model:
+  student_path: ../models/Qwen3-1.7B
+  math_teacher_path: models/Qwen3-30B-A3B-Instruct-2507
+  code_teacher_path: models/Qwen3-30B-A3B-Instruct-2507
+  domain_teacher_paths:
+    math: models/Qwen3-30B-A3B-Instruct-2507
+    code: models/Qwen3-30B-A3B-Instruct-2507
+    science: models/Qwen3-30B-A3B-Instruct-2507
+
+worker_placement:
+  separate_ref_policy: true
+  actor_rollout: {n_gpus_per_node: 6, nnodes: 1}
+  ref_policy: {n_gpus_per_node: 2, nnodes: 1, process_on_nodes: null}
+
+teacher_performance:
+  enabled: true
+
+audit:
+  output_dir: audit/q1p7b-8g-mcs-mtl05-ctl02-sltc02-f4-b528-s60
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-8g-mcs-mtl05-ctl02-sltc02-f4-b528-s60
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/mopd/q1p7b-8g-mcs-mtl05-ctl02-sltc02-f4-b528-s60
+
+trainer:
+  experiment_name: q1p7b-8g-mcs-mtl05-ctl02-sltc02-f4-b528-s60
+  n_gpus_per_node: 6
+  default_local_dir: checkpoints/MOPD/q1p7b-8g-mcs-mtl05-ctl02-sltc02-f4-b528-s60
