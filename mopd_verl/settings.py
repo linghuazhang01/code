@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from mopd_verl.config_profiles import load_raw_config
+from mopd_verl.token_category_loss import validate_token_category_loss
 from mopd_verl.domain_gradient.control_selection_scoring import (
     FIXED_ONLINE_WEIGHT_MODE,
     LOSS_RATIO_ONLINE_WEIGHT_MODE,
@@ -130,6 +131,7 @@ class ActorConfig:
     tip_native_temperature: float = 1.0
     topk_distill_enabled: bool = False
     topk_distill_kl_direction: str = "reverse"
+    topk_distill_loss_by_domain: dict[str, dict[str, str]] = field(default_factory=dict)
     topk_distill_k: int = 8
     topk_distill_support_source: str = "teacher"
     topk_distill_tail_bucket: bool = True
@@ -789,6 +791,7 @@ def load_config(path: str | Path) -> MOPDConfig:
         use_remove_padding=bool(model_raw.get("use_remove_padding", True)),
     )
     actor = ActorConfig(**_expect_mapping(root.get("actor", {}), "actor"))
+    validate_token_category_loss(actor)
     rollout = RolloutConfig(**_expect_mapping(root.get("rollout", {}), "rollout"))
     teacher_performance = parse_teacher_performance(
         _expect_mapping(root.get("teacher_performance", {}), "teacher_performance")

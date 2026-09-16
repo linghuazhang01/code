@@ -1,5 +1,12 @@
 # MOPD 远端调试规则
 
+## 三 domain 训练 batch size 约束
+
+- Math/Code/Science 三 domain 训练的 global `data.train_batch_size` 应保持约 526–528，默认使用 **528**；`actor.ppo_mini_batch_size` 默认同步设为 **528**。既有 525 配置可为满足 GPU 整除约束保留，但不得因扩大 GPU 数量自动增大 global batch。
+- 必须根据实际 actor data-parallel 数核对整除条件；6 actor + 2 teacher 的 8-GPU 布局使用 528，三 domain 等权时每步各 176 条。526 只是用户要求的近似规模，不能在不满足整除要求时机械使用。
+- 禁止新建、继承或恢复 **batch size 576 / b576** 训练模板。启动前必须检查继承展开后的 `data.train_batch_size`、`actor.ppo_mini_batch_size` 和最终启动参数，不得只看文件名。
+- 其他 batch size 必须取得用户针对该任务的明确指示；本约束不改变 math-only 配置，也不允许改写历史实验记录或删除已有 checkpoint。
+
 ## Token.md 定义优先级
 
 - `Token.md` 是本项目中 `V3`、`Taxonomy`、`Control`、`Structure`、`Other`、domain subset、candidate pool 及其相关版本、集合关系、数量和计算口径的唯一规范 source of truth。凡涉及上述术语的代码、配置、实验、评测、分析或文档，执行前必须先阅读同目录下最新的 `Token.md`。
@@ -14,6 +21,7 @@
 - 默认禁止 `rsync --delete`，不得覆盖远端独有的 dataset、model、logs 或 checkpoints。
 - **远端任务运行方式（当前默认）**：训练、评测、smoke 及其他 GPU 任务统一通过 SSH 在远端 GPU 节点直接以 local process 启动，不提交 Slurm，不依赖 `sbatch`、`srun`、`squeue` 或 `scontrol`。长任务必须使用 `nohup`/`setsid`/`tee` 等方式保留后台进程、PID 和日志；启动命令必须显式设置并记录 `CUDA_VISIBLE_DEVICES`、Python executable、run directory 和完整日志路径。只有用户针对某个具体任务明确要求 Slurm 时，才允许走 Slurm；此时才适用下述 Slurm 资源申请规则。
 - **训练启动入口**：远端训练必须从同步后的仓库根目录使用 `start.sh --local` 启动，不得直接调用 `python -m mopd_verl.launch` 或绕过 `start.sh` 的训练入口。启动时必须显式传入 config、`GPU_IDS`、实际 Python executable，并设置正确的 conda 环境根目录/`PATH`，确保 `ninja`、FlashInfer 等运行时依赖可见；长任务可在 `start.sh --local --foreground` 外层使用 `nohup`/`setsid`，同时保留 start.sh 生成的 run ID、日志和 GPU 监控文件。
+- **Local 评测启动入口**：远端四 GPU 评测使用同步后的仓库根目录 `start.sh --eval --local --model_path PATH` 启动；可通过 `--run_tag`、`--output_root`、`--gpu_ids`、`--datasets`、`--gopd_dir`、`--score_code` 和 `PYTHON` 指定运行标识、输出目录、物理 GPU IDs、数据集、G-OPD checkout、Code scorer 与 Python executable。默认是 Math-only 四数据集、`K=8`；需要标准 3-domain 评测时必须使用 `--standard_protocol`，固定为 canonical 十数据集、DP=4、四个单卡 `TP=1` worker、`K=8`，并写入 `scheduler: direct-local` 的 `RUN_MANIFEST.md`。`start.sh --eval` 不带 `--local` 仍保留历史 Slurm standard-evaluation 分支，但默认远端任务不得使用该分支。
 - **直接运行的评测 provenance**：即使复用历史 `slurm_*` worker 脚本，也只能作为普通 local process 执行，禁止调用 Slurm submit/queue 命令；`RUN_MANIFEST.md` 必须明确记录 `scheduler: direct-local`、实际 GPU IDs、完整 checkpoint path 和日志路径，不得把 synthetic run ID 伪称为 Slurm allocation。
 - **训练步数与 Hugging Face checkpoint 约束**：所有训练配置的 `trainer.total_training_steps` 最大只能为 `65`，禁止运行超过 65 个 training steps；Hugging Face checkpoint steps 必须落在实际训练范围内，默认使用 `[55, 60, 65]`，禁止新增或恢复 `global_step_70` 上传。Hugging Face 必须使用 public repository 传输方式，即明确设置 `huggingface_checkpoint.private: false`；不得改回 `true`。启动前必须核对 resolved command 同时满足 `trainer.total_training_steps<=65`、`trainer.huggingface_checkpoint.private=False`，且所有上传 step 不超过总训练步数。
 - 若用户明确要求 Slurm，远端 Slurm 任务才必须按 GPU 数量线性分配 host memory：`1 GPU = 100G`，即 `--mem = GPU_COUNT × 100G`（例如 1/2/5 GPU 分别请求 100G/200G/500G）。提交前必须核对 launcher 输出与 `scontrol` 中的 GPU 数和 `ReqMem`；不得擅自多申请或少申请。只有用户对某个具体任务明确指定例外时才允许偏离该公式，并必须在运行记录中注明。当前 taxonomy job 193 使用 `200G` 是用户明确指定的一次性例外，不得据此改变后续任务的默认公式。
@@ -22,6 +30,10 @@
 - **远端任务启动门槛（磁盘可用空间）**：每次启动远端任务（包括训练、评测、smoke 和重启）前，必须检查任务实际使用的远端文件系统，包括 checkpoint、日志/评测输出及临时目录（如 `/tmp` 或实际 Ray temp 目录）所在挂载点；同一挂载点只检查一次。以 `df` 的 Available 或等效文件系统查询为准，按 `500 GiB` 核验。任一相关文件系统可用空间小于 `500G` 时，不得启动任务，必须提示用户对应路径/挂载点、当前可用空间、500G 门槛及本次未启动的任务；无法读取或确认磁盘可用空间时同样不得启动并说明原因。达到门槛仅允许继续其他资源检查；不得为满足门槛擅自删除文件。此门槛指磁盘可用空间，不是主机 RAM 或 GPU 显存。
 
 ## MOPD 标准评测与归档规则
+
+- **`Summary.md` 格式保护**：`/Users/linghuazhang/Desktop/Project/OPD/experiments_records/eval/Summary.md` 必须保持现有的章节结构、表格格式、列数、命名和链接风格。
+- 对 `Summary.md` 的更新只能做与已完成评测直接相关的最小范围增量；禁止重写、重排、覆盖全文或引入新的总结模板，不得进行大范围修改。
+- 修改前必须先检查并保留可恢复副本，修改后必须核对文本 diff、Markdown 表格结构和文件完整性；临时状态、未完成任务和推测性结论不得写入 `Summary.md`。
 
 - 后续标准评测固定使用 Math、Code、Science 共 10 个数据集，并将这 10 个数据集作为一个完整 evaluation batch；少于 10 个数据集的运行只能标记为 partial/smoke，不得作为标准评测汇报。canonical 清单如下：
   - Math（4）：`AIME2024`、`AIME2025`、`HMMT25Feb`、`HMMT25Nov`。

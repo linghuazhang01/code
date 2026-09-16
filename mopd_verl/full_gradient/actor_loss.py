@@ -36,6 +36,7 @@ from mopd_verl.region_dpo_loss import (
     build_region_dpo_actor_loss,
     region_dpo_enabled,
 )
+from mopd_verl.token_category_loss import routed_topk_loss, validate_token_category_loss
 from mopd_verl.topk_distill import (
     DISTILL_LOSS_BUILDER_EOPD,
     DISTILL_LOSS_BUILDER_EXOPD,
@@ -51,7 +52,6 @@ from mopd_verl.topk_distill import (
     eopd_forward_kl_weight,
     eopd_teacher_student_cross_entropy_matrix,
     eopd_topk_k,
-    resolved_topk_distill_mode,
     select_teacher_log_prob_tensor,
     teacher_prefix_forward_weight,
     teacher_prefix_masks,
@@ -122,6 +122,7 @@ def build_actor_micro_batch_loss(
     }
     builder_name = distill_loss_builder(policy_loss_cfg)
     topk_distill_active = uses_topk_distill_loss(policy_loss_cfg)
+    validate_token_category_loss(policy_loss_cfg)
     if adaptive_neighborhood_spec is not None and not topk_distill_active:
         raise ValueError(
             "Per-token adaptive neighborhoods require an active Top-K "
@@ -353,12 +354,12 @@ def build_actor_micro_batch_loss(
         )
         policy_loss = policy_loss - entropy_loss * entropy_coeff
     if topk_distill_active:
-        topk_loss_mat = topk_distill_loss_matrix(
-            student_topk_log_probs=student_topk_log_probs,
-            teacher_topk_log_probs=teacher_support_log_probs,
-            mode=resolved_topk_distill_mode(policy_loss_cfg),
-            include_tail=topk_distill_include_tail(policy_loss_cfg),
-            temperature=topk_distill_temperature(policy_loss_cfg),
+        topk_loss_mat = routed_topk_loss(
+            student=student_topk_log_probs,
+            teacher=teacher_support_log_probs,
+            config=policy_loss_cfg,
+            token_ids=aligned_response_token_ids(model_inputs, response_mask),
+            domains=_labels_from_mapping(model_inputs, int(response_mask.shape[0])),
         )
         if return_configured_token_loss:
             selector_token_loss_mat = topk_loss_mat.detach().float()

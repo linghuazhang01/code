@@ -73,6 +73,7 @@ class PolicyLossConfig(BaseConfig):
     tip_native_temperature: float = 1.0
     topk_distill_enabled: bool = False
     topk_distill_kl_direction: str = "reverse"
+    topk_distill_loss_by_domain: dict[str, dict[str, str]] = field(default_factory=dict)
     topk_distill_k: int = 8
     topk_distill_support_source: str = "teacher"
     topk_distill_tail_bucket: bool = True

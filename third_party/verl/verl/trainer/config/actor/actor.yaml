@@ -131,6 +131,7 @@ policy_loss:
 
   # KL direction for top-k distillation
   topk_distill_kl_direction: reverse
+  topk_distill_loss_by_domain: {}
 
   # Number of logits retained in sparse top-k distillation
   topk_distill_k: 8

@@ -608,6 +608,11 @@ def build_overrides(config: MOPDConfig) -> list[str]:
         f"{actor.tip_native_temperature}",
         f"actor_rollout_ref.actor.policy_loss.topk_distill_enabled={str(actor.topk_distill_enabled).lower()}",
         f"actor_rollout_ref.actor.policy_loss.topk_distill_kl_direction={actor.topk_distill_kl_direction}",
+        "++actor_rollout_ref.actor.policy_loss.topk_distill_loss_by_domain="
+        + "{" + ",".join(
+            f"{domain}:{_hydra_string_dict(categories)}"
+            for domain, categories in actor.topk_distill_loss_by_domain.items()
+        ) + "}",
         f"actor_rollout_ref.actor.policy_loss.topk_distill_k={actor.topk_distill_k}",
         f"actor_rollout_ref.actor.policy_loss.topk_distill_support_source={actor.topk_distill_support_source}",
         f"actor_rollout_ref.actor.policy_loss.topk_distill_tail_bucket={str(actor.topk_distill_tail_bucket).lower()}",

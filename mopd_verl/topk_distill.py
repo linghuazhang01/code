@@ -162,6 +162,10 @@ def configured_distill_loss_name(policy_loss_config: Any) -> str:
         if builder == DISTILL_LOSS_BUILDER_TOPK_KL
         else builder
     )
+    if builder == DISTILL_LOSS_BUILDER_TOPK_KL and cfg_get(
+        policy_loss_config, "topk_distill_loss_by_domain", {}
+    ):
+        name = "topk32_domain_category_renormalized_kl"
     if builder == DISTILL_LOSS_BUILDER_POLICY_GRADIENT:
         name = "policy_gradient_distillation_signal"
     elif builder == DISTILL_LOSS_BUILDER_EOPD:

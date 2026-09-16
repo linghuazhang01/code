@@ -1,6 +1,6 @@
 # Four-GPU co-located MOPD selector with domain-specific metrics and budgets.
-# Math keeps TopLoss at Top-P 5%; Code keeps TopLoss at Top-P 2%. Science uses
-# robust-normalized TopLoss + chosen-token teacher confidence + interaction at Top-P 2%.
+# Math keeps TopLoss at Top-P 5%; Code keeps TopLoss at Top-P 1%. Science uses
+# robust-normalized TopLoss + chosen-token teacher confidence + interaction at Top-P 1%.
 # Confidence is p_T(y_t | c_t), aggregated through mean chosen-token log-prob
 # per token type, then Q2--Q98 clipped and min-max normalized within domain.
 # Code keeps only its Structure candidate group; Science keeps its full taxonomy.
@@ -8,7 +8,7 @@ extends: mopd_qwen1p7b_30b_a3b_instruct_2507_8gpu_math_code_structure_only_toplo
 
 runtime:
   slurm_allocation_gpus: 4
-  wandb_run_id: q1p7b-4g-mcs-mtl05-ctl02-sltc02-f4-b528-coloc-s60
+  wandb_run_id: q1p7b-4g-mcs-mtl05-ctl01-sltc01-f4-b528-coloc-s60
   wandb_resume: never
 
 data:
@@ -35,8 +35,8 @@ audit:
   control_token_online_top_p: 0.05
   control_token_online_top_p_by_domain:
     math: 0.05
-    code: 0.02
-    science: 0.02
+    code: 0.01
+    science: 0.01
   control_token_online_selection_mode: top_loss
   control_token_online_selection_mode_by_domain:
     math: top_loss
@@ -47,15 +47,15 @@ audit:
     math: fixed
     code: fixed
     science: fixed
-  output_dir: audit/q1p7b-4g-mcs-mtl05-ctl02-sltc02-f4-b528-coloc-s60
+  output_dir: audit/q1p7b-4g-mcs-mtl05-ctl01-sltc01-f4-b528-coloc-s60
 
 paper_eval:
-  output_dir: eval_outputs/paper_suite/q1p7b-4g-mcs-mtl05-ctl02-sltc02-f4-b528-coloc-s60
+  output_dir: eval_outputs/paper_suite/q1p7b-4g-mcs-mtl05-ctl01-sltc01-f4-b528-coloc-s60
 
 huggingface_checkpoint:
-  path_prefix: checkpoints/mopd/q1p7b-4g-mcs-mtl05-ctl02-sltc02-f4-b528-coloc-s60
+  path_prefix: checkpoints/mopd/q1p7b-4g-mcs-mtl05-ctl01-sltc01-f4-b528-coloc-s60
 
 trainer:
-  experiment_name: q1p7b-4g-mcs-mtl05-ctl02-sltc02-f4-b528-coloc-s60
+  experiment_name: q1p7b-4g-mcs-mtl05-ctl01-sltc01-f4-b528-coloc-s60
   n_gpus_per_node: 4
-  default_local_dir: checkpoints/MOPD/q1p7b-4g-mcs-mtl05-ctl02-sltc02-f4-b528-coloc-s60
+  default_local_dir: checkpoints/MOPD/q1p7b-4g-mcs-mtl05-ctl01-sltc01-f4-b528-coloc-s60

@@ -1,0 +1,87 @@
+# Eight GPUs: six actor/rollout workers plus two dedicated teacher workers.
+# All three domains use their frozen Control + Structure candidate pools.
+# Top-P is an occurrence budget, NOT five token IDs or 5% of token types.
+extends: mopd_qwen1p7b_30b_a3b_instruct_2507_8gpu_math_code_structure_only_toploss_topp05_fixed4_b528.yaml
+
+runtime:
+  slurm_allocation_gpus: 8  # Resource count only; launch with start.sh --local.
+  wandb_run_id: q1p7b-8g-mcs-p05-sci-tconf-cfkl-srkl-f4-b528-s60
+  wandb_resume: never
+
+data:
+  train_batch_size: 528
+
+actor:
+  ppo_mini_batch_size: 528
+  distill_loss_builder: topk_kl
+  distill_mode: topk_renormalized_reverse_kl
+  topk_distill_enabled: true
+  topk_distill_k: 32
+  topk_distill_support_source: teacher
+  topk_distill_tail_bucket: false
+  topk_distill_temperature: 1.0
+  topk_distill_loss_by_domain:
+    default:
+      control: forward
+      structure: reverse
+      other: reverse
+
+worker_placement:
+  separate_ref_policy: true
+  actor_rollout: {n_gpus_per_node: 6, nnodes: 1}
+  ref_policy: {n_gpus_per_node: 2, nnodes: 1}
+
+audit:
+  domain_control_token_candidate_groups:
+    code:
+      # Structure is inherited; add the active frozen Code Control subset.
+      Control: [
+        258, 263, 269, 300, 304, 323, 333, 369, 389, 421, 437, 438, 448, 476,
+        504, 553, 641, 704, 711, 714, 758, 770, 773, 868, 911, 979, 983, 1075,
+        1083, 1156, 1172, 1221, 1249, 1283, 1380, 1393, 1416, 1431, 1499, 1503, 1573, 1576,
+        1597, 1694, 1752, 1790, 1913, 1925, 1958, 1986, 1988, 2014, 2041, 2055, 2058, 2195,
+        2461, 2474, 2521, 2661, 2679, 2726, 2870, 2937, 2938, 3036, 3055, 3080, 3085, 3197,
+        3243, 3391, 3425, 3472, 3498, 3567, 3600, 3602, 3650, 3830, 3983, 4197, 4226, 4354,
+        4416, 4498, 4518, 4623, 4636, 4695, 4803, 5005, 5338, 5519, 5542, 5937, 5976, 6025,
+        6197, 6788, 7039, 7138, 7241, 7281, 7308, 7797, 8088, 8278, 8450, 8597, 8704, 9064,
+        9112, 9211, 9295, 9309, 9646, 9658, 10694, 11209, 11284, 11683, 12090, 12209, 12522, 12549,
+        13023, 13184, 13394, 14801, 15277, 15356, 15484, 16246, 17375, 17949, 18214, 18804, 19357, 21806,
+        22043, 22477, 22971, 23322, 23949, 27079, 27653, 28996, 30787, 34239, 35587, 41968, 44500, 54815,
+        67691, 80456, 92014
+      ]
+  control_token_online_audit_interval_steps: 1
+  control_token_online_window_steps: 1
+  control_token_online_budget_mode: top_p
+  control_token_online_top_p: 0.05
+  control_token_online_top_p_by_domain:
+    math: 0.05
+    code: 0.05
+    science: 0.05
+  control_token_online_selection_mode: top_loss
+  control_token_online_selection_mode_by_domain:
+    math: top_loss
+    code: top_loss
+    science: top_loss_teacher_confidence
+  control_token_online_weight_mode: fixed
+  control_token_online_weight_mode_by_domain:
+    math: fixed
+    code: fixed
+    science: fixed
+  control_token_loss_weight: 4.0
+  control_token_normalize_per_domain: true
+  output_dir: audit/q1p7b-8g-mcs-p05-sci-tconf-cfkl-srkl-f4-b528-s60
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-8g-mcs-p05-sci-tconf-cfkl-srkl-f4-b528-s60
+
+huggingface_checkpoint:
+  steps: [60]
+  private: false
+  path_prefix: checkpoints/mopd/q1p7b-8g-mcs-p05-sci-tconf-cfkl-srkl-f4-b528-s60
+
+trainer:
+  experiment_name: q1p7b-8g-mcs-p05-sci-tconf-cfkl-srkl-f4-b528-s60
+  n_gpus_per_node: 6
+  total_training_steps: 60
+  save_freq: 5
+  default_local_dir: checkpoints/MOPD/q1p7b-8g-mcs-p05-sci-tconf-cfkl-srkl-f4-b528-s60

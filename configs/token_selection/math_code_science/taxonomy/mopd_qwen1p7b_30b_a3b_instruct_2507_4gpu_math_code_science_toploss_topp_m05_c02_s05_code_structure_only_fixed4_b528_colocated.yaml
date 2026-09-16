@@ -1,7 +1,7 @@
 # Four-GPU co-located MOPD taxonomy selector with per-domain Top-P budgets.
 # Math/Code/Science are enabled; Code uses Structure tokens only.
 # The teacher and student share the same four actor/rollout workers.
-extends: mopd_qwen1p7b_30b_a3b_instruct_2507_8gpu_math_code_structure_only_toploss_topp05_fixed4_b576.yaml
+extends: mopd_qwen1p7b_30b_a3b_instruct_2507_8gpu_math_code_structure_only_toploss_topp05_fixed4_b528.yaml
 
 runtime:
   slurm_allocation_gpus: 4
