@@ -1,0 +1,30 @@
+# Eight GPUs: six actor/rollout workers and two dedicated teacher workers.
+# Keep global batch 528 and all domain selector/loss settings from the 4-GPU variant.
+extends: mopd_qwen1p7b_30b_4gpu_m05_c01_s01_sci_teacherconf_cfkl_srkl_fixed4_b528_colocated.yaml
+
+runtime:
+  slurm_allocation_gpus: 8
+  wandb_run_id: q1p7b-8g-mcs-m05c01s01-stconf-cfkl-srkl-f4-b528-s60
+  wandb_resume: never
+
+worker_placement:
+  separate_ref_policy: true
+  actor_rollout: {n_gpus_per_node: 6, nnodes: 1}
+  ref_policy: {n_gpus_per_node: 2, nnodes: 1, process_on_nodes: null}
+
+teacher_performance:
+  enabled: true
+
+audit:
+  output_dir: audit/q1p7b-8g-mcs-m05c01s01-stconf-cfkl-srkl-f4-b528-s60
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-8g-mcs-m05c01s01-stconf-cfkl-srkl-f4-b528-s60
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/mopd/q1p7b-8g-mcs-m05c01s01-stconf-cfkl-srkl-f4-b528-s60
+
+trainer:
+  experiment_name: q1p7b-8g-mcs-m05c01s01-stconf-cfkl-srkl-f4-b528-s60
+  n_gpus_per_node: 6
+  default_local_dir: checkpoints/MOPD/q1p7b-8g-mcs-m05c01s01-stconf-cfkl-srkl-f4-b528-s60
