@@ -1,0 +1,37 @@
+# Four-GPU m05/c01/s01 variant with Code Control and Structure candidates.
+# Code ranks both groups together by TopLoss under its existing 1% Top-P budget.
+# Selected Code tokens retain Fixed4 weighting and per-domain normalization.
+extends: mopd_qwen1p7b_30b_a3b_instruct_2507_4gpu_math_code_science_topp_m05_c01_s01_code_structure_only_science_loss_teacherconf_fixed4_b528_colocated.yaml
+
+runtime:
+  wandb_run_id: q1p7b-4g-mcs-mtl05-ctl01cs-sltc01-f4-b528-coloc-s60
+  wandb_resume: never
+
+audit:
+  domain_control_token_candidate_groups:
+    code:
+      Control: [
+        258, 263, 269, 300, 304, 323, 333, 369, 389, 421, 437, 438, 448, 476,
+        504, 553, 641, 704, 711, 714, 758, 770, 773, 868, 911, 979, 983, 1075,
+        1083, 1156, 1172, 1221, 1249, 1283, 1380, 1393, 1416, 1431, 1499, 1503, 1573, 1576,
+        1597, 1694, 1752, 1790, 1913, 1925, 1958, 1986, 1988, 2014, 2041, 2055, 2058, 2195,
+        2461, 2474, 2521, 2661, 2679, 2726, 2870, 2937, 2938, 3036, 3055, 3080, 3085, 3197,
+        3243, 3391, 3425, 3472, 3498, 3567, 3600, 3602, 3650, 3830, 3983, 4197, 4226, 4354,
+        4416, 4498, 4518, 4623, 4636, 4695, 4803, 5005, 5338, 5519, 5542, 5937, 5976, 6025,
+        6197, 6788, 7039, 7138, 7241, 7281, 7308, 7797, 8088, 8278, 8450, 8597, 8704, 9064,
+        9112, 9211, 9295, 9309, 9646, 9658, 10694, 11209, 11284, 11683, 12090, 12209, 12522, 12549,
+        13023, 13184, 13394, 14801, 15277, 15356, 15484, 16246, 17375, 17949, 18214, 18804, 19357, 21806,
+        22043, 22477, 22971, 23322, 23949, 27079, 27653, 28996, 30787, 34239, 35587, 41968, 44500, 54815,
+        67691, 80456, 92014
+      ]
+  output_dir: audit/q1p7b-4g-mcs-mtl05-ctl01cs-sltc01-f4-b528-coloc-s60
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-4g-mcs-mtl05-ctl01cs-sltc01-f4-b528-coloc-s60
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/mopd/q1p7b-4g-mcs-mtl05-ctl01cs-sltc01-f4-b528-coloc-s60
+
+trainer:
+  experiment_name: q1p7b-4g-mcs-mtl05-ctl01cs-sltc01-f4-b528-coloc-s60
+  default_local_dir: checkpoints/MOPD/q1p7b-4g-mcs-mtl05-ctl01cs-sltc01-f4-b528-coloc-s60
