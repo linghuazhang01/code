@@ -324,6 +324,7 @@ class AuditConfig:
     control_token_online_candidate_vocab_size: int | None = None
     control_token_normalize_per_domain: bool = False
     control_token_online_selection_enabled: bool = False
+    control_token_online_selection_unit: str = "token_id"
     control_token_online_audit_interval_steps: int = 3
     control_token_online_window_steps: int = 3
     control_token_online_min_mean_occurrences_per_step: float = 20.0
@@ -802,6 +803,15 @@ def load_config(path: str | Path) -> MOPDConfig:
     worker_placement = _worker_placement(root.get("worker_placement", {}))
     trainer = TrainerConfig(**_expect_mapping(root.get("trainer", {}), "trainer"))
     audit = AuditConfig(**_expect_mapping(root.get("audit", {}), "audit"))
+    from mopd_verl.domain_gradient.occurrence_config import validate_occurrence_config
+
+    validate_occurrence_config(audit, actor)
+    if audit.control_token_online_selection_unit == "occurrence":
+        from mopd_verl.domain_gradient.occurrence_config import validate_occurrence_actor
+
+        validate_occurrence_actor(actor)
+        if actor.ppo_mini_batch_size != data.train_batch_size * rollout.n:
+            raise ValueError("occurrence requires exactly one full actor minibatch")
     region_dpo = with_control_token_fallback(
         parse_region_dpo_config(root.get("region_dpo", {})),
         control_token_ids=audit.control_token_ids,
@@ -811,6 +821,8 @@ def load_config(path: str | Path) -> MOPDConfig:
         region_dpo,
         max_response_length=data.max_response_length,
     )
+    if audit.control_token_online_selection_unit == "occurrence" and region_dpo.enabled:
+        raise ValueError("occurrence does not support region_dpo")
     domain_budgeting = parse_domain_budgeting_config(domain_budgeting_raw)
     normalized_loss_builder = distill_loss_builder(actor)
     topk_distillation_active = uses_topk_distill_loss(actor)

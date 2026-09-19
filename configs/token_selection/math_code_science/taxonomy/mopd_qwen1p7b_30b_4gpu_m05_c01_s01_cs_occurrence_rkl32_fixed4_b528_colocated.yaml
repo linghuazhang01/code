@@ -1,0 +1,20 @@
+# Current-minibatch position ranking. Separate run/checkpoint identities; no resume.
+extends: mopd_qwen1p7b_30b_4gpu_m05_c01_s01_cs_toploss_rkl32_fixed4_b528_colocated.yaml
+
+runtime:
+  wandb_run_id: q1p7b-4g-mcs-occ-m05c01s01-rkl32-f4-b528-s60
+  wandb_resume: never
+
+audit:
+  control_token_online_selection_unit: occurrence
+  output_dir: audit/q1p7b-4g-mcs-occ-m05c01s01-rkl32-f4-b528-s60
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-4g-mcs-occ-m05c01s01-rkl32-f4-b528-s60
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/mopd/q1p7b-4g-mcs-occ-m05c01s01-rkl32-f4-b528-s60
+
+trainer:
+  experiment_name: q1p7b-4g-mcs-occ-m05c01s01-rkl32-f4-b528-s60
+  default_local_dir: checkpoints/MOPD/q1p7b-4g-mcs-occ-m05c01s01-rkl32-f4-b528-s60

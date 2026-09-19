@@ -1254,6 +1254,9 @@ class MOPDAuditLogger:
         self.control_token_loss_ratio_alpha = float(
             _cfg_get(audit_config, "control_token_loss_ratio_alpha", 1.0)
         )
+        self.control_token_online_selection_unit = str(
+            _cfg_get(audit_config, "control_token_online_selection_unit", "token_id")
+        )
         self.control_token_adaptive_neighborhood_enabled = bool(
             _cfg_get(
                 audit_config,
@@ -1908,6 +1911,9 @@ class MOPDAuditLogger:
                     self.control_token_online_weight_mode_by_domain
                 ),
                 "control_token_loss_ratio_alpha": self.control_token_loss_ratio_alpha,
+                "control_token_online_selection_unit": (
+                    self.control_token_online_selection_unit if mode == "train" else "token_id"
+                ),
                 "control_token_adaptive_neighborhood_enabled": (
                     self.control_token_adaptive_neighborhood_enabled and mode == "train"
                 ),

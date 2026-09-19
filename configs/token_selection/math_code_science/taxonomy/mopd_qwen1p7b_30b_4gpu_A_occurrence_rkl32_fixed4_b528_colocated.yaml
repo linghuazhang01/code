@@ -1,0 +1,20 @@
+# Experiment A occurrence-only sidecar; preserve all original training settings.
+# Math C+S/5%/TopLoss; Code S/1%/TopLoss; Science C+S/1%/Loss+TC.
+extends: mopd_qwen1p7b_30b_a3b_instruct_2507_4gpu_math_code_science_topp_m05_c01_s01_code_structure_only_science_loss_teacherconf_fixed4_b528_colocated.yaml
+
+runtime:
+  wandb_run_id: q1p7b-4g-A-occ-mtl05-ctl01-sltc01-f4-b528-coloc-s60
+
+audit:
+  control_token_online_selection_unit: occurrence
+  output_dir: audit/q1p7b-4g-A-occ-mtl05-ctl01-sltc01-f4-b528-coloc-s60
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-4g-A-occ-mtl05-ctl01-sltc01-f4-b528-coloc-s60
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/mopd/q1p7b-4g-A-occ-mtl05-ctl01-sltc01-f4-b528-coloc-s60
+
+trainer:
+  experiment_name: q1p7b-4g-A-occ-mtl05-ctl01-sltc01-f4-b528-coloc-s60
+  default_local_dir: checkpoints/MOPD/q1p7b-4g-A-occ-mtl05-ctl01-sltc01-f4-b528-coloc-s60

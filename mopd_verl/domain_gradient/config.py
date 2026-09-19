@@ -213,6 +213,7 @@ class DomainGradientConfig:
     unsupported_modes: tuple[str, ...]
     control_token_online_selection_mode_by_domain: tuple[tuple[str, str], ...] = ()
     control_token_online_weight_mode_by_domain: tuple[tuple[str, str], ...] = ()
+    control_token_online_selection_unit: str = "token_id"
 
     def effective_domain_candidate_map(self) -> dict[str, tuple[int, ...]]:
         """Return one canonical candidate whitelist for every domain."""
@@ -576,6 +577,9 @@ class DomainGradientConfig:
             control_token_loss_ratio_alpha=float(
                 _get(meta, "control_token_loss_ratio_alpha", 1.0)
             ),
+            control_token_online_selection_unit=str(
+                _get(meta, "control_token_online_selection_unit", "token_id")
+            ),
             control_token_adaptive_neighborhood_enabled=bool(
                 _get(meta, "control_token_adaptive_neighborhood_enabled", False)
             ),
@@ -701,6 +705,9 @@ class DomainGradientConfig:
         return config
 
     def validate(self) -> None:
+        from mopd_verl.domain_gradient.occurrence_config import validate_occurrence_config
+
+        validate_occurrence_config(self)
         if self.unsupported_modes:
             names = ", ".join(self.unsupported_modes)
             raise ValueError(

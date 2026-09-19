@@ -907,6 +907,18 @@ class DataParallelPPOActor(BasePPOActor):
                 "mini-batch and one PPO epoch per actor update so each speed "
                 "observation covers the complete global step."
             )
+        if audit.config.control_token_online_selection_unit == "occurrence":
+            from mopd_verl.domain_gradient.occurrence_config import (
+                validate_occurrence_actor,
+                validate_occurrence_config,
+            )
+
+            validate_occurrence_actor(self.config)
+            validate_occurrence_config(audit.config, self.config.policy_loss)
+            if len(mini_batches) != 1:
+                raise ValueError(
+                    "Occurrence selection requires exactly one full actor minibatch."
+                )
         if audit.config.control_token_online_selection_enabled and (
             len(mini_batches) != 1 or self.config.ppo_epochs != 1
         ):

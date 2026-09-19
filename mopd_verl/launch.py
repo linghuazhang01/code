@@ -349,6 +349,8 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"{_hydra_string_dict(audit.control_token_online_weight_mode_by_domain)}",
         "+mopd_audit.control_token_loss_ratio_alpha="
         f"{audit.control_token_loss_ratio_alpha}",
+        "+mopd_audit.control_token_online_selection_unit="
+        f"{audit.control_token_online_selection_unit}",
         "+mopd_audit.control_token_adaptive_neighborhood_enabled="
         f"{str(audit.control_token_adaptive_neighborhood_enabled).lower()}",
         "+mopd_audit.control_token_adaptive_neighborhood_max_distance="

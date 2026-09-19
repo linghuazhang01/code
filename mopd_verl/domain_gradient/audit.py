@@ -545,6 +545,11 @@ class DomainGradientAudit:
     ) -> torch.Tensor | None:
         """Return current domain and token production gradient multipliers."""
 
+        if self.config.control_token_online_selection_unit == "occurrence":
+            from mopd_verl.domain_gradient.occurrence import occurrence_mask
+
+            return occurrence_mask(self, micro_batch)
+
         token_weighting_enabled = (
             self.config.control_token_weighting_enabled
             and not self.config.control_token_adaptive_neighborhood_enabled
@@ -1724,6 +1729,9 @@ class DomainGradientAudit:
                     ),
                 )
             )
+        if self.config.control_token_online_selection_unit == "occurrence":
+            self._occurrence_masks = {}
+            return metrics
         if not self.config.control_token_online_selection_enabled:
             return metrics
         state = self._online_control_selection_state
@@ -2230,6 +2238,29 @@ class DomainGradientAudit:
         )
 
     def run_before_training(
+        self,
+        micro_batches: Sequence[Any],
+        loss_scales: Sequence[float],
+        *,
+        on_policy: bool,
+        temperature: float,
+    ) -> dict[str, float]:
+        occurrence_metrics = {}
+        if self.config.control_token_online_selection_unit == "occurrence":
+            from mopd_verl.domain_gradient.occurrence import prepare_occurrence_masks
+
+            occurrence_metrics = prepare_occurrence_masks(
+                self, micro_batches, loss_scales,
+                on_policy=on_policy, temperature=temperature,
+            )
+        return {
+            **self._run_before_training_replay(
+                micro_batches, loss_scales, on_policy=on_policy, temperature=temperature,
+            ),
+            **occurrence_metrics,
+        }
+
+    def _run_before_training_replay(
         self,
         micro_batches: Sequence[Any],
         loss_scales: Sequence[float],
