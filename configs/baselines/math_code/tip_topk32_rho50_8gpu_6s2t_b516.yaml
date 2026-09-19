@@ -1,0 +1,46 @@
+# Method semantics follow ../opd_baselines.yaml; see README.md for topology.
+extends: _common.yaml
+runtime:
+  slurm_allocation_gpus: 8
+actor:
+  token_baseline_method: tip_topk32
+  token_baseline_retention_ratio: 0.5
+  token_baseline_selection_mode: topk
+  loss_agg_mode: seq-mean-token-mean
+  distill_loss_builder: topk_kl
+  distill_mode: topk_renormalized_reverse_kl
+  topk_distill_enabled: true
+worker_placement:
+  separate_ref_policy: true
+  actor_rollout:
+    n_gpus_per_node: 6
+    nnodes: 1
+  ref_policy:
+    n_gpus_per_node: 2
+    nnodes: 1
+    process_on_nodes: null
+extra_overrides:
+- custom_reward_function.path=mopd_verl/mixed_reward.py
+- custom_reward_function.name=compute_score
+- trainer.resume_mode=disable
+- actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+- actor_rollout_ref.ref.fsdp_config.fsdp_size=2
+teacher_performance:
+  enabled: true
+  topk_logprob_chunk_size: 1024
+  max_micro_batch_size: 32
+  max_tokens: 57344
+  moe_dispatch: stable_sort
+  memory_margin_gib: 12.0
+audit:
+  output_dir: audit/qwen1p7b-30b-math-code-tip-topk32-rho50-8gpu-6s2t-b516-s42
+  loss_variance_signal: topk_renormalized_reverse_kl+tip_topk32_token_weighting
+paper_eval:
+  output_dir: eval_outputs/paper_suite/qwen1p7b-30b-math-code-tip-topk32-rho50-8gpu-6s2t-b516-s42
+trainer:
+  n_gpus_per_node: 6
+  experiment_name: qwen1p7b-30b-math-code-tip-topk32-rho50-8gpu-6s2t-b516-s42
+  default_local_dir: checkpoints/MOPD/qwen1p7b-30b-math-code-tip-topk32-rho50-8gpu-6s2t-b516-s42
+ray_kwargs:
+  ray_init:
+    num_cpus: 48
