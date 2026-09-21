@@ -1,0 +1,251 @@
+# Two-domain Math+Code MOPD training profile.
+# Method: TopLoss online selector + Fixed4 selected-token weighting with per-domain mean-one normalization.
+# Four colocated GPUs, batch 528, seed 42, 60 training steps, vLLM utilization 0.75.
+# Math uses the full candidate union; Code uses Structure candidates only.
+
+runtime:
+  python_bin: python3
+  verl_module: verl.trainer.main_ppo
+  wandb_mode: online
+  wandb_entity: lz101-rice-university
+  wandb_run_id: q1p7b4g-mc-struct-tl-f4-b528-s60
+  wandb_resume: never
+  env_file: .env.local
+  used_model: no_api
+  slurm_allocation_gpus: 4
+
+data:
+  domain_train_files:
+    math:
+    - ../mopd/code/data/G-OPD-Training-Data/DeepMath-103K/train_filtered_level6.parquet
+    code:
+    - ../mopd/code/data/G-OPD-Training-Data/Eurus/code_train.parquet
+  domain_sampling_weights:
+    math: 1
+    code: 1
+  domain_sampling_replacement: true
+  load_parquet_direct: true
+  val_files:
+  - ../mopd/code/data/eval_data/math/AIME24/test.parquet
+  - ../mopd/code/data/eval_data/math/AIME25/test.parquet
+  - ../mopd/code/data/eval_data/math/HMMT25Feb/test.parquet
+  - ../mopd/code/data/eval_data/math/HMMT25Nov/test.parquet
+  - ../mopd/code/data/eval_data/code/HumanEvalPlus/test.parquet
+  - ../mopd/code/data/eval_data/code/MBPPPlus/test.parquet
+  train_batch_size: 528
+  val_batch_size: 1024
+  max_prompt_length: 2048
+  max_response_length: 16384
+  filter_overlong_prompts: true
+  truncation: error
+  shuffle: true
+  validation_shuffle: false
+  seed: 42
+  return_raw_chat: true
+  enable_thinking: false
+
+model:
+  student_path: ../mopd/models/Qwen3-1.7B
+  student_base_path: null
+  math_teacher_path: ../mopd/models/Qwen3-30B-A3B-Instruct-2507
+  code_teacher_path: ../mopd/models/Qwen3-30B-A3B-Instruct-2507
+  domain_teacher_paths:
+    math: ../mopd/models/Qwen3-30B-A3B-Instruct-2507
+    code: ../mopd/models/Qwen3-30B-A3B-Instruct-2507
+  teacher_model_device: gpu
+  attn_implementation: flash_attention_2
+
+actor:
+  learning_rate: 5e-6
+  lr_warmup_steps_ratio: 0.0
+  only_reverse_kl_advantages: false
+  lambda_vals: 1.0
+  multi_teacher_distill: true
+  distill_loss_builder: topk_kl
+  distill_mode: topk_renormalized_reverse_kl
+  topk_distill_enabled: true
+  topk_distill_kl_direction: reverse
+  topk_distill_k: 32
+  topk_distill_support_source: teacher
+  topk_distill_tail_bucket: false
+  topk_distill_temperature: 1.0
+  topk_distill_loss_weight: 1.0
+  topk_distill_logprob_chunk_size: 16
+  topk_distill_logprob_mode: sparse
+  ppo_mini_batch_size: 528
+  ppo_micro_batch_size_per_gpu: 1
+  ppo_epochs: 1
+  use_dynamic_bsz: false
+  use_kl_loss: true
+  kl_loss_coef: 0
+  kl_loss_type: low_var_kl
+  entropy_coeff: 0
+  ppo_max_token_len_per_gpu: 32768
+  gradient_checkpointing: true
+  param_offload: true
+  optimizer_offload: true
+  fsdp_size: 1
+
+rollout:
+  calculate_log_probs: true
+  log_prob_micro_batch_size_per_gpu: 1
+  tensor_model_parallel_size: 1
+  name: vllm
+  mode: sync
+  gpu_memory_utilization: 0.75
+  enforce_eager: false
+  enable_chunked_prefill: false
+  n: 1
+  max_num_batched_tokens: 32768
+  max_model_len: 18432
+  max_num_seqs: 64
+  do_sample: true
+  temperature: 1.0
+  top_p: 1.0
+  val_n: 1
+  val_do_sample: false
+  val_temperature: 0.0
+  val_top_p: 1.0
+  seed: 42
+
+worker_placement:
+  separate_ref_policy: false
+  actor_rollout:
+    n_gpus_per_node: 4
+    nnodes: 1
+  ref_policy:
+    n_gpus_per_node: null
+    nnodes: null
+    process_on_nodes: null
+
+extra_overrides:
+- custom_reward_function.path=mopd_verl/mixed_reward.py
+- custom_reward_function.name=compute_score
+- trainer.resume_mode=disable
+- actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+
+teacher_performance:
+  enabled: false
+
+audit:
+  enabled: true
+  domains: [math, code]
+  loss_variance_signal: opd_loss_token
+  control_token_loss_weighting_enabled: true
+  control_token_loss_weight: 4.0
+  control_token_candidate_ids: []
+  domain_control_token_ids: {}
+  domain_control_token_candidate_ids:
+    math: [
+          0, 1, 2, 4, 6, 7, 8, 9, 11, 12, 13, 14, 25, 26, 30, 58, 59, 60, 62, 90, 92, 198, 220, 256, 257, 258,
+          262, 263, 265, 269, 271, 285, 286, 300, 304, 307, 312, 314, 320, 323, 330, 333, 334, 335, 340, 345,
+          353, 364, 369, 374, 382, 389, 396, 414, 421, 436, 437, 438, 448, 456, 470, 476, 481, 495, 497, 504,
+          508, 510, 516, 527, 532, 536, 537, 539, 541, 549, 553, 565, 568, 569, 593, 608, 609, 624, 630, 633,
+          641, 678, 692, 701, 704, 714, 715, 729, 738, 746, 758, 770, 773, 820, 863, 873, 877, 894, 911, 914,
+          921, 943, 979, 983, 1019, 1036, 1065, 1075, 1083, 1112, 1124, 1125, 1140, 1142, 1156, 1171, 1172, 1188,
+          1221, 1242, 1249, 1283, 1308, 1326, 1365, 1380, 1393, 1416, 1430, 1431, 1447, 1465, 1492, 1494, 1499,
+          1573, 1576, 1597, 1633, 1634, 1648, 1688, 1694, 1714, 1752, 1787, 1790, 1812, 1837, 1913, 1921, 1925,
+          1932, 1939, 1958, 1959, 1986, 1988, 2041, 2055, 2058, 2088, 2121, 2137, 2146, 2186, 2195, 2217, 2219,
+          2256, 2279, 2293, 2303, 2376, 2415, 2432, 2461, 2467, 2474, 2503, 2508, 2514, 2521, 2533, 2561, 2572,
+          2629, 2661, 2679, 2750, 2810, 2870, 2928, 2938, 3036, 3055, 3070, 3197, 3243, 3265, 3270, 3343, 3417,
+          3425, 3498, 3518, 3554, 3593, 3602, 3644, 3650, 3661, 3764, 3767, 3789, 3830, 3890, 3983, 4057, 4080,
+          4142, 4194, 4197, 4226, 4292, 4354, 4416, 4472, 4518, 4605, 4623, 4751, 4778, 4803, 4894, 4999, 5005,
+          5053, 5138, 5315, 5338, 5410, 5542, 5620, 5627, 5937, 6013, 6351, 6599, 6718, 6788, 6863, 6894, 6960,
+          7039, 7110, 7241, 7252, 7546, 7609, 7705, 7731, 8013, 8088, 8275, 8290, 8450, 8704, 9064, 9112, 9139,
+          9211, 9544, 9658, 9669, 9697, 9769, 10055, 10293, 10297, 10374, 10569, 10694, 10699, 11035, 11209,
+          11248, 11284, 11436, 11463, 11520, 11661, 11662, 11683, 11884, 11974, 12209, 12236, 12314, 12371,
+          12549, 12824, 12935, 13023, 13036, 13316, 13394, 13989, 14374, 14771, 15159, 15170, 15277, 15370,
+          15484, 15505, 15777, 15983, 16085, 16097, 16315, 17949, 18491, 18788, 19357, 19444, 19788, 19999,
+          21806, 22043, 22477, 23247, 23322, 24984, 25156, 25439, 25547, 25931, 26056, 26126, 26266, 27275,
+          27653, 28406, 28996, 29562, 30529, 30787, 31040, 31888, 32295, 34319, 35702, 36777, 38154, 38770,
+          41295, 41968, 43389, 44364, 44500, 44903, 45797, 46127, 51535, 52731, 54815, 56014, 56177, 58336,
+          60353, 65305, 67691, 72977, 73877, 75542, 90155, 92014, 93815, 95518, 96065, 97219, 98329, 151645
+      ]
+    code: [
+          0, 1, 2, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 25, 26, 30, 31, 58, 59, 60, 62, 90, 92, 198, 220, 256, 257,
+          260, 262, 265, 271, 285, 286, 307, 310, 312, 313, 314, 320, 322, 330, 334, 335, 338, 340, 341, 345,
+          353, 364, 368, 374, 381, 382, 394, 396, 414, 436, 442, 445, 455, 470, 474, 481, 486, 492, 495, 496,
+          497, 503, 508, 510, 516, 526, 527, 532, 536, 537, 539, 541, 549, 563, 565, 568, 569, 593, 607, 608,
+          609, 624, 630, 633, 659, 660, 664, 671, 677, 678, 688, 689, 692, 698, 701, 707, 715, 716, 729, 738,
+          741, 746, 750, 751, 753, 756, 788, 820, 854, 863, 873, 877, 878, 894, 899, 914, 917, 921, 936, 937,
+          943, 981, 982, 999, 1005, 1018, 1019, 1036, 1049, 1060, 1065, 1066, 1110, 1112, 1124, 1125, 1138, 1140,
+          1142, 1159, 1171, 1173, 1183, 1188, 1189, 1210, 1213, 1242, 1248, 1259, 1294, 1304, 1305, 1308, 1313,
+          1326, 1334, 1341, 1349, 1350, 1355, 1365, 1383, 1430, 1438, 1447, 1457, 1465, 1492, 1494, 1507, 1539,
+          1591, 1607, 1633, 1648, 1653, 1698, 1714, 1727, 1781, 1787, 1789, 1797, 1837, 1843, 1844, 1887, 1920,
+          1921, 1932, 1934, 1939, 1946, 1959, 2088, 2130, 2137, 2140, 2146, 2198, 2217, 2219, 2224, 2240, 2243,
+          2256, 2279, 2290, 2293, 2303, 2376, 2398, 2415, 2420, 2422, 2432, 2467, 2503, 2505, 2508, 2509, 2514,
+          2533, 2546, 2550, 2559, 2561, 2572, 2629, 2647, 2750, 2761, 2810, 2822, 2892, 2928, 3006, 3007, 3056,
+          3060, 3070, 3159, 3263, 3265, 3270, 3343, 3344, 3353, 3374, 3378, 3417, 3435, 3447, 3458, 3489, 3557,
+          3561, 3589, 3593, 3644, 3646, 3647, 3649, 3661, 3741, 3767, 3817, 3824, 3876, 3890, 3932, 4007, 4049,
+          4051, 4057, 4080, 4089, 4142, 4167, 4194, 4208, 4292, 4293, 4318, 4319, 4380, 4383, 4390, 4409, 4421,
+          4427, 4432, 4567, 4569, 4610, 4660, 4710, 4778, 4806, 4828, 4869, 4908, 4999, 5053, 5065, 5090, 5097,
+          5108, 5125, 5130, 5175, 5180, 5196, 5267, 5352, 5360, 5367, 5399, 5410, 5419, 5468, 5552, 5563, 5571,
+          5613, 5618, 5620, 5638, 5656, 5669, 5708, 5731, 5820, 5875, 5929, 5933, 5973, 5987, 6013, 6256, 6351,
+          6374, 6451, 6523, 6599, 6620, 6718, 6860, 6863, 6875, 6882, 6888, 6894, 6960, 7026, 7213, 7252, 7287,
+          7546, 7609, 7646, 7705, 7731, 7788, 7791, 7834, 8156, 8275, 8290, 8296, 8361, 8374, 8389, 8465, 8737,
+          8945, 8958, 8981, 9139, 9258, 9338, 9365, 9544, 9592, 9604, 9669, 9697, 9719, 9752, 9769, 9931, 9940,
+          9957, 10055, 10071, 10131, 10293, 10308, 10343, 10374, 10444, 10569, 10589, 10615, 10699, 10907, 11024,
+          11035, 11436, 11520, 11696, 11777, 11843, 11884, 12145, 12210, 12236, 12367, 12371, 12458, 12669,
+          12924, 13027, 13036, 13105, 13252, 13265, 13316, 13749, 13935, 13989, 14129, 14288, 14374, 14405,
+          14451, 14599, 14654, 14853, 14879, 14955, 14979, 15081, 15159, 15170, 15270, 15302, 15505, 15674,
+          15983, 16097, 16315, 16324, 16667, 16976, 17729, 17826, 18574, 18611, 18789, 18893, 19235, 19444,
+          19496, 19788, 20492, 20672, 20948, 21082, 21215, 21743, 22165, 22956, 23754, 24135, 24254, 24361,
+          24734, 25439, 25547, 25903, 25912, 26049, 26126, 27151, 27244, 27437, 27771, 28131, 28283, 28298,
+          28406, 28675, 29562, 29636, 30701, 31067, 32295, 32798, 35065, 35702, 36777, 37880, 39193, 40635,
+          41295, 41331, 42450, 42863, 43389, 44364, 45669, 48290, 49962, 50349, 51356, 51535, 56014, 56177,
+          56466, 57250, 57390, 60353, 60402, 62154, 66963, 73516, 73530, 75738, 78341, 79375, 80174, 84507,
+          85922, 90155, 93670, 94722, 95518, 96065, 97219, 146369, 147003, 151645
+      ]
+  domain_control_token_candidate_groups: {}
+  control_token_normalize_per_domain: true
+  control_token_online_selection_enabled: true
+  control_token_online_audit_interval_steps: 1
+  control_token_online_window_steps: 1
+  control_token_online_min_mean_occurrences_per_step: 20.0
+  control_token_online_strict_occurrence_gate: true
+  control_token_online_top_k: 30
+  control_token_online_top_k_per_group: null
+  control_token_online_budget_mode: top_p
+  control_token_online_top_p: 0.05
+  control_token_online_top_p_by_domain:
+    math: 0.05
+    code: 0.01
+  control_token_online_selection_mode: top_loss
+  control_token_online_weight_mode: fixed
+  output_dir: audit/q1p7b4g-mc-struct-tl-f4-b528-s60
+
+paper_eval:
+  enabled: false
+  output_dir: eval_outputs/paper_suite/q1p7b4g-mc-struct-tl-f4-b528-s60
+  datasets: [aime24, aime25, hmmt25_feb, hmmt25_nov, humaneval_plus, mbpp_plus, lcb]
+
+huggingface_checkpoint:
+  enabled: true
+  steps: [60]
+  repo_id: icemoon28/opd-checkpoints
+  private: false
+  token_env_var: HF_TOKEN
+  path_prefix: checkpoints/mopd/q1p7b4g-mc-struct-tl-f4-b528-s60
+
+trainer:
+  project_name: MOPD
+  experiment_name: q1p7b4g-mc-struct-tl-f4-b528-s60
+  seed: 42
+  logger: '["console","tensorboard","wandb"]'
+  n_gpus_per_node: 4
+  nnodes: 1
+  save_freq: 5
+  test_freq: -1
+  total_epochs: 3
+  total_training_steps: 60
+  default_local_dir: checkpoints/MOPD/q1p7b4g-mc-struct-tl-f4-b528-s60
+  critic_warmup: 0
+  val_before_train: false
+  log_val_generations: 10
+  max_actor_ckpt_to_keep: 2
+  max_critic_ckpt_to_keep: 1
+
+ray_kwargs:
+  ray_init:
+    include_dashboard: false
+    num_cpus: 24

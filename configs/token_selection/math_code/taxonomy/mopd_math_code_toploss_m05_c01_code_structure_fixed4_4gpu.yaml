@@ -1,0 +1,22 @@
+# Math/Code MOPD profile: Math Top-P 5%, Code Top-P 1%.
+extends: _mopd_math_code_structure_toploss_fixed4_4gpu.yaml
+
+runtime:
+  wandb_run_id: q1p7b4g-mc-tl-m05c01-cstruct-f4-b528-s60
+  wandb_resume: never
+
+audit:
+  control_token_online_top_p_by_domain:
+    math: 0.05
+    code: 0.01
+  output_dir: audit/q1p7b4g-mc-tl-m05c01-cstruct-f4-b528-s60
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b4g-mc-tl-m05c01-cstruct-f4-b528-s60
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/mopd/q1p7b4g-mc-tl-m05c01-cstruct-f4-b528-s60
+
+trainer:
+  experiment_name: q1p7b4g-mc-tl-m05c01-cstruct-f4-b528-s60
+  default_local_dir: checkpoints/MOPD/q1p7b4g-mc-tl-m05c01-cstruct-f4-b528-s60
