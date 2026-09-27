@@ -45,7 +45,14 @@ from mopd_verl.domain_gradient.control_top_loss_runtime import (
     global_candidate_loss_statistics_with_valid_counts,
 )
 from mopd_verl.domain_gradient.config import DomainGradientConfig
-from mopd_verl.domain_gradient.occurrence_config import uses_current_step_selection
+from mopd_verl.domain_gradient.occurrence_config import (
+    uses_current_step_selection,
+    uses_versioned_next_step_selection,
+)
+from mopd_verl.domain_gradient.versioned_next_step import (
+    next_step_candidate_statistics,
+    next_step_gradient_mask,
+)
 from mopd_verl.domain_gradient.geometry import (
     GradientVector,
     actor_group_sum,
@@ -553,6 +560,9 @@ class DomainGradientAudit:
             from mopd_verl.domain_gradient.occurrence import occurrence_mask
 
             return occurrence_mask(self, micro_batch)
+
+        if uses_versioned_next_step_selection(self.config):
+            return next_step_gradient_mask(self, micro_batch)
 
         token_weighting_enabled = (
             self.config.control_token_weighting_enabled
@@ -1681,13 +1691,17 @@ class DomainGradientAudit:
             shared_weight=self.config.all_domain_shared_token_weight,
             use_actual_masks=(
                 self.config.control_token_online_selection_timing == "current_step"
+                or uses_versioned_next_step_selection(self.config)
             ),
         )
         metrics = format_loss_amplification_metrics(
             reduce_loss_amplification_statistics(local_by_domain)
         )
-        if self.config.control_token_online_selection_timing == "current_step":
-            # Current-step membership lives in the detached head/tail selector.
+        if (
+            self.config.control_token_online_selection_timing == "current_step"
+            or uses_versioned_next_step_selection(self.config)
+        ):
+            # Position-aware membership cannot be described by static IDs alone.
             # Static-ID counts and a self-comparison are not independent audits.
             for name in (
                 "control_occurrence_count", "control_shared_overlap_occurrence_count",
@@ -1911,39 +1925,45 @@ class DomainGradientAudit:
                         "must align with the configured token loss."
                     )
                 teacher_log_prob_batches.append(teacher_log_prob.detach())
-        global_statistics = global_candidate_loss_statistics_with_valid_counts(
-            token_id_batches,
-            configured_loss_batches,
-            configured_loss_mask_batches,
-            label_batches,
-            domains=self.config.domains,
-            domain_candidate_token_ids=(self.config.effective_domain_candidate_map()),
-            selection_mode=self.config.control_token_online_selection_mode,
-            selection_mode_by_domain=selection_modes,
-            selection_loss_batches_by_domain=selection_loss_batches_by_domain,
-            selection_loss_mask_batches_by_domain=selection_loss_mask_batches_by_domain,
-            student_entropy_batches=(
-                tuple(student_entropy_batches) if student_entropy_mode else None
-            ),
-            teacher_entropy_batches=(
-                tuple(teacher_entropy_batches) if teacher_entropy_mode else None
-            ),
-            teacher_log_prob_batches=(
-                tuple(teacher_log_prob_batches)
-                if loss_teacher_confidence_mode
-                else None
-            ),
-            normalization_min_occurrences=(
-                self.config.control_token_online_min_mean_occurrences_per_step
-            ),
-            normalization_strict_occurrence_gate=(
-                self.config.control_token_online_strict_occurrence_gate
-            ),
-            candidate_scope=self.config.control_token_online_candidate_scope,
-            candidate_vocab_size=(
-                self.config.control_token_online_candidate_vocab_size
-            ),
-        )
+        if uses_versioned_next_step_selection(self.config):
+            global_statistics = next_step_candidate_statistics(
+                self.config, micro_batches,
+                selector_token_loss_batches, selector_token_loss_mask_batches,
+            )
+        else:
+            global_statistics = global_candidate_loss_statistics_with_valid_counts(
+                token_id_batches,
+                configured_loss_batches,
+                configured_loss_mask_batches,
+                label_batches,
+                domains=self.config.domains,
+                domain_candidate_token_ids=(self.config.effective_domain_candidate_map()),
+                selection_mode=self.config.control_token_online_selection_mode,
+                selection_mode_by_domain=selection_modes,
+                selection_loss_batches_by_domain=selection_loss_batches_by_domain,
+                selection_loss_mask_batches_by_domain=selection_loss_mask_batches_by_domain,
+                student_entropy_batches=(
+                    tuple(student_entropy_batches) if student_entropy_mode else None
+                ),
+                teacher_entropy_batches=(
+                    tuple(teacher_entropy_batches) if teacher_entropy_mode else None
+                ),
+                teacher_log_prob_batches=(
+                    tuple(teacher_log_prob_batches)
+                    if loss_teacher_confidence_mode
+                    else None
+                ),
+                normalization_min_occurrences=(
+                    self.config.control_token_online_min_mean_occurrences_per_step
+                ),
+                normalization_strict_occurrence_gate=(
+                    self.config.control_token_online_strict_occurrence_gate
+                ),
+                candidate_scope=self.config.control_token_online_candidate_scope,
+                candidate_vocab_size=(
+                    self.config.control_token_online_candidate_vocab_size
+                ),
+            )
         statistics = global_statistics.by_domain
         for domain, normalization in (
             global_statistics.q_normalization_stats or {}

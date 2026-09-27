@@ -816,17 +816,18 @@ def load_config(path: str | Path) -> MOPDConfig:
     audit = AuditConfig(**_expect_mapping(root.get("audit", {}), "audit"))
     from mopd_verl.domain_gradient.occurrence_config import (
         uses_current_step_selection,
+        uses_versioned_next_step_selection,
         validate_occurrence_config,
     )
 
     validate_occurrence_config(audit, actor)
-    if uses_current_step_selection(audit):
+    if uses_current_step_selection(audit) or uses_versioned_next_step_selection(audit):
         from mopd_verl.domain_gradient.occurrence_config import validate_occurrence_actor
 
         validate_occurrence_actor(actor)
         if actor.ppo_mini_batch_size != data.train_batch_size * rollout.n:
             raise ValueError(
-                "current-step selection requires exactly one full actor minibatch"
+                "token selection requires exactly one full actor minibatch"
             )
     region_dpo = with_control_token_fallback(
         parse_region_dpo_config(root.get("region_dpo", {})),
@@ -837,8 +838,10 @@ def load_config(path: str | Path) -> MOPDConfig:
         region_dpo,
         max_response_length=data.max_response_length,
     )
-    if uses_current_step_selection(audit) and region_dpo.enabled:
-        raise ValueError("current-step selection does not support region_dpo")
+    if region_dpo.enabled and (
+        uses_current_step_selection(audit) or uses_versioned_next_step_selection(audit)
+    ):
+        raise ValueError("current-step/versioned selection does not support region_dpo")
     domain_budgeting = parse_domain_budgeting_config(domain_budgeting_raw)
     normalized_loss_builder = distill_loss_builder(actor)
     topk_distillation_active = uses_topk_distill_loss(actor)

@@ -25,6 +25,18 @@ def uses_current_step_selection(config: Any) -> bool:
     )
 
 
+def uses_versioned_next_step_selection(config: Any) -> bool:
+    """Versioned C+S profiles can reuse the preceding production loss."""
+    return (
+        normalize_token_taxonomy_version(
+            getattr(config, "token_taxonomy_version", "legacy")
+        ) in TOKEN_TAXONOMY_VERSIONS
+        and getattr(config, "structure_token_loss_weighting_enabled", False)
+        and getattr(config, "control_token_online_selection_timing", "next_step")
+        == "next_step"
+    )
+
+
 def normalize_tail_top_p_by_domain(
     domains: Sequence[str], value: Any,
 ) -> tuple[tuple[str, float], ...]:
@@ -120,9 +132,9 @@ def _validate_versioned_taxonomy(config: Any) -> str:
     if version not in TOKEN_TAXONOMY_VERSIONS:
         raise ValueError(f"Unsupported token taxonomy version: {version!r}")
     current_step = uses_current_step_selection(config)
-    if structure_enabled and not current_step:
-        raise ValueError("Token V4/V5 Structure weighting requires current_step.")
-    if current_step and not structure_enabled:
+    if (
+        current_step or config.control_token_online_selection_enabled
+    ) and not structure_enabled:
         raise ValueError("Token V4/V5 requires fixed Structure weighting.")
     if getattr(config, "token_taxonomy_artifact_sha256", "") != (
         TOKEN_TAXONOMY_ARTIFACT_SHA256
@@ -170,8 +182,16 @@ def validate_occurrence_config(config: Any, actor: Any = None) -> None:
         raise ValueError(
             "control_token_online_selection_unit must be token_id or occurrence"
         )
-    if not uses_current_step_selection(config):
+    versioned_next_step = uses_versioned_next_step_selection(config)
+    if not uses_current_step_selection(config) and not versioned_next_step:
         return
+    selection_modes = dict(config.control_token_online_selection_mode_by_domain)
+    if versioned_next_step and (
+        unit != "token_id"
+        or config.control_token_online_selection_mode != "top_loss"
+        or any(mode != "top_loss" for mode in selection_modes.values())
+    ):
+        raise ValueError("Token V4/V5 next_step requires token_id TopLoss selection.")
     expected = {
         "control_token_online_selection_enabled": True,
         "control_token_normalize_per_domain": True,

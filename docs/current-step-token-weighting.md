@@ -2,6 +2,10 @@
 
 当前实现支持在同一个 optimizer step 中评分、选取 token、再加权反向传播。
 默认仍为 `next_step`；显式配置 `current_step` 才启用新增路径。
+本文以下的 same-step 时序与 tail/TC 例子保留为历史机制说明。当前可启动的
+Math+Code 配置已迁至上一 step 结果选择：37 个 active public profiles 均为
+`next_step`、`token_id`、`top_loss`、无 tail；旧 `current_step` 文件名只是兼容 alias，
+展开后仍为 `next_step`。实验对照应以实际展开配置而不是文件名判断时序。
 
 ## 最小配置
 
@@ -65,7 +69,7 @@ weighting 或其他 token weighting controller。原有校验会拒绝不兼容�
 Token V4/V5 profile 使用更严格的组合语义：
 
 ```text
-Control candidate --position gate--Current-Step TopLoss--> selected Control, raw w
+Control candidate --position gate--previous-step TopLoss--> selected Control, raw w
 Structure IDs --------position gate---------------------> accepted Structure, raw w
 两者与普通 token(raw w=1) 合并 -----------> 每个 microbatch/domain 归一化一次
 ```
@@ -84,7 +88,9 @@ code-body/fence token，但正文答案标签及 EOS 仍可生效。mask 随 `Da
 Code Control 的 mask 排除所有 backtick/tilde fenced blocks，包括从未闭合的 fence
 到回复末尾；scoring 的频次、均值与最终 ID 加权共用同一 mask。top-p 分母仍为该 domain
 全部 valid response tokens。Math Control 的有效位置不另收窄。prepass 的 raw selector
-validity 仍必须等于完整 response mask，位置筛选独立发生在该完整 mask 内。
+validity 仍必须等于完整 response mask，位置筛选独立发生在该完整 mask 内；这条
+prepass 说明仅适用于历史 Current-Step 路径。当前 Next-Step 路径直接使用上一步
+正式 forward 的未加权原始 loss。
 
 Code Structure 的非答案词只取最终闭合 block 的围栏/语言行及 I/O、函数签名、入口逻辑语句，
 排除注释和 string literal token 位置，支持多行语句和 `input = sys.stdin.readline`。
@@ -163,6 +169,9 @@ same-step / global-domain normalization；它与这里的显式 current_step nor
 
 ## 开销、日志与恢复
 
+以下开销与日志描述历史 Current-Step 路径；当前 active Next-Step 配置不执行额外
+student 评分 forward，而是利用上一 step 正式 forward 的原始 loss 更新下一步选择。
+
 每步额外一遍 student scoring forward，以及全局评分统计通信。teacher 已缓存结果
 继续复用。不能把置零比例当作 FLOPs 节约，也不能未经测量声称总时间翻倍。
 
@@ -179,27 +188,29 @@ static-ID membership 的 Control 计数或没有独立 oracle 的 gradient-mask 
 
 ## 已提供的 Math+Code 配置
 
-均位于 `configs/token_selection/math_code/taxonomy/`，继承相同的 4-GPU、batch528
-regular recipe，使用独立 run/checkpoint namespace 与 `wandb_resume: never`：
+均位于 `configs/token_selection/math_code/taxonomy/`。regular Math+Code head-only 配置为
+`mopd_math_code_next_step_toploss_m05_c01_fixed4_4gpu.yaml`：batch 528，Math/Code
+top-p 分别为 5%/1%，首步无选中 ID，之后使用上一 step 生产 loss 的统计。旧同名
+`current_step` 文件为指向此配置的 alias。
 
-- `mopd_math_code_current_step_toploss_m05_c01_fixed4_4gpu.yaml`：same-step head-only 对照。
-- `mopd_math_code_current_step_toploss_m05_c01_tailhalf_4gpu.yaml`：bottom-loss raw weight 0.5。
-- `mopd_math_code_current_step_toploss_m05_c01_tailzero_4gpu.yaml`：bottom-loss raw weight 0。
-- `mopd_math_code_current_step_teacher_confidence_m05_c01_tailhalf_4gpu.yaml`：高/低 confidence 两端。
-- `mopd_math_code_current_step_loss_teacher_confidence_m05_c01_tailhalf_4gpu.yaml`：composite 两端。
-
-TC 两个配置是可选机制对照，未自动加入训练队列。优先比较前三个 same-step 配置，
-避免用旧 next-step head-only 成绩直接归因 tail 的效果。本轮仅本地实现与验证。
+原四个非默认 tail/TC 例子（TopLoss tailhalf/tailzero、Teacher Confidence tailhalf、
+Loss+Teacher Confidence tailhalf）仍只实现 same-step 语义，未作为 active YAML 保留，
+不能把它们的 timing 改为 `next_step` 后直接运行。原始 YAML 保存在
+`tests/fixtures/next_step_migration/current-step-configs.json.gz` 及 Git
+commit `806795e`；后续若需比较这些机制，应先实现并验证对应的 lagged selector。
 
 Token V4/V5 提供 18 个主设置 public profile，命名为：
 
 ```text
-mopd_math_code_current_step_token_v{4,5}_toploss_
+mopd_math_code_next_step_token_v{4,5}_toploss_
 m05_c{05,02,01}_fixed4_{3,4,8}gpu_colocated.yaml
 ```
 
 另有同一矩阵的 18 个 `fixed8` profile，分别继承对应 `fixed4`，仅覆盖 C/S raw weight
-为 8 及独立 namespace（`-r3-...-f8-`）。Math/Code top-p、batch 和 topology 保持一致。
+为 8 及独立 namespace（含 `-r3-`、`-next-` 和 `-f8-`）。Math/Code top-p、batch 和
+topology 保持一致。首步只有位置门控 Structure 加权；第 t 步产生的未加权原始 loss
+用于第 t+1 步选择 Control IDs，不做额外的评分 forward。全部 36 个旧 `current_step`
+文件名保留 alias，但解析后的机制与相应 `next_step` profile 完全相同。
 本轮不包含 S-only sweep。后续实验需同报 Math4/Code4 以及 code extraction failure、
 无 `\\boxed` 比例、截断率和平均长度；当前实现测试不等同于这些训练/评测结果。
 

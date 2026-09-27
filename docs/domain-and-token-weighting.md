@@ -92,7 +92,10 @@ token loss，按 domain 和候选 ID 累加 absolute-loss sum 与 occurrence cou
 当 rolling window 已填满且 step 命中 audit interval 时，token 先通过
 `window occurrence count / window_steps >= threshold` 的频次门槛，再按
 `window absolute-loss sum / window occurrence count` 排名，各 domain 独立激活
-Top-K。step `t` 的审计结果从 step `t+1` 生效，避免 same-batch feedback。
+Top-K。默认 step `t` 的审计结果从 step `t+1` 生效。
+也可显式配置 `control_token_online_selection_timing: current_step`，使用当步评分
+并加权；低 loss 降权与 teacher confidence 选择见
+[Current-step token weighting](current-step-token-weighting.md)。
 
 rolling window、当前 active IDs 和 audit step 随 optimizer checkpoint 保存；
 resume 时配置签名必须一致。step gap 会清空窗口和 stale active set。该模式要求

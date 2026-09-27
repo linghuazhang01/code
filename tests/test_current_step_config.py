@@ -198,9 +198,9 @@ def test_duplicate_tail_domain_overrides_are_rejected(tmp_path: Path) -> None:
                                       "control_token_tail_top_p_by_domain": value}})
 
 
-def test_current_step_example_profiles_are_isolated_and_launchable(tmp_path: Path) -> None:
-    profiles = sorted(BASE.parent.glob("mopd_math_code_current_step_*_4gpu.yaml"))
-    assert len(profiles) == 5
+def test_active_next_step_example_is_isolated_and_launchable(tmp_path: Path) -> None:
+    profiles = sorted(BASE.parent.glob("mopd_math_code_next_step_toploss_*_4gpu.yaml"))
+    assert len(profiles) == 1
     configs = [load_config(path) for path in profiles]
     original = load_config(BASE)
     for getter in (
@@ -224,9 +224,9 @@ def test_current_step_example_profiles_are_isolated_and_launchable(tmp_path: Pat
         command = build_command(config)
         assert "trainer.resume_mode=disable" in command
         assert not any("resume_from_path=" in argument for argument in command)
-        assert "+mopd_audit.control_token_online_selection_timing=current_step" in command
+        assert "+mopd_audit.control_token_online_selection_timing=next_step" in command
         domain = DomainGradientConfig.from_meta(_metadata(config, tmp_path))
-        assert domain.control_token_online_selection_timing == "current_step"
+        assert domain.control_token_online_selection_timing == "next_step"
         DomainGradientConfig.from_meta(_metadata(config, tmp_path, "eval"))
 
 

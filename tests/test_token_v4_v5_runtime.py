@@ -28,10 +28,13 @@ def test_actor_batch_selection_retains_both_trainer_position_masks() -> None:
 
 def _versioned_audit(weight: int = 4) -> object:
     config = load_config(
-        f"configs/token_selection/math_code/taxonomy/mopd_math_code_current_step_"
+        f"configs/token_selection/math_code/taxonomy/mopd_math_code_next_step_"
         f"token_v5_toploss_m05_c01_fixed{weight}_4gpu_colocated.yaml"
     )
-    logger = MOPDAuditLogger({"mopd_audit": asdict(config.audit)})
+    # Historical same-step runtime behavior is tested with an explicit override.
+    logger = MOPDAuditLogger({"mopd_audit": {
+        **asdict(config.audit), "control_token_online_selection_timing": "current_step",
+    }})
     domain = DomainGradientConfig.from_meta(
         logger.full_gradient_meta("train", 1)["mopd_full_gradient"]
     )

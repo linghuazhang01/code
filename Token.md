@@ -178,8 +178,8 @@ revision 1 JSON/CSV 与 26 份配置快照保留在 `token_taxonomy_history/revi
 `token_taxonomy_history/revision_2/`。当前 revision-3 profile 的 run/audit/eval/checkpoint
 名称均含 `-r3-`，不得用新集合恢复旧 namespace。
 
-训练语义为 Control-only candidate pool 做 Current-Step TopLoss；Code Control 仅在
-所有 fenced code blocks 外评分和加权，未闭合 block 一直排除到回复末尾。频次门槛与
+原始配置矩阵使用 Control-only candidate pool 做 Current-Step TopLoss；当前 active 的无 tail/TC 配置已改为 Next-Step TopLoss：step `t` 正式 forward 的 raw RKL 在成功更新后决定 step `t+1` 的 Control IDs，不另做 no-grad student 评分。旧 `current_step` 文件名仅为指向 Next-Step canonical 配置的兼容 alias，不能据文件名推断实际时序。Code Control 仅在
+所有 fenced code blocks 外统计和加权，未闭合 block 一直排除到回复末尾。频次门槛与
 ID mean loss 均只使用这些 eligible occurrences，top-p 分母仍为该 domain 全部 valid
 response tokens。Structure 不进入 TopLoss budget，按以下位置固定加权：
 
@@ -200,6 +200,17 @@ response tokens。Structure 不进入 TopLoss budget，按以下位置固定加�
 `token_v4_v5_fourbaseline_r3_answer_format`。当前 18 组主配置及 18 组 w8 变体保持 Math top-p=0.05、
 Code=0.05/0.02/0.01 与 3/4/8-GPU topology；未采用草稿中的其他 top-p 建议，也未新增
 S-only sweep。Science 尚未定义，配置校验 fail closed。
+
+本轮 active 迁移覆盖上述 36 个 V4/V5 profile 和 1 个 legacy 纯 TopLoss head-only profile（另有 8 个 helper），`control_token_online_selection_timing=next_step`、`control_token_online_selection_unit=token_id`、interval/window 均为 1；首步 Control 不额外加权，Structure 仍按位置生效。当前 active 配置的 tail budget 为 0，不使用 teacher-confidence 选词。4 个历史 tail/TC 示例保存在迁移备份中，本轮不更改其算法，也不作为 active Next-Step profile。
+
+本次 V4 Math5%/Code1% Fixed4 四卡训练改用独立的 `next_step` profile：
+`mopd_math_code_next_step_token_v4_toploss_m05_c01_fixed4_4gpu_colocated.yaml`。
+step t 正式 forward 产生的未加权 teacher-support reverse KL，在成功更新后聚合，
+以相同 Control 位置限制、严格 `>20` 和 top-p 规则选出供 step t+1 使用的 token IDs；
+不增加评分 forward。interval/window 均为 1，首步 Control 选择为空，Structure 仍从首步
+按当前位置生效；两类仍只做一次 microbatch/domain mean-one normalization。
+top-p 预算依据来源 step 的全部 valid response tokens，下一 step 的实际覆盖比例可能不同。
+新 run/audit/eval/checkpoint namespace 含 `-next-`，不恢复 Current-Step 的实验空间。
 
 ## 1. 名称与状态
 

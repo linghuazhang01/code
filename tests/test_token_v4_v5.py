@@ -73,7 +73,7 @@ def test_config_matrix_is_launchable(
     weight: int,
 ) -> None:
     path = CONFIG_DIR / (
-        f"mopd_math_code_current_step_token_{version}_toploss_"
+        f"mopd_math_code_next_step_token_{version}_toploss_"
         f"m05_c{code_top_p}_fixed{weight}_{gpu_count}gpu_colocated.yaml"
     )
     config = load_config(path)
@@ -85,7 +85,7 @@ def test_config_matrix_is_launchable(
     assert config.worker_placement.ref_policy.n_gpus_per_node is None
     assert config.trainer.n_gpus_per_node == gpu_count
     assert not config.teacher_performance.enabled
-    assert config.audit.control_token_online_selection_timing == "current_step"
+    assert config.audit.control_token_online_selection_timing == "next_step"
     assert config.audit.control_token_online_top_p_by_domain == {
         "math": 0.05,
         "code": int(code_top_p) / 100,
@@ -115,7 +115,7 @@ def test_config_matrix_is_launchable(
 
 def test_versioned_config_rejects_taxonomy_drift(tmp_path: Path) -> None:
     source = CONFIG_DIR / (
-        "mopd_math_code_current_step_token_v5_toploss_"
+        "mopd_math_code_next_step_token_v5_toploss_"
         "m05_c01_fixed4_4gpu_colocated.yaml"
     )
     config = load_config(source)
@@ -128,7 +128,7 @@ def test_versioned_config_rejects_taxonomy_drift(tmp_path: Path) -> None:
 def test_all_public_profiles_have_unique_namespaces() -> None:
     paths = sorted(
         CONFIG_DIR.glob(
-            "mopd_math_code_current_step_token_v[45]_toploss_"
+            "mopd_math_code_next_step_token_v[45]_toploss_"
             "m05_c0[125]_fixed[48]_*gpu_colocated.yaml"
         )
     )
@@ -144,7 +144,7 @@ def test_all_public_profiles_have_unique_namespaces() -> None:
     ):
         values = [getter(config) for config in configs]
         assert len(values) == len(set(values))
-        assert all("-r3-" in value for value in values)
+        assert all("-r3-" in value and "-next-" in value for value in values)
     for config in configs:
         gpu_count = config.trainer.n_gpus_per_node
         assert config.rollout.tensor_model_parallel_size == 1
@@ -212,7 +212,7 @@ def test_worker_rejects_old_revision_and_inconsistent_weights(
 ) -> None:
     config = load_config(
         CONFIG_DIR
-        / "mopd_math_code_current_step_token_v5_toploss_m05_c01_fixed4_4gpu_colocated.yaml"
+        / "mopd_math_code_next_step_token_v5_toploss_m05_c01_fixed4_4gpu_colocated.yaml"
     )
     metadata = _metadata(config)
     metadata[field] = value

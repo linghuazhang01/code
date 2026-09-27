@@ -909,9 +909,13 @@ class DataParallelPPOActor(BasePPOActor):
                 "mini-batch and one PPO epoch per actor update so each speed "
                 "observation covers the complete global step."
             )
-        from mopd_verl.domain_gradient.occurrence_config import uses_current_step_selection
+        from mopd_verl.domain_gradient.occurrence_config import (
+            uses_current_step_selection,
+            uses_versioned_next_step_selection,
+        )
 
-        if uses_current_step_selection(audit.config):
+        versioned_next_step = uses_versioned_next_step_selection(audit.config)
+        if uses_current_step_selection(audit.config) or versioned_next_step:
             from mopd_verl.domain_gradient.occurrence_config import (
                 validate_occurrence_actor,
                 validate_occurrence_config,
@@ -1155,13 +1159,13 @@ class DataParallelPPOActor(BasePPOActor):
                             selector_token_loss_batches=(
                                 micro_batch_selector_token_loss
                                 if TOP_KL_STUDENT_ENTROPY_SELECTION_MODE
-                                in online_selection_modes
+                                in online_selection_modes or versioned_next_step
                                 else None
                             ),
                             selector_token_loss_mask_batches=(
                                 micro_batch_selector_token_loss_mask
                                 if TOP_KL_STUDENT_ENTROPY_SELECTION_MODE
-                                in online_selection_modes
+                                in online_selection_modes or versioned_next_step
                                 else None
                             ),
                         ),

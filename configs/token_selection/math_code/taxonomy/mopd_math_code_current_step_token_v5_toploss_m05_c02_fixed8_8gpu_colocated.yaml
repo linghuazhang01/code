@@ -1,27 +1,2 @@
-# Explicit revision-3 variant: Control and Structure both use raw w=8.
-# Token V5, Math top_p=0.05, Code top_p=0.02, 8-GPU colocated.
-extends: mopd_math_code_current_step_token_v5_toploss_m05_c02_fixed4_8gpu_colocated.yaml
-
-runtime:
-  wandb_run_id: q1p7b8g-mc-v5-r3-cs-m05c02-f8-b528-s60
-  wandb_resume: never
-
-audit:
-  control_token_loss_weight: 8.0
-  structure_token_loss_weight: 8.0
-  control_token_online_top_p: 0.05
-  control_token_online_top_p_by_domain:
-    math: 0.05
-    code: 0.02
-  output_dir: audit/q1p7b8g-mc-v5-r3-cs-m05c02-f8-b528-s60
-
-paper_eval:
-  output_dir: eval_outputs/paper_suite/q1p7b8g-mc-v5-r3-cs-m05c02-f8-b528-s60
-
-huggingface_checkpoint:
-  private: false
-  path_prefix: checkpoints/mopd/q1p7b8g-mc-v5-r3-cs-m05c02-f8-b528-s60
-
-trainer:
-  experiment_name: q1p7b8g-mc-v5-r3-cs-m05c02-f8-b528-s60
-  default_local_dir: checkpoints/MOPD/q1p7b8g-mc-v5-r3-cs-m05c02-f8-b528-s60
+# Historical filename alias; this profile now selects from the previous step.
+extends: mopd_math_code_next_step_token_v5_toploss_m05_c02_fixed8_8gpu_colocated.yaml
