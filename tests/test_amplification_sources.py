@@ -51,6 +51,25 @@ def test_actual_occurrences_padding_domain_weights_and_unique_ids() -> None:
     assert filter_tensorboard_metrics(metrics, 'core') == metrics
 
 
+def test_versioned_source_metrics_use_explicit_domain_membership() -> None:
+    # 13023 is legacy Control but Token V4 Math Structure. Explicit membership
+    # must win so the experiment is not mislabeled by the frozen 809 taxonomy.
+    metrics = amplified_token_source_metrics(
+        [torch.tensor([[13023, 333]])],
+        [torch.ones(1, 2)],
+        [torch.full((1, 2), 4.0)],
+        [["math"]],
+        domains=["math"],
+        domain_weights={},
+        domain_control_token_ids={"math": [333]},
+        domain_structure_token_ids={"math": [13023]},
+    )
+    prefix = "math/token_weight/amplified_source_"
+    assert metrics[prefix + "control_occurrence_count"] == 1
+    assert metrics[prefix + "structure_occurrence_count"] == 1
+    assert metrics[prefix + "other_occurrence_count"] == 0
+
+
 def test_distributed_merge_deduplicates_ids_and_uses_ratio_of_sums() -> None:
     control, structure = min(CONTROL_TOKEN_IDS), min(STRUCTURE_TOKEN_IDS)
 
@@ -67,6 +86,28 @@ def test_distributed_merge_deduplicates_ids_and_uses_ratio_of_sums() -> None:
     prefix = 'global/token_weight/amplified_source_'
     assert metrics[prefix + 'control_occurrence_fraction'] == 0.8
     assert metrics[prefix + 'unique_token_count'] == 2
+
+
+def test_versioned_flat_histogram_uses_explicit_membership() -> None:
+    def gather(output: list, local: dict) -> None:
+        output[:] = [local, {"math": {13023: 2}}]
+
+    with patch('torch.distributed.is_initialized', return_value=True), patch(
+        'torch.distributed.get_world_size', return_value=2
+    ), patch('torch.distributed.all_gather_object', side_effect=gather):
+        metrics = amplified_token_source_metrics(
+            [torch.tensor([[333]])],
+            [torch.ones(1, 1)],
+            [torch.full((1, 1), 4.0)],
+            [["math"]],
+            domains=["math"],
+            domain_weights={},
+            domain_control_token_ids={"math": [333]},
+            domain_structure_token_ids={"math": [13023]},
+        )
+    prefix = "global/token_weight/amplified_source_"
+    assert metrics[prefix + "control_occurrence_count"] == 1
+    assert metrics[prefix + "structure_occurrence_count"] == 2
 
 
 def test_fixed_weight_completed_step_emits_metrics_without_online_selector() -> None:

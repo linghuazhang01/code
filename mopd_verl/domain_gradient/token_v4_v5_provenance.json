@@ -1,0 +1,51 @@
+{
+  "revision": 3,
+  "support_rule": "all four baseline domain maxima > 20",
+  "summary": {
+    "math": {
+      "v4_control": 119,
+      "v5_control": 61,
+      "structure": 9,
+      "control_intersection": 57,
+      "control_sibling_added": [
+        3896,
+        5185,
+        5512,
+        82610
+      ]
+    },
+    "code": {
+      "v4_control": 153,
+      "v5_control": 72,
+      "structure": 45,
+      "control_intersection": 64,
+      "control_sibling_added": [
+        3328,
+        3896,
+        5185,
+        5512,
+        7036,
+        9974,
+        62197,
+        82610
+      ]
+    }
+  },
+  "support_counts": {
+    "math": 3686,
+    "code": 6573
+  },
+  "npz_csv_compared_values": 2664,
+  "npz_csv_mismatches": 0,
+  "sources_sha256": {
+    "token_v4_v5.json": "2a6e62db4c0986d4bd4825bc0891cf223fb2b1a955d1bc5404eed2ff42dd22d8",
+    "tables/token_v4_v5_membership.csv": "7c27427726f985036f2c6b415358508af61b51444782a2fd9cedb8ca15e4d16b",
+    "tables/four_baseline_maxocc/maxocc_1p7b_opd.npz": "74bd1de38fc6860912bb4d7c6e6da899854ab5a8c77cd2c92a840ca1fc7c658e",
+    "tables/four_baseline_maxocc/maxocc_1p7b_eopd.npz": "70f0564babe828abd62f36e7fde551fa411a8d78b98ea624bd764abbf62e58e1",
+    "tables/four_baseline_maxocc/maxocc_4b_opd.npz": "3005412e85914fcafb1de9e9cf4529c6ea00f9aa378473ff8b8cc7ea882d7749",
+    "tables/four_baseline_maxocc/maxocc_4b_eopd.npz": "8c09bbb5c43f343db1439904bedb36ea4af1210a740eac3f3d71c2ab2f7fa337",
+    "scripts/four_baseline_maxocc.py": "a6d1fa5ad16df338d9b9785c897c6b5a8c29396092a328770f5c94d360796652",
+    "scripts/closure_fullvocab.py": "e63eb8940ae64dfae3c1f22506b9c8fc32ed77904655fb700051aed2a8d2027f",
+    "scripts/build_v4v5_fourbaseline.py": "52ef064593332b2e86876e048543d83bdd5b267bc052f7e065b1ae458815ffc1"
+  }
+}

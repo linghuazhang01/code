@@ -1,0 +1,29 @@
+# Current-step token-ID selection; head/tail share the configured C+S pool.
+# Tail budgets are examples for the proposed experiment, not tuned optima.
+extends: mopd_math_code_toploss_m05_c01_fixed4_4gpu.yaml
+
+runtime:
+  wandb_run_id: q1p7b4g-mc-cs-tc-m05c01-thalf-b528-s60
+  wandb_resume: never
+
+audit:
+  control_token_online_selection_timing: current_step
+  control_token_online_selection_unit: token_id
+  control_token_online_selection_mode: top_teacher_confidence
+  control_token_tail_selection_mode: bottom_teacher_confidence
+  control_token_tail_top_p: 0.0
+  control_token_tail_top_p_by_domain:
+    math: 0.05
+    code: 0.01
+  control_token_tail_weight: 0.5
+  output_dir: audit/q1p7b4g-mc-cs-tc-m05c01-thalf-b528-s60
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b4g-mc-cs-tc-m05c01-thalf-b528-s60
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/mopd/q1p7b4g-mc-cs-tc-m05c01-thalf-b528-s60
+
+trainer:
+  experiment_name: q1p7b4g-mc-cs-tc-m05c01-thalf-b528-s60
+  default_local_dir: checkpoints/MOPD/q1p7b4g-mc-cs-tc-m05c01-thalf-b528-s60

@@ -1,0 +1,46 @@
+# Token V5 revision 3: Control uses Current-Step TopLoss; Structure uses position-aware Fixed4.
+extends: _mopd_math_code_toploss_fixed4_4gpu.yaml
+
+audit:
+  token_taxonomy_version: token_v5
+  token_taxonomy_artifact_sha256: 2a6e62db4c0986d4bd4825bc0891cf223fb2b1a955d1bc5404eed2ff42dd22d8
+  control_token_online_selection_timing: current_step
+  control_token_online_selection_unit: token_id
+  control_token_online_selection_mode: top_loss
+  control_token_online_candidate_scope: configured
+  control_token_online_audit_interval_steps: 1
+  control_token_online_window_steps: 1
+  control_token_online_budget_mode: top_p
+  control_token_online_weight_mode: fixed
+  control_token_tail_top_p: 0.0
+  control_token_tail_weight: 1.0
+  structure_token_loss_weighting_enabled: true
+  structure_token_loss_weight: 4.0
+  structure_token_position_profile: token_v4_v5_fourbaseline_r3_answer_format
+  domain_control_token_candidate_ids:
+    math: [
+      333, 421, 704, 714, 773, 1083, 1156, 1221, 1416, 1431, 1576, 1790,
+      1988, 2055, 2058, 2474, 2679, 3425, 3498, 3602, 3896, 3983, 4354, 4416,
+      4518, 4623, 4751, 5005, 5185, 5338, 5512, 5627, 5937, 7039, 7241, 8088,
+      8450, 8704, 9112, 9211, 9658, 11209, 11284, 12209, 12549, 12824, 13394, 15277,
+      16085, 17949, 22477, 23322, 27653, 30787, 31040, 38770, 44500, 54815, 67691, 82610,
+      92014
+    ]
+    code: [
+      333, 421, 704, 714, 773, 1083, 1156, 1221, 1416, 1431, 1576, 1790,
+      1988, 2055, 2058, 2474, 2679, 3328, 3391, 3425, 3498, 3600, 3602, 3896,
+      3983, 4354, 4416, 4518, 4623, 4695, 5005, 5185, 5338, 5512, 5937, 7036,
+      7039, 7241, 7281, 8088, 8450, 8704, 9112, 9211, 9295, 9658, 9974, 11209,
+      11284, 12090, 12209, 12549, 13394, 15277, 17375, 17949, 18214, 22477, 23322, 23949,
+      27079, 27653, 30787, 34239, 35587, 44500, 54815, 62197, 67691, 80456, 82610, 92014
+    ]
+  domain_structure_token_ids:
+    math: [
+      1590, 4226, 13023, 16688, 19357, 21806, 73877, 79075, 151645
+    ]
+    code: [
+      396, 526, 707, 750, 878, 1005, 1173, 1349, 1350, 1355, 1548, 1590,
+      1887, 1946, 2415, 3817, 3932, 4125, 4226, 5289, 5384, 5708, 5987, 6718,
+      6960, 7791, 9147, 9217, 11625, 11822, 12669, 13023, 13105, 13316, 16688, 18140,
+      19357, 21806, 31800, 41233, 43184, 54275, 59419, 73594, 151645
+    ]

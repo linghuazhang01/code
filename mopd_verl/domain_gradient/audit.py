@@ -45,6 +45,7 @@ from mopd_verl.domain_gradient.control_top_loss_runtime import (
     global_candidate_loss_statistics_with_valid_counts,
 )
 from mopd_verl.domain_gradient.config import DomainGradientConfig
+from mopd_verl.domain_gradient.occurrence_config import uses_current_step_selection
 from mopd_verl.domain_gradient.geometry import (
     GradientVector,
     actor_group_sum,
@@ -228,7 +229,10 @@ class DomainGradientAudit:
             str,
             dict[int, float],
         ] = {}
-        if self.config.control_token_online_selection_enabled:
+        if (
+            self.config.control_token_online_selection_enabled
+            and self.config.control_token_online_selection_timing != "current_step"
+        ):
             online_state = getattr(
                 actor,
                 "_mopd_online_control_selection_state",
@@ -545,7 +549,7 @@ class DomainGradientAudit:
     ) -> torch.Tensor | None:
         """Return current domain and token production gradient multipliers."""
 
-        if self.config.control_token_online_selection_unit == "occurrence":
+        if uses_current_step_selection(self.config):
             from mopd_verl.domain_gradient.occurrence import occurrence_mask
 
             return occurrence_mask(self, micro_batch)
@@ -1675,10 +1679,22 @@ class DomainGradientAudit:
                 self.config.all_domain_shared_token_weighting_enabled
             ),
             shared_weight=self.config.all_domain_shared_token_weight,
+            use_actual_masks=(
+                self.config.control_token_online_selection_timing == "current_step"
+            ),
         )
-        return format_loss_amplification_metrics(
+        metrics = format_loss_amplification_metrics(
             reduce_loss_amplification_statistics(local_by_domain)
         )
+        if self.config.control_token_online_selection_timing == "current_step":
+            # Current-step membership lives in the detached head/tail selector.
+            # Static-ID counts and a self-comparison are not independent audits.
+            for name in (
+                "control_occurrence_count", "control_shared_overlap_occurrence_count",
+                "gradient_multiplier_abs_error_sum", "gradient_multiplier_mean_abs_error",
+            ):
+                metrics.pop(f"global/token_weight/{name}", None)
+        return metrics
 
     def observe_completed_step(
         self,
@@ -1727,9 +1743,19 @@ class DomainGradientAudit:
                     sequence_parallel_size=getattr(
                         self.actor, "ulysses_sequence_parallel_size", 1
                     ),
+                    domain_control_token_ids=(
+                        self.config.effective_domain_candidate_map()
+                        if self.config.token_taxonomy_version != "legacy"
+                        else None
+                    ),
+                    domain_structure_token_ids=(
+                        self.config.effective_domain_structure_map()
+                        if self.config.token_taxonomy_version != "legacy"
+                        else None
+                    ),
                 )
             )
-        if self.config.control_token_online_selection_unit == "occurrence":
+        if uses_current_step_selection(self.config):
             self._occurrence_masks = {}
             return metrics
         if not self.config.control_token_online_selection_enabled:
@@ -2246,7 +2272,7 @@ class DomainGradientAudit:
         temperature: float,
     ) -> dict[str, float]:
         occurrence_metrics = {}
-        if self.config.control_token_online_selection_unit == "occurrence":
+        if uses_current_step_selection(self.config):
             from mopd_verl.domain_gradient.occurrence import prepare_occurrence_masks
 
             occurrence_metrics = prepare_occurrence_masks(

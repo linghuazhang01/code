@@ -1,6 +1,6 @@
 # Control、Structure、Other 与 VR Token 定义
 
-更新日期：2026-08-31
+更新日期：2026-09-28
 
 本文档是当前项目中 Control、Control-44、Connective、Structure、Other 和 VR token
 集合的规范定义。除非另有说明，token ID 均绑定 Qwen3 tokenizer，不能直接复用于
@@ -119,6 +119,87 @@ expected `baseline × domain × token type` cells 且 full-K rate 为 100%；同
 PoolCapacity、TypeRecall、TypeF1 和每 cell event count。Control-44 的 Structure 集合
 为空，因此 split complete evaluation unavailable。完整机器可读结果位于
 `analysis-output/four-baseline-global-token-taxonomy/phase-top200-recall/`。
+
+### 0.3 Token V4 / Token V5（四 baseline 支持版，revision 3）
+
+Token V4/V5 是 version-scoped 的完整 `Control + Structure` 定义，不是
+ExpandedPruned-V3 一类 candidate-pool 版本，也不原地覆盖本节的全局 809-token
+taxonomy。当前只定义 Math 与 Code：
+
+| 版本 | Math Control | Code Control | Math Structure | Code Structure |
+|---|---:|---:|---:|---:|
+| Token V4 | 119 | 153 | 9 | 45 |
+| Token V5 | 61 | 72 | 9 | 45 |
+
+本版在完整 Qwen3 vocabulary（151,936 IDs）上做 sibling closure，再要求每个保留
+token 在四条 baseline 的相应 domain 中都满足 `M_{b,d}(t)>20`。这个条件也作用于
+seed，不能沿用第 6.1 节历史 candidate pool 的 seed 保留例外或 `>=20` 门槛。
+
+```text
+AnswerWord = {t: core(t) ∈ {final, answer, conclusion}}
+support_d(t) = all_b M_{b,d}(t) > 20
+Control_V4(d) = DomainControl_d \ AnswerWord
+Control_V5(d) = {t ∈ SiblingClosure(A ∪ B): support_d(t)}
+Structure(d) = {t ∈ SiblingClosure(Seed_d) ∪ AnswerWord: support_d(t)} \ Control
+```
+
+`core(t)` 去掉前导空白和至多一个前缀符号（`(`、`.`、`[`、`\`、`{`），再做
+casefold。C 类答案词整体划入 Structure；其余冲突仍由 Control 优先处理，同一
+version/domain 的 C/S 必须互斥。DomainControl 移出的 Math 5 个、Code 4 个答案词
+都保留在对应 Structure 中，未丢失；Code 也补回第二版漏掉的 ` Final`、`Final`、` Answer`。
+Control sibling 使用 `casefold(strip(NFKC(token)))`；围栏要求 strip 后精确等于三个
+backticks；标点核心精确匹配；代码词去掉前导空白和前缀符号后匹配核心（Code 区分
+大小写，Math 不区分）。逐项 source seed、状态及四 baseline 最大次数保留在 membership。
+
+V4 只保留 A、B、D，Math 分类数量为 `49/8/62`，Code 为 `53/11/89`。
+V5 只保留 A 推理连接词、B 步骤/假设标记，Math 为 `49/12`，Code 为 `53/19`。
+V5 不是 V4 子集：删除 D 类的同时，Math 新增 4 个 sibling
+`3896,5185,5512,82610`，Code 新增 8 个
+`3328,3896,5185,5512,7036,9974,62197,82610`。JSON 的
+`control_sibling_added` 明确保留这些 ID；`V4 Control ∩ V5 Control` 为 Math 57、Code 64。
+因此 V4/V5 比较同时改变 D 类与 sibling 扩充，不能称为只删除 D 类的单因素消融。
+
+两版本共享 Structure：Math 为 `1590,4226,13023,16688,19357,21806,73877,79075,151645`；
+Code 为 45 个 fence/language、I/O、程序接口/入口、答案标记及 EOS IDs，其中新增的
+8 个答案标记为 `1590,4226,9217,11822,13023,16688,19357,21806`。
+Math `Answer=16141` 和 Code
+` join=5138` 未通过支持条件，均被剪除；Math 新保留 ` final=1590`，Code 使用
+`join=5987`。`\\boxed` 与 `(solve` 为多 token 组合，不另造单 token ID；本版没有待解析项。
+
+最终机器定义为 `mopd_verl/domain_gradient/token_v4_v5.json`，SHA256：
+`2a6e62db4c0986d4bd4825bc0891cf223fb2b1a955d1bc5404eed2ff42dd22d8`；逐 token 清单为
+`token_v4_v5_membership.csv`，证据 hash 与核验报告为同目录 `token_v4_v5_provenance.json`。
+权威 source 位于 `../plan/code-gap-20260927/structure-budget-context-20260927/`。
+`scripts/finalize_token_v4_v5.py SOURCE_DIR [--install DESTINATION_DIR]` 只验证/导入
+已冻结的 JSON/CSV，逐项核对 NPZ，不再运行 revision-1 tokenizer-only 补全。
+核验为 666 rows × 4 baseline、0 mismatch；完整支持集为 Math 3,686、Code 6,573。
+revision 1 JSON/CSV 与 26 份配置快照保留在 `token_taxonomy_history/revision_1/`，不得
+改写；revision 2 JSON/CSV/provenance 与 44 份配置快照保留在
+`token_taxonomy_history/revision_2/`。当前 revision-3 profile 的 run/audit/eval/checkpoint
+名称均含 `-r3-`，不得用新集合恢复旧 namespace。
+
+训练语义为 Control-only candidate pool 做 Current-Step TopLoss；Code Control 仅在
+所有 fenced code blocks 外评分和加权，未闭合 block 一直排除到回复末尾。频次门槛与
+ID mean loss 均只使用这些 eligible occurrences，top-p 分母仍为该 domain 全部 valid
+response tokens。Structure 不进入 TopLoss budget，按以下位置固定加权：
+
+- Math/Code 的 `final`/`answer`/`conclusion` 答案词在 Markdown 标题或闭合加粗 label 内
+  生效。Math 额外允许同一行含字面 `\boxed` 命令的句子；前后相邻行不继承，`boxed`/EOS
+  本身仍在任意位置生效。大小写按词面匹配，ID 始终限定为该 domain 的冻结 Structure。
+- Code 答案词只在所有 fenced blocks 外的正文标题/加粗 label 内生效，无闭合代码块时
+  仍可生效；代码变量、comments、strings 与 docstrings 中的同词不命中。
+- Code fence 与 `python` 只在最终闭合 block 的围栏行；其余非答案词 Structure 只在该 block
+  的 I/O、函数签名和入口逻辑语句中。多行语句一并处理，但注释与 string literal
+  内容的位置排除。`input = sys.stdin.readline`、输入读取、`print`、输出 `.join(...)`
+  与独立 `solve()`/`main()` 属于这些语句；普通计算中的 `int`/`split` 不因此生效。
+- Code EOS 任意位置；Python lexical parsing 失败时 body 不加权。若后面另有未闭合
+  block，最后一个已闭合 block 仍是 Structure 的目标。
+
+主设置 C/S raw `w=4`，显式 w=8 变体将 C/S 同时设为 8；普通 token 为 1，合并后只做
+一次 microbatch/domain mean-one normalization。位置 profile 为
+`token_v4_v5_fourbaseline_r3_answer_format`。当前 18 组主配置及 18 组 w8 变体保持 Math top-p=0.05、
+Code=0.05/0.02/0.01 与 3/4/8-GPU topology；未采用草稿中的其他 top-p 建议，也未新增
+S-only sweep。Science 尚未定义，配置校验 fail closed。
 
 ## 1. 名称与状态
 

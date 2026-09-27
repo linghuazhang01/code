@@ -37,8 +37,12 @@ from mopd_verl.domain_gradient.control_selection_budget import (
     normalize_top_p_by_domain,
 )
 from mopd_verl.domain_gradient.control_selection_scoring import (
+    TOP_TEACHER_CONFIDENCE_SELECTION_MODE,
     normalize_online_selection_mode_by_domain,
     normalize_online_weight_mode_by_domain,
+)
+from mopd_verl.domain_gradient.occurrence_config import (
+    normalize_tail_top_p_by_domain,
 )
 from mopd_verl.tensorboard_filter import (
     filter_tensorboard_metrics as _filter_tensorboard_metrics,
@@ -996,6 +1000,34 @@ class MOPDAuditLogger:
         self.control_token_loss_weight = float(
             _cfg_get(audit_config, "control_token_loss_weight", 1.0)
         )
+        self.token_taxonomy_version = str(
+            _cfg_get(audit_config, "token_taxonomy_version", "legacy")
+        )
+        self.token_taxonomy_artifact_sha256 = str(
+            _cfg_get(audit_config, "token_taxonomy_artifact_sha256", "")
+        )
+        self.structure_token_loss_weighting_enabled = bool(
+            _cfg_get(
+                audit_config,
+                "structure_token_loss_weighting_enabled",
+                False,
+            )
+        )
+        self.structure_token_loss_weight = float(
+            _cfg_get(audit_config, "structure_token_loss_weight", 1.0)
+        )
+        self.structure_token_position_profile = str(
+            _cfg_get(audit_config, "structure_token_position_profile", "none")
+        )
+        raw_domain_structure_ids = _cfg_get(
+            audit_config,
+            "domain_structure_token_ids",
+            {},
+        )
+        self.domain_structure_token_ids = {
+            str(domain): tuple(dict.fromkeys(int(token_id) for token_id in token_ids))
+            for domain, token_ids in raw_domain_structure_ids.items()
+        }
         self.control_token_ids = tuple(
             dict.fromkeys(
                 int(token_id)
@@ -1256,6 +1288,24 @@ class MOPDAuditLogger:
         )
         self.control_token_online_selection_unit = str(
             _cfg_get(audit_config, "control_token_online_selection_unit", "token_id")
+        )
+        self.control_token_online_selection_timing = str(
+            _cfg_get(audit_config, "control_token_online_selection_timing", "next_step")
+        )
+        self.control_token_tail_top_p = float(
+            _cfg_get(audit_config, "control_token_tail_top_p", 0.0)
+        )
+        self.control_token_tail_top_p_by_domain = dict(
+            normalize_tail_top_p_by_domain(
+                self.domains,
+                _cfg_get(audit_config, "control_token_tail_top_p_by_domain", {}),
+            )
+        )
+        self.control_token_tail_weight = float(
+            _cfg_get(audit_config, "control_token_tail_weight", 1.0)
+        )
+        self.control_token_tail_selection_mode = str(
+            _cfg_get(audit_config, "control_token_tail_selection_mode", "bottom_loss")
         )
         self.control_token_adaptive_neighborhood_enabled = bool(
             _cfg_get(
@@ -1851,6 +1901,18 @@ class MOPDAuditLogger:
                     self.control_token_loss_weighting_enabled and mode == "train"
                 ),
                 "control_token_loss_weight": self.control_token_loss_weight,
+                "token_taxonomy_version": self.token_taxonomy_version,
+                "token_taxonomy_artifact_sha256": (
+                    self.token_taxonomy_artifact_sha256
+                ),
+                "structure_token_loss_weighting_enabled": (
+                    self.structure_token_loss_weighting_enabled and mode == "train"
+                ),
+                "structure_token_loss_weight": self.structure_token_loss_weight,
+                "structure_token_position_profile": (
+                    self.structure_token_position_profile
+                ),
+                "domain_structure_token_ids": self.domain_structure_token_ids,
                 "control_token_ids": self.control_token_ids,
                 "domain_control_token_ids": self.domain_control_token_ids,
                 "control_token_candidate_ids": (self.control_token_candidate_ids),
@@ -1899,20 +1961,48 @@ class MOPDAuditLogger:
                     self.control_token_online_top_p_by_domain
                 ),
                 "control_token_online_selection_mode": (
-                    self.control_token_online_selection_mode
+                    "top_loss"
+                    if (mode != "train" and self.control_token_online_selection_mode
+                        == TOP_TEACHER_CONFIDENCE_SELECTION_MODE)
+                    else self.control_token_online_selection_mode
                 ),
                 "control_token_online_weight_mode": (
                     self.control_token_online_weight_mode
                 ),
-                "control_token_online_selection_mode_by_domain": (
-                    self.control_token_online_selection_mode_by_domain
-                ),
+                "control_token_online_selection_mode_by_domain": {
+                    domain: (
+                        "top_loss"
+                        if (mode != "train" and selection_mode
+                            == TOP_TEACHER_CONFIDENCE_SELECTION_MODE)
+                        else selection_mode
+                    )
+                    for domain, selection_mode in (
+                        self.control_token_online_selection_mode_by_domain.items()
+                    )
+                },
                 "control_token_online_weight_mode_by_domain": (
                     self.control_token_online_weight_mode_by_domain
                 ),
                 "control_token_loss_ratio_alpha": self.control_token_loss_ratio_alpha,
                 "control_token_online_selection_unit": (
                     self.control_token_online_selection_unit if mode == "train" else "token_id"
+                ),
+                "control_token_online_selection_timing": (
+                    self.control_token_online_selection_timing
+                    if mode == "train" else "next_step"
+                ),
+                "control_token_tail_top_p": (
+                    self.control_token_tail_top_p if mode == "train" else 0.0
+                ),
+                "control_token_tail_top_p_by_domain": (
+                    self.control_token_tail_top_p_by_domain if mode == "train" else {}
+                ),
+                "control_token_tail_weight": (
+                    self.control_token_tail_weight if mode == "train" else 1.0
+                ),
+                "control_token_tail_selection_mode": (
+                    self.control_token_tail_selection_mode
+                    if mode == "train" else "bottom_loss"
                 ),
                 "control_token_adaptive_neighborhood_enabled": (
                     self.control_token_adaptive_neighborhood_enabled and mode == "train"

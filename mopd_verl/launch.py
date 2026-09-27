@@ -351,6 +351,26 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"{audit.control_token_loss_ratio_alpha}",
         "+mopd_audit.control_token_online_selection_unit="
         f"{audit.control_token_online_selection_unit}",
+        "+mopd_audit.control_token_online_selection_timing="
+        f"{audit.control_token_online_selection_timing}",
+        "+mopd_audit.control_token_tail_top_p=" f"{audit.control_token_tail_top_p}",
+        "+mopd_audit.control_token_tail_top_p_by_domain="
+        f"{_hydra_float_dict(audit.control_token_tail_top_p_by_domain)}",
+        "+mopd_audit.control_token_tail_weight=" f"{audit.control_token_tail_weight}",
+        "+mopd_audit.control_token_tail_selection_mode="
+        f"{audit.control_token_tail_selection_mode}",
+        "+mopd_audit.token_taxonomy_version="
+        f"{_hydra_string(audit.token_taxonomy_version)}",
+        "+mopd_audit.token_taxonomy_artifact_sha256="
+        f"{_hydra_string(audit.token_taxonomy_artifact_sha256)}",
+        "+mopd_audit.structure_token_loss_weighting_enabled="
+        f"{str(audit.structure_token_loss_weighting_enabled).lower()}",
+        "+mopd_audit.structure_token_loss_weight="
+        f"{audit.structure_token_loss_weight}",
+        "+mopd_audit.structure_token_position_profile="
+        f"{_hydra_string(audit.structure_token_position_profile)}",
+        "+mopd_audit.domain_structure_token_ids="
+        f"{_hydra_int_list_dict(audit.domain_structure_token_ids)}",
         "+mopd_audit.control_token_adaptive_neighborhood_enabled="
         f"{str(audit.control_token_adaptive_neighborhood_enabled).lower()}",
         "+mopd_audit.control_token_adaptive_neighborhood_max_distance="

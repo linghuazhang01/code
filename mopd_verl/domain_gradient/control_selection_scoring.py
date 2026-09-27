@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
 
 TOP_LOSS_SELECTION_MODE = "top_loss"
+TOP_TEACHER_CONFIDENCE_SELECTION_MODE = "top_teacher_confidence"
 TOP_LOGP_DIFF_SELECTION_MODE = "top_logp_diff"
 TOP_SPEED_SELECTION_MODE = "top_speed"
 TOP_Q_LOSS_ENTROPY_SELECTION_MODE = "top_q_loss_entropy"
@@ -30,6 +31,7 @@ PAIRED_SIGNAL_SELECTION_MODES = frozenset(
 ONLINE_CONTROL_SELECTION_MODES = frozenset(
     {
         TOP_LOSS_SELECTION_MODE,
+        TOP_TEACHER_CONFIDENCE_SELECTION_MODE,
         TOP_LOGP_DIFF_SELECTION_MODE,
         TOP_SPEED_SELECTION_MODE,
         TOP_Q_LOSS_ENTROPY_SELECTION_MODE,
@@ -74,7 +76,10 @@ def validate_loss_teacher_confidence_selection_contract(
 ) -> None:
     """Require one-step, fixed-weight selection for robust batch normalization."""
 
-    if selection_mode == TOP_LOSS_TEACHER_CONFIDENCE_SELECTION_MODE and (
+    if selection_mode in {
+        TOP_LOSS_TEACHER_CONFIDENCE_SELECTION_MODE,
+        TOP_TEACHER_CONFIDENCE_SELECTION_MODE,
+    } and (
         weight_mode != FIXED_ONLINE_WEIGHT_MODE or interval != 1 or window != 1
     ):
         raise ValueError(

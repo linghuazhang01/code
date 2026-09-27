@@ -1812,6 +1812,22 @@ class RayPPOTrainer:
 
                     if "response_mask" not in batch.batch.keys():
                         batch.batch["response_mask"] = compute_response_mask(batch)
+                    audit_config = self.config.get("mopd_audit", {})
+                    if bool(
+                        audit_config.get(
+                            "structure_token_loss_weighting_enabled",
+                            False,
+                        )
+                    ):
+                        from mopd_verl.domain_gradient.structure_positions import (
+                            attach_structure_position_mask,
+                        )
+
+                        attach_structure_position_mask(
+                            batch,
+                            self.tokenizer,
+                            audit_config,
+                        )
                     if self.region_dpo_controller.enabled:
                         with marked_timer(
                             "region_dpo_rerollout",

@@ -43,6 +43,7 @@ def local_loss_amplification_statistics(
     shared_token_ids: Sequence[int],
     shared_weighting_enabled: bool,
     shared_weight: float,
+    use_actual_masks: bool = False,
 ) -> dict[str, dict[str, float]]:
     """Summarize raw loss mass and the exact production gradient masks."""
 
@@ -80,7 +81,7 @@ def local_loss_amplification_statistics(
             shared_match = (
                 shared_weighting_enabled and token_id in shared_ids
             )
-            if domain_control_ids:
+            if domain_control_ids or use_actual_masks:
                 token_factor = effective_factor / max(domain_factor, 1e-12)
                 expected_effective_factor = effective_factor
             else:

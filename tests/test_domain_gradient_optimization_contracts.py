@@ -302,11 +302,28 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
             "mopd_verl.domain_gradient.state",
             "mopd_verl.full_gradient.actor_loss",
         )
+        def synchronize_package_modules() -> None:
+            # patch.dict restores sys.modules, but leaves imported package attrs.
+            # Stale attrs make string-based mocks patch a different module object.
+            for package_name, package in tuple(sys.modules.items()):
+                if not package_name.startswith("mopd_verl") or package is None:
+                    continue
+                for attribute, value in tuple(vars(package).items()):
+                    module_name = f"{package_name}.{attribute}"
+                    if not isinstance(value, ModuleType) or value.__name__ != module_name:
+                        continue
+                    restored = sys.modules.get(module_name)
+                    if restored is None:
+                        delattr(package, attribute)
+                    elif value is not restored:
+                        setattr(package, attribute, restored)
+
         saved_modules = {
             name: sys.modules.pop(name)
             for name in isolated_names
             if name in sys.modules
         }
+        synchronize_package_modules()
         try:
             with patch.dict(
                 sys.modules,
@@ -325,6 +342,7 @@ class DomainGradientOptimizationContractTests(unittest.TestCase):
             for name in isolated_names:
                 sys.modules.pop(name, None)
             sys.modules.update(saved_modules)
+            synchronize_package_modules()
 
     def test_training_forward_reuses_detached_topk_cross_entropy(self) -> None:
         torch = self._torch()

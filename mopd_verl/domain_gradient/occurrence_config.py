@@ -1,15 +1,176 @@
-"""Fail-closed contract for current-minibatch occurrence selection."""
+"""Fail-closed contracts for current-step token and occurrence selection."""
 
+import math
+from collections.abc import Mapping, Sequence
 from typing import Any
+
+from mopd_verl.domain_gradient.structure_positions import (
+    STRUCTURE_POSITION_PROFILE,
+)
+from mopd_verl.domain_gradient.token_taxonomy_registry import (
+    TOKEN_TAXONOMY_ARTIFACT_SHA256,
+    TOKEN_TAXONOMY_VERSIONS,
+    normalize_token_taxonomy_version,
+    token_taxonomy,
+)
+
+
+def uses_current_step_selection(config: Any) -> bool:
+    """Legacy occurrence profiles already select within the current step."""
+    return (
+        getattr(config, "control_token_online_selection_timing", "next_step")
+        == "current_step"
+        or getattr(config, "control_token_online_selection_unit", "token_id")
+        == "occurrence"
+    )
+
+
+def normalize_tail_top_p_by_domain(
+    domains: Sequence[str], value: Any,
+) -> tuple[tuple[str, float], ...]:
+    """Allow partial domain overrides and zero to disable a domain's tail."""
+    if value is None:
+        return ()
+    if isinstance(value, (str, bytes)):
+        raise TypeError("control_token_tail_top_p_by_domain must be a mapping")
+    items = value.items() if isinstance(value, Mapping) else value
+    normalized = {}
+    for domain, raw in items:
+        domain = str(domain)
+        if domain not in domains or domain in normalized:
+            raise ValueError("Tail budget contains an unknown or duplicate domain")
+        fraction = float(raw)
+        if not math.isfinite(fraction) or not 0 <= fraction <= 1:
+            raise ValueError("Tail budgets must be finite and in [0, 1]")
+        normalized[domain] = fraction
+    return tuple((d, normalized[d]) for d in domains if d in normalized)
+
+
+def _validate_tail_config(config: Any) -> None:
+    timing = getattr(config, "control_token_online_selection_timing", "next_step")
+    if timing not in {"next_step", "current_step"}:
+        raise ValueError("selection timing must be next_step or current_step")
+    fraction = getattr(config, "control_token_tail_top_p", 0.0)
+    weight = getattr(config, "control_token_tail_weight", 1.0)
+    if any(not math.isfinite(v) or not 0 <= v <= 1 for v in (fraction, weight)):
+        raise ValueError("Tail top_p and weight must be finite and in [0, 1]")
+    overrides = normalize_tail_top_p_by_domain(
+        config.domains, getattr(config, "control_token_tail_top_p_by_domain", ()),
+    )
+    mode = getattr(config, "control_token_tail_selection_mode", "bottom_loss")
+    if mode not in {
+        "bottom_loss", "bottom_teacher_confidence", "bottom_loss_teacher_confidence",
+    }:
+        raise ValueError("Unsupported tail selection mode")
+    modes = {config.control_token_online_selection_mode}
+    modes.update(dict(config.control_token_online_selection_mode_by_domain).values())
+    if timing != "current_step" and (
+        fraction != 0 or overrides or weight != 1 or mode != "bottom_loss"
+        or "top_teacher_confidence" in modes
+    ):
+        raise ValueError("Tail selection and pure teacher confidence require current_step")
+
+
+def _as_domain_map(value: Any) -> dict[str, tuple[int, ...]]:
+    if value is None:
+        return {}
+    items = value.items() if isinstance(value, Mapping) else value
+    return {
+        str(domain): tuple(int(token_id) for token_id in token_ids)
+        for domain, token_ids in items
+    }
+
+
+def _candidate_map(config: Any) -> dict[str, tuple[int, ...]]:
+    groups = config.domain_control_token_candidate_groups
+    if groups:
+        group_map = dict(groups)
+        return {
+            str(domain): tuple(
+                sorted(
+                    {
+                        int(token_id)
+                        for token_ids in dict(domain_groups).values()
+                        for token_id in token_ids
+                    }
+                )
+            )
+            for domain, domain_groups in group_map.items()
+        }
+    ids = _as_domain_map(config.domain_control_token_candidate_ids)
+    if ids:
+        return ids
+    shared = tuple(int(value) for value in config.control_token_candidate_ids)
+    return {str(domain): shared for domain in config.domains} if shared else {}
+
+
+def _validate_versioned_taxonomy(config: Any) -> str:
+    version = normalize_token_taxonomy_version(
+        getattr(config, "token_taxonomy_version", "legacy")
+    )
+    structure_enabled = bool(
+        getattr(config, "structure_token_loss_weighting_enabled", False)
+    )
+    if version == "legacy":
+        if structure_enabled:
+            raise ValueError(
+                "Explicit Structure weighting requires token_v4 or token_v5."
+            )
+        return version
+    if version not in TOKEN_TAXONOMY_VERSIONS:
+        raise ValueError(f"Unsupported token taxonomy version: {version!r}")
+    current_step = uses_current_step_selection(config)
+    if structure_enabled and not current_step:
+        raise ValueError("Token V4/V5 Structure weighting requires current_step.")
+    if current_step and not structure_enabled:
+        raise ValueError("Token V4/V5 requires fixed Structure weighting.")
+    if getattr(config, "token_taxonomy_artifact_sha256", "") != (
+        TOKEN_TAXONOMY_ARTIFACT_SHA256
+    ):
+        raise ValueError("Token V4/V5 taxonomy artifact SHA256 mismatch.")
+    weight = float(getattr(config, "structure_token_loss_weight", 1.0))
+    if not math.isfinite(weight) or weight not in {4.0, 8.0}:
+        raise ValueError("Token V4/V5 Structure weighting requires Fixed4 or Fixed8.")
+    if getattr(config, "structure_token_position_profile", "none") != (
+        STRUCTURE_POSITION_PROFILE
+    ):
+        raise ValueError(
+            f"Token V4/V5 requires {STRUCTURE_POSITION_PROFILE!r}."
+        )
+    expected = token_taxonomy(version)
+    if set(config.domains) != set(expected):
+        raise ValueError("Token V4/V5 currently supports exactly math and code.")
+    candidates = _candidate_map(config)
+    structures = _as_domain_map(
+        getattr(config, "domain_structure_token_ids", {})
+    )
+    for domain, definition in expected.items():
+        if len(candidates.get(domain, ())) != len(set(candidates.get(domain, ()))):
+            raise ValueError(f"{version}/{domain} Control IDs contain duplicates.")
+        if len(structures.get(domain, ())) != len(set(structures.get(domain, ()))):
+            raise ValueError(f"{version}/{domain} Structure IDs contain duplicates.")
+        if set(candidates.get(domain, ())) != set(definition.control):
+            raise ValueError(
+                f"{version}/{domain} candidate IDs must equal frozen Control."
+            )
+        if set(structures.get(domain, ())) != set(definition.structure):
+            raise ValueError(
+                f"{version}/{domain} Structure IDs must equal the frozen artifact."
+            )
+    if set(candidates) != set(expected) or set(structures) != set(expected):
+        raise ValueError("Token V4/V5 maps must contain exactly math and code.")
+    return version
 
 
 def validate_occurrence_config(config: Any, actor: Any = None) -> None:
+    _validate_tail_config(config)
+    taxonomy_version = _validate_versioned_taxonomy(config)
     unit = getattr(config, "control_token_online_selection_unit", "token_id")
     if unit not in {"token_id", "occurrence"}:
         raise ValueError(
             "control_token_online_selection_unit must be token_id or occurrence"
         )
-    if unit == "token_id":
+    if not uses_current_step_selection(config):
         return
     expected = {
         "control_token_online_selection_enabled": True,
@@ -38,12 +199,12 @@ def validate_occurrence_config(config: Any, actor: Any = None) -> None:
     ):
         if getattr(config, key, False):
             raise ValueError(f"occurrence does not support {key}")
-    supported = {"top_loss", "top_loss_teacher_confidence"}
+    supported = {"top_loss", "top_loss_teacher_confidence", "top_teacher_confidence"}
     if config.control_token_online_selection_mode not in supported:
-        raise ValueError("occurrence requires TopLoss or Loss+TC selection")
+        raise ValueError("current-step selection requires TopLoss, TC, or Loss+TC")
     selection_modes = dict(config.control_token_online_selection_mode_by_domain)
     if any(mode not in supported for mode in selection_modes.values()):
-        raise ValueError("occurrence requires per-domain TopLoss or Loss+TC")
+        raise ValueError("current-step requires per-domain TopLoss, TC, or Loss+TC")
     for suffix, expected_mode in (("weight", "fixed"),):
         modes = dict(getattr(config, f"control_token_online_{suffix}_mode_by_domain"))
         if any(mode != expected_mode for mode in modes.values()):
@@ -54,8 +215,11 @@ def validate_occurrence_config(config: Any, actor: Any = None) -> None:
     enabled = getattr(config, "control_token_loss_weighting_enabled", None)
     if enabled is None:
         enabled = config.control_token_weighting_enabled
-    if weight != 4.0 or not enabled:
-        raise ValueError("occurrence requires enabled Fixed4 weighting")
+    allowed_weights = {4.0} if taxonomy_version == "legacy" else {4.0, 8.0}
+    if weight not in allowed_weights or not enabled:
+        raise ValueError("current-step requires enabled Fixed4 (or versioned Fixed8) weighting")
+    if taxonomy_version != "legacy" and weight != config.structure_token_loss_weight:
+        raise ValueError("Token V4/V5 Control and Structure raw weights must match.")
     from mopd_verl.domain_gradient.frozen_taxonomy import (
         CONTROL_TOKEN_IDS,
         STRUCTURE_TOKEN_IDS,
@@ -69,7 +233,11 @@ def validate_occurrence_config(config: Any, actor: Any = None) -> None:
     for domain_groups in groups.values():
         for values in dict(domain_groups).values():
             configured.update(values)
-    if not configured or not configured <= CONTROL_TOKEN_IDS | STRUCTURE_TOKEN_IDS:
+    if not configured:
+        raise ValueError("occurrence requires configured candidate IDs")
+    if taxonomy_version == "legacy" and not (
+        configured <= CONTROL_TOKEN_IDS | STRUCTURE_TOKEN_IDS
+    ):
         raise ValueError("occurrence requires configured C+S candidate IDs")
     if actor is None:
         return

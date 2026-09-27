@@ -784,6 +784,8 @@ class DataParallelPPOActor(BasePPOActor):
             "student_suffix_mask",
             "student_topk_ids",
             "mopd_domain_loss_scale",
+            "mopd_structure_position_mask",
+            "mopd_control_position_mask",
             *PRECOMPUTED_KEYS,
         ):
             append_batch_key(key)
@@ -907,7 +909,9 @@ class DataParallelPPOActor(BasePPOActor):
                 "mini-batch and one PPO epoch per actor update so each speed "
                 "observation covers the complete global step."
             )
-        if audit.config.control_token_online_selection_unit == "occurrence":
+        from mopd_verl.domain_gradient.occurrence_config import uses_current_step_selection
+
+        if uses_current_step_selection(audit.config):
             from mopd_verl.domain_gradient.occurrence_config import (
                 validate_occurrence_actor,
                 validate_occurrence_config,

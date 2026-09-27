@@ -15,6 +15,9 @@ from mopd_verl.domain_gradient.occurrence_config import (
 from mopd_verl.domain_gradient.control_selection_budget import (
     top_p_target_occurrence_count,
 )
+from mopd_verl.domain_gradient.structure_positions import (
+    validated_control_position_mask,
+)
 
 
 @dataclass(frozen=True)
@@ -26,6 +29,7 @@ class Position:
     token_id: int
     score: float
     teacher_logp: float | None = None
+    occurrence_count: int = 1
 
 
 def select_positions(
@@ -150,6 +154,7 @@ def prepare_occurrence_masks(
     from mopd_verl.full_gradient.labels import _labels_from_mapping
 
     config = audit.config
+    current_step = getattr(config, "control_token_online_selection_timing", "next_step") == "current_step"
     audit._occurrence_masks = {}
     if len(micro_batches) != len(loss_scales):
         raise ValueError("Each occurrence microbatch requires one loss scale")
@@ -171,6 +176,13 @@ def prepare_occurrence_masks(
     error = None
     candidates = config.effective_domain_candidate_map()
     selection_modes = config.online_selection_mode_map()
+    tail_fractions = dict(getattr(config, "control_token_tail_top_p_by_domain", ()))
+    tail_confidence_domains = {
+        domain for domain in config.domains
+        if current_step
+        and "teacher_confidence" in config.control_token_tail_selection_mode
+        and tail_fractions.get(domain, config.control_token_tail_top_p) > 0
+    }
     try:
         for index, (batch, scale) in enumerate(
             zip(micro_batches, loss_scales, strict=True)
@@ -201,6 +213,7 @@ def prepare_occurrence_masks(
             if (
                 raw.shape != mask.shape
                 or valid.shape != mask.shape
+                or ids.shape != mask.shape
                 or not torch.equal(valid, mask)
             ):
                 error = "selector validity must equal the full response mask"
@@ -210,7 +223,9 @@ def prepare_occurrence_masks(
             teacher_logp = None
             tc_rows = torch.tensor(
                 [
-                    selection_modes.get(domain) == "top_loss_teacher_confidence"
+                    selection_modes.get(domain) in {
+                        "top_loss_teacher_confidence", "top_teacher_confidence",
+                    } or domain in tail_confidence_domains
                     for domain in labels
                 ],
                 dtype=torch.bool,
@@ -238,6 +253,11 @@ def prepare_occurrence_masks(
                     error = f"teacher chosen-token logp unavailable: {exc}"
                     continue
             templates.append((batch, mask, labels))
+            try:
+                control_mask = validated_control_position_mask(batch, config, mask)
+            except ValueError as exc:
+                error = str(exc)
+                continue
             for row, domain in enumerate(labels):
                 if domain not in counts:
                     error = f"unknown response domain {domain!r}"
@@ -245,7 +265,7 @@ def prepare_occurrence_masks(
                 counts[domain] += int(mask[row].sum())
                 allowed = torch.tensor(candidates[domain], dtype=ids.dtype)
                 eligible_columns = (
-                    (mask[row] & torch.isin(ids[row], allowed)).nonzero().flatten()
+                    (control_mask[row] & torch.isin(ids[row], allowed)).nonzero().flatten()
                 )
                 for column in eligible_columns.tolist():
                     token_id = int(ids[row, column])
@@ -259,13 +279,17 @@ def prepare_occurrence_masks(
                             float(raw[row, column]),
                             float(teacher_logp[row, column])
                             if teacher_logp is not None
-                            and selection_modes.get(domain)
-                            == "top_loss_teacher_confidence"
+                            and bool(tc_rows[row])
                             else None,
                         )
                     )
     finally:
         state.restore()
+    if current_step and config.control_token_online_selection_unit == "token_id":
+        from mopd_verl.domain_gradient.current_step_selection import compact_token_positions
+
+        if error is None:
+            positions = compact_token_positions(positions)
     distributed = (
         torch.distributed.is_available() and torch.distributed.is_initialized()
     )
@@ -277,6 +301,26 @@ def prepare_occurrence_masks(
     if distributed:
         torch.distributed.all_gather_object(ranks, (counts, positions, error))
     fractions = dict(config.control_token_online_top_p_by_domain)
+    if current_step:
+        from mopd_verl.domain_gradient.current_step_selection import select_current_step
+        from mopd_verl.domain_gradient.current_step_weights import install_current_step_masks
+
+        selection = select_current_step(
+            ranks, candidates,
+            {d: fractions.get(d, config.control_token_online_top_p) for d in config.domains},
+            {d: tail_fractions.get(d, config.control_token_tail_top_p) for d in config.domains},
+            config.control_token_online_min_mean_occurrences_per_step,
+            config.control_token_online_strict_occurrence_gate,
+            unit=config.control_token_online_selection_unit,
+            head_modes=selection_modes, tail_mode=config.control_token_tail_selection_mode,
+        )
+        rank = torch.distributed.get_rank() if distributed else 0
+        metrics = dict(selection.metrics)
+        metrics.update(install_current_step_masks(audit, templates, selection, rank=rank))
+        metrics["global/current_step/prepass_seconds"] = time.perf_counter() - started
+        metrics["global/current_step/prepass_forward_count"] = float(len(micro_batches))
+        metrics["global/current_step/gathered_candidates"] = float(sum(len(p) for _, p, _ in ranks))
+        return metrics
     selected, means, metrics = select_positions(
         ranks,
         candidates,

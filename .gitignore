@@ -11,6 +11,11 @@ settings.json
 *_secret*
 *_token*
 !/configs/baselines/canonical/fire_token_topk32.yaml
+!/scripts/finalize_token_v4_v5.py
+!/tests/test_token_v4_v5.py
+!/tests/test_token_v4_v5_runtime.py
+!/configs/token_selection/math_code/taxonomy/*token_v4*.yaml
+!/configs/token_selection/math_code/taxonomy/*token_v5*.yaml
 !third_party/verl/tests/workers/rollout/test_sglang_async_rollout_w_tools_token_out.py
 
 # Python

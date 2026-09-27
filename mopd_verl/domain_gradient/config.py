@@ -28,6 +28,9 @@ from mopd_verl.domain_gradient.control_selection_scoring import (
     normalize_selection_mode,
     validate_online_control_mode_contracts,
 )
+from mopd_verl.domain_gradient.occurrence_config import (
+    normalize_tail_top_p_by_domain,
+)
 from mopd_verl.domain_gradient.token_weighting_state import (
     PER_STEP_MEAN_ABS_LOSS_SELECTION,
     SHARED_TOKEN_SELECTION_MODES,
@@ -214,6 +217,22 @@ class DomainGradientConfig:
     control_token_online_selection_mode_by_domain: tuple[tuple[str, str], ...] = ()
     control_token_online_weight_mode_by_domain: tuple[tuple[str, str], ...] = ()
     control_token_online_selection_unit: str = "token_id"
+    control_token_online_selection_timing: str = "next_step"
+    control_token_tail_top_p: float = 0.0
+    control_token_tail_top_p_by_domain: tuple[tuple[str, float], ...] = ()
+    control_token_tail_weight: float = 1.0
+    control_token_tail_selection_mode: str = "bottom_loss"
+    token_taxonomy_version: str = "legacy"
+    token_taxonomy_artifact_sha256: str = ""
+    structure_token_loss_weighting_enabled: bool = False
+    structure_token_loss_weight: float = 1.0
+    structure_token_position_profile: str = "none"
+    domain_structure_token_ids: tuple[tuple[str, tuple[int, ...]], ...] = ()
+
+    def effective_domain_structure_map(self) -> dict[str, tuple[int, ...]]:
+        """Return the explicit per-domain Structure token membership."""
+
+        return dict(self.domain_structure_token_ids)
 
     def effective_domain_candidate_map(self) -> dict[str, tuple[int, ...]]:
         """Return one canonical candidate whitelist for every domain."""
@@ -579,6 +598,35 @@ class DomainGradientConfig:
             ),
             control_token_online_selection_unit=str(
                 _get(meta, "control_token_online_selection_unit", "token_id")
+            ),
+            control_token_online_selection_timing=str(
+                _get(meta, "control_token_online_selection_timing", "next_step")
+            ),
+            control_token_tail_top_p=float(_get(meta, "control_token_tail_top_p", 0.0)),
+            control_token_tail_top_p_by_domain=normalize_tail_top_p_by_domain(
+                domains, _get(meta, "control_token_tail_top_p_by_domain", {})
+            ),
+            control_token_tail_weight=float(_get(meta, "control_token_tail_weight", 1.0)),
+            control_token_tail_selection_mode=str(
+                _get(meta, "control_token_tail_selection_mode", "bottom_loss")
+            ),
+            token_taxonomy_version=str(
+                _get(meta, "token_taxonomy_version", "legacy")
+            ),
+            token_taxonomy_artifact_sha256=str(
+                _get(meta, "token_taxonomy_artifact_sha256", "")
+            ),
+            structure_token_loss_weighting_enabled=bool(
+                _get(meta, "structure_token_loss_weighting_enabled", False)
+            ),
+            structure_token_loss_weight=float(
+                _get(meta, "structure_token_loss_weight", 1.0)
+            ),
+            structure_token_position_profile=str(
+                _get(meta, "structure_token_position_profile", "none")
+            ),
+            domain_structure_token_ids=_domain_token_ids(
+                _get(meta, "domain_structure_token_ids", {})
             ),
             control_token_adaptive_neighborhood_enabled=bool(
                 _get(meta, "control_token_adaptive_neighborhood_enabled", False)

@@ -20,6 +20,8 @@ def amplified_token_source_metrics(
     domains: Sequence[str],
     domain_weights: Mapping[str, float],
     sequence_parallel_size: int = 1,
+    domain_control_token_ids: Mapping[str, Sequence[int]] | None = None,
+    domain_structure_token_ids: Mapping[str, Sequence[int]] | None = None,
 ) -> dict[str, float]:
     """Merge rank histograms before computing occurrence and unique-ID shares.
 
@@ -29,7 +31,22 @@ def amplified_token_source_metrics(
     """
     if sequence_parallel_size < 1:
         raise ValueError("Sequence parallel size must be positive.")
-    local: dict[str, Counter[int]] = {domain: Counter() for domain in domains}
+    versioned = (
+        domain_control_token_ids is not None
+        and domain_structure_token_ids is not None
+    )
+    control_map = {
+        domain: set((domain_control_token_ids or {}).get(domain, ()))
+        for domain in domains
+    }
+    structure_map = {
+        domain: set((domain_structure_token_ids or {}).get(domain, ()))
+        for domain in domains
+    }
+    local: dict[str, dict[str, Counter[int]]] = {
+        domain: {kind: Counter() for kind in ("control", "structure", "other")}
+        for domain in domains
+    }
     for ids, valid, weights, labels in zip(
         token_id_batches, valid_mask_batches, gradient_mask_batches,
         label_batches, strict=True,
@@ -46,35 +63,72 @@ def amplified_token_source_metrics(
             token_ids, counts = torch.unique(
                 ids[row][boosted].detach(), return_counts=True
             )
-            local[domain].update(dict(zip(
+            for token_id, count in zip(
                 token_ids.cpu().tolist(), counts.cpu().tolist(), strict=True
-            )))
+            ):
+                if versioned:
+                    kind = (
+                        "control" if token_id in control_map[domain]
+                        else "structure" if token_id in structure_map[domain]
+                        else "other"
+                    )
+                else:
+                    kind = (
+                        "control" if token_id in CONTROL_TOKEN_IDS
+                        else "structure" if token_id in STRUCTURE_TOKEN_IDS
+                        else "other"
+                    )
+                local[domain][kind][token_id] += count
 
     gathered = [local]
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         gathered = [None] * torch.distributed.get_world_size()
         torch.distributed.all_gather_object(gathered, local)
-    merged = {domain: Counter() for domain in domains}
+    merged = {
+        domain: {kind: Counter() for kind in ("control", "structure", "other")}
+        for domain in domains
+    }
     for rank_counts in gathered:
         for domain in domains:
-            merged[domain].update(rank_counts[domain])
-    global_counts = Counter()
-    for counts in merged.values():
-        global_counts.update(counts)
-    merged["global"] = global_counts
+            domain_counts = rank_counts[domain]
+            if set(domain_counts).issubset({"control", "structure", "other"}):
+                for kind in ("control", "structure", "other"):
+                    merged[domain][kind].update(domain_counts[kind])
+                continue
+            # Backward-compatible wire shape used by older ranks/tests.
+            for token_id, count in domain_counts.items():
+                if versioned:
+                    kind = (
+                        "control" if token_id in control_map[domain]
+                        else "structure" if token_id in structure_map[domain]
+                        else "other"
+                    )
+                else:
+                    kind = (
+                        "control" if token_id in CONTROL_TOKEN_IDS
+                        else "structure" if token_id in STRUCTURE_TOKEN_IDS
+                        else "other"
+                    )
+                merged[domain][kind][token_id] += count
+    merged["global"] = {
+        kind: sum(
+            (merged[domain][kind] for domain in domains),
+            Counter(),
+        )
+        for kind in ("control", "structure", "other")
+    }
 
     metrics: dict[str, float] = {}
-    for domain, counts in merged.items():
-        occurrence_counts = Counter()
-        type_counts = Counter()
-        for token_id, count in counts.items():
-            kind = (
-                "control" if token_id in CONTROL_TOKEN_IDS
-                else "structure" if token_id in STRUCTURE_TOKEN_IDS
-                else "other"
-            )
-            occurrence_counts[kind] += count
-            type_counts[kind] += 1
+    for domain, counts_by_kind in merged.items():
+        occurrence_counts = Counter(
+            {
+                kind: sum(counts.values())
+                for kind, counts in counts_by_kind.items()
+            }
+        )
+        type_counts = Counter(
+            {kind: len(counts) for kind, counts in counts_by_kind.items()}
+        )
         prefix = f"{domain}/token_weight/amplified_source"
         for unit, by_kind in (
             ("occurrence", occurrence_counts), ("unique_token", type_counts),
