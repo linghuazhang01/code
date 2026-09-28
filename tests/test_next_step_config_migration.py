@@ -29,7 +29,11 @@ RETIRED_EXAMPLES = {
 
 
 def _normalized(config: object) -> dict:
-    return json.loads(json.dumps(asdict(config)))
+    resolved = json.loads(json.dumps(asdict(config)))
+    # This optional selector must leave every pre-existing profile unchanged.
+    assert resolved["audit"].pop("versioned_cs_selection_mode_by_domain") == {}
+    assert resolved["audit"].pop("code_cs_position_gate_enabled") is None
+    return resolved
 
 
 def _fixture(name: str) -> dict:

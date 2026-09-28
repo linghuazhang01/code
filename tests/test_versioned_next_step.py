@@ -72,6 +72,8 @@ def test_planned_config_changes_only_timing_and_output_namespaces() -> None:
     with gzip.open(baseline, "rt") as handle:
         before = json.load(handle)[source]
     after = json.loads(json.dumps(asdict(new)))
+    assert after["audit"]["code_cs_position_gate_enabled"] is None
+    after["audit"].pop("code_cs_position_gate_enabled")
     changed = {
         f"{section}.{name}"
         for section in before
@@ -89,6 +91,9 @@ def test_planned_config_changes_only_timing_and_output_namespaces() -> None:
     for field in changed:
         section, name = field.split(".", 1)
         matched[section][name] = before[section][name]
+    # New optional selector controls default to the historical position rule.
+    assert matched["audit"]["versioned_cs_selection_mode_by_domain"] == {}
+    matched["audit"].pop("versioned_cs_selection_mode_by_domain")
     assert matched == before
     assert "+mopd_audit.control_token_online_selection_timing=next_step" in build_command(new)
     assert new.data.train_batch_size == new.actor.ppo_mini_batch_size == 528

@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Sequence
 
 import torch
 from verl.utils.device import get_device_id
 
+from mopd_verl.audit_io import step_jsonl_dir
 from mopd_verl.domain_gradient.adaptive_neighborhood import (
     PerTokenAdaptiveNeighborhoodSpec,
 )
@@ -46,12 +48,21 @@ from mopd_verl.domain_gradient.control_top_loss_runtime import (
 )
 from mopd_verl.domain_gradient.config import DomainGradientConfig
 from mopd_verl.domain_gradient.occurrence_config import (
+    effective_code_cs_position_policy,
     uses_current_step_selection,
     uses_versioned_next_step_selection,
 )
+from mopd_verl.domain_gradient.versioned_position_eligibility import (
+    versioned_position_eligibility,
+)
 from mopd_verl.domain_gradient.versioned_next_step import (
+    merge_versioned_candidate_statistics,
     next_step_candidate_statistics,
     next_step_gradient_mask,
+    versioned_selector_candidate_map,
+)
+from mopd_verl.domain_gradient.versioned_teacher_confidence import (
+    next_step_teacher_confidence_statistics,
 )
 from mopd_verl.domain_gradient.geometry import (
     GradientVector,
@@ -137,6 +148,71 @@ _CandidateData = tuple[
     dict[str, tuple[LocalTokenCandidate, ...]],
     tuple[torch.Tensor, ...],
 ]
+
+
+@torch.no_grad()
+def _versioned_position_occurrence_counts(
+    config: DomainGradientConfig,
+    micro_batches: Sequence[Any],
+    applied_ids_by_domain: dict[str, tuple[int, ...]],
+) -> dict[str, tuple[int, int, int, int]]:
+    """Count source-eligible and currently weighted C/S occurrences globally."""
+
+    if not micro_batches:
+        raise ValueError("V4/V5 occurrence audit requires production batches.")
+    domains = config.domains
+    modes = config.versioned_cs_selection_mode_map()
+    controls = config.effective_domain_candidate_map()
+    structures = config.effective_domain_structure_map()
+    device = micro_batches[0].batch["response_mask"].device
+    counts = torch.zeros((len(domains), 4), device=device, dtype=torch.long)
+    for batch in micro_batches:
+        inputs = {**batch.batch, **batch.non_tensor_batch}
+        valid = inputs["response_mask"].detach().bool()
+        ids = aligned_response_token_ids(inputs, valid)
+        if ids is None or ids.shape != valid.shape:
+            raise ValueError("V4/V5 occurrence audit requires aligned token IDs.")
+        labels = _labels_from_mapping(inputs, int(valid.shape[0]))
+        control_positions, structure_positions = versioned_position_eligibility(
+            batch, config, valid, labels,
+        )
+        for index, domain in enumerate(domains):
+            rows = torch.tensor(
+                [label == domain for label in labels], device=valid.device,
+            ).unsqueeze(-1)
+            domain_valid = rows & valid
+            control_ids = torch.tensor(
+                controls[domain], device=ids.device, dtype=ids.dtype,
+            )
+            structure_ids = torch.tensor(
+                structures[domain], device=ids.device, dtype=ids.dtype,
+            )
+            active_ids = torch.tensor(
+                applied_ids_by_domain.get(domain, ()),
+                device=ids.device, dtype=ids.dtype,
+            )
+            source_control = (
+                domain_valid & control_positions & torch.isin(ids, control_ids)
+            )
+            source_structure = (
+                domain_valid & structure_positions & torch.isin(ids, structure_ids)
+            )
+            counts[index, 0] += source_control.sum()
+            counts[index, 1] += source_structure.sum()
+            counts[index, 2] += (
+                source_control & torch.isin(ids, active_ids)
+            ).sum()
+            counts[index, 3] += (
+                source_structure
+                if modes[domain] == "position_fixed"
+                else source_structure & torch.isin(ids, active_ids)
+            ).sum()
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        torch.distributed.all_reduce(counts, op=torch.distributed.ReduceOp.SUM)
+    return {
+        domain: tuple(int(value) for value in counts[index].tolist())
+        for index, domain in enumerate(domains)
+    }
 
 
 class DomainGradientAudit:
@@ -258,7 +334,11 @@ class DomainGradientAudit:
                 )
             expected_state = initial_online_control_selection_state(
                 self.config.domains,
-                self.config.effective_domain_candidate_map(),
+                (
+                    versioned_selector_candidate_map(self.config)
+                    if uses_versioned_next_step_selection(self.config)
+                    else self.config.effective_domain_candidate_map()
+                ),
                 audit_interval_steps=(
                     self.config.control_token_online_audit_interval_steps
                 ),
@@ -284,12 +364,37 @@ class DomainGradientAudit:
                 selection_mode=(self.config.control_token_online_selection_mode),
                 weight_mode=self.config.control_token_online_weight_mode,
                 selection_mode_by_domain=(
-                    self.config.control_token_online_selection_mode_by_domain
+                    tuple(
+                        (
+                            domain,
+                            "top_teacher_confidence"
+                            if self.config.versioned_cs_selection_mode_map()[domain]
+                            == "top_teacher_confidence"
+                            else "top_loss",
+                        )
+                        for domain in self.config.domains
+                    )
+                    if uses_versioned_next_step_selection(self.config)
+                    else self.config.control_token_online_selection_mode_by_domain
                 ),
                 weight_mode_by_domain=(
                     self.config.control_token_online_weight_mode_by_domain
                 ),
+                code_cs_position_policy=(
+                    effective_code_cs_position_policy(self.config)
+                ),
                 loss_ratio_alpha=self.config.control_token_loss_ratio_alpha,
+            )
+            legacy_fixed_position_policy = (
+                online_state is not None
+                and online_state.code_cs_position_policy is None
+                and expected_state.code_cs_position_policy == "position_fixed"
+                and all(
+                    mode == "position_fixed"
+                    for mode in self.config.versioned_cs_selection_mode_map().values()
+                )
+                and online_state.domain_candidate_token_ids
+                == expected_state.domain_candidate_token_ids
             )
             if online_state is None:
                 online_state = expected_state
@@ -320,11 +425,20 @@ class DomainGradientAudit:
                 != expected_state.selection_mode_by_domain
                 or online_state.weight_mode_by_domain
                 != expected_state.weight_mode_by_domain
+                or (
+                    online_state.code_cs_position_policy
+                    != expected_state.code_cs_position_policy
+                    and not legacy_fixed_position_policy
+                )
                 or online_state.loss_ratio_alpha != expected_state.loss_ratio_alpha
             ):
                 raise ValueError(
                     "Checkpointed online Control selection state does not "
                     "match the current configuration."
+                )
+            if legacy_fixed_position_policy:
+                online_state = replace(
+                    online_state, code_cs_position_policy="position_fixed"
                 )
             self._online_control_selection_state = online_state
             if (
@@ -1926,9 +2040,37 @@ class DomainGradientAudit:
                     )
                 teacher_log_prob_batches.append(teacher_log_prob.detach())
         if uses_versioned_next_step_selection(self.config):
-            global_statistics = next_step_candidate_statistics(
-                self.config, micro_batches,
-                selector_token_loss_batches, selector_token_loss_mask_batches,
+            structure_modes = self.config.versioned_cs_selection_mode_map()
+            loss_statistics = (
+                next_step_candidate_statistics(
+                    self.config, micro_batches,
+                    selector_token_loss_batches, selector_token_loss_mask_batches,
+                )
+                if any(
+                    mode != "top_teacher_confidence"
+                    for mode in structure_modes.values()
+                ) else None
+            )
+            confidence_statistics = None
+            if "top_teacher_confidence" in structure_modes.values():
+                policy_loss_cfg = _cfg_get(
+                    getattr(self.actor, "config", {}), "policy_loss", {},
+                )
+                try:
+                    teacher_logp_batches = tuple(
+                        selected_teacher_log_prob(
+                            {**batch.batch, **batch.non_tensor_batch},
+                            policy_loss_cfg,
+                        ).detach()
+                        for batch in micro_batches
+                    )
+                except (KeyError, TypeError, ValueError, RuntimeError):
+                    teacher_logp_batches = None
+                confidence_statistics = next_step_teacher_confidence_statistics(
+                    self.config, micro_batches, teacher_logp_batches,
+                )
+            global_statistics = merge_versioned_candidate_statistics(
+                self.config, loss_statistics, confidence_statistics,
             )
         else:
             global_statistics = global_candidate_loss_statistics_with_valid_counts(
@@ -1965,6 +2107,13 @@ class DomainGradientAudit:
                 ),
             )
         statistics = global_statistics.by_domain
+        versioned_occurrences = (
+            _versioned_position_occurrence_counts(
+                self.config, micro_batches,
+                self._applied_online_control_token_ids,
+            )
+            if uses_versioned_next_step_selection(self.config) else {}
+        )
         for domain, normalization in (
             global_statistics.q_normalization_stats or {}
         ).items():
@@ -2151,6 +2300,118 @@ class DomainGradientAudit:
                     metrics[f"{domain}/token_weight/selected_score_mean"] = sum(
                         item.mean_selection_score for item in result.selected_tokens
                     ) / len(result.selected_tokens)
+        if uses_versioned_next_step_selection(self.config):
+            modes = self.config.versioned_cs_selection_mode_map()
+            controls = self.config.effective_domain_candidate_map()
+            structures = self.config.effective_domain_structure_map()
+            record: dict[str, Any] = {
+                "observed_step": self.config.step,
+                "applies_from_step": self.config.step + 1,
+                "mode_by_domain": modes,
+                "code_cs_position_policy": state.code_cs_position_policy,
+                "shared_top_p_by_domain": state.top_p_map(),
+                "shared_top_p_basis": "all_valid_source_response_tokens",
+                "domains": {},
+            }
+            for domain in self.config.domains:
+                control_set = set(controls[domain])
+                structure_set = set(structures[domain])
+                applied = set(self._applied_online_control_token_ids.get(domain, ()))
+                upcoming = set(next_active.get(domain, ()))
+                active_structure = (
+                    applied & structure_set
+                    if modes[domain] != "position_fixed" else set()
+                )
+                next_structure = (
+                    upcoming & structure_set
+                    if modes[domain] != "position_fixed" else set()
+                )
+                (
+                    eligible_control, eligible_structure,
+                    applied_control_positions, applied_structure_positions,
+                ) = versioned_occurrences[domain]
+                result = result_map.get(domain)
+                source_valid = global_statistics.valid_token_counts[domain]
+                target = result.target_occurrence_count if result else None
+                selected = result.selected_occurrence_count if result else None
+                shortfall = result.top_p_occurrence_shortfall if result else None
+                prefix = f"{domain}/token_weight/"
+                metrics[prefix + "active_control_token_count"] = float(
+                    len(applied & control_set)
+                )
+                metrics[prefix + "next_active_control_token_count"] = float(
+                    len(upcoming & control_set)
+                )
+                metrics[prefix + "active_structure_token_count"] = float(
+                    len(active_structure)
+                )
+                metrics[prefix + "next_active_structure_token_count"] = float(
+                    len(next_structure)
+                )
+                metrics[prefix + "shared_control_structure_budget_enabled"] = float(
+                    modes[domain] != "position_fixed"
+                )
+                metrics[prefix + "source_eligible_control_occurrence_count"] = float(
+                    eligible_control
+                )
+                metrics[prefix + "source_eligible_structure_occurrence_count"] = float(
+                    eligible_structure
+                )
+                metrics[prefix + "applied_control_weighted_position_count"] = float(
+                    applied_control_positions
+                )
+                metrics[prefix + "applied_structure_weighted_position_count"] = float(
+                    applied_structure_positions
+                )
+                if target is not None:
+                    metrics[prefix + "top_p_target_occurrence_count"] = float(target)
+                if selected is not None:
+                    metrics[prefix + "top_p_selected_occurrence_count"] = float(
+                        selected
+                    )
+                if shortfall is not None:
+                    metrics[prefix + "top_p_occurrence_shortfall"] = float(
+                        shortfall
+                    )
+                record["domains"][domain] = {
+                    "mode": modes[domain],
+                    "position_policy": (
+                        state.code_cs_position_policy
+                        if domain == "code" else "unchanged"
+                    ),
+                    "source_valid_response_token_count": source_valid,
+                    "source_eligible_control_occurrence_count": eligible_control,
+                    "source_eligible_structure_occurrence_count": eligible_structure,
+                    "top_p_target_occurrence_count": target,
+                    "top_p_selected_occurrence_count": selected,
+                    "top_p_occurrence_shortfall": shortfall,
+                    "applied_control_weighted_position_count": (
+                        applied_control_positions
+                    ),
+                    "applied_structure_weighted_position_count": (
+                        applied_structure_positions
+                    ),
+                    "applied_control_ids": sorted(applied & control_set),
+                    "next_control_ids": sorted(upcoming & control_set),
+                    "applied_structure_ids": sorted(active_structure),
+                    "next_structure_ids": sorted(next_structure),
+                    "position_fixed_structure_candidate_ids": (
+                        sorted(structure_set)
+                        if modes[domain] == "position_fixed" else []
+                    ),
+                }
+            if (
+                not torch.distributed.is_available()
+                or not torch.distributed.is_initialized()
+                or torch.distributed.get_rank() == 0
+            ):
+                destination = step_jsonl_dir(
+                    self.config.output_dir, self.config.step, create=True,
+                )
+                with (destination / "versioned_token_selection.jsonl").open(
+                    "a", encoding="utf-8",
+                ) as handle:
+                    handle.write(json.dumps(record) + "\n")
         return metrics
 
     def _token_selection_metrics(

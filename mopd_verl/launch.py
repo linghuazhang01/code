@@ -369,6 +369,10 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"{audit.structure_token_loss_weight}",
         "+mopd_audit.structure_token_position_profile="
         f"{_hydra_string(audit.structure_token_position_profile)}",
+        "+mopd_audit.versioned_cs_selection_mode_by_domain="
+        f"{_hydra_string_dict(audit.versioned_cs_selection_mode_by_domain)}",
+        "+mopd_audit.code_cs_position_gate_enabled="
+        f"{_hydra_scalar(audit.code_cs_position_gate_enabled).lower()}",
         "+mopd_audit.domain_structure_token_ids="
         f"{_hydra_int_list_dict(audit.domain_structure_token_ids)}",
         "+mopd_audit.control_token_adaptive_neighborhood_enabled="

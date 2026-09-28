@@ -29,6 +29,7 @@ from mopd_verl.domain_gradient.control_selection_scoring import (
     validate_online_control_mode_contracts,
 )
 from mopd_verl.domain_gradient.occurrence_config import (
+    normalize_versioned_cs_selection_mode_by_domain,
     normalize_tail_top_p_by_domain,
 )
 from mopd_verl.domain_gradient.token_weighting_state import (
@@ -227,7 +228,17 @@ class DomainGradientConfig:
     structure_token_loss_weighting_enabled: bool = False
     structure_token_loss_weight: float = 1.0
     structure_token_position_profile: str = "none"
+    versioned_cs_selection_mode_by_domain: tuple[tuple[str, str], ...] = ()
+    code_cs_position_gate_enabled: bool | None = None
     domain_structure_token_ids: tuple[tuple[str, tuple[int, ...]], ...] = ()
+
+    def versioned_cs_selection_mode_map(self) -> dict[str, str]:
+        """Return each domain's fixed-S or shared C+S selector mode."""
+
+        modes = dict(self.versioned_cs_selection_mode_by_domain)
+        return {
+            domain: modes.get(domain, "position_fixed") for domain in self.domains
+        }
 
     def effective_domain_structure_map(self) -> dict[str, tuple[int, ...]]:
         """Return the explicit per-domain Structure token membership."""
@@ -624,6 +635,15 @@ class DomainGradientConfig:
             ),
             structure_token_position_profile=str(
                 _get(meta, "structure_token_position_profile", "none")
+            ),
+            versioned_cs_selection_mode_by_domain=(
+                normalize_versioned_cs_selection_mode_by_domain(
+                    domains,
+                    _get(meta, "versioned_cs_selection_mode_by_domain", {}),
+                )
+            ),
+            code_cs_position_gate_enabled=_get(
+                meta, "code_cs_position_gate_enabled", None
             ),
             domain_structure_token_ids=_domain_token_ids(
                 _get(meta, "domain_structure_token_ids", {})

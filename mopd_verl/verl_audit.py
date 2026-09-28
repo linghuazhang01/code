@@ -1019,6 +1019,15 @@ class MOPDAuditLogger:
         self.structure_token_position_profile = str(
             _cfg_get(audit_config, "structure_token_position_profile", "none")
         )
+        self.versioned_cs_selection_mode_by_domain = {
+            str(domain): str(selection_mode)
+            for domain, selection_mode in dict(
+                _cfg_get(audit_config, "versioned_cs_selection_mode_by_domain", {})
+            ).items()
+        }
+        self.code_cs_position_gate_enabled = _cfg_get(
+            audit_config, "code_cs_position_gate_enabled", None
+        )
         raw_domain_structure_ids = _cfg_get(
             audit_config,
             "domain_structure_token_ids",
@@ -1911,6 +1920,12 @@ class MOPDAuditLogger:
                 "structure_token_loss_weight": self.structure_token_loss_weight,
                 "structure_token_position_profile": (
                     self.structure_token_position_profile
+                ),
+                "versioned_cs_selection_mode_by_domain": (
+                    self.versioned_cs_selection_mode_by_domain
+                ),
+                "code_cs_position_gate_enabled": (
+                    self.code_cs_position_gate_enabled if mode == "train" else None
                 ),
                 "domain_structure_token_ids": self.domain_structure_token_ids,
                 "control_token_ids": self.control_token_ids,

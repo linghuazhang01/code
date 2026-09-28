@@ -212,6 +212,36 @@ step t 正式 forward 产生的未加权 teacher-support reverse KL，在成功�
 top-p 预算依据来源 step 的全部 valid response tokens，下一 step 的实际覆盖比例可能不同。
 新 run/audit/eval/checkpoint namespace 含 `-next-`，不恢复 Current-Step 的实验空间。
 
+### 可选的 V4/V5 C+S 共享选词模式
+
+上述正在运行及原有的 V4/V5 配置不指定
+`audit.versioned_cs_selection_mode_by_domain`，因此继续使用旧规则：Control 按
+Next-Step TopLoss 选择，Structure 按位置固定加权。新配置可以对 Math、Code 分别显式指定：
+
+| 模式 | Control 与 Structure 如何加权 |
+|---|---|
+| `position_fixed` | 仅 Control 参与 Next-Step TopLoss/TopP；Structure 按现有位置规则固定加权，不占 TopP。 |
+| `top_loss` | 冻结的 Control∪Structure 按上一步正式 forward 的原始 RKL 共同排名，共用该 domain 的一份 TopP。 |
+| `top_teacher_confidence` | 冻结的 Control∪Structure 按上一步 teacher chosen-token 的平均 log-probability 共同排名，共用该 domain 的一份 TopP。 |
+
+非 `position_fixed` 模式没有独立的 Structure 预算；继续使用
+`audit.control_token_online_top_p_by_domain`，分母为来源 step 中该 domain 的全部 valid
+response tokens。动态 Code 可设置 `audit.code_cs_position_gate_enabled`：未设置或 `false`
+时 C/S 的所有 valid 出现都参与来源 step 排名和下一 step 加权；`true` 时 Code C 仅在
+所有 fenced code blocks 外、Code S 仅在原有 Structure position mask 允许的位置
+参与这两件事。Math 不受该开关影响。位置过滤同时作用于 per-ID 分数、频次、TopP
+累计出现数和下一步加权，不产生 C/S 独立预算。Code 使用 `position_fixed` 时保留旧规则，
+不能显式设置此开关。选择结果从下一 step 生效，因此首步该 domain 的 C/S 都不因动态
+选择额外加权。入选 C/S 分别使用配置的 raw weight，再按 microbatch/domain 归一化一次；
+TopP 以完整 token type 计入，实际选中数量可能略超目标，下一 step 的实际覆盖率也可能变化。
+
+准备但未启动的示例：`mopd_math_code_next_step_token_v4_shared_toploss_m05_c01_fixed4_4gpu_colocated.yaml`
+让 Math/Code 的 C∪S 都用 TopLoss；`mopd_math_code_next_step_token_v4_math_teacherconf_code_toploss_m05_c01_fixed4_4gpu_colocated.yaml`
+让 Math 用 Teacher Confidence、Code 用 TopLoss。两者仍分别采用 Math 5%/Code 1% 与
+Fixed4，Code 开关均显式关闭。`mopd_math_code_next_step_token_v4_shared_toploss_code_gated_m05_c01_fixed4_4gpu_colocated.yaml`
+仅将共享 TopLoss 示例的 Code 开关打开，并使用独立的运行空间，便于对照。三个示例
+均未启动，不会修改正在运行的训练。
+
 ## 1. 名称与状态
 
 | 名称 | 状态 | 含义 |

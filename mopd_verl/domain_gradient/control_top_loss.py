@@ -77,6 +77,7 @@ class OnlineControlSelectionState:
     top_p_by_domain: tuple[tuple[str, float], ...] = ()
     selection_mode_by_domain: tuple[tuple[str, str], ...] = ()
     weight_mode_by_domain: tuple[tuple[str, str], ...] = ()
+    code_cs_position_policy: str | None = None
 
     def active_map(self) -> dict[str, tuple[int, ...]]:
         return dict(self.active_token_ids)
@@ -185,6 +186,7 @@ class OnlineControlSelectionState:
             "weight_mode": self.weight_mode,
             "selection_mode_by_domain": self.selection_mode_map(),
             "weight_mode_by_domain": self.weight_mode_map(),
+            "code_cs_position_policy": self.code_cs_position_policy,
             "loss_ratio_alpha": self.loss_ratio_alpha,
             "history": self.history,
             "valid_token_count_history": self.valid_token_count_history,
@@ -230,6 +232,7 @@ def initial_online_control_selection_state(
         Mapping[str, str] | Sequence[tuple[str, str]] | None
     ) = None,
     weight_mode_by_domain: Mapping[str, str] | Sequence[tuple[str, str]] | None = None,
+    code_cs_position_policy: str | None = None,
     loss_ratio_alpha: float = 1.0,
 ) -> OnlineControlSelectionState:
     """Create an empty selector state with a frozen configuration signature."""
@@ -237,6 +240,10 @@ def initial_online_control_selection_state(
     normalized_domains = tuple(dict.fromkeys(str(domain) for domain in domains))
     if not normalized_domains:
         raise ValueError("Online Control selection requires at least one domain.")
+    if code_cs_position_policy not in {
+        None, "position_fixed", "dynamic_ungated", "dynamic_gated"
+    }:
+        raise ValueError("Unsupported Code C+S position policy.")
     normalized_selection_mode = normalize_selection_mode(selection_mode)
     normalized_weight_mode = normalize_online_weight_mode(weight_mode)
     effective_selection_modes, effective_weight_modes = (
@@ -383,6 +390,7 @@ def initial_online_control_selection_state(
         weight_mode=normalized_weight_mode,
         selection_mode_by_domain=effective_selection_modes,
         weight_mode_by_domain=effective_weight_modes,
+        code_cs_position_policy=code_cs_position_policy,
         loss_ratio_alpha=float(loss_ratio_alpha),
         history=(),
         valid_token_count_history=(),
@@ -757,6 +765,7 @@ def update_online_control_selection(
         weight_mode=state.weight_mode,
         selection_mode_by_domain=state.selection_mode_by_domain,
         weight_mode_by_domain=state.weight_mode_by_domain,
+        code_cs_position_policy=state.code_cs_position_policy,
         loss_ratio_alpha=state.loss_ratio_alpha,
         history=tuple(history),
         valid_token_count_history=tuple(valid_token_count_history),

@@ -1,0 +1,29 @@
+# Prepared per-domain V4 example: Math C+S Teacher Confidence; Code C+S TopLoss.
+# Both domains rank C and S together within their own single Top-P budget.
+extends: _mopd_math_code_next_step_token_v4_fixed4_4gpu_colocated.yaml
+
+runtime:
+  wandb_run_id: q1p7b4g-mc-v4-r3-cs-mtc-ctl-next-m05c01-f4-b528-s60
+  wandb_resume: never
+
+audit:
+  versioned_cs_selection_mode_by_domain:
+    math: top_teacher_confidence
+    code: top_loss
+  code_cs_position_gate_enabled: false
+  control_token_online_top_p_by_domain:
+    math: 0.05
+    code: 0.01
+  output_dir: audit/q1p7b4g-mc-v4-r3-cs-mtc-ctl-next-m05c01-f4-b528-s60
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b4g-mc-v4-r3-cs-mtc-ctl-next-m05c01-f4-b528-s60
+
+huggingface_checkpoint:
+  enabled: false
+  private: false
+  path_prefix: checkpoints/mopd/q1p7b4g-mc-v4-r3-cs-mtc-ctl-next-m05c01-f4-b528-s60
+
+trainer:
+  experiment_name: q1p7b4g-mc-v4-r3-cs-mtc-ctl-next-m05c01-f4-b528-s60
+  default_local_dir: checkpoints/MOPD/q1p7b4g-mc-v4-r3-cs-mtc-ctl-next-m05c01-f4-b528-s60

@@ -1,0 +1,23 @@
+# Unlaunched Code-position-gated comparison for shared V4 C+S TopLoss.
+# Same selection, Top-P, and training parameters as the ungated profile.
+extends: mopd_math_code_next_step_token_v4_shared_toploss_m05_c01_fixed4_4gpu_colocated.yaml
+
+runtime:
+  wandb_run_id: q1p7b4g-mc-v4-r3-cs-sharedtl-codegate-next-m05c01-f4-b528-s60
+  wandb_resume: never
+
+audit:
+  code_cs_position_gate_enabled: true
+  output_dir: audit/q1p7b4g-mc-v4-r3-cs-sharedtl-codegate-next-m05c01-f4-b528-s60
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b4g-mc-v4-r3-cs-sharedtl-codegate-next-m05c01-f4-b528-s60
+
+huggingface_checkpoint:
+  enabled: false
+  private: false
+  path_prefix: checkpoints/mopd/q1p7b4g-mc-v4-r3-cs-sharedtl-codegate-next-m05c01-f4-b528-s60
+
+trainer:
+  experiment_name: q1p7b4g-mc-v4-r3-cs-sharedtl-codegate-next-m05c01-f4-b528-s60
+  default_local_dir: checkpoints/MOPD/q1p7b4g-mc-v4-r3-cs-sharedtl-codegate-next-m05c01-f4-b528-s60

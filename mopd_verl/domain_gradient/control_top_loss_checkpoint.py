@@ -203,6 +203,11 @@ def restore_online_control_selection_state(
         active_weights = tuple((domain, ()) for domain in domains)
     raw_observed = value.get("last_observed_step")
     raw_audit = value.get("last_audit_step")
+    code_cs_position_policy = value.get("code_cs_position_policy")
+    if code_cs_position_policy not in {
+        None, "position_fixed", "dynamic_ungated", "dynamic_gated"
+    }:
+        raise ValueError("Checkpointed Code C+S position policy is invalid.")
     state = cast(Any, state_type)(
         domains=domains,
         domain_candidate_token_ids=domain_candidates,
@@ -222,6 +227,7 @@ def restore_online_control_selection_state(
         weight_mode=weight_mode,
         selection_mode_by_domain=selection_mode_by_domain,
         weight_mode_by_domain=weight_mode_by_domain,
+        code_cs_position_policy=code_cs_position_policy,
         loss_ratio_alpha=float(value.get("loss_ratio_alpha", 1.0)),
         history=history,
         valid_token_count_history=valid_token_count_history,

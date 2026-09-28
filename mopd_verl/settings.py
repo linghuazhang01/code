@@ -335,6 +335,10 @@ class AuditConfig:
     structure_token_loss_weighting_enabled: bool = False
     structure_token_loss_weight: float = 1.0
     structure_token_position_profile: str = "none"
+    versioned_cs_selection_mode_by_domain: dict[str, str] = field(
+        default_factory=dict
+    )
+    code_cs_position_gate_enabled: bool | None = None
     domain_structure_token_ids: dict[str, list[int]] = field(default_factory=dict)
     control_token_online_audit_interval_steps: int = 3
     control_token_online_window_steps: int = 3
