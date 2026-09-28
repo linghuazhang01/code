@@ -1,0 +1,29 @@
+# Prepared V4 profile: Math/Code share one C+S TopLoss budget per domain.
+# Code position gating is disabled; this profile has not been launched.
+extends: _mopd_math_code_next_step_token_v4_fixed4_3gpu_colocated.yaml
+
+runtime:
+  wandb_run_id: q1p7b3g-mc-v4-r3-cs-sharedtl-next-m05c01-f4-b528-s60
+  wandb_resume: never
+
+audit:
+  versioned_cs_selection_mode_by_domain:
+    math: top_loss
+    code: top_loss
+  code_cs_position_gate_enabled: false
+  control_token_online_top_p_by_domain:
+    math: 0.05
+    code: 0.01
+  output_dir: audit/q1p7b3g-mc-v4-r3-cs-sharedtl-next-m05c01-f4-b528-s60
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b3g-mc-v4-r3-cs-sharedtl-next-m05c01-f4-b528-s60
+
+huggingface_checkpoint:
+  enabled: false
+  private: false
+  path_prefix: checkpoints/mopd/q1p7b3g-mc-v4-r3-cs-sharedtl-next-m05c01-f4-b528-s60
+
+trainer:
+  experiment_name: q1p7b3g-mc-v4-r3-cs-sharedtl-next-m05c01-f4-b528-s60
+  default_local_dir: checkpoints/MOPD/q1p7b3g-mc-v4-r3-cs-sharedtl-next-m05c01-f4-b528-s60

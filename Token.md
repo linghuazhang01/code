@@ -242,6 +242,11 @@ Fixed4，Code 开关均显式关闭。`mopd_math_code_next_step_token_v4_shared_
 仅将共享 TopLoss 示例的 Code 开关打开，并使用独立的运行空间，便于对照。三个示例
 均未启动，不会修改正在运行的训练。
 
+共享 TopLoss 且 Code 位置开关关闭的 Fixed4 profile 现覆盖 Token V4/V5 各自的
+3、4、8-GPU colocated 布局，共六份配置；沿用 Math 5%、Code 1%、batch 528、
+Step 60，并为每份配置使用独立的 run/audit/eval/checkpoint 路径。它们尚未启动，
+也未同步到 GPU 训练服务器。
+
 ## 1. 名称与状态
 
 | 名称 | 状态 | 含义 |
