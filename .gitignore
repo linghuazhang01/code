@@ -16,6 +16,17 @@ settings.json
 !/tests/test_token_v4_v5_runtime.py
 !/configs/token_selection/math_code/taxonomy/*token_v4*.yaml
 !/configs/token_selection/math_code/taxonomy/*token_v5*.yaml
+!/configs/token_selection/math_code/taxonomy/_mopd_math_code_current_step_token_v[678]_fixed4.yaml
+!/configs/token_selection/math_code/taxonomy/_mopd_math_code_current_step_token_v[678]_fixed4_[348]gpu_colocated.yaml
+!/configs/token_selection/math_code/taxonomy/mopd_math_code_current_step_token_v[678]_toploss_m05_c0[12]_fixed4_[348]gpu_colocated.yaml
+!/configs/token_selection/math_code/taxonomy/mopd_math_code_current_step_token_v[678]_toploss_m05_c0[12]_code_structure_fixed4_[348]gpu_colocated.yaml
+!/tests/test_token_v6_v8_current_step_configs.py
+!/configs/token_selection/math_code/taxonomy/_mopd_math_code_current_step_token_v9_fixed4.yaml
+!/configs/token_selection/math_code/taxonomy/_mopd_math_code_current_step_token_v9_fixed4_[348]gpu_colocated.yaml
+!/configs/token_selection/math_code/taxonomy/mopd_math_code_current_step_token_v9_toploss_m05_c01_fixed4_[348]gpu_colocated.yaml
+!/tests/test_token_v9_current_step_configs.py
+!/configs/token_selection/math_code/taxonomy/mopd_math_code_current_step_token_v6_toploss_m05_c01_fixed4_4student_3teacher_shared.yaml
+!/configs/token_selection/math_code/taxonomy/mopd_math_code_current_step_token_v6_toploss_m05_c01_fixed4_3student_1teacher.yaml
 !third_party/verl/tests/workers/rollout/test_sglang_async_rollout_w_tools_token_out.py
 
 # Python

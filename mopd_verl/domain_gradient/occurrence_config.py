@@ -328,6 +328,7 @@ def validate_occurrence_config(config: Any, actor: Any = None) -> None:
     from mopd_verl.domain_gradient.frozen_taxonomy import (
         CONTROL_TOKEN_IDS,
         STRUCTURE_TOKEN_IDS,
+        TOKEN_V9_CONTROL_IDS,
     )
 
     groups = dict(config.domain_control_token_candidate_groups)
@@ -342,8 +343,9 @@ def validate_occurrence_config(config: Any, actor: Any = None) -> None:
         raise ValueError("occurrence requires configured candidate IDs")
     if taxonomy_version == "legacy" and not (
         configured <= CONTROL_TOKEN_IDS | STRUCTURE_TOKEN_IDS
+        or configured <= TOKEN_V9_CONTROL_IDS
     ):
-        raise ValueError("occurrence requires configured C+S candidate IDs")
+        raise ValueError("occurrence requires configured C+S or Token V9 candidate IDs")
     if actor is None:
         return
 

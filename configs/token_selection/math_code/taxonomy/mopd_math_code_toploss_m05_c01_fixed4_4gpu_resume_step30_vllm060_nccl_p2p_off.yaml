@@ -1,0 +1,15 @@
+extends: mopd_math_code_toploss_m05_c01_fixed4_4gpu.yaml
+
+runtime:
+  wandb_run_id: q1p7b4g-mc-tl-m05c01-f4-b528-s60-resume30-vllm060-p2p-off
+  wandb_resume: never
+
+rollout:
+  gpu_memory_utilization: 0.6
+
+extra_overrides:
+- custom_reward_function.path=mopd_verl/mixed_reward.py
+- custom_reward_function.name=compute_score
+- trainer.resume_mode=auto
+- actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+- '+ray_kwargs.ray_init.runtime_env.env_vars.NCCL_P2P_DISABLE="1"'

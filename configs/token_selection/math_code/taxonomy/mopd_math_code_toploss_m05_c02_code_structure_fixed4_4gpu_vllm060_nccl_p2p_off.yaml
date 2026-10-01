@@ -1,0 +1,13 @@
+# Runtime-safe variant for the Math 5% / Code 2% Structure-only run.
+# Keeps the experiment profile intact while using the validated H200 settings.
+extends: mopd_math_code_toploss_m05_c02_code_structure_fixed4_4gpu.yaml
+
+rollout:
+  gpu_memory_utilization: 0.6
+
+extra_overrides:
+- custom_reward_function.path=mopd_verl/mixed_reward.py
+- custom_reward_function.name=compute_score
+- trainer.resume_mode=disable
+- actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+- '+ray_kwargs.ray_init.runtime_env.env_vars.NCCL_P2P_DISABLE="1"'

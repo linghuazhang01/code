@@ -1,0 +1,3 @@
+# Structure-only alias of mopd_math_code_current_step_token_v7_toploss_m05_c02_fixed4_3gpu_colocated.yaml.
+# V7 has no Code Control IDs, so Structure-only is the same experiment and run namespace.
+extends: mopd_math_code_current_step_token_v7_toploss_m05_c02_fixed4_3gpu_colocated.yaml

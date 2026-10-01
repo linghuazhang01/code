@@ -2,10 +2,13 @@
 
 当前实现支持在同一个 optimizer step 中评分、选取 token、再加权反向传播。
 默认仍为 `next_step`；显式配置 `current_step` 才启用新增路径。
-本文以下的 same-step 时序与 tail/TC 例子保留为历史机制说明。当前可启动的
-Math+Code 配置已迁至上一 step 结果选择：37 个 active public profiles 均为
+本文以下的 tail/TC 例子保留为历史机制说明。原有 V4/V5 与 legacy head-only
+Math+Code 配置已迁至上一 step 结果选择：这 37 个 active public profiles 均为
 `next_step`、`token_id`、`top_loss`、无 tail；旧 `current_step` 文件名只是兼容 alias，
-展开后仍为 `next_step`。实验对照应以实际展开配置而不是文件名判断时序。
+展开后仍为 `next_step`。2026-10-01 新增的 V6/V7/V8 候选池矩阵为真正的
+`current_step`；全部池内 ID 在各 domain 共享 TopLoss/TopP，Code 无位置门控。
+候选池及数量统一以 [Token.md §0.4](../Token.md) 为准。实验对照应以实际展开配置
+而不是文件名判断时序。
 
 ## 最小配置
 
@@ -169,8 +172,8 @@ same-step / global-domain normalization；它与这里的显式 current_step nor
 
 ## 开销、日志与恢复
 
-以下开销与日志描述历史 Current-Step 路径；当前 active Next-Step 配置不执行额外
-student 评分 forward，而是利用上一 step 正式 forward 的原始 loss 更新下一步选择。
+以下开销与日志也适用于 V6/V7/V8 Current-Step 路径；原有 Next-Step 配置不执行
+额外 student 评分 forward，而是利用上一 step 正式 forward 的原始 loss 更新下一步选择。
 
 每步额外一遍 student scoring forward，以及全局评分统计通信。teacher 已缓存结果
 继续复用。不能把置零比例当作 FLOPs 节约，也不能未经测量声称总时间翻倍。

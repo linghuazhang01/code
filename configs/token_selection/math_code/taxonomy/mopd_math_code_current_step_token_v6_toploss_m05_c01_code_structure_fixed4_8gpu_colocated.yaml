@@ -1,0 +1,26 @@
+# Token V6 Structure-only, current-step, Math top_p=0.05, Code top_p=0.01, 8-GPU colocated.
+# Code drops all 23 Control IDs (Code = 196 Structure), so the candidate pools equal V7;
+# only the run namespace is V6. Do not launch both this and the V7 profile expecting different results.
+extends: _mopd_math_code_current_step_token_v7_fixed4_8gpu_colocated.yaml
+
+runtime:
+  wandb_run_id: q1p7b8g-mc-v6-cstruct-current-m05c01-f4-b528-s60
+  wandb_resume: never
+
+audit:
+  control_token_online_top_p: 0.05
+  control_token_online_top_p_by_domain:
+    math: 0.05
+    code: 0.01
+  output_dir: audit/q1p7b8g-mc-v6-cstruct-current-m05c01-f4-b528-s60
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b8g-mc-v6-cstruct-current-m05c01-f4-b528-s60
+
+huggingface_checkpoint:
+  private: false
+  path_prefix: checkpoints/mopd/q1p7b8g-mc-v6-cstruct-current-m05c01-f4-b528-s60
+
+trainer:
+  experiment_name: q1p7b8g-mc-v6-cstruct-current-m05c01-f4-b528-s60
+  default_local_dir: checkpoints/MOPD/q1p7b8g-mc-v6-cstruct-current-m05c01-f4-b528-s60

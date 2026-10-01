@@ -1,6 +1,6 @@
 # Control、Structure、Other 与 VR Token 定义
 
-更新日期：2026-09-28
+更新日期：2026-10-01
 
 本文档是当前项目中 Control、Control-44、Connective、Structure、Other 和 VR token
 集合的规范定义。除非另有说明，token ID 均绑定 Qwen3 tokenizer，不能直接复用于
@@ -246,6 +246,235 @@ Fixed4，Code 开关均显式关闭。`mopd_math_code_next_step_token_v4_shared_
 3、4、8-GPU colocated 布局，共六份配置；沿用 Math 5%、Code 1%、batch 528、
 Step 60，并为每份配置使用独立的 run/audit/eval/checkpoint 路径。它们尚未启动，
 也未同步到 GPU 训练服务器。
+
+### 0.4 Token V6 / V7 / V8（Current-Step 候选池版本）
+
+V6/V7/V8 是第 0 节 active Four-Baseline-Supported taxonomy 的 **candidate-pool
+版本**，使用同一套 Qwen3 token IDs 和 global/domain 类型；不新增完整词表 taxonomy。
+它们不采用 V4/V5 的 sibling closure、答案词移到 Structure 的规则或位置 profile。
+例如 `Final`、`answer` 在这些池中的类型仍由第 0 节决定，不能套用第 0.3 节的类型。
+
+| 候选池版本 | Math Control | Math Structure | Math 总数 | Code Control | Code Structure | Code 总数 |
+|---|---:|---:|---:|---:|---:|---:|
+| V6 | 118 | 156 | 274 | 23 | 196 | 219 |
+| V7 | 118 | 156 | 274 | 0 | 196 | 196 |
+| V8 | 118 | 156 | 274 | 0 | 341 | 341 |
+
+**2026-10-01 修订（1.7B Rising 补全）**：上表是在首版冻结池（Math 263、Code
+V6/V7/V8=185/164/316，各带 SHA256 并经独立审计）之上，按用户要求把 1.7B 两条
+baseline（1.7B-OPD、1.7B-EOPD）Rising Top-200 里**缺失的 Control/Structure IDs 全部补入**
+后的当前定义。补全规则见本节“1.7B Rising 补全”；首版冻结池在下文以 M263、S164、
+S316、C21 命名，作为补全的输入保留。
+
+**首版共同 Math 池 M263**：从 `DomainControl_math ∪ DomainStructure_math` 的 390 IDs
+开始，删除历史 C01、C02 两条 Next-Step run 在 source steps 1–60 中都未选中过的
+124 IDs，再删除 decoded token 文本含 `**` 的 7 个加粗标记 IDs。两种删除集合重叠
+4 IDs，因此 `390 − 124 − 7 + 4 = 263`。保留 Control 116、Structure 147；后者为
+67 个 code-lexical 和 80 个 format IDs。这里“选中过”指 source-step 新选择，不是
+下一 step 实际应用：step 60 新选但未在 step 61 应用的 ID 也按已选中过保留。
+
+**Code Structure 池 S316**：从 `DomainStructure_code` 的 551 IDs 开始，删除上述
+两条 run 的 source steps 1–60 都未选中过的 230 IDs，再删除文本含 `**` 的 11 IDs；
+重叠 6 IDs，故 `551 − 230 − 11 + 6 = 316`。其中 code-lexical 135、format 181。
+
+补全后的 V6/V7/V8 Math、Code 候选池仍均不含 decoded 文本包含 `**` 的 ID，包括前导
+空格、换行等变体（补入的 IDs 经检查无一含 `**`）。这里删除的是候选池成员；完整
+tokenizer vocabulary 仍保留这些 IDs。
+
+**Code Structure 池 S164**：在 S316 中保留全部 135 个 code-lexical IDs；对 format
+IDs，额外要求教师 Code 文本的 `p_exec_code ≥ 0.5`，保留 29 个，合计 164。
+其余 152 个 format IDs 被移除。该比例来自 1,000 条教师回复的 context 统计，属于
+regex/词面匹配的近似 proxy；其中 44 条触及 16,384-token 长度上限。生成 CSV 的
+比例先保留四位小数；用原始整数计数复核 `2 × exec_count ≥ total_count`，所得集合
+相同。**此条件仅筛选 format IDs，不作用于 135 个 code-lexical IDs，也不构成
+训练时的位置 mask。**
+
+**Code Control 池 C21**：从 active `DomainControl_code` 中取在至少两条不同
+baseline 的 Code Rising Top-200 内出现的 IDs，严格采用第 0.1 节的 endpoints、
+eligibility 和排名。这里统计 distinct baseline，不合并 Stable，也不要求同时进入
+全部四条 baseline 的 Top-200。结果为：
+
+```text
+323, 369, 389, 421, 438, 448, 504, 1156, 1172, 1221, 1249,
+1393, 1416, 1752, 1986, 2014, 2055, 2461, 4416, 8704, 13023
+```
+
+**1.7B Rising 补全**：对每个 domain，取 1.7B-OPD 与 1.7B-EOPD 两条 baseline 的
+Rising Top-200（严格沿用第 0.1 节 endpoints、eligibility 和排名，不并入 Stable），
+其中按 active domain taxonomy 类型为 Control 或 Structure 的 IDs（Other 不加入）；
+凡不在对应池内者补入。**只增不删**，不使用 4B baseline 决定补全。
+
+```text
+M274 = M263 ∪ R_math          R_math = 1.7B Rising 的 Math Control/Structure IDs，补入 11 个
+                              （Control 2：389(` on`)、1221(` then`)；Structure 9）
+S196 = S164 ∪ R_code,S         补入 32 个 Structure（V7）
+S341 = S316 ∪ R_code,S         补入 25 个 Structure（V8）
+C23  = C21 ∪ R_code,C          R_code,C = 1.7B Rising 的 Code Control IDs，新增 476(` or`)、4695(` Now`)
+```
+
+C21 中 1221(` then`)、2014(` To`)、4416(`So`) 不在任一 1.7B Rising Top-200 内（它们来自
+“至少两条不同 baseline”的旧选法），按“只增不删”保留。补入 IDs 的逐项清单（token、类型、
+出现的 baseline 数、最佳名次）为 `pruned_pool/final_plus_rising/added_tokens.csv`。
+
+补全后对 1.7B 两条 baseline 的 Rising Top-200 中 Control/Structure 部分命中率：
+Math（V6/V7/V8 相同）与 V6 Code 均为 **100%**；V7、V8 Code 按设计不含 Code Control，
+故 Structure 部分为 100%，Control 部分不覆盖。4B baseline 不参与补全，其命中率不保证。
+这不是训练收益或泛化结论，仅说明池对 1.7B Rising 速度排名的覆盖。
+
+最终集合关系为：
+
+```text
+V6(math) = V7(math) = V8(math) = M274 ⊋ M263
+V6(code) = C23 ∪ S196
+V7(code) = S196
+V8(code) = S341
+C23 ∩ S341 = ∅；S196 ⊊ S341
+V7(code) ⊊ V6(code)，V7(code) ⊊ V8(code)；V6/V8 互不包含。
+```
+
+三个 pool helpers 为
+`configs/token_selection/math_code/taxonomy/_mopd_math_code_current_step_token_v{6,7,8}_fixed4.yaml`，
+均继承原有 `_mopd_math_code_toploss_fixed4_4gpu.yaml`。最终 runtime 使用
+`token_taxonomy_version=legacy`，本文的 V6/V7/V8 标识记录候选池身份；当前 registry
+只注册 V4/V5，不能直接将字段改成 `token_v6`、`token_v7` 或 `token_v8`。
+
+这三版均为真正的 **Current-Step**：每个 optimizer step 在正式 backward 前额外
+对各 microbatch 做一次 no-grad student forward，跨 actor ranks 汇总当前 step 的
+per-ID mean absolute raw teacher-support Top-K renormalized reverse KL。每个 ID 的
+当前 domain occurrence 必须严格 `>20`；Control/Structure 在各 domain 共用一次
+TopLoss 排名和一份 occurrence TopP 预算，不拆 C/S quota。Math TopP=0.05，Code
+为 0.01 或 0.02；分母是该 domain 当前 step 的全部 valid response tokens，不是
+池大小或 token-ID 数。`token_id` 选择完整 ID，可能 overshoot；候选不足时记录
+shortfall，不补入池外 ID。继承的 `top_k=30` 不在 `budget_mode=top_p` 下限制 ID 数。
+
+首步即可选词和增权，每步重新评分；没有 Next-Step lag。所有入选 ID 在所属
+domain 的全部 valid response 位置获得 raw `w=4`，其余为 1。Code 的代码块内外、
+注释、string literal、解释文字均可命中；没有 V4/V5 的 fenced-block/答案标签
+门控，也不对全部 Structure 固定增权。tail budget=0、tail weight=1，不使用
+Teacher Confidence。归一化范围是 **rank-local microbatch/domain**：若该局部块
+入选位置比例为 `r`，最终系数为 `4/(1+3r)` 与 `1/(1+3r)`，不能把全局 TopP 直接
+代入局部 `r`，也不能把 raw Fixed4 称为归一化后的绝对系数 4。
+
+配置矩阵包含 3 pool、9 个 3/4/8-GPU colocated topology、36 个 run/alias 文件，共
+48 文件。batch/mini-batch=528、seed=42、训练 60 steps、公开 HF checkpoint `[60]`；
+N-GPU topology 使用 N 个 actor ranks 和同卡的 N-way FSDP teacher，不是 6+2 布局。
+`code_structure` 只约束 Code 池，Math 仍为 M274：V6 的该变体去掉 C23，因此与
+对应 V7 普通配置的训练参数相同，但保留独立 V6 namespace；V7/V8 的该变体是普通
+run 的精确 alias，共用 namespace。36 文件实际只有 **24 个 namespace、18 种不同
+配置组合**，不能按 36 个独立实验启动；alias 还多一层 run→run 继承。
+
+机器可读逐 ID 定义与 provenance 位于
+[`../analysis-output/c01-c02-selection-stepdiff-20260930/`](../analysis-output/c01-c02-selection-stepdiff-20260930/)：
+`v678_pool_membership.csv` 包含 1,578 个唯一 `(version,domain,token_id)` entries，
+每行类型与 active domain taxonomy 一致，文件 bytes SHA256 为
+`a2ef2a265a7a5162f0201ac5082a5bb9d69bfd2327dda4fbc962ee3ee6993014`。
+补全后的 M274、V6/V7/V8 Code 池 ID JSON 在 `pruned_pool/final_plus_rising/`
+（`math_ids.json`、`code_v{6,7,8}_ids.json`，另有 `added_tokens.csv`、`hit_rate_report.json`）。
+首版冻结池的输入仍在原处：Math263、Code164、C21 的 ID JSON 在 `pruned_pool/final/`，
+Code316 在 `pruned_pool/code_candidate_ids_pruned.json`。构造入口为 `prune_pool.py`、
+`prune_pool_math.py`、`finalize_pools.py`（首版），再由 `extend_pools_rising.py` 补全，
+最后由 `build_v678_configs.py` 生成 48 个配置与 membership CSV。
+首版冻结状态（M263/C21/S164/S316，membership SHA256 `d9d57608…005f85`）的 48 个配置与
+membership 已归档于 `frozen_audited_20261001/`，可用其回退；其中 3 个 pool helper 的头部注释
+是审计后手改过的，归档里是生成器原始输出，池内容和所有生效值与审计时一致。
+`../code/plan/token-v6-v8-config-audit-20261001/` 的审计记录描述的是**补全前**的首版冻结状态，
+其中的池大小、指纹和 membership hash 已被本节取代；拓扑、命名空间、Current-Step 语义、
+`.gitignore` 等结论不受补全影响。
+C21 的独立核验来源为
+`analysis-output/four-baseline-global-token-taxonomy/phase-top200-recall/tables/phase-top200-membership.csv.gz`；
+context 来源为
+`../plan/code-gap-20260927/structure-budget-context-20260927/tables/token_ctx_counts.csv`。
+
+下列 fingerprint 对 **排序后的 ID 数组、紧凑 JSON（separators=(",",":")）、UTF-8、
+无换行** 计算 SHA256；不是 YAML bytes 或带空格的原 JSON 文件 hash：
+
+| 集合 | Token count | ID fingerprint SHA256 |
+|---|---:|---|
+| M274（V6/V7/V8 Math） | 274 | `b0e6445ac181e03e46b8c88776157ecc41224598eeba26dbf6608d999749b665` |
+| V6 Code（C23 ∪ S196） | 219 | `f888c81aeeeb47dc258b1fe90eef8971e9c76ad03864b7bce410ef18f1672750` |
+| V7 Code / S196 | 196 | `3ed9edc703988b707e68cfbd9bd7c3b7b5ea52d3d552c3a699bfff547b818fe8` |
+| V8 Code / S341 | 341 | `2c69c5c9b08c96cf8552750ac4f17b57133910368048d31abe2a916c0d6566ba` |
+
+补全前的首版冻结指纹（仅作回退核对）：M263 `59a790e0…86bf`、V6 Code（185）`2676c004…1ca`、
+V7 Code（164）`9deab687…935e`、V8 Code（316）`84b14a78…52a0`。
+
+这些池由两条历史 Next-Step 轨迹的数据驱动剪枝得到；“旧 run 未选中过”不表示新
+Current-Step 训练中无用。删除加粗 ID 后，旧日志未记录的后续排名无法完整重放。
+1.7B Rising 补全只依据 baseline 速度排名的覆盖，不依据旧 run 是否选中过，补入的 IDs
+多数在旧 run 中从未被选中。旧文档对首版 S164（补全后 S196）的 Code 2% 预算不足仅作
+量级提示，不能据此断言新训练每步一定 shortfall；应读取实际 `eligible_count`、`head/coverage`、`head/shortfall` 和
+`head/overshoot`。本节登记定义与配置语义，不把旧轨迹或教师 context proxy 当作
+这三版的新训练结果或独立泛化证据。
+
+### 0.5 Token V9（统一 Control，Current-Step 候选池）
+
+V9 是 version-scoped 的**统一 Control** 定义，同时作为 Current-Step candidate pool
+使用。它不拆 Control/Structure，也不覆盖第 0 节的 809-token taxonomy。V9 的 Math∪Code
+共 186 个 ID，其中 41 个在第 0 节属于 Other（如 `Wait`、` let`、`Actually`），因此 V9
+**不适用**第 0 节 `P_d ∩ (DomainControl_d ∪ DomainStructure_d)` 的交集规则。选词器与
+第 0.4 节 V6/V7/V8 完全相同，只替换候选池。
+
+**定义。** Control token 是模型在该位置决定推理或程序下一步走向的 token：与前文的关系、
+下一步做什么、分支/循环/作用域、结束一个推理段落或整个回答。承载内容的 token（数字、
+变量、术语、介词）和由语法强制的 token（闭括号、逗号、`:\n`、缩进）不属于 Control。
+子类只用于审计：D 逻辑关系、M 推理动作、P 程序控制、B 分段边界。
+
+**构造。** 全程不读取任何 gap/speed 数据。
+
+1. 候选 = 第 0 节 domain Control ∪ Structure，加上功能词表按大小写和前导空格展开的 ID。
+2. 功能词表给每个词一条规则：词义即连接（任何位置都算）、只在句首/分句首算、只在大写句首算
+   （`And`/`Or`/`Else`）、只在 `Let's/Let me/Let us` 时算、只在引导连接短语时算
+   （如 `In other words`、`On the other hand`）、代码关键字（区分大小写）、边界形态
+   （含 `\n\n` 的段落分隔、正文行首的 `#` 标题/`-` 列表/`---` 分隔线、代码围栏、EOS）。
+3. 用法审计：在 Qwen3-1.7B 基座与 step60 1.7B 的 Math/Code/Science 评测回答上，统计每个 ID
+   处于控制用法的比例。代码上下文为 fenced 与行内反引号代码，注释和 docstring 按正文处理。
+4. 纳入：控制用法占比 ≥0.3 且样本 ≥30（0.3–0.5 为临界项，用户 2026-10-01 决定纳入）；
+   样本 <30 时只按先验纳入"词义即连接"的词；EOS `151645` 按规则纳入。Code 的 ` return`、
+   ` for`、` break`、` raise` 是双用途关键字：抽查显示其"正文"出现多为未加围栏的代码或
+   "if x, return True" 式算法步骤，审计低估了代码用法，用户决定纳入。
+5. 剔除：`382`（`.\n\n`，用户决定：单个 token 占 Control 出现量 19–25%）；`56177`
+   （`**\n\n`，沿用 V6/V7/V8 "候选池不含 `**`" 的规则）。
+6. 支持：每个 ID 在对应 domain 的四条 baseline 上均满足 `M_{b,d}(t) > 20`。
+
+| Domain | 总数 | D | M | P | B | 来自原 Control | 来自原 Structure | 新增 | 占 1.7B-EOPD token 比例 | B 占 Control 出现量 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Math | 117 | 58 | 39 | 0 | 20 | 68 | 20 | 29 | 5.64% | 35.1% |
+| Code | 169 | 67 | 49 | 16 | 37 | 88 | 44 | 37 | 8.98% | 36.9% |
+
+Code P 类为 ` for`、` return`、`return`、` def`、`def`、` else`、`else`、` while`、
+`while`、` break`、` continue`、` except`、` elif`、`elif`、` raise`、`for`。原 Control 中
+未纳入的主要是介词/并列用法（` in`、` and`、` or`、` with`、` by`、` on`、` as`、
+` from`、` only`、` given`）以及 `This`、` That`、` answer`、`to`、` first`、` now`、` next`。
+Science V9（106 个，SHA256 `7f4eccb7…0165`）已定义但没有配置。
+
+ID fingerprint（排序后 ID 数组的紧凑 JSON 的 SHA256，口径同第 0.4 节）：
+
+| 集合 | Token count | ID fingerprint SHA256 |
+|---|---:|---|
+| V9 Math | 117 | `1d63fc235cc80438413f37423d2a8d415d6b783d4e675b051521ab9b72c8445a` |
+| V9 Code | 169 | `69c0149131a065b7c6c78272341eb90213ec3977b06465a843f35c2ccf03a909` |
+
+**配置。** 7 个文件位于 `configs/token_selection/math_code/taxonomy/`：pool helper
+`_mopd_math_code_current_step_token_v9_fixed4.yaml`（继承
+`_mopd_math_code_toploss_fixed4_4gpu.yaml`）、3/4/8-GPU colocated topology helper，以及
+`mopd_math_code_current_step_token_v9_toploss_m05_c01_fixed4_{3,4,8}gpu_colocated.yaml`。
+Math top-p=0.05、Code top-p=0.01，Current-Step TopLoss、token_id、raw w=4、
+rank-local microbatch/domain mean-one、tail=0、`token_taxonomy_version=legacy`、
+无 fenced-code 门控，batch/mini-batch=528、60 steps、公开 HF checkpoint `[60]`、
+`teacher_performance.enabled: true`。run namespace 为
+`q1p7b{3,4,8}g-mc-v9-ctl-current-m05c01-f4-b528-s60`。尚未同步远端，未启动。
+
+**运行时改动。** legacy Current-Step 校验原本要求候选 ⊆ 第 0 节 C∪S。现于
+`mopd_verl/domain_gradient/frozen_taxonomy.py` 登记 `TOKEN_V9_CONTROL_IDS`（186 = V9 Math∪Code），
+`occurrence_config.py` 接受"候选 ⊆ C∪S"或"候选 ⊆ V9"，二者不可混用，其他 ID 仍被拒绝。
+loss 计算不变；`token_source_metrics` 仍按第 0 节分类记录，V9 独有 ID 在日志中记为 other。
+
+机器可读来源与逐 token 依据位于
+`analysis-output/control-token-redesign-20261001/`：`tables/v9_membership.csv`（规则、用法占比、
+样本数、四 baseline 最大次数）、`tables/v9_{math,code,science}_ids.json`、`tables/v9_dropped.csv`、
+`V9_tokens.md`；构造入口 `build_control_set.py` → `build_v9.py` → `build_v9_configs.py`。
+配置契约测试为 `tests/test_token_v9_current_step_configs.py`。审计语料为评测回答而非训练 rollout，
+Code 语料来自 HumanEvalPlus/MBPPPlus（非 Eurus 训练 prompt）；这些都不是训练收益证据。
 
 ## 1. 名称与状态
 

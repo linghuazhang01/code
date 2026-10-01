@@ -1,0 +1,19 @@
+# Four-GPU run on physical GPUs 0,1,2,4; GPU IDs are set by the launcher.
+extends: mopd_math_code_current_step_toploss_m05_c01_math_control_code_structure_fixed4_4gpu.yaml
+
+runtime:
+  wandb_run_id: q1p7b4g-mc-tl-m05c01-mctrl-cstruct-current-f4-b528-s60-g0124
+  wandb_resume: never
+
+audit:
+  output_dir: audit/q1p7b4g-mc-tl-m05c01-mctrl-cstruct-current-f4-b528-s60-g0124
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b4g-mc-tl-m05c01-mctrl-cstruct-current-f4-b528-s60-g0124
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/mopd/q1p7b4g-mc-tl-m05c01-mctrl-cstruct-current-f4-b528-s60-g0124
+
+trainer:
+  experiment_name: q1p7b4g-mc-tl-m05c01-mctrl-cstruct-current-f4-b528-s60-g0124
+  default_local_dir: checkpoints/MOPD/q1p7b4g-mc-tl-m05c01-mctrl-cstruct-current-f4-b528-s60-g0124
