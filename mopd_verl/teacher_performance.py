@@ -3,7 +3,9 @@
 The guard is a conservative heuristic, not an OOM guarantee. Dedicated
 multi-rank reference workers synchronize batch boundaries before entering the
 model, while unsupported worker layouts retain their original path, including
-their collective call ordering. The independent expandable_segments setting
+their collective call ordering. Memory-guarded TopK chunking is independent of
+batching and is enabled by default on supported colocated teachers as well.
+The independent expandable_segments setting
 applies before model construction on dedicated CUDA teachers, including
 multi-rank workers with batching disabled.
 """
@@ -70,7 +72,7 @@ def _lengths(data: Any) -> list[int]:
 def _concat(parts: list[tuple[Any, ...]]) -> tuple[Any, ...]:
     if any(not isinstance(part, tuple) or len(part) != len(parts[0]) for part in parts):
         raise RuntimeError("Teacher returned inconsistent output tuples")
-    output = []
+    output: list[Any] = []
     for column in zip(*parts):
         if all(value is None for value in column):
             output.append(None)
@@ -124,12 +126,18 @@ def _batch_wrapper(
             supported = locally_supported
         if not supported:
             return original(*args, **kwargs)
+        caller_chunk = data.meta_info.get("topk_logprob_chunk_size")
+        explicit_chunk = caller_chunk is not None and not data.meta_info.get(
+            "teacher_memory_guarded_chunk", False
+        )
         parts, group_stats, start = [], [], 0
         while start < len(lengths):
             available = _available(tuning)
-            candidate_chunks = [tuning.chunk]
+            candidate_chunks = (
+                [int(caller_chunk) or 16] if explicit_chunk else [tuning.chunk]
+            )
             if (
-                tuning.adaptive_chunk is not None
+                not explicit_chunk and tuning.adaptive_chunk is not None
                 and tuning.adaptive_chunk < tuning.chunk
             ):
                 candidate_chunks.append(tuning.adaptive_chunk)
@@ -166,14 +174,18 @@ def _batch_wrapper(
             piece.meta_info = dict(data.meta_info)
             piece.meta_info.update(micro_batch_size=len(indices), use_dynamic_bsz=False)
             effective_chunk = chunk if chunk_is_safe else 16
-            piece.meta_info["topk_logprob_chunk_size"] = effective_chunk
-            piece.meta_info["teacher_memory_guarded_chunk"] = True
+            if explicit_chunk:
+                effective_chunk = int(caller_chunk) or 16
+            piece.meta_info["topk_logprob_chunk_size"] = (
+                caller_chunk if explicit_chunk else effective_chunk
+            )
+            piece.meta_info["teacher_memory_guarded_chunk"] = not explicit_chunk
             group_stats.append(
                 {
                     "rows": len(indices),
                     "tokens": sum(lengths[index] for index in indices),
                     "chunk": effective_chunk,
-                    "guard_fallback": not bool(chunk_is_safe),
+                    "guard_fallback": not bool(chunk_is_safe) and not explicit_chunk,
                 }
             )
             piece_args = (piece, *args[1:]) if args else args
@@ -199,18 +211,32 @@ def _chunk_wrapper(
 ) -> Callable[..., Any]:
     signature = inspect.signature(original)
 
+    def record(
+        effective: int, tokens: int | None, capacity: int | None, reason: str,
+    ) -> None:
+        previous = getattr(forward, "_teacher_chunk_stats", {})
+        stats = {
+            "configured_chunk": tuning.chunk, "effective_chunk": effective,
+            "tokens": tokens, "capacity": capacity, "reason": reason,
+        }
+        forward.__dict__["_teacher_chunk_stats"] = stats
+        if previous.get("effective_chunk") != effective or previous.get("reason") != reason:
+            logging.getLogger(__name__).info("Teacher TopK chunk selected: %s", stats)
+
     @functools.wraps(original)
     def forward(*args: Any, **kwargs: Any) -> Any:
         bound = signature.bind(*args, **kwargs)
         micro_batch = bound.arguments["micro_batch"]
+        requested_chunk = bound.arguments.get("topk_logprob_chunk_size")
         if "multi_modal_inputs" in micro_batch:
+            record(int(requested_chunk or 16), None, None, "multimodal input")
             return original(*args, **kwargs)
         # Explicit call-site overrides keep their original meaning.
-        requested_chunk = bound.arguments.get("topk_logprob_chunk_size")
         memory_guarded_chunk = bool(
             bound.arguments.get("teacher_memory_guarded_chunk", False)
         )
         if requested_chunk is not None and not memory_guarded_chunk:
+            record(int(requested_chunk or 16), None, None, "explicit override")
             return original(*args, **kwargs)
         key = "ref_attention_mask" if "ref_attention_mask" in micro_batch else "attention_mask"
         tokens = int(micro_batch[key].sum().item())
@@ -220,6 +246,7 @@ def _chunk_wrapper(
         capacity = token_capacity(_available(tuning), vocab_size, effective_chunk)
         if tokens <= min(capacity, tuning.max_tokens):
             bound.arguments["topk_logprob_chunk_size"] = effective_chunk
+            record(effective_chunk, tokens, capacity, "memory guard passed")
         else:
             # An oversized single row cannot be split without changing attention.
             # Retain the original chunk, rather than reject otherwise valid work.
@@ -228,6 +255,7 @@ def _chunk_wrapper(
                 tokens, capacity,
             )
             bound.arguments["topk_logprob_chunk_size"] = None
+            record(16, tokens, capacity, "memory guard fallback")
         return original(*bound.args, **bound.kwargs)
     return forward
 
@@ -255,13 +283,17 @@ def configure_teacher_performance(
     fsdp_size: int | None = None,
 ) -> dict[str, Any]:
     """Install policy-local defaults once, after the reference model is built."""
-    if not config.get("enabled", False):
-        return {"enabled": False, "reason": "disabled"}
+    requested = parse_teacher_performance(config)
+    logger = logging.getLogger(__name__)
+    if logger.level == logging.NOTSET:
+        # Make the configured/effective chunk visible under verl's WARNING root.
+        logger.setLevel(logging.INFO)
     if hasattr(policy, "_teacher_performance_config"):
         return policy._teacher_performance_config
+    bundle_requested = config.get("enabled", False)
+    if not bundle_requested and not requested.topk_logprob_chunk_enabled:
+        return {"enabled": False, "topk_logprob_chunk_enabled": False, "reason": "disabled"}
     reasons = []
-    if world_size != 1 and not dedicated_teacher:
-        reasons.append("multi-rank collective ordering")
     if teacher_model_device not in {"gpu", "cuda"} or not torch.cuda.is_available():
         reasons.append("CPU/offloaded or non-CUDA teacher")
     if policy.ulysses_sequence_parallel_size != 1 or not policy.use_remove_padding:
@@ -273,16 +305,15 @@ def configure_teacher_performance(
         reasons.append("memory estimate validated only for BF16 model")
     if reasons:
         logging.getLogger(__name__).warning("Teacher performance fallback: %s", "; ".join(reasons))
-        return {"enabled": False, "reason": "; ".join(reasons)}
-    requested = parse_teacher_performance(config)
+        return {"enabled": False, "topk_logprob_chunk_enabled": False, "reason": "; ".join(reasons)}
+    bundle_enabled = bundle_requested and (world_size == 1 or dedicated_teacher)
     tuning = _Tuning(
-        chunk=requested.topk_logprob_chunk_size,
+        chunk=requested.topk_logprob_chunk_size if requested.topk_logprob_chunk_enabled else 16,
         max_sequences=requested.max_micro_batch_size,
         max_tokens=requested.max_tokens,
         margin_bytes=int(requested.memory_margin_gib * 1024**3),
-        adaptive_chunk=requested.adaptive_topk_chunk_size,
+        adaptive_chunk=requested.adaptive_topk_chunk_size if requested.topk_logprob_chunk_enabled else None,
     )
-    mode = requested.moe_dispatch
     vocab = int(model_config.vocab_size)
     replicated_teacher = (
         dedicated_teacher
@@ -292,31 +323,36 @@ def configure_teacher_performance(
     batch_sync_world_size = (
         world_size if dedicated_teacher and not replicated_teacher else 1
     )
-    policy._forward_micro_batch = _chunk_wrapper(
-        policy._forward_micro_batch, tuning, vocab
-    )
-    policy.compute_log_prob = _batch_wrapper(
-        policy.compute_log_prob,
-        tuning,
-        vocab,
-        distributed_world_size=batch_sync_world_size,
-    )
-    blocks = install_moe_dispatch(policy.actor_module, mode)
+    if requested.topk_logprob_chunk_enabled:
+        policy._forward_micro_batch = _chunk_wrapper(
+            policy._forward_micro_batch, tuning, vocab
+        )
+    blocks = 0
+    if bundle_enabled:
+        policy.compute_log_prob = _batch_wrapper(
+            policy.compute_log_prob, tuning, vocab,
+            distributed_world_size=batch_sync_world_size,
+        )
+        blocks = install_moe_dispatch(policy.actor_module, requested.moe_dispatch)
     state = {
-        "enabled": True,
+        "enabled": bundle_enabled,
+        "topk_logprob_chunk_enabled": requested.topk_logprob_chunk_enabled,
+        "requested_chunk": requested.topk_logprob_chunk_size,
         "chunk": tuning.chunk,
         "max_micro_batch_size": tuning.max_sequences,
         "max_tokens": tuning.max_tokens,
         "adaptive_topk_chunk_size": tuning.adaptive_chunk,
-        "fused_statistics": requested.fused_statistics,
-        "compact_topk_ids": requested.compact_topk_ids,
+        "fused_statistics": bundle_enabled and requested.fused_statistics,
+        "compact_topk_ids": bundle_enabled and requested.compact_topk_ids,
         "memory_margin_bytes": tuning.margin_bytes,
         "moe_blocks": blocks,
-        "distributed_batch_sync": batch_sync_world_size > 1,
+        "distributed_batch_sync": bundle_enabled and batch_sync_world_size > 1,
         "replicated_teacher": replicated_teacher,
         "fsdp_size": fsdp_size,
         "world_size": world_size,
     }
+    if not bundle_enabled:
+        state["reason"] = "disabled" if not bundle_requested else "multi-rank collective ordering"
     policy._teacher_performance_config = state
-    logging.getLogger(__name__).info("Teacher performance configured: %s", state)
+    logger.info("Teacher performance configured: %s", state)
     return state

@@ -11,6 +11,7 @@ from mopd_verl.teacher_performance_config import TeacherPerformanceConfig
 
 @pytest.mark.parametrize("values", [
     {"enabled": "false"}, {"expandable_segments": "false"},
+    {"topk_logprob_chunk_enabled": "false"}, {"topk_logprob_chunk_enabled": 1},
     {"expandable_segments": 1}, {"topk_logprob_chunk_size": 0},
     {"topk_logprob_chunk_size": True}, {"max_micro_batch_size": 33},
     {"max_tokens": 57345}, {"memory_margin_gib": 0},
@@ -31,6 +32,7 @@ def test_teacher_settings_reach_ref_without_changing_actor() -> None:
     assert "actor_rollout_ref.rollout.enforce_eager=False" in overrides
     assert "actor_rollout_ref.rollout.max_num_seqs=64" in overrides
     assert "+actor_rollout_ref.ref.teacher_performance.topk_logprob_chunk_size=1024" in overrides
+    assert "+actor_rollout_ref.ref.teacher_performance.topk_logprob_chunk_enabled=true" in overrides
     assert "+actor_rollout_ref.ref.teacher_performance.max_micro_batch_size=32" in overrides
     assert "+actor_rollout_ref.ref.teacher_performance.max_tokens=57344" in overrides
     assert "+actor_rollout_ref.ref.teacher_performance.expandable_segments=true" in overrides
@@ -42,7 +44,28 @@ def test_teacher_settings_reach_ref_without_changing_actor() -> None:
     changed_actor = [value for value in build_overrides(changed) if value.startswith("actor_rollout_ref.actor.")]
     assert original_actor == changed_actor
     assert "+actor_rollout_ref.ref.teacher_performance.enabled=false" in build_overrides(changed)
+    assert "+actor_rollout_ref.ref.teacher_performance.topk_logprob_chunk_enabled=true" in build_overrides(changed)
     assert "+actor_rollout_ref.ref.teacher_performance.expandable_segments=true" in build_overrides(changed)
     allocator_disabled = replace(config, teacher_performance=replace(config.teacher_performance, expandable_segments=False))
     assert "+actor_rollout_ref.ref.teacher_performance.expandable_segments=false" in build_overrides(allocator_disabled)
     assert "+actor_rollout_ref.ref.teacher_performance.enabled=true" in build_overrides(allocator_disabled)
+
+
+def test_chunk_opt_out_reaches_ref_without_changing_other_overrides() -> None:
+    config = load_config("configs/token_selection/math_code/taxonomy/"
+        "mopd_math_code_toploss_m05_c01_code_structure_fixed4_4gpu.yaml")
+    assert config.teacher_performance.enabled
+    original = build_overrides(config)
+    assert "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1" in original
+    assert "actor_rollout_ref.actor.ppo_mini_batch_size=528" in original
+    assert "data.train_batch_size=528" in original
+    assert "trainer.total_training_steps=60" in original
+    disabled = replace(config, teacher_performance=replace(
+        config.teacher_performance, topk_logprob_chunk_enabled=False,
+    ))
+    changed = build_overrides(disabled)
+    prefix = "+actor_rollout_ref.ref.teacher_performance.topk_logprob_chunk_enabled="
+    assert prefix + "true" in original and prefix + "false" in changed
+    assert [value for value in original if not value.startswith(prefix)] == [
+        value for value in changed if not value.startswith(prefix)
+    ]

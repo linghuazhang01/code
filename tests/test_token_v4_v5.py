@@ -84,7 +84,7 @@ def test_config_matrix_is_launchable(
     assert config.worker_placement.actor_rollout.n_gpus_per_node == gpu_count
     assert config.worker_placement.ref_policy.n_gpus_per_node is None
     assert config.trainer.n_gpus_per_node == gpu_count
-    assert not config.teacher_performance.enabled
+    assert config.teacher_performance.enabled
     assert config.audit.control_token_online_selection_timing == "next_step"
     assert config.audit.control_token_online_top_p_by_domain == {
         "math": 0.05,

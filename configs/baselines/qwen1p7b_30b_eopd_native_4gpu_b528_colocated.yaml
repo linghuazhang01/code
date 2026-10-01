@@ -37,7 +37,7 @@ extra_overrides:
 teacher_performance:
   # The optimized wrapper targets a dedicated single-rank ref worker. Use the
   # stock path for the four-rank co-located teacher.
-  enabled: false
+  enabled: true
 
 trainer:
   experiment_name: qwen1p7b-30b-eopd-native-4gpu-b528-colocated

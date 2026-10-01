@@ -9,6 +9,7 @@ rollout:
 
 teacher_performance:
   enabled: true
+  topk_logprob_chunk_enabled: true
   topk_logprob_chunk_size: 1024
   max_micro_batch_size: 32
   max_tokens: 57344
@@ -24,25 +25,36 @@ sampling policy and actor optimizer batch sizes remain independent.
 
 ## Teacher behavior and applicability
 
-`settings.py` validates the teacher configuration and `launch.py` forwards its six
+`settings.py` validates the teacher configuration and `launch.py` forwards all
 fields under `actor_rollout_ref.ref.teacher_performance`. Reference-worker
 initialization installs the wrappers in `teacher_performance.py`.
 
 - The TopK chunk controls how many token positions are postprocessed together;
   it does not change the number of returned support tokens (`topk_distill_k=32`).
-- Teacher input rows are grouped contiguously, up to 32 sequences and 57,344
+  Memory-guarded chunking defaults to 1024 with the independent
+  `topk_logprob_chunk_enabled: true`, including colocated multi-rank teachers
+  and configurations with `enabled: false`. It preserves forward microbatches
+  and collective call order. Explicit call-site chunk overrides take priority.
+- With the batching bundle enabled, teacher input rows are grouped contiguously,
+  up to 32 sequences and 57,344
   non-padding input tokens. Output row order and optional output tensors are
   preserved. Each group is reduced further when the memory estimate requires it.
 - Optimization requires a CUDA-resident BF16 reference model, remove-padding,
   sequence parallel size one, no optimizer and unfused execution. A dedicated
   multi-rank FSDP reference worker is supported: it synchronizes rank-local
   batch boundaries using the minimum available capacity before entering the
-  model, preserving collective call order. Colocated or otherwise unsupported
-  layouts retain the original computation path and log the reason.
+  model, preserving collective call order. Colocated multi-rank teachers retain
+  their original batching and MoE path while independently using the chunk
+  wrapper. Unsupported execution paths retain their original methods and log
+  the reason; chunking does not bypass these model/device guards.
 - The memory budget estimates logits and chunk workspace using free and cached
   memory while retaining at least 12 GiB headroom. It is a heuristic, not an OOM
   guarantee: cached bytes may not all be immediately reusable contiguous memory.
-  An oversized single row retains the original chunk behavior.
+  An oversized single row falls back to chunk16 with a warning. The chunk
+  wrapper records the last configured/effective chunk and fallback reason in
+  `_teacher_chunk_stats`; INFO logs report the first selection and any change.
+  The module enables INFO by default even with verl's WARNING root logger,
+  while preserving an explicitly configured module log level.
 - Stable-sort MoE dispatch is enabled only for the verified 48-block Qwen3 MoE
   implementation in Transformers 4.57.6 with its matching original forward hash.
   Other model implementations retain stock dispatch. Expert accumulation order
@@ -57,8 +69,22 @@ Caps are intentionally limited to the tested upper bounds: chunk 1024,
 For a dedicated multi-rank reference worker, the effective batch capacity is the
 minimum across ranks, so adding reference GPUs does not silently create uneven
 collective schedules.
-Use `teacher_performance.enabled: false` to retain the original teacher path,
-or `moe_dispatch: stock` to disable only the MoE dispatch replacement.
+`teacher_performance.enabled: true` is the base setting for every training
+profile, including colocated templates; colocated multi-rank teachers fall back
+to their original batching and MoE path at runtime, while separate reference
+workers (dedicated or `share_ref_policy_gpus`) use the bundle. On 2026-10-01 the
+shared 4-student/3-teacher V6 run spent 1254–1279 s per step in the reference
+phase with the bundle disabled (steps 1–4), versus 51–62 s for the bundled
+6-student/2-teacher `retry1` run at similar token counts (different nodes:
+H200 NVL versus L20Y, so this is not a matched benchmark).
+Use `teacher_performance.enabled: false` to disable the batching/MoE/statistics
+bundle while retaining the independent chunk default. To disable automatic
+chunking explicitly, set `topk_logprob_chunk_enabled: false`; with batching
+still enabled, its automatic chunk remains 16 and adaptive chunk selection is
+disabled. Both switches must be false to retain the entire original teacher
+path. `moe_dispatch: stock` disables only the MoE dispatch replacement.
+Expandable allocator segments remain a separate dedicated-worker setting.
+Changed teacher settings take effect when workers are initialized again.
 
 ## Validation evidence and limits
 
@@ -84,6 +110,12 @@ server-only deployment snapshots are maintained separately from the reviewed
 repository configuration set. In particular, old paper-native EOPD snapshots
 with non-null `rollout_correction.rollout_is` are rejected by current validation;
 performance tuning does not silently rewrite their objective configuration.
+
+The independent chunk regression checks colocated world-size4 execution with
+the batching bundle disabled, preserving forward count/order and input metadata.
+Fixed CPU FP32/BF16 logits compare chunk16/256/1024 for identical Top32 IDs,
+logP and reverse-KL loss. These checks do not measure H200 performance or peak
+memory for the current colocated run.
 
 ## Timing interpretation
 

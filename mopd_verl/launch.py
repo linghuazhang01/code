@@ -118,6 +118,8 @@ def _worker_pool_overrides(prefix: str, pool: WorkerPoolPlacementConfig) -> list
         overrides.append(f"{prefix}.n_gpus_per_node={pool.n_gpus_per_node}")
     if pool.nnodes is not None:
         overrides.append(f"{prefix}.nnodes={pool.nnodes}")
+    if pool.gpu_ids is not None:
+        overrides.append(f"{prefix}.gpu_ids={_hydra_int_list(pool.gpu_ids)}")
     return overrides
 
 
@@ -138,6 +140,10 @@ def _worker_placement_overrides(config: MOPDConfig) -> list[str]:
     return [
         "+actor_rollout_ref.worker_placement.separate_ref_policy="
         f"{str(placement.separate_ref_policy).lower()}",
+        *(
+            ["+actor_rollout_ref.worker_placement.share_ref_policy_gpus=true"]
+            if placement.share_ref_policy_gpus else []
+        ),
         *pool_overrides,
     ]
 

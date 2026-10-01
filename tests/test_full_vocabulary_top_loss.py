@@ -288,12 +288,11 @@ def test_math_only_full_vocabulary_profile_and_launcher_contract(
     )
     assert config.trainer.experiment_name == run_id
     assert config.trainer.default_local_dir == f"checkpoints/MOPD/{run_id}"
+    assert config.teacher_performance.enabled
     if teacher_gpus is None:
         assert not config.worker_placement.separate_ref_policy
-        assert not config.teacher_performance.enabled
     else:
         assert config.worker_placement.separate_ref_policy
-        assert config.teacher_performance.enabled
         assert "actor_rollout_ref.ref.fsdp_config.fsdp_size=2" in command
     assert "+mopd_audit.control_token_online_candidate_scope=full_vocabulary" in command
     assert "+mopd_audit.control_token_online_candidate_vocab_size=null" in command

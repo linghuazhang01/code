@@ -23,7 +23,7 @@ extra_overrides:
 teacher_performance:
   # The optimized wrapper requires a single-rank reference worker. The
   # co-located reference model is four-rank FSDP, so use the stock path.
-  enabled: false
+  enabled: true
 
 audit:
   output_dir: audit/q1p7b-4g-mcs-taxonomy-toploss-topp05-fixed4-b528-colocated-s60

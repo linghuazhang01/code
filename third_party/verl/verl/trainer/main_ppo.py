@@ -23,6 +23,7 @@ import ray
 from omegaconf import OmegaConf
 
 from mopd_verl.reproducibility import GLOBAL_SEED_ENV, PYTHON_HASH_SEED_ENV, seed_everything
+from mopd_verl.shared_ref_placement import shared_ref_pool_spec
 from mopd_verl.topk_distill import uses_tip_full_vocab_loss
 from verl.experimental.dataset.sampler import AbstractSampler
 from verl.trainer.constants_ppo import get_ppo_ray_runtime_env
@@ -261,6 +262,7 @@ class TaskRunner:
         resource_pool_spec = {
             actor_pool_id: actor_pool,
         }
+        shared_pool_spec = {}
         if _separate_ref_policy(config) and (
             config.algorithm.use_kl_in_reward
             or config.actor_rollout_ref.actor.use_kl_loss
@@ -274,6 +276,11 @@ class TaskRunner:
                     "The repeated train batch must be divisible by the ref worker world size."
                 )
             resource_pool_spec[REF_POLICY_POOL_ID] = ref_pool
+            shared_pool_spec = shared_ref_pool_spec(
+                config, actor_pool, ref_pool, actor_pool_id, REF_POLICY_POOL_ID
+            )
+        elif _cfg_get(_worker_placement(config), "share_ref_policy_gpus", False):
+            raise ValueError("Shared ref GPUs require an enabled standalone reference policy.")
         # TODO Here you can use the new registration method to support dynamic registration of roles
         if config.reward_model.enable_resource_pool:
             if config.reward_model.n_gpus_per_node <= 0:
@@ -288,7 +295,9 @@ class TaskRunner:
         self.mapping[Role.Critic] = actor_pool_id
         from verl.trainer.ppo.ray_trainer import ResourcePoolManager
 
-        resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=self.mapping)
+        resource_pool_manager = ResourcePoolManager(
+            resource_pool_spec=resource_pool_spec, mapping=self.mapping, shared_pool_spec=shared_pool_spec
+        )
         return resource_pool_manager
 
     def add_reward_model_worker(self, config):

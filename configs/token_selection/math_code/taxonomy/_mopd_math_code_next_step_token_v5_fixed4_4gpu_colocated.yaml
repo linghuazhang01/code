@@ -22,7 +22,7 @@ extra_overrides:
 - actor_rollout_ref.ref.fsdp_config.fsdp_size=4
 
 teacher_performance:
-  enabled: false
+  enabled: true
 
 trainer:
   n_gpus_per_node: 4

@@ -13,7 +13,7 @@ worker_placement:
 
 teacher_performance:
   # The optimized reference wrapper requires separate teacher workers.
-  enabled: false
+  enabled: true
 
 audit:
   output_dir: audit/q1p7b-4g-mcs-mtl05-ctl01cs-stl01-f4-b528-coloc-s60

@@ -208,11 +208,13 @@ class WorkerPoolPlacementConfig:
     process_on_nodes: list[int] | None = None
     n_gpus_per_node: int | None = None
     nnodes: int | None = None
+    gpu_ids: list[int] | None = None
 
 
 @dataclass(frozen=True)
 class WorkerPlacementConfig:
     separate_ref_policy: bool = False
+    share_ref_policy_gpus: bool = False
     actor_rollout: WorkerPoolPlacementConfig = field(
         default_factory=WorkerPoolPlacementConfig
     )
@@ -597,6 +599,14 @@ def _optional_positive_int_list(value: Any, key: str) -> list[int] | None:
 
 def _worker_pool_placement(value: Any, key: str) -> WorkerPoolPlacementConfig:
     raw = _expect_mapping(value or {}, key)
+    gpu_ids = raw.get("gpu_ids")
+    if gpu_ids is not None and (
+        not isinstance(gpu_ids, list)
+        or not gpu_ids
+        or any(type(item) is not int or item < 0 for item in gpu_ids)
+        or len(set(gpu_ids)) != len(gpu_ids)
+    ):
+        raise ValueError(f"{key}.gpu_ids must contain distinct non-negative integers.")
     return WorkerPoolPlacementConfig(
         process_on_nodes=_optional_positive_int_list(
             raw.get("process_on_nodes"), f"{key}.process_on_nodes"
@@ -605,15 +615,17 @@ def _worker_pool_placement(value: Any, key: str) -> WorkerPoolPlacementConfig:
             raw.get("n_gpus_per_node"), f"{key}.n_gpus_per_node"
         ),
         nnodes=_optional_positive_int(raw.get("nnodes"), f"{key}.nnodes"),
+        gpu_ids=gpu_ids,
     )
 
 
 def _worker_placement(value: Any) -> WorkerPlacementConfig:
     raw = _expect_mapping(value or {}, "worker_placement")
-    return WorkerPlacementConfig(
+    placement = WorkerPlacementConfig(
         separate_ref_policy=bool(
             raw.get("separate_ref_policy", WorkerPlacementConfig.separate_ref_policy)
         ),
+        share_ref_policy_gpus=bool(raw.get("share_ref_policy_gpus", False)),
         actor_rollout=_worker_pool_placement(
             raw.get("actor_rollout"), "worker_placement.actor_rollout"
         ),
@@ -621,6 +633,16 @@ def _worker_placement(value: Any) -> WorkerPlacementConfig:
             raw.get("ref_policy"), "worker_placement.ref_policy"
         ),
     )
+    if placement.actor_rollout.gpu_ids is not None:
+        raise ValueError("Actor GPU visibility must be set through runtime.cuda_visible_devices.")
+    if placement.share_ref_policy_gpus:
+        if not placement.separate_ref_policy or placement.ref_policy.gpu_ids is None:
+            raise ValueError(
+                "Shared ref GPUs require separate_ref_policy=true and explicit ref_policy.gpu_ids."
+            )
+    elif placement.ref_policy.gpu_ids is not None:
+        raise ValueError("ref_policy.gpu_ids requires share_ref_policy_gpus=true.")
+    return placement
 
 
 def _optional_string(value: Any, key: str) -> str | None:

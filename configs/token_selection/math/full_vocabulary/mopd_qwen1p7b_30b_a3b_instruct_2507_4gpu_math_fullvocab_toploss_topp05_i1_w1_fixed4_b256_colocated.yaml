@@ -21,7 +21,7 @@ rollout:
 
 teacher_performance:
   # The optimized teacher wrapper requires a separate single-rank ref worker.
-  enabled: false
+  enabled: true
 
 worker_placement:
   separate_ref_policy: false

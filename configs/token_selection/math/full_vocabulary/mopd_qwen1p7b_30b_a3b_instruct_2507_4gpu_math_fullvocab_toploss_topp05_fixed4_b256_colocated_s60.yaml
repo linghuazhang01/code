@@ -270,7 +270,7 @@ ray_kwargs:
     include_dashboard: false
     num_cpus: 24
 teacher_performance:
-  enabled: false
+  enabled: true
   topk_logprob_chunk_size: 1024
   max_micro_batch_size: 32
   max_tokens: 57344

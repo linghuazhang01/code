@@ -25,7 +25,7 @@ worker_placement:
 
 teacher_performance:
   # The optimized wrapper requires a separate single-rank reference worker.
-  enabled: false
+  enabled: true
 
 audit:
   domains: [math, code, science]

@@ -23,7 +23,7 @@ worker_placement:
 teacher_performance:
   # The optimized wrapper requires a single-rank reference worker; co-located
   # teacher/student execution uses the stock reference path.
-  enabled: false
+  enabled: true
 
 audit:
   domains: [math, code, science]

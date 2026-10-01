@@ -185,7 +185,10 @@ import os
 import re
 import sys
 
+import yaml
+
 from mopd_verl.config_profiles import load_raw_config
+from mopd_verl.shared_ref_placement import validate_shared_pool_spec
 
 config = load_raw_config(sys.argv[1])
 placement = config.get("worker_placement") or (
@@ -302,7 +305,19 @@ required_gpus = pool_gpus(
     trainer_gpus,
     "worker_placement.actor_rollout",
 )
-if parse_bool(placement.get("separate_ref_policy", False)):
+shared_ref = parse_bool(placement.get("share_ref_policy_gpus", False))
+if shared_ref:
+    if not parse_bool(placement.get("separate_ref_policy", False)):
+        raise SystemExit("Shared ref GPUs require separate_ref_policy=true.")
+    ref_gpus = pool_gpus(ref_pool, trainer_gpus, "worker_placement.ref_policy")
+    gpu_ids = ref_pool.get("gpu_ids")
+    if isinstance(gpu_ids, str):
+        gpu_ids = yaml.safe_load(gpu_ids)
+    validate_shared_pool_spec(
+        {"actor": [required_gpus], "ref": [ref_gpus]},
+        {"ref": ("actor", gpu_ids or [])},
+    )
+elif parse_bool(placement.get("separate_ref_policy", False)):
     required_gpus += pool_gpus(
         ref_pool,
         trainer_gpus,
@@ -345,6 +360,8 @@ else:
             f"allocation range 0..{allocation_gpus - 1}"
         )
 ray_init = (config.get("ray_kwargs") or {}).get("ray_init") or {}
+if shared_ref and not set(gpu_ids).issubset(selected_gpu_ids):
+    raise SystemExit("CUDA_VISIBLE_DEVICES must expose every requested ref physical GPU.")
 required_cpus = parse_int(
     ray_init.get("num_cpus", max(8, required_gpus * 4)),
     "ray_kwargs.ray_init.num_cpus",

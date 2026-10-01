@@ -1196,6 +1196,16 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         return output
 
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+    def release_shared_ref_cache(self) -> None:
+        """Release ref-process caches after a completed RPC, before actor GPU work."""
+        if self.role != "ref" or not OmegaConf.select(
+            self.config, "worker_placement.share_ref_policy_gpus", default=False
+        ):
+            raise ValueError("Ref cache handoff is only available to shared standalone ref workers.")
+        get_torch_device().synchronize()
+        get_torch_device().empty_cache()
+
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
     @DistProfiler.annotate(color="green", role="base_compute_log_prob")
     def compute_base_log_prob(self, data: DataProto):

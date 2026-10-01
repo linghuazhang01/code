@@ -48,6 +48,11 @@ from mopd_verl.region_dpo_pairs import (
     build_region_dpo_reward_batch,
 )
 from mopd_verl.reproducibility import derive_seed
+from mopd_verl.shared_ref_placement import (
+    bind_shared_ref_pool,
+    validate_shared_pool_spec,
+    verify_shared_ref_workers,
+)
 from mopd_verl.teacher_prefix import (
     build_dataset_teacher_prefix,
     build_student_suffix_prompts,
@@ -156,6 +161,7 @@ class ResourcePoolManager:
     resource_pool_spec: dict[str, list[int]]
     mapping: dict[Role, str]
     resource_pool_dict: dict[str, RayResourcePool] = field(default_factory=dict)
+    shared_pool_spec: dict[str, tuple[str, list[int]]] = field(default_factory=dict)
 
     def create_resource_pool(self):
         """Create Ray resource pools for distributed training.
@@ -165,13 +171,18 @@ class ResourcePoolManager:
         For FSDP backend, uses max_colocate_count=1 to merge WorkerGroups.
         For Megatron backend, uses max_colocate_count>1 for different models.
         """
+        validate_shared_pool_spec(self.resource_pool_spec, self.shared_pool_spec)
+        shared_names = set(self.shared_pool_spec) | {source for source, _ in self.shared_pool_spec.values()}
         for resource_pool_name, process_on_nodes in self.resource_pool_spec.items():
             # max_colocate_count means the number of WorkerGroups (i.e. processes) in each RayResourcePool
             # For FSDP backend, we recommend using max_colocate_count=1 that merge all WorkerGroups into one.
             # For Megatron backend, we recommend using max_colocate_count>1
             # that can utilize different WorkerGroup for differnt models
             resource_pool = RayResourcePool(
-                process_on_nodes=process_on_nodes, use_gpu=True, max_colocate_count=1, name_prefix=resource_pool_name
+                process_on_nodes=process_on_nodes,
+                use_gpu=True,
+                max_colocate_count=2 if resource_pool_name in shared_names else 1,
+                name_prefix=resource_pool_name,
             )
             self.resource_pool_dict[resource_pool_name] = resource_pool
 
@@ -183,7 +194,9 @@ class ResourcePoolManager:
 
     def get_n_gpus(self) -> int:
         """Get the number of gpus in this cluster."""
-        return sum([n_gpus for process_on_nodes in self.resource_pool_spec.values() for n_gpus in process_on_nodes])
+        return sum(
+            sum(counts) for name, counts in self.resource_pool_spec.items() if name not in self.shared_pool_spec
+        )
 
     def _check_resource_available(self):
         """Check if the resource pool can be satisfied in this ray cluster."""
@@ -195,9 +208,7 @@ class ResourcePoolManager:
 
         # check total required gpus can be satisfied
         total_available_gpus = sum(node_available_gpus.values())
-        total_required_gpus = sum(
-            [n_gpus for process_on_nodes in self.resource_pool_spec.values() for n_gpus in process_on_nodes]
-        )
+        total_required_gpus = self.get_n_gpus()
         if total_available_gpus < total_required_gpus:
             raise ValueError(
                 f"Total available GPUs {total_available_gpus} is less than total desired GPUs {total_required_gpus}"
@@ -1347,13 +1358,29 @@ class RayPPOTrainer:
                 )
         wg_kwargs["device_name"] = self.device_name
 
-        for resource_pool, class_dict in self.resource_pool_to_cls.items():
+        pool_workers = {}
+        pool_names = {pool: name for name, pool in self.resource_pool_manager.resource_pool_dict.items()}
+        ordered_pools = sorted(
+            self.resource_pool_to_cls,
+            key=lambda pool: pool_names[pool] in self.resource_pool_manager.shared_pool_spec,
+        )
+        for resource_pool in ordered_pools:
+            class_dict = self.resource_pool_to_cls[resource_pool]
+            pool_name = pool_names[resource_pool]
+            shared = self.resource_pool_manager.shared_pool_spec.get(pool_name)
+            if shared is not None:
+                source_name, gpu_ids = shared
+                source_pool = self.resource_pool_manager.resource_pool_dict[source_name]
+                bind_shared_ref_pool(resource_pool, source_pool, pool_workers[source_name], gpu_ids)
             worker_dict_cls = create_colocated_worker_cls(class_dict=class_dict)
             wg_dict = self.ray_worker_group_cls(
                 resource_pool=resource_pool,
                 ray_cls_with_init=worker_dict_cls,
                 **wg_kwargs,
             )
+            pool_workers[pool_name] = wg_dict
+            if shared is not None:
+                verify_shared_ref_workers(wg_dict, gpu_ids)
             spawn_wg = wg_dict.spawn(prefix_set=class_dict.keys())
             all_wg.update(spawn_wg)
 
@@ -1364,6 +1391,8 @@ class RayPPOTrainer:
         if self.use_reference_policy and not self.ref_in_actor:
             self.ref_policy_wg = all_wg[str(Role.RefPolicy)]
             self.ref_policy_wg.init_model()
+            if self.resource_pool_manager.shared_pool_spec:
+                self.ref_policy_wg.release_shared_ref_cache()
 
         self.rm_wg = None
         # initalization of rm_wg will be deprecated in the future
@@ -2073,6 +2102,10 @@ class RayPPOTrainer:
                                 else:
                                     ref_log_prob = self.actor_rollout_wg.compute_ref_log_prob(batch)
                                 batch = batch.union(ref_log_prob)
+
+                    if self.resource_pool_manager.shared_pool_spec:
+                        with marked_timer("ref_cache_release", timing_raw, color="green"):
+                            self.ref_policy_wg.release_shared_ref_cache()
 
                     if "ref_log_prob" in batch.batch:
                         batch.batch["math_teacher_log_prob"] = batch.batch["ref_log_prob"]

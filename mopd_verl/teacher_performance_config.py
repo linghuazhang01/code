@@ -1,7 +1,7 @@
 """Persistent, teacher-only performance settings and Hydra serialization."""
 
-from dataclasses import asdict, dataclass
 import math
+from dataclasses import asdict, dataclass
 from typing import Any, Mapping
 
 
@@ -12,9 +12,14 @@ class TeacherPerformanceConfig:
     expandable_segments independently enables the allocator on dedicated CUDA
     teachers before model loading, even when enabled is false or world size > 1.
     Setting it false leaves the process allocator unchanged.
+
+    topk_logprob_chunk_enabled independently enables memory-guarded chunking,
+    including colocated multi-rank teachers with enabled=false. The enabled
+    switch controls batching, MoE dispatch and optional fused statistics.
     """
 
     enabled: bool = True
+    topk_logprob_chunk_enabled: bool = True
     topk_logprob_chunk_size: int = 1024
     max_micro_batch_size: int = 32
     max_tokens: int = 57344
@@ -28,7 +33,10 @@ class TeacherPerformanceConfig:
     def __post_init__(self) -> None:
         if type(self.enabled) is not bool:
             raise ValueError("teacher_performance.enabled must be a boolean")
-        for name in ("expandable_segments", "fused_statistics", "compact_topk_ids"):
+        for name in (
+            "topk_logprob_chunk_enabled", "expandable_segments",
+            "fused_statistics", "compact_topk_ids",
+        ):
             if type(getattr(self, name)) is not bool:
                 raise ValueError(f"teacher_performance.{name} must be a boolean")
         bounds = {

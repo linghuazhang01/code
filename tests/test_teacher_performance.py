@@ -214,7 +214,7 @@ def test_forward_guard_revalidates_batch_selected_chunk(
 
 
 @pytest.mark.parametrize("field,value", [
-    ("world_size", 2), ("teacher_model_device", "cpu"), ("use_fused_kernels", True),
+    ("teacher_model_device", "cpu"), ("use_fused_kernels", True),
     ("use_remove_padding", False), ("ulysses_sequence_parallel_size", 2),
 ])
 def test_unsupported_layout_does_not_modify_methods(
@@ -240,7 +240,8 @@ def test_unsupported_layout_does_not_modify_methods(
 def test_disabled_does_not_inspect_or_mutate_policy() -> None:
     policy = SimpleNamespace()
     assert not perf.configure_teacher_performance(
-        policy, {"enabled": False}, world_size=1, teacher_model_device="gpu")["enabled"]
+        policy, {"enabled": False, "topk_logprob_chunk_enabled": False},
+        world_size=1, teacher_model_device="gpu")["enabled"]
     assert vars(policy) == {}
 
 
@@ -396,11 +397,11 @@ def test_ref_initialization_sets_allocator_before_build_on_each_rank(
     )
     exec(compile(ast.Module(body=[ref_block], type_ignores=[]), str(source), "exec"), namespace)
     assert events == ["expandable_segments:True", "build"]
+    assert policy._forward_micro_batch is not forward
+    assert policy._teacher_performance_config["topk_logprob_chunk_enabled"]
     if enabled:
-        assert policy._forward_micro_batch is not forward
         assert policy.compute_log_prob is not compute
     else:
-        assert policy._forward_micro_batch is forward
         assert policy.compute_log_prob is compute
     assert f"rank={rank} world_size=2 expandable_segments_applied=True" in capsys.readouterr().out
 

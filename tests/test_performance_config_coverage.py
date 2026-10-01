@@ -9,6 +9,7 @@ from pathlib import Path
 from mopd_verl.config_profiles import list_config_profiles, load_raw_config
 from mopd_verl.launch import build_overrides
 from mopd_verl.settings import load_config
+from mopd_verl.teacher_performance_config import parse_teacher_performance
 
 
 class PerformanceConfigCoverageTests(unittest.TestCase):
@@ -47,15 +48,22 @@ class PerformanceConfigCoverageTests(unittest.TestCase):
                             )
                         if not colocated:
                             self.assertEqual(raw["rollout"]["max_num_seqs"], 64)
-                        # Co-located profiles may intentionally disable the
-                        # optimized teacher wrapper; the measured caps must
-                        # remain consistent either way.
-                        expected_performance = dict(
-                            expected_teacher,
-                            enabled=raw["teacher_performance"]["enabled"],
+                        # The batching bundle is the base setting for every
+                        # profile; unsupported layouts fall back at runtime.
+                        # Shared baseline templates may use parser defaults.
+                        raw_teacher = raw.get("teacher_performance", {})
+                        expected_performance = dict(expected_teacher)
+                        expected_settings = dict(
+                            expected_performance,
+                            topk_logprob_chunk_enabled=True,
+                            expandable_segments=True,
+                            fused_statistics=False,
+                            compact_topk_ids=False,
+                            adaptive_topk_chunk_size=None,
                         )
                         self.assertEqual(
-                            raw["teacher_performance"], expected_performance
+                            asdict(parse_teacher_performance(raw_teacher)),
+                            expected_settings,
                         )
                         if str(path.relative_to(repo)) in abstract_profiles:
                             continue
@@ -73,15 +81,10 @@ class PerformanceConfigCoverageTests(unittest.TestCase):
                             self.assertEqual(config.rollout.max_num_seqs, 64)
                         self.assertEqual(
                             asdict(config.teacher_performance),
-                            dict(
-                                expected_performance,
-                                expandable_segments=True,
-                                fused_statistics=False,
-                                compact_topk_ids=False,
-                                adaptive_topk_chunk_size=None,
-                            ),
+                            expected_settings,
                         )
                         overrides = build_overrides(config)
+                        self.assertIn("+actor_rollout_ref.ref.teacher_performance.topk_logprob_chunk_enabled=true", overrides)
                         self.assertIn("+actor_rollout_ref.ref.teacher_performance.expandable_segments=true", overrides)
                         self.assertIn(
                             f"actor_rollout_ref.rollout.enforce_eager={config.rollout.enforce_eager}",

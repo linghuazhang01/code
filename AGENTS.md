@@ -1,5 +1,14 @@
 # MOPD 远端调试规则
 
+## 已验证 teacher 性能能力的继承约束
+
+- **Teacher/ref TopK logprob chunk 默认开启，默认 `1024`**。通用开关为 `teacher_performance.topk_logprob_chunk_enabled: true`，独立于 `teacher_performance.enabled`。所有新配置、继承配置、resume 和 colocated/dedicated 布局都必须通过统一配置解析与 launcher 传递此能力；不得因四卡、多 rank 或关闭 batching 而静默退回原始 `16`。
+- **Teacher batching bundle 默认开启**：所有训练 config（含 colocated 模板）统一使用 `teacher_performance.enabled: true`；colocated 多 rank 由 runtime guard 自动 fallback，独立 ref worker（dedicated 或 `share_ref_policy_gpus`）启用 batching + `stable_sort`。新增、继承或恢复配置不得显式写 `enabled: false`，除非有明确用户指示或可复现的 OOM/数值/兼容性证据；`tests/test_performance_config_coverage.py` 检查全部 profile。
+- `teacher_performance.enabled` 只控制原有 batching、MoE dispatch 和可选统计优化；其 collective ordering guard 必须保留。chunk-only 只改变本地 logits 后处理的分块，不得改变 ref/actor microbatch、model forward 次数、FSDP collective 顺序、token selection、loss 或实验定义。
+- 已验证优化应成为通用默认，而非单次 run 的临时覆盖。新增模板或调整布局时必须检查最终 Hydra overrides 和实际 forward 的 effective chunk，不能仅凭 YAML 中写着 `1024` 判断生效。必须保留配置覆盖测试和 colocated 多 rank、`enabled=false` 的运行路径回归测试。
+- 支持条件为 CUDA、BF16、unfused reference-only、remove-padding、sequence parallel size 1；显存保护继续保留至少 `12 GiB` margin。不支持的执行路径或显存不足允许有原因的 fallback，并记录 runtime 状态；不得为强开优化绕过保护。显式 chunk override 保持优先级。
+- 将默认 chunk 调小、关闭独立开关或收窄已支持范围，必须有明确用户指示，或记录可复现的 OOM/数值/兼容性证据并完成回归验证；不得在新 profile、恢复配置或无关重构中顺手回退。显存保护对单个 microbatch 的动态 fallback 不属于永久关闭能力。
+
 ## 三 domain 训练 batch size 约束
 
 - Math/Code/Science 三 domain 训练的 global `data.train_batch_size` 应保持约 526–528，默认使用 **528**；`actor.ppo_mini_batch_size` 默认同步设为 **528**。既有 525 配置可为满足 GPU 整除约束保留，但不得因扩大 GPU 数量自动增大 global batch。

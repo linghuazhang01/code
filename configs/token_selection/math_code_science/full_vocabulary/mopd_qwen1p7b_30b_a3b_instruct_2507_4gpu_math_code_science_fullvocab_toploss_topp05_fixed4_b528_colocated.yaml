@@ -27,7 +27,7 @@ extra_overrides:
   - actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
 
 teacher_performance:
-  enabled: false
+  enabled: true
 
 audit:
   domains: [math, code, science]

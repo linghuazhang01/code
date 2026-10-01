@@ -41,6 +41,22 @@ def _fixture(name: str) -> dict:
         return json.load(handle)
 
 
+def with_post_snapshot_defaults(snapshot: dict) -> dict:
+    """Apply the repo-wide defaults introduced after these snapshots were frozen.
+
+    2026-10-01: teacher batching became the base for every profile, the TopK chunk
+    switch became explicit, and shared-ref placement added two optional keys.
+    """
+    updated = deepcopy(snapshot)
+    assert updated["teacher_performance"]["enabled"] is False
+    updated["teacher_performance"]["enabled"] = True
+    updated["teacher_performance"]["topk_logprob_chunk_enabled"] = True
+    updated["worker_placement"]["share_ref_policy_gpus"] = False
+    for pool in ("actor_rollout", "ref_policy"):
+        updated["worker_placement"][pool]["gpu_ids"] = None
+    return updated
+
+
 def test_migrated_public_profiles_preserve_all_non_timing_parameters() -> None:
     originals = _fixture("current-step-resolved")
     active = {path: value for path, value in originals.items()
@@ -49,6 +65,7 @@ def test_migrated_public_profiles_preserve_all_non_timing_parameters() -> None:
     namespace_values = {field: set() for field in NAMESPACE_FIELDS}
 
     for path, before in active.items():
+        before = with_post_snapshot_defaults(before)
         legacy = ROOT / path
         canonical = legacy.with_name(legacy.name.replace("current_step", "next_step"))
         after = _normalized(load_config(canonical))
@@ -101,6 +118,6 @@ def test_private_helpers_are_aliased_and_retired_examples_are_archived() -> None
 
 
 def test_launched_v4_profile_remains_identical_to_frozen_snapshot() -> None:
-    frozen = _fixture("launch-next-step-resolved")
+    frozen = with_post_snapshot_defaults(_fixture("launch-next-step-resolved"))
     path = CONFIGS / "mopd_math_code_next_step_token_v4_toploss_m05_c01_fixed4_4gpu_colocated.yaml"
     assert _normalized(load_config(path)) == frozen

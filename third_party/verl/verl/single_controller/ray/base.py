@@ -103,6 +103,7 @@ class RayResourcePool(ResourcePool):
         # print(f"in RayProcessDispatchConfiguration: name_prefix = {name_prefix}")
         self.name_prefix = get_random_string(length=6) if name_prefix is None else name_prefix
         self.pgs = None
+        self.bundle_indices: Optional[list[int]] = None
         self.detached = detached
         self.accelerator_type = accelerator_type
 
@@ -374,6 +375,14 @@ class RayWorkerGroup(WorkerGroup):
         if bin_pack:
             strategy = "STRICT_PACK"
         pgs = resource_pool.get_placement_groups(strategy=strategy, device_name=self.device_name)
+        bundle_indices = resource_pool.bundle_indices
+        if bundle_indices is not None and (
+            len(pgs) != 1
+            or len(bundle_indices) != resource_pool.world_size
+            or len(set(bundle_indices)) != len(bundle_indices)
+            or any(index < 0 or index >= pgs[0].bundle_count for index in bundle_indices)
+        ):
+            raise ValueError("Explicit GPU bundle indices must select distinct bundles on one node.")
         world_size = resource_pool.world_size
         self._world_size = world_size
         # cia.add_kwarg("_world_size", world_size)
@@ -435,7 +444,9 @@ class RayWorkerGroup(WorkerGroup):
                 # create a worker
                 worker = ray_cls_with_init(
                     placement_group=pg,
-                    placement_group_bundle_idx=local_rank,
+                    placement_group_bundle_idx=(
+                        bundle_indices[local_rank] if bundle_indices is not None else local_rank
+                    ),
                     use_gpu=use_gpu,
                     num_gpus=num_gpus,
                     device_name=self.device_name,

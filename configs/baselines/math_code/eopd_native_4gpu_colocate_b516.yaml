@@ -27,7 +27,7 @@ extra_overrides:
 - actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
 - actor_rollout_ref.ref.fsdp_config.fsdp_size=4
 teacher_performance:
-  enabled: false
+  enabled: true
   topk_logprob_chunk_size: 1024
   max_micro_batch_size: 32
   max_tokens: 57344

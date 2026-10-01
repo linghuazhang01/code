@@ -294,10 +294,13 @@ if missing:
     raise SystemExit(2)
 PY
 
-REQUIRED_GPUS="$("${PYTHON}" - "${CONFIG_REFERENCE}" "${EXTRA_ARGS[@]}" <<'PY'
+REQUIRED_GPUS="$("${PYTHON}" - "${CONFIG_REFERENCE}" "${GPU_IDS}" "${EXTRA_ARGS[@]}" <<'PY'
 import sys
 
+import yaml
+
 from mopd_verl.config_profiles import load_raw_config
+from mopd_verl.shared_ref_placement import validate_shared_pool_spec
 
 config = load_raw_config(sys.argv[1])
 trainer = config.get("trainer") or {}
@@ -356,7 +359,7 @@ def set_path(root, dotted_key, raw_value):
         cursor = next_cursor
     cursor[parts[-1]] = raw_value.strip().strip("'\"")
 
-for override in sys.argv[2:]:
+for override in sys.argv[3:]:
     if "=" not in override:
         continue
     key, raw_value = override.split("=", 1)
@@ -377,7 +380,28 @@ separate_ref_policy = parse_bool(worker_placement.get("separate_ref_policy", sep
 actor_rollout = worker_placement.get("actor_rollout") or {}
 ref_policy = worker_placement.get("ref_policy") or {}
 required_gpus = first_node_gpus(actor_rollout, trainer_gpus, "worker_placement.actor_rollout")
-if separate_ref_policy:
+if parse_bool(worker_placement.get("share_ref_policy_gpus", False)):
+    if not separate_ref_policy or parse_int(trainer_nnodes, "trainer.nnodes") != 1:
+        raise SystemExit("Shared ref GPUs require separate_ref_policy=true and one node.")
+    pools = {"actor": actor_rollout, "ref": ref_policy}
+    counts = {}
+    for name, pool in pools.items():
+        if parse_int(pool.get("nnodes", 1), f"{name}.nnodes") != 1:
+            raise SystemExit("Shared ref GPUs require single-node pools.")
+        counts[name] = parse_process_on_nodes(pool.get("process_on_nodes"), name) or [
+            first_node_gpus(pool, trainer_gpus, name)
+        ]
+    gpu_ids = ref_policy.get("gpu_ids")
+    if isinstance(gpu_ids, str):
+        gpu_ids = yaml.safe_load(gpu_ids)
+    validate_shared_pool_spec(counts, {"ref": ("actor", gpu_ids or [])})
+    visible_ids = [int(value) for value in sys.argv[2].split(",")]
+    if not set(gpu_ids).issubset(visible_ids):
+        raise SystemExit("GPU_IDS must expose every requested ref physical GPU.")
+    configured_visibility = (config.get("runtime") or {}).get("cuda_visible_devices")
+    if configured_visibility and visible_ids != [int(value) for value in configured_visibility.split(",")]:
+        raise SystemExit("GPU_IDS must match runtime.cuda_visible_devices for the shared layout.")
+elif separate_ref_policy:
     required_gpus += first_node_gpus(ref_policy, trainer_gpus, "worker_placement.ref_policy")
 print(required_gpus)
 PY

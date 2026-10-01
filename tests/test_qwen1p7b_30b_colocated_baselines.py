@@ -50,7 +50,7 @@ def test_qwen1p7b_colocated_baseline_topology_and_batch(
         "../mopd/models/Qwen3-30B-A3B-Instruct-2507"
     )
     assert config.actor.distill_loss_builder == loss_builder
-    assert not config.teacher_performance.enabled
+    assert config.teacher_performance.enabled
     assert "separate_ref_policy=false" in command
     assert "actor_rollout_ref.worker_placement.actor_rollout.n_gpus_per_node=4" in command
     assert "actor_rollout_ref.ref.fsdp_config.fsdp_size=4" in command

@@ -26,6 +26,7 @@ from mopd_verl.launch import build_command
 from mopd_verl.settings import load_config
 from mopd_verl.verl_audit import MOPDAuditLogger
 from test_structure_positions import _Tokenizer
+from test_next_step_config_migration import with_post_snapshot_defaults
 
 
 CONFIG = Path("configs/token_selection/math_code/taxonomy/") / (
@@ -70,7 +71,7 @@ def test_planned_config_changes_only_timing_and_output_namespaces() -> None:
     baseline = Path("tests/fixtures/next_step_migration/current-step-resolved.json.gz")
     source = str(CONFIG).replace("next_step", "current_step")
     with gzip.open(baseline, "rt") as handle:
-        before = json.load(handle)[source]
+        before = with_post_snapshot_defaults(json.load(handle)[source])
     after = json.loads(json.dumps(asdict(new)))
     assert after["audit"]["code_cs_position_gate_enabled"] is None
     after["audit"].pop("code_cs_position_gate_enabled")

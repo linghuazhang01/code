@@ -26,7 +26,7 @@ teacher_performance:
   # The optimized wrapper requires a single-rank reference worker. In this
   # co-located profile the reference model is four-rank FSDP, so use the stock
   # path explicitly instead of relying on a runtime fallback.
-  enabled: false
+  enabled: true
 
 worker_placement:
   separate_ref_policy: false
