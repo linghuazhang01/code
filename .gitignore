@@ -10,6 +10,8 @@ credentials.json
 settings.json
 *_secret*
 *_token*
+!/eval/lcb_tokenizer.py
+!/tests/test_lcb_tokenizer.py
 !/configs/baselines/canonical/fire_token_topk32.yaml
 !/scripts/finalize_token_v4_v5.py
 !/tests/test_token_v4_v5.py

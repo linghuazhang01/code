@@ -13,6 +13,7 @@ from typing import Any
 
 from eval.parallel_tasks import run_lcb_task_atomic, run_mmlupro_task, run_standard_task
 from eval.runner import load_vllm_model
+from eval.scoring_pipeline import ScoringPipeline
 
 LOGGER = logging.getLogger(__name__)
 
@@ -78,6 +79,7 @@ def _execute_claimed_task(
     llm: Any,
     tokenizer: Any,
     resume: bool,
+    pipeline: ScoringPipeline | None = None,
 ) -> bool:
     """Execute one claimed task and move its queue record to a terminal state."""
 
@@ -93,7 +95,7 @@ def _execute_claimed_task(
             task["source_end_exclusive"],
         )
         if task["task_type"] == "standard":
-            run_standard_task(
+            finalize = run_standard_task(
                 task=task,
                 manifest=manifest,
                 eval_model_path=eval_model_path,
@@ -101,7 +103,23 @@ def _execute_claimed_task(
                 tokenizer=tokenizer,
                 source_file=source_by_dataset[str(task["dataset"])],
                 resume=resume,
+                **({"scoring_executor": pipeline.scorers} if pipeline is not None else {}),
             )
+            if pipeline is not None and finalize is not None:
+                def finish() -> None:
+                    try:
+                        finalize()
+                        if not Path(str(task["success_marker"])).is_file():
+                            raise FileNotFoundError("Deferred scoring did not publish SUCCESS")
+                        os.replace(claimed, queue_root / "done" / claimed.name)
+                    except Exception:
+                        if claimed.exists():
+                            os.replace(claimed, queue_root / "failed" / claimed.name)
+                        LOGGER.exception("Deferred scoring failed: %s", claimed)
+                        raise
+
+                pipeline.submit(finish)
+                return True
         elif task["task_type"] == "official_mmlupro":
             run_mmlupro_task(
                 task=task,
@@ -135,6 +153,31 @@ def run_worker(
     eval_model_path: str,
     worker_id: int,
     resume: bool,
+) -> int:
+    manifest = _load_manifest(manifest_path)
+    settings = manifest["execution"].get("async_code_scoring", {})
+    workers = int(settings.get("workers", 0))
+    kwargs = dict(manifest_path=manifest_path, eval_model_path=eval_model_path,
+                  worker_id=worker_id, resume=resume)
+    if not workers:
+        return _run_worker(**kwargs)
+    if os.environ.get("MOPD_CODE_SANDBOX") != "docker":
+        raise ValueError("Concurrent Code scoring requires MOPD_CODE_SANDBOX=docker")
+    try:
+        with ScoringPipeline(workers, int(settings["pending_shards"])) as pipeline:
+            return _run_worker(**kwargs, pipeline=pipeline)
+    except Exception:
+        LOGGER.exception("worker=%d asynchronous evaluation failed", worker_id)
+        return 1
+
+
+def _run_worker(
+    *,
+    manifest_path: Path,
+    eval_model_path: str,
+    worker_id: int,
+    resume: bool,
+    pipeline: ScoringPipeline | None = None,
 ) -> int:
     """Load one TP=1 engine and process strict dataset waves without reloading."""
     manifest = _load_manifest(manifest_path)
@@ -172,6 +215,8 @@ def run_worker(
         wave_root = _wave_queue_root(queue_root, wave)
         expected_tasks = int(wave["expected_tasks"])
         while True:
+            if pipeline is not None:
+                pipeline.make_room()
             if any((wave_root / "failed").glob("*.task")):
                 LOGGER.error("worker=%d wave=%s has a failed task", worker_id, wave["dataset"])
                 return 1
@@ -188,9 +233,12 @@ def run_worker(
                     llm=llm,
                     tokenizer=tokenizer,
                     resume=resume,
+                    **({"pipeline": pipeline} if pipeline is not None else {}),
                 ):
                     return 1
                 continue
+            if pipeline is not None:
+                pipeline.drain()
             pending = any((wave_root / "pending").glob("*.task"))
             running = any((wave_root / "running").glob("*.task"))
             if pending or running:

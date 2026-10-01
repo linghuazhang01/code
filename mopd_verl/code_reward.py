@@ -58,12 +58,49 @@ def _run_assert_case(source: str, result: Any) -> None:
 
 
 def _remove_docker_container(container_name: str) -> None:
-    subprocess.run(
-        ["docker", "rm", "-f", container_name],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        timeout=5,
+    """Retry slow cleanup, and fail closed unless removal is confirmed."""
+
+    last_error = ""
+    for timeout in (5, 15, 30):
+        try:
+            removed = subprocess.run(
+                ["docker", "rm", "-f", container_name],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            last_error = repr(exc)
+        else:
+            if removed.returncode == 0:
+                return
+            last_error = f"rm returncode={removed.returncode}: {removed.stderr.strip()}"
+
+        # --rm or an earlier timed-out removal may already have removed it.
+        # A successful, exact-name lookup distinguishes that race from a
+        # daemon/CLI failure; a nonzero rm status alone is not confirmation.
+        try:
+            remaining = subprocess.run(
+                ["docker", "ps", "--all", "--quiet", "--filter", f"name=^/{container_name}$"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            last_error = f"{last_error}; cleanup verification failed: {exc!r}"
+        else:
+            if remaining.returncode == 0 and not remaining.stdout.strip():
+                return
+            last_error = (
+                f"{last_error}; cleanup verification returncode={remaining.returncode}, "
+                f"stdout={remaining.stdout.strip()!r}, stderr={remaining.stderr.strip()!r}"
+            )
+
+    raise RuntimeError(
+        "Docker Code sandbox cleanup could not be confirmed; refusing to score "
+        f"the timed-out program (container={container_name!r}, {last_error[:1000]})."
     )
 
 

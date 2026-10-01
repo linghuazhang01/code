@@ -287,6 +287,13 @@ class ParallelEvalTest(unittest.TestCase):
             ).splitlines()
             success_exists = (final_dir / "SUCCESS").is_file()
             report_exists = (final_dir / "thinking_eval_results.json").is_file()
+            # Resuming a proxy-only suite must revoke its premature final marker.
+            (suite_root / "COMPLETED_AT_UTC").touch()
+            deferred = merge_manifest(manifest_path, defer_completion=True)
+            self.assertEqual(deferred["status"], "awaiting_official_evalplus")
+            self.assertTrue((suite_root / "MERGE_SUCCESS").is_file())
+            self.assertFalse((suite_root / "SUCCESS").exists())
+            self.assertFalse((suite_root / "COMPLETED_AT_UTC").exists())
 
         self.assertEqual(merged["status"], "complete")
         self.assertEqual(len(merged_records), 8)

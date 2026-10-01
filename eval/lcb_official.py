@@ -13,6 +13,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from eval.lcb_tokenizer import cached_formatter_tokenizer
+
 LCB_RELEASE_COUNTS = {"v5": 167, "v6": 175}
 LCB_SOURCE_SHA256 = {
     "v5": "34dc80fac0fb8c3919835079dafa7831fc10056705d9b0d242003ad3ad1e0f5c",
@@ -147,7 +149,8 @@ def load_lcb_prompts(gopd_dir: Path, release: str) -> tuple[Any, list[Any], list
 
     runtime, benchmark, format_prompt = load_lcb_benchmark(gopd_dir, release)
     model_style = runtime.model_store[LCB_MODEL_STYLE].model_style
-    prompts = [format_prompt(problem, model_style) for problem in benchmark]
+    with cached_formatter_tokenizer():
+        prompts = [format_prompt(problem, model_style) for problem in benchmark]
     return runtime, benchmark, prompts
 
 

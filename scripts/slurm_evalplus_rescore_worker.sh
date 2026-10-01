@@ -18,7 +18,7 @@ fi
 MODEL_LABEL="$1"
 RECORDS_JSONL="$2"
 OUTPUT_ROOT="$3"
-REPO_ROOT="/home/shuang_qiu/mopd_code"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GOPD_COMMIT="37371a4c31ad7947746200d234161769191f4748"
 RUNTIME_ROOT="${REPO_ROOT}/.runtime/evalplus-gopd-${GOPD_COMMIT}"
 PYTHON_BIN="${RUNTIME_ROOT}/venv/bin/python"

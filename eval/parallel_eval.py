@@ -131,6 +131,9 @@ def build_manifest(
     code_sandbox_image: str = "verlai/verl:vllm023.dev1",
     code_sandbox_image_id: str = "unresolved",
     worker_count: int = 4,
+    code_scoring_workers: int = 0,
+    code_scoring_pending_shards: int = 2,
+    seed_sequence_offset: int = 0,
 ) -> dict[str, Any]:
     """Create a deterministic shard manifest for one model and evaluation suite."""
     if shards_per_dataset < 1:
@@ -139,8 +142,14 @@ def build_manifest(
         raise ValueError("min_rows_per_shard must be positive")
     if worker_count < 1:
         raise ValueError("worker_count must be positive")
+    if code_scoring_workers < 0 or code_scoring_pending_shards < 1:
+        raise ValueError("Code scoring workers must be non-negative and pending shards positive")
+    if code_scoring_workers and not score_code:
+        raise ValueError("Concurrent Code scoring requires score_code")
     if base_seed < 0:
         raise ValueError("base_seed must be non-negative")
+    if seed_sequence_offset < 0:
+        raise ValueError("seed_sequence_offset must be non-negative")
     if max_samples_per_dataset is not None and max_samples_per_dataset < 1:
         raise ValueError("max_samples_per_dataset must be positive when provided")
     for name, value in (
@@ -261,7 +270,7 @@ def build_manifest(
                     "generation_seed": (
                         base_seed
                         if spec.task_type == "official_mmlupro"
-                        else base_seed + sequence * SEED_STRIDE
+                        else base_seed + (sequence + seed_sequence_offset) * SEED_STRIDE
                     ),
                     "expected_records": (end - start) * num_samples,
                     "task_root": str(task_root),
@@ -292,6 +301,9 @@ def build_manifest(
             "eval_path": eval_model_path or model_path,
         },
         "execution": {
+            **({"async_code_scoring": {"workers": code_scoring_workers,
+                                      "pending_shards": code_scoring_pending_shards}}
+               if code_scoring_workers else {}),
             "backend": "vllm",
             "tensor_parallel_size": 1,
             "parallelism": "data_parallel_gpu_worker_pool",
@@ -320,7 +332,12 @@ def build_manifest(
             "science_samples": science_samples,
             "mmlupro_samples": science_samples,
             "base_seed": base_seed,
-            "standard_shard_seed_rule": f"base_seed + task_sequence * {SEED_STRIDE}",
+            "standard_shard_seed_rule": (
+                f"base_seed + (task_sequence + {seed_sequence_offset}) * {SEED_STRIDE}"
+                if seed_sequence_offset
+                else f"base_seed + task_sequence * {SEED_STRIDE}"
+            ),
+            **({"seed_sequence_offset": seed_sequence_offset} if seed_sequence_offset else {}),
             "mmlupro_seed_rule": "fixed base_seed for every prompt shard",
             "max_new_tokens": max_new_tokens,
             "temperature": temperature,
@@ -677,7 +694,7 @@ def _merge_lcb(
         raise
 
 
-def merge_manifest(manifest_path: Path) -> dict[str, Any]:
+def merge_manifest(manifest_path: Path, *, defer_completion: bool = False) -> dict[str, Any]:
     """Validate all shards, merge domain outputs, and mark the suite complete."""
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     tasks = list(manifest["tasks"])
@@ -698,10 +715,14 @@ def merge_manifest(manifest_path: Path) -> dict[str, Any]:
         _merge_standard_domain(manifest=manifest, domain=domain, tasks=domain_tasks)
     _merge_mmlupro(manifest=manifest, tasks=mmlupro_tasks)
     _merge_lcb(manifest=manifest, tasks=lcb_tasks)
-    manifest["status"] = "complete"
+    manifest["status"] = "awaiting_official_evalplus" if defer_completion else "complete"
     manifest["completed_shards"] = len(tasks)
+    if defer_completion:
+        # An explicitly resumed proxy-only suite must not advertise final success.
+        for marker in ("SUCCESS", "COMPLETED_AT_UTC"):
+            Path(manifest["suite_root"]).joinpath(marker).unlink(missing_ok=True)
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    Path(manifest["suite_root"]).joinpath("SUCCESS").touch()
+    Path(manifest["suite_root"]).joinpath("MERGE_SUCCESS" if defer_completion else "SUCCESS").touch()
     return manifest
 
 
@@ -731,6 +752,7 @@ def parse_args() -> argparse.Namespace:
     plan_parser.add_argument("--code-samples", type=int, required=True)
     plan_parser.add_argument("--science-samples", type=int, required=True)
     plan_parser.add_argument("--base-seed", type=int, default=42)
+    plan_parser.add_argument("--seed-sequence-offset", type=int, default=0)
     plan_parser.add_argument("--max-new-tokens", type=int, default=16384)
     plan_parser.add_argument("--temperature", type=float, default=1.0)
     plan_parser.add_argument("--top-p", type=float, default=1.0)
@@ -742,12 +764,15 @@ def parse_args() -> argparse.Namespace:
     plan_parser.add_argument("--code-sandbox-image", default="verlai/verl:vllm023.dev1")
     plan_parser.add_argument("--code-sandbox-image-id", default="unresolved")
     plan_parser.add_argument("--no-score-code", action="store_true")
+    plan_parser.add_argument("--code-scoring-workers", type=int, default=0)
+    plan_parser.add_argument("--code-scoring-pending-shards", type=int, default=2)
     plan_parser.add_argument("--max-samples-per-dataset", type=int)
     plan_parser.add_argument("--include-mmlupro-500", action="store_true")
     plan_parser.add_argument("--resume", action="store_true")
 
     merge_parser = subparsers.add_parser("merge", help="Merge all successful shards.")
     merge_parser.add_argument("--manifest", type=Path, required=True)
+    merge_parser.add_argument("--defer-completion", action="store_true")
     return parser.parse_args()
 
 
@@ -768,6 +793,7 @@ def main() -> int:
             code_samples=args.code_samples,
             science_samples=args.science_samples,
             base_seed=args.base_seed,
+            seed_sequence_offset=args.seed_sequence_offset,
             max_samples_per_dataset=args.max_samples_per_dataset,
             include_mmlupro_500=args.include_mmlupro_500,
             max_new_tokens=args.max_new_tokens,
@@ -782,11 +808,13 @@ def main() -> int:
             code_sandbox_image=args.code_sandbox_image,
             code_sandbox_image_id=args.code_sandbox_image_id,
             worker_count=args.worker_count,
+            code_scoring_workers=args.code_scoring_workers,
+            code_scoring_pending_shards=args.code_scoring_pending_shards,
         )
         manifest_path = write_plan(manifest, resume=args.resume)
         print(f"[parallel-eval] planned shards={manifest['total_shards']} manifest={manifest_path}")
         return 0
-    manifest = merge_manifest(args.manifest)
+    manifest = merge_manifest(args.manifest, defer_completion=args.defer_completion)
     print(
         f"[parallel-eval] merged shards={manifest['completed_shards']} "
         f"output={manifest['suite_root']}"

@@ -15,8 +15,13 @@ GPU_COUNT=4
 SHARDS_PER_DATASET=16
 MIN_ROWS_PER_SHARD=1
 MAX_SAMPLES=""
+BASE_SEED=42
+SEED_SEQUENCE_OFFSET=0
 SCORE_CODE=0
+CODE_SCORING_WORKERS=0
+CODE_SCORING_PENDING_SHARDS=2
 STANDARD_PROTOCOL=0
+OFFICIAL_EVALPLUS=0
 RESUME=0
 DRY_RUN=0
 POSITIONAL_ARGS=()
@@ -34,11 +39,15 @@ Options:
   --gopd_dir PATH             G-OPD checkout, required for lcb_v5/lcb_v6.
   --run_tag TAG              Output suite identifier (default: timestamp).
   --output_root PATH         Parent output directory.
-  --gpus N                   Number of local GPUs; must be 4.
+  --gpus N                   Number of local GPUs: 2, 3, or 4 (default: 4).
   --gpu_ids LIST             Physical GPU IDs (default: $GPU_IDS or 0,1,2,3).
   --shards_per_dataset N     Dynamic micro-shards per dataset (default: 16).
   --max_samples N             Optional prompt cap per dataset for smoke tests.
+  --seed N                    Base generation seed (default: 42).
+  --seed_sequence_offset N    Preserve shard seed positions from a larger suite.
   --score_code                Enable isolated Code scoring through Docker.
+  --code_scoring_workers N    Scorer threads per GPU worker (default: 0, synchronous).
+  --code_scoring_pending_shards N  Pending scored shards per worker (default: 2).
   --standard_protocol         Enforce canonical 10-dataset, K=8, seed-42 protocol.
   --resume                    Resume a compatible existing suite.
   --dry_run                  Print the direct-local plan without launching workers.
@@ -46,7 +55,8 @@ Options:
 
 By default this launcher evaluates Math-only AIME24, AIME25, HMMT25Feb, and
 HMMT25Nov. With --standard_protocol it evaluates the canonical 10-dataset
-Math/Code/Science suite using DP=4, four persistent TP=1 vLLM workers, and K=8.
+Math/Code/Science suite using DP=N, N persistent TP=1 vLLM workers, and K=8.
+N is selected by --gpus (default: 4); --gpu_ids must contain exactly N IDs.
 USAGE
 }
 
@@ -65,7 +75,12 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --max_samples|--max-samples) MAX_SAMPLES="${2:?$1 requires a value}"; shift 2 ;;
+    --seed|--base_seed|--base-seed) BASE_SEED="${2:?$1 requires a value}"; shift 2 ;;
+    --seed_sequence_offset|--seed-sequence-offset)
+      SEED_SEQUENCE_OFFSET="${2:?$1 requires a value}"; shift 2 ;;
     --score_code|--score-code) SCORE_CODE=1; shift ;;
+    --code_scoring_workers|--code-scoring-workers) CODE_SCORING_WORKERS="${2:?$1 requires a value}"; shift 2 ;;
+    --code_scoring_pending_shards|--code-scoring-pending-shards) CODE_SCORING_PENDING_SHARDS="${2:?$1 requires a value}"; shift 2 ;;
     --standard_protocol) STANDARD_PROTOCOL=1; shift ;;
     --resume) RESUME=1; shift ;;
     --dry_run|--dry-run) DRY_RUN=1; shift ;;
@@ -89,8 +104,14 @@ fi
   exit 2
 }
 [[ -n "${MODEL_PATH}" ]] || { echo "--model_path is required" >&2; exit 2; }
-[[ "${GPU_COUNT}" == "4" ]] || { echo "local Math-only evaluation requires --gpus 4" >&2; exit 2; }
+[[ "${GPU_COUNT}" =~ ^[234]$ ]] || { echo "--gpus must be 2, 3, or 4" >&2; exit 2; }
 [[ -n "${DATASETS}" ]] || { echo "--datasets cannot be empty" >&2; exit 2; }
+[[ "${CODE_SCORING_WORKERS}" =~ ^(0|[1-9][0-9]*)$ ]] || {
+  echo "--code_scoring_workers must be a non-negative integer" >&2; exit 2;
+}
+[[ "${CODE_SCORING_PENDING_SHARDS}" =~ ^[1-9][0-9]*$ ]] || {
+  echo "--code_scoring_pending_shards must be a positive integer" >&2; exit 2;
+}
 [[ "${SHARDS_PER_DATASET}" =~ ^[1-9][0-9]*$ ]] || {
   echo "--shards_per_dataset must be a positive integer" >&2
   exit 2
@@ -107,12 +128,36 @@ fi
   echo "run_tag may contain only letters, numbers, '.', '_', and '-'." >&2
   exit 2
 }
+[[ "${BASE_SEED}" =~ ^(0|[1-9][0-9]*)$ ]] || {
+  echo "--seed must be a non-negative integer without leading zeros" >&2; exit 2;
+}
+[[ "${SEED_SEQUENCE_OFFSET}" =~ ^(0|[1-9][0-9]*)$ ]] || {
+  echo "--seed_sequence_offset must be a non-negative integer without leading zeros" >&2; exit 2;
+}
+if [[ "${STANDARD_PROTOCOL}" == "1" && ( "${BASE_SEED}" != "42" || "${SEED_SEQUENCE_OFFSET}" != "0" ) ]]; then
+  echo "--standard_protocol requires seed 42 and seed_sequence_offset 0" >&2
+  exit 2
+fi
 if [[ "${PYTHON_BIN}" != */* ]]; then
   PYTHON_BIN="$(command -v "${PYTHON_BIN}" || true)"
 fi
 [[ -x "${PYTHON_BIN}" ]] || { echo "Python executable is not runnable: ${PYTHON_BIN:-unset}" >&2; exit 2; }
 EVAL_MODEL_PATH="${EVAL_MODEL_PATH:-${MODEL_PATH}}"
+[[ "${GPU_ID_LIST}" =~ ^(0|[1-9][0-9]*)(,(0|[1-9][0-9]*))*$ ]] || {
+  echo "--gpu_ids must contain comma-separated non-negative integer IDs (no leading zeros)" >&2
+  exit 2
+}
 IFS=',' read -r -a GPU_IDS <<<"${GPU_ID_LIST}"
+[[ "${#GPU_IDS[@]}" == "${GPU_COUNT}" ]] || {
+  echo "Expected ${GPU_COUNT} comma-separated GPU IDs" >&2; exit 2;
+}
+SEEN_GPU_IDS=","
+for gpu_id in "${GPU_IDS[@]}"; do
+  [[ "${SEEN_GPU_IDS}" != *",${gpu_id},"* ]] || {
+    echo "--gpu_ids must contain unique IDs; duplicate: ${gpu_id}" >&2; exit 2;
+  }
+  SEEN_GPU_IDS+="${gpu_id},"
+done
 SUITE_ROOT="${OUTPUT_ROOT}/${RUN_TAG}"
 MANIFEST_PATH="${SUITE_ROOT}/suite_manifest.json"
 LOG_ROOT="${SUITE_ROOT}/logs"
@@ -127,7 +172,6 @@ export MOPD_ALLOW_SIMPLE_SCORER_FALLBACK="${MOPD_ALLOW_SIMPLE_SCORER_FALLBACK:-1
 export VLLM_ENABLE_V1_MULTIPROCESSING="${VLLM_ENABLE_V1_MULTIPROCESSING:-0}"
 unset ROCR_VISIBLE_DEVICES
 
-[[ "${#GPU_IDS[@]}" == "4" ]] || { echo "Expected four comma-separated GPU IDs" >&2; exit 2; }
 [[ -d "${MODEL_PATH}" ]] || { echo "model path does not exist: ${MODEL_PATH}" >&2; exit 2; }
 [[ -d "${EVAL_MODEL_PATH}" ]] || { echo "eval model path does not exist: ${EVAL_MODEL_PATH}" >&2; exit 2; }
 [[ -z "${G_OPD_DIR}" || -d "${G_OPD_DIR}" ]] || {
@@ -143,6 +187,11 @@ if [[ "${STANDARD_PROTOCOL}" == "1" ]]; then
     echo "--standard_protocol requires --gopd_dir" >&2
     exit 2
   }
+fi
+# Both EvalPlus datasets require official scoring even in a custom Math+Code suite.
+if [[ "${SCORE_CODE}" == "1" && ",${DATASETS}," == *",humaneval_plus,"* \
+  && ",${DATASETS}," == *",mbpp_plus,"* ]]; then
+  OFFICIAL_EVALPLUS=1
 fi
 if [[ "${SCORE_CODE}" == "1" \
   && ( "${DATASETS}" == *"humaneval_plus"* || "${DATASETS}" == *"mbpp_plus"* ) ]]; then
@@ -165,6 +214,10 @@ else
   CODE_SANDBOX_IMAGE="verlai/verl:vllm023.dev1"
   CODE_SANDBOX_IMAGE_ID="disabled"
 fi
+if [[ "${CODE_SCORING_WORKERS}" != "0" && "${CODE_SANDBOX_IMAGE_ID}" == "disabled" ]]; then
+  echo "Async Code scoring requires --score_code and HumanEvalPlus or MBPPPlus" >&2
+  exit 2
+fi
 if [[ "${RESUME}" == "0" && -e "${SUITE_ROOT}" ]]; then
   echo "Evaluation suite already exists: ${SUITE_ROOT}" >&2
   exit 2
@@ -179,12 +232,13 @@ PLAN_ARGS=(
   --eval-model-path "${EVAL_MODEL_PATH}"
   --datasets "${DATASETS}"
   --shards-per-dataset "${SHARDS_PER_DATASET}"
-  --worker-count 4
+  --worker-count "${GPU_COUNT}"
   --min-rows-per-shard "${MIN_ROWS_PER_SHARD}"
   --math-samples 8
   --code-samples 8
   --science-samples 8
-  --base-seed 42
+  --base-seed "${BASE_SEED}"
+  --seed-sequence-offset "${SEED_SEQUENCE_OFFSET}"
   --max-new-tokens 16384
   --temperature 1.0
   --top-p 1.0
@@ -193,6 +247,8 @@ PLAN_ARGS=(
   --max-model-len 18432
   --max-num-batched-tokens 32768
   --max-num-seqs 24
+  --code-scoring-workers "${CODE_SCORING_WORKERS}"
+  --code-scoring-pending-shards "${CODE_SCORING_PENDING_SHARDS}"
 )
 [[ -z "${G_OPD_DIR}" ]] || PLAN_ARGS+=(--gopd-dir "${G_OPD_DIR}")
 [[ -z "${MAX_SAMPLES}" ]] || PLAN_ARGS+=(--max-samples-per-dataset "${MAX_SAMPLES}")
@@ -209,6 +265,12 @@ if [[ "${DRY_RUN}" == "1" ]]; then
 fi
 
 mkdir -p "${OUTPUT_ROOT}"
+if [[ "${OFFICIAL_EVALPLUS}" == "1" ]]; then
+  [[ -x "${CODE_DIR}/.runtime/evalplus-gopd-37371a4c31ad7947746200d234161769191f4748/venv/bin/python" ]] || {
+    echo "Code evaluation requires the pinned official EvalPlus runtime" >&2
+    exit 2
+  }
+fi
 "${PLAN_ARGS[@]}" > "${OUTPUT_ROOT}/${RUN_TAG}.plan.log" 2>&1
 
 mkdir -p "${LOG_ROOT}"
@@ -219,25 +281,30 @@ cat > "${SUITE_ROOT}/RUN_MANIFEST.md" <<EOF
 - scheduler: direct-local
 - remote host: $(hostname)
 - GPU IDs: ${GPU_ID_LIST}
-- topology: DP=4, four persistent TP=1 vLLM workers
+- topology: DP=${GPU_COUNT}, ${GPU_COUNT} persistent TP=1 vLLM workers
 - checkpoint: ${MODEL_PATH}
 - eval model path: ${EVAL_MODEL_PATH}
 - global step: 60
 - datasets: ${DATASETS}
-- protocol: $(if [[ "${STANDARD_PROTOCOL}" == "1" ]]; then printf 'canonical 3-domain ten-dataset evaluation'; else printf 'Math-only partial evaluation'; fi); ${SHARDS_PER_DATASET} micro-shards per dataset; strict dataset wave order
+- protocol: $(if [[ "${STANDARD_PROTOCOL}" == "1" ]]; then printf 'canonical 3-domain ten-dataset evaluation'; else printf 'custom dataset partial evaluation'; fi); ${SHARDS_PER_DATASET} micro-shards per dataset; strict dataset wave order
 - rollouts: K=8 per prompt/domain, temperature=1.0, top_p=1.0
+- generation seed: base_seed=${BASE_SEED}, seed_sequence_offset=${SEED_SEQUENCE_OFFSET}; shard seed=base_seed+(task_sequence+seed_sequence_offset)*1000003
 - generation: max_new_tokens=16384, max_model_len=18432
 - execution: batch_size=24, max_num_batched_tokens=32768, max_num_seqs=24, gpu_memory=0.85
 - code scoring: $(if [[ "${SCORE_CODE}" == "1" ]]; then printf 'enabled via Docker (%s)' "${CODE_SANDBOX_IMAGE}"; else printf 'disabled'; fi)
+- asynchronous Code scoring: ${CODE_SCORING_WORKERS} threads per GPU worker, at most ${CODE_SCORING_PENDING_SHARDS} pending shards
+- official EvalPlus: ${OFFICIAL_EVALPLUS} (sanitize + base + plus before suite completion)
 - python: ${PYTHON_BIN}
 - suite root: ${SUITE_ROOT}
 - wrapper log: ${SUITE_ROOT}/wrapper.log
-- worker logs: ${LOG_ROOT}/gpu_worker_0.log through gpu_worker_3.log
+- worker logs: ${LOG_ROOT}/gpu_worker_0.log through gpu_worker_$((GPU_COUNT - 1)).log
 - started at UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-$(if [[ "${STANDARD_PROTOCOL}" == "1" ]]; then printf 'This is the canonical 10-dataset 3-domain run.'; else printf 'This is intentionally a partial Math-only run and must not be treated as the canonical 10-dataset active ranking.'; fi)
+$(if [[ "${STANDARD_PROTOCOL}" == "1" ]]; then printf 'This is the canonical 10-dataset 3-domain run.'; else printf 'This is a custom partial run and must not be treated as the canonical 10-dataset active ranking.'; fi)
 EOF
 
+WORKER_ARGS=()
+[[ "${RESUME}" != "1" ]] || WORKER_ARGS+=(--resume)
 pids=()
 for worker_id in "${!GPU_IDS[@]}"; do
   CUDA_VISIBLE_DEVICES="${GPU_IDS[${worker_id}]}" \
@@ -248,7 +315,7 @@ for worker_id in "${!GPU_IDS[@]}"; do
     "${PYTHON_BIN}" -m eval.parallel_worker \
       --manifest "${MANIFEST_PATH}" \
       --eval-model-path "${EVAL_MODEL_PATH}" \
-      --worker-id "${worker_id}" \
+      --worker-id "${worker_id}" "${WORKER_ARGS[@]}" \
       > "${LOG_ROOT}/gpu_worker_${worker_id}.log" 2>&1 &
   pids+=("$!")
 done
@@ -262,7 +329,12 @@ if [[ "${status}" != "0" ]]; then
   exit "${status}"
 fi
 
-"${PYTHON_BIN}" -m eval.parallel_eval merge --manifest "${MANIFEST_PATH}" \
+MERGE_ARGS=()
+[[ "${OFFICIAL_EVALPLUS}" != "1" ]] || MERGE_ARGS+=(--defer-completion)
+"${PYTHON_BIN}" -m eval.parallel_eval merge --manifest "${MANIFEST_PATH}" "${MERGE_ARGS[@]}" \
   > "${LOG_ROOT}/merge.log" 2>&1
+if [[ "${OFFICIAL_EVALPLUS}" == "1" ]]; then
+  PYTHON="${PYTHON_BIN}" bash "${CODE_DIR}/scripts/finalize_local_standard_eval.sh" "${SUITE_ROOT}"
+fi
 date -u +%Y-%m-%dT%H:%M:%SZ > "${SUITE_ROOT}/COMPLETED_AT_UTC"
 echo "[local-eval] complete output=${SUITE_ROOT}"

@@ -6,11 +6,20 @@ import json
 import logging
 import os
 import shutil
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from eval.common import load_eval_samples, write_outputs
+from eval.common import (
+    EvalResult,
+    append_sample_outputs,
+    load_eval_samples,
+    write_outputs,
+)
+from eval.domains.scoring import score_completion
 from eval.domains.science.official_eval import run_dataset as run_science_dataset
 from eval.lcb_official import generate_lcb_task
 from eval.runner import generate_vllm_batch
@@ -60,7 +69,8 @@ def run_standard_task(
     tokenizer: Any,
     source_file: Path,
     resume: bool,
-) -> None:
+    scoring_executor: ThreadPoolExecutor | None = None,
+) -> Callable[[], None] | None:
     """Evaluate one parquet micro-shard with batched K-way sampling."""
 
     output_dir = Path(str(task["output_dir"]))
@@ -84,11 +94,13 @@ def run_standard_task(
         json.dumps(config, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    results: list[Any] = []
+    results: list[EvalResult] = []
     num_samples = int(task["num_samples"])
     execution = manifest["execution"]
     generation = manifest["generation"]
     batch_size = int(execution["batch_size"])
+    deferred = scoring_executor is not None and bool(execution["score_code"]) and task["domain"] == "code"
+    generation_start = time.perf_counter()
     try:
         for batch_start in range(0, len(samples), batch_size):
             batch = samples[batch_start : batch_start + batch_size]
@@ -110,7 +122,7 @@ def run_standard_task(
                     max_new_tokens=int(generation["max_new_tokens"]),
                     temperature=float(generation["temperature"]),
                     top_p=float(generation["top_p"]),
-                    score_code=bool(execution["score_code"] and task["domain"] == "code"),
+                    score_code=bool(execution["score_code"] and task["domain"] == "code" and not deferred),
                     save_completion=True,
                     generation_seed=int(task["generation_seed"]) + batch_start,
                     num_return_sequences=num_samples,
@@ -121,6 +133,39 @@ def run_standard_task(
                 f"Task {task['task_id']} produced {len(results)} records; "
                 f"expected {task['expected_records']}"
             )
+        generation_seconds = time.perf_counter() - generation_start
+        if deferred:
+            # Raw generations survive scoring errors; never publish them as scored output.
+            append_sample_outputs(results, temporary / "raw")
+
+            def finalize() -> None:
+                scoring_start = time.perf_counter()
+
+                def score_one(index: int) -> EvalResult:
+                    result = results[index]
+                    if result.completion is None:
+                        raise ValueError("Deferred scoring requires a saved completion")
+                    score, prediction, metadata = score_completion(
+                        samples[index // num_samples], result.completion, score_code=True,
+                    )
+                    return replace(result, score=score, prediction=prediction,
+                                   correct=None if score is None else score == 1.0,
+                                   reward_metadata=metadata)
+
+                assert scoring_executor is not None
+                scored = list(scoring_executor.map(score_one, range(len(results))))
+                scoring_seconds = time.perf_counter() - scoring_start
+                write_outputs(scored, temporary)
+                temporary.joinpath("stage_timings.json").write_text(
+                    json.dumps({"generation_seconds": generation_seconds,
+                                "scoring_seconds": scoring_seconds,
+                                "records": len(scored)}, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                temporary.joinpath("SUCCESS").touch()
+                temporary.rename(output_dir)
+
+            return finalize
         write_outputs(results, temporary)
         temporary.joinpath("SUCCESS").touch()
         temporary.rename(output_dir)

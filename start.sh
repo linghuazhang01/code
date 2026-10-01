@@ -59,7 +59,7 @@ Examples:
   bash start.sh --slurm --eval --model_path checkpoints/model --gpus 4 --dry_run
 
 The default training mode is local. Use --eval --local for the direct-local
-four-GPU evaluation launcher (Math-only by default, or canonical 3-domain with
+2/3/4-GPU evaluation launcher (default: 4; Math-only, or canonical 3-domain with
 --standard_protocol); --eval without --local keeps the existing Slurm
 standard-evaluation entry point. MOPD_LAUNCH_MODE=auto selects Slurm when
 sbatch is available for training. If no config is selected, start.sh uses the
