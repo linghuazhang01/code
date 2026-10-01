@@ -53,6 +53,11 @@ temp/
 *.jsonl
 events.out.tfevents*
 
+# Local plans, research logs and profiling artifacts
+/plan/
+/profile_output/
+/refine-logs/
+
 # Large model/data artifacts
 *.parquet
 *.pt
