@@ -18,6 +18,7 @@ import pyarrow.parquet as pq
 
 from eval.domains.science.pinned_mmlupro import PinnedMMLUValidation
 from eval.parallel_eval import (
+    OVERLAP_WAVE_SCHEDULING,
     balanced_ranges,
     build_manifest,
     merge_manifest,
@@ -30,6 +31,7 @@ from eval.parallel_worker import run_worker
 CODE_DIR = Path(__file__).resolve().parents[1]
 SUBMIT_SCRIPT = CODE_DIR / "slurm_parallel_eval.sh"
 START_SCRIPT = CODE_DIR / "start.sh"
+LOCAL_EVAL_SCRIPT = CODE_DIR / "scripts/run_local_math_parallel_eval.sh"
 
 
 def _write_parquet(path: Path, rows: int) -> None:
@@ -495,6 +497,78 @@ class ParallelEvalTest(unittest.TestCase):
         self.assertGreaterEqual(wave1_start, wave0_end)
         self.assertEqual(len([event for event in events if event[1] == "start"]), 4)
 
+    def test_two_workers_overlap_dataset_wave_tails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _write_parquet(root / "data/eval_data/math/AIME24/test.parquet", 4)
+            _write_parquet(root / "data/eval_data/math/AIME25/test.parquet", 4)
+            manifest = build_manifest(
+                code_dir=root,
+                suite_root=root / "outputs/run",
+                run_tag="run",
+                model_path="/models/model",
+                eval_model_path="/models/hf",
+                dataset_keys=["aime24", "aime25"],
+                shards_per_dataset=2,
+                min_rows_per_shard=1,
+                math_samples=8,
+                code_samples=8,
+                science_samples=8,
+                base_seed=42,
+                max_samples_per_dataset=None,
+                include_mmlupro_500=False,
+                worker_count=2,
+                scheduling=OVERLAP_WAVE_SCHEDULING,
+            )
+            manifest_path = write_plan(manifest, resume=False)
+            fake_llm = SimpleNamespace(get_tokenizer=lambda: object())
+            load_barrier = threading.Barrier(2)
+            event_lock = threading.Lock()
+            events: list[tuple[str, str, float]] = []
+
+            def fake_load(*args: object, **kwargs: object) -> object:
+                load_barrier.wait(timeout=2)
+                return fake_llm
+
+            def fake_run(*, task: dict[str, object], **kwargs: object) -> None:
+                dataset = str(task["dataset"])
+                with event_lock:
+                    events.append((dataset, "start", time.monotonic()))
+                if dataset == "aime24":
+                    time.sleep(0.08 if int(task["source_start"]) == 0 else 0.02)
+                else:
+                    time.sleep(0.01)
+                success_marker = Path(str(task["success_marker"]))
+                success_marker.parent.mkdir(parents=True, exist_ok=True)
+                success_marker.touch()
+                with event_lock:
+                    events.append((dataset, "end", time.monotonic()))
+
+            with (
+                patch("eval.parallel_worker.load_vllm_model", side_effect=fake_load) as load_model,
+                patch("eval.parallel_worker.run_standard_task", side_effect=fake_run),
+                patch("eval.parallel_worker._validate_single_visible_gpu"),
+                ThreadPoolExecutor(max_workers=2) as executor,
+            ):
+                statuses = list(
+                    executor.map(
+                        lambda worker_id: run_worker(
+                            manifest_path=manifest_path,
+                            eval_model_path="/models/hf",
+                            worker_id=worker_id,
+                            resume=False,
+                        ),
+                        range(2),
+                    )
+                )
+
+        wave0_end = max(timestamp for dataset, event, timestamp in events if dataset == "aime24" and event == "end")
+        wave1_start = min(timestamp for dataset, event, timestamp in events if dataset == "aime25" and event == "start")
+        self.assertEqual(statuses, [0, 0])
+        self.assertEqual(load_model.call_count, 2)
+        self.assertLess(wave1_start, wave0_end)
+        self.assertEqual(len([event for event in events if event[1] == "start"]), 4)
+
     def test_submit_dry_run_requests_four_gpus_and_400g(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             model = Path(temp_dir) / "model"
@@ -520,6 +594,100 @@ class ParallelEvalTest(unittest.TestCase):
         self.assertIn("--mem=400G", completed.stdout)
         self.assertIn("--shards_per_dataset", completed.stdout)
         self.assertIn("--include_mmlupro_500", completed.stdout)
+
+    def test_start_local_eval_dry_run_supports_eight_gpus(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model = Path(temp_dir) / "model"
+            model.mkdir()
+            completed = subprocess.run(
+                [
+                    "bash",
+                    str(START_SCRIPT),
+                    "--eval",
+                    "--local",
+                    "--model_path",
+                    str(model),
+                    "--run_tag",
+                    "local-eight-gpu-test",
+                    "--datasets",
+                    "aime24",
+                    "--gpus",
+                    "8",
+                    "--dry_run",
+                ],
+                cwd=CODE_DIR,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("--worker-count 8", completed.stdout)
+        self.assertIn("--max-num-seqs 28", completed.stdout)
+        self.assertIn("--scheduling overlap_dataset_waves_dynamic_microshards", completed.stdout)
+        self.assertIn("--no-enforce-eager", completed.stdout)
+        self.assertIn("--enable-chunked-prefill", completed.stdout)
+
+    def test_local_eval_rejects_gpu_id_count_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model = Path(temp_dir) / "model"
+            model.mkdir()
+            completed = subprocess.run(
+                [
+                    "bash",
+                    str(LOCAL_EVAL_SCRIPT),
+                    "--model_path",
+                    str(model),
+                    "--datasets",
+                    "aime24",
+                    "--gpus",
+                    "8",
+                    "--gpu_ids",
+                    "0,1,2,3",
+                    "--dry_run",
+                ],
+                cwd=CODE_DIR,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("Expected 8 comma-separated GPU IDs; got 4", completed.stderr)
+
+    def test_standard_eval_can_defer_official_evalplus_scoring(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model = Path(temp_dir) / "model"
+            gopd = Path(temp_dir) / "gopd"
+            model.mkdir()
+            gopd.mkdir()
+            completed = subprocess.run(
+                [
+                    "bash",
+                    str(LOCAL_EVAL_SCRIPT),
+                    "--model_path",
+                    str(model),
+                    "--gopd_dir",
+                    str(gopd),
+                    "--standard_protocol",
+                    "--defer_official_code_scoring",
+                    "--gpus",
+                    "8",
+                    "--dry_run",
+                ],
+                cwd=CODE_DIR,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("--worker-count 8", completed.stdout)
+        self.assertIn("--no-score-code", completed.stdout)
+        self.assertIn("--scheduling strict_dataset_wave_dynamic_microshards", completed.stdout)
+        self.assertIn("--max-num-seqs 24", completed.stdout)
+        self.assertIn("--enforce-eager", completed.stdout)
+        self.assertIn("--no-enable-chunked-prefill", completed.stdout)
 
     def test_submit_rejects_memory_above_hard_cap(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

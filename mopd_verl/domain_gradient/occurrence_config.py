@@ -76,7 +76,12 @@ def normalize_versioned_cs_selection_mode_by_domain(
                 "V4/V5 C+S selection contains an unknown or duplicate domain"
             )
         mode = str(raw_mode)
-        if mode not in {"position_fixed", "top_loss", "top_teacher_confidence"}:
+        if mode not in {
+            "position_fixed",
+            "structure_only",
+            "top_loss",
+            "top_teacher_confidence",
+        }:
             raise ValueError(f"Unsupported V4/V5 C+S selection mode: {mode!r}")
         normalized[domain] = mode
     if normalized and set(normalized) != set(domains):
@@ -87,19 +92,20 @@ def normalize_versioned_cs_selection_mode_by_domain(
 
 
 def effective_code_cs_position_policy(config: Any) -> str | None:
-    """Resolve Code position eligibility for the versioned Next-Step selector."""
+    """Resolve Code position eligibility for versioned dynamic selectors."""
 
     setting = getattr(config, "code_cs_position_gate_enabled", None)
     if setting is not None and not isinstance(setting, bool):
         raise TypeError("code_cs_position_gate_enabled must be bool or null")
-    if (
-        not uses_versioned_next_step_selection(config)
-        or uses_current_step_selection(config)
-        or not getattr(config, "control_token_online_selection_enabled", False)
+    version = normalize_token_taxonomy_version(
+        getattr(config, "token_taxonomy_version", "legacy")
+    )
+    if version not in TOKEN_TAXONOMY_VERSIONS or not getattr(
+        config, "control_token_online_selection_enabled", False
     ):
         if setting is not None:
             raise ValueError(
-                "code_cs_position_gate_enabled requires V4/V5 Next-Step selection"
+                "code_cs_position_gate_enabled requires active V4/V5 selection"
             )
         return None
     modes = dict(
@@ -108,13 +114,43 @@ def effective_code_cs_position_policy(config: Any) -> str | None:
             getattr(config, "versioned_cs_selection_mode_by_domain", ()),
         )
     )
-    if modes.get("code", "position_fixed") == "position_fixed":
+    code_mode = modes.get("code", "position_fixed")
+    if uses_current_step_selection(config):
+        if code_mode == "structure_only":
+            return (
+                "structure_only_ungated"
+                if setting is False
+                else "structure_only_gated"
+            )
+        if setting is not None:
+            raise ValueError(
+                "code_cs_position_gate_enabled requires current-step Code "
+                "structure_only selection"
+            )
+        return None
+    if not uses_versioned_next_step_selection(config):
+        if setting is not None:
+            raise ValueError(
+                "code_cs_position_gate_enabled requires V4/V5 Next-Step selection"
+            )
+        return None
+    if code_mode == "position_fixed":
         if setting is not None:
             raise ValueError(
                 "code_cs_position_gate_enabled requires dynamic Code C+S selection"
             )
         return "position_fixed"
     return "dynamic_gated" if setting else "dynamic_ungated"
+
+
+def uses_ungated_current_step_code_structure(config: Any) -> bool:
+    """Return whether Code Structure-only selection ignores position masks."""
+
+    return (
+        uses_current_step_selection(config)
+        and config.versioned_cs_selection_mode_map().get("code") == "structure_only"
+        and getattr(config, "code_cs_position_gate_enabled", None) is False
+    )
 
 
 def _validate_tail_config(config: Any) -> None:
@@ -201,10 +237,18 @@ def _validate_versioned_taxonomy(config: Any) -> str:
         raise ValueError(f"Unsupported token taxonomy version: {version!r}")
     current_step = uses_current_step_selection(config)
     if current_step and any(
-        mode != "position_fixed" for mode in structure_modes.values()
+        mode not in {"position_fixed", "structure_only"}
+        for mode in structure_modes.values()
     ):
         raise ValueError(
-            "Token V4/V5 current_step requires position_fixed Structure."
+            "Token V4/V5 current_step supports position_fixed or "
+            "structure_only selection."
+        )
+    if not current_step and any(
+        mode == "structure_only" for mode in structure_modes.values()
+    ):
+        raise ValueError(
+            "Token V4/V5 structure_only selection requires current_step."
         )
     if (
         current_step or config.control_token_online_selection_enabled
@@ -217,11 +261,16 @@ def _validate_versioned_taxonomy(config: Any) -> str:
     weight = float(getattr(config, "structure_token_loss_weight", 1.0))
     if not math.isfinite(weight) or weight not in {4.0, 8.0}:
         raise ValueError("Token V4/V5 Structure weighting requires Fixed4 or Fixed8.")
-    if getattr(config, "structure_token_position_profile", "none") != (
-        STRUCTURE_POSITION_PROFILE
-    ):
+    position_profile = getattr(
+        config, "structure_token_position_profile", "none"
+    )
+    allowed_position_profiles = {STRUCTURE_POSITION_PROFILE}
+    if current_step:
+        allowed_position_profiles.add("none")
+    if position_profile not in allowed_position_profiles:
         raise ValueError(
-            f"Token V4/V5 requires {STRUCTURE_POSITION_PROFILE!r}."
+            "Token V4/V5 requires the frozen position profile, or 'none' "
+            "for current-step selection."
         )
     expected = token_taxonomy(version)
     if set(config.domains) != set(expected):
@@ -246,6 +295,32 @@ def _validate_versioned_taxonomy(config: Any) -> str:
     if set(candidates) != set(expected) or set(structures) != set(expected):
         raise ValueError("Token V4/V5 maps must contain exactly math and code.")
     return version
+
+
+def current_step_candidate_map(config: Any) -> dict[str, tuple[int, ...]]:
+    """Return the exact candidate pool used by current-step selection."""
+
+    candidates = config.effective_domain_candidate_map()
+    version = normalize_token_taxonomy_version(
+        getattr(config, "token_taxonomy_version", "legacy")
+    )
+    if version not in TOKEN_TAXONOMY_VERSIONS:
+        return candidates
+    modes = dict(
+        normalize_versioned_cs_selection_mode_by_domain(
+            config.domains,
+            getattr(config, "versioned_cs_selection_mode_by_domain", ()),
+        )
+    )
+    structures = config.effective_domain_structure_map()
+    return {
+        domain: (
+            structures[domain]
+            if modes[domain] == "structure_only"
+            else candidates[domain]
+        )
+        for domain in config.domains
+    }
 
 
 def validate_occurrence_config(config: Any, actor: Any = None) -> None:

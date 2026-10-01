@@ -35,6 +35,9 @@ def versioned_position_eligibility(
 
     active = set(modes) if active_domains is None else set(active_domains)
     code_gated = getattr(config, "code_cs_position_gate_enabled", None) is True
+    position_masks_enabled = (
+        getattr(config, "structure_token_position_profile", "none") != "none"
+    )
     needs_control = any(
         domain in active and (
             domain == "math"
@@ -55,7 +58,7 @@ def versioned_position_eligibility(
         if needs_control else valid
     )
     structure_positions = valid
-    if needs_structure:
+    if needs_structure and position_masks_enabled:
         positions = batch.batch.get("mopd_structure_position_mask")
         if positions is None:
             raise ValueError(

@@ -115,14 +115,14 @@ def test_code_gate_requires_boolean_or_null(tmp_path: Path, invalid: object) -> 
         )
 
 
-def test_gate_rejects_current_step_and_legacy(tmp_path: Path) -> None:
+def test_gate_rejects_current_step_position_fixed_and_legacy(tmp_path: Path) -> None:
     base = load_config(CONFIG).audit
-    with pytest.raises(ValueError, match="requires V4/V5 Next-Step"):
+    with pytest.raises(ValueError, match="current-step Code structure_only"):
         validate_occurrence_config(
             replace(base, control_token_online_selection_timing="current_step",
                     code_cs_position_gate_enabled=False)
         )
-    with pytest.raises(ValueError, match="requires V4/V5 Next-Step"):
+    with pytest.raises(ValueError, match="requires active V4/V5"):
         validate_occurrence_config(
             replace(base, token_taxonomy_version="legacy",
                     structure_token_loss_weighting_enabled=False,

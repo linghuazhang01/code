@@ -9,6 +9,8 @@ from typing import Any, Sequence
 import torch
 
 from mopd_verl.domain_gradient.occurrence_config import (
+    current_step_candidate_map,
+    uses_ungated_current_step_code_structure,
     validate_occurrence_actor,
     validate_occurrence_config,
 )
@@ -174,8 +176,19 @@ def prepare_occurrence_masks(
     positions: list[Position] = []
     templates: list[tuple[Any, torch.Tensor, list[str]]] = []
     error = None
-    candidates = config.effective_domain_candidate_map()
+    candidates = current_step_candidate_map(config)
     selection_modes = config.online_selection_mode_map()
+    structure_only_domains = {
+        domain
+        for domain, mode in config.versioned_cs_selection_mode_map().items()
+        if mode == "structure_only"
+    }
+    ungated_structure_only_domains = (
+        {"code"} if uses_ungated_current_step_code_structure(config) else set()
+    )
+    positioned_structure_only_domains = (
+        structure_only_domains - ungated_structure_only_domains
+    )
     tail_fractions = dict(getattr(config, "control_token_tail_top_p_by_domain", ()))
     tail_confidence_domains = {
         domain for domain in config.domains
@@ -258,14 +271,42 @@ def prepare_occurrence_masks(
             except ValueError as exc:
                 error = str(exc)
                 continue
+            structure_mask = None
+            if positioned_structure_only_domains:
+                if "mopd_structure_position_mask" not in batch.batch:
+                    error = (
+                        "Token V4/V5 structure_only requires "
+                        "mopd_structure_position_mask."
+                    )
+                    continue
+                structure_mask = batch.batch["mopd_structure_position_mask"]
+                structure_mask = structure_mask.detach().bool().cpu()
+                if (
+                    structure_mask.shape != mask.shape
+                    or (structure_mask & ~mask).any()
+                ):
+                    error = (
+                        "Structure position mask must align with valid "
+                        "response positions."
+                    )
+                    continue
             for row, domain in enumerate(labels):
                 if domain not in counts:
                     error = f"unknown response domain {domain!r}"
                     continue
                 counts[domain] += int(mask[row].sum())
                 allowed = torch.tensor(candidates[domain], dtype=ids.dtype)
+                position_mask = (
+                    mask[row]
+                    if domain in ungated_structure_only_domains
+                    else (
+                        structure_mask[row]
+                        if domain in positioned_structure_only_domains
+                        else control_mask[row]
+                    )
+                )
                 eligible_columns = (
-                    (control_mask[row] & torch.isin(ids[row], allowed)).nonzero().flatten()
+                    (position_mask & torch.isin(ids[row], allowed)).nonzero().flatten()
                 )
                 for column in eligible_columns.tolist():
                     token_id = int(ids[row, column])

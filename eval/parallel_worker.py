@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from eval.parallel_eval import OVERLAP_WAVE_SCHEDULING, STRICT_WAVE_SCHEDULING
 from eval.parallel_tasks import run_lcb_task_atomic, run_mmlupro_task, run_standard_task
 from eval.runner import load_vllm_model
 
@@ -129,6 +130,104 @@ def _execute_claimed_task(
         return False
 
 
+def _finalize_wave(
+    *,
+    wave_root: Path,
+    wave: Mapping[str, Any],
+    task_by_id: Mapping[str, Mapping[str, Any]],
+    worker_id: int,
+) -> bool:
+    expected_tasks = int(wave["expected_tasks"])
+    done_count = len(list((wave_root / "done").glob("*.task")))
+    if done_count != expected_tasks:
+        LOGGER.error(
+            "worker=%d wave=%s terminal count=%d expected=%d",
+            worker_id,
+            wave["dataset"],
+            done_count,
+            expected_tasks,
+        )
+        return False
+    missing_markers = [
+        task_id
+        for task_id in wave["task_ids"]
+        if not Path(str(task_by_id[str(task_id)]["success_marker"])).is_file()
+    ]
+    if missing_markers:
+        LOGGER.error(
+            "worker=%d wave=%s missing success markers=%s",
+            worker_id,
+            wave["dataset"],
+            missing_markers[:4],
+        )
+        return False
+    wave_root.joinpath("SUCCESS").touch()
+    LOGGER.info("worker=%d completed wave=%s", worker_id, wave["dataset"])
+    return True
+
+
+def _run_overlapping_waves(
+    *,
+    manifest: Mapping[str, Any],
+    queue_root: Path,
+    worker_id: int,
+    task_by_id: Mapping[str, Mapping[str, Any]],
+    source_by_dataset: Mapping[str, Path],
+    eval_model_path: str,
+    llm: Any,
+    tokenizer: Any,
+    resume: bool,
+) -> int:
+    waves = list(manifest["waves"])
+    wave_roots = [(_wave_queue_root(queue_root, wave), wave) for wave in waves]
+    while True:
+        for wave_root, wave in wave_roots:
+            if any((wave_root / "failed").glob("*.task")):
+                LOGGER.error("worker=%d wave=%s has a failed task", worker_id, wave["dataset"])
+                return 1
+
+        claimed_task: tuple[Path, Path] | None = None
+        for wave_root, _wave in wave_roots:
+            claimed = claim_next_task(wave_root, worker_id)
+            if claimed is not None:
+                claimed_task = claimed, wave_root
+                break
+        if claimed_task is not None:
+            claimed, wave_root = claimed_task
+            if not _execute_claimed_task(
+                claimed=claimed,
+                queue_root=wave_root,
+                worker_id=worker_id,
+                task_by_id=task_by_id,
+                source_by_dataset=source_by_dataset,
+                manifest=manifest,
+                eval_model_path=eval_model_path,
+                llm=llm,
+                tokenizer=tokenizer,
+                resume=resume,
+            ):
+                return 1
+            continue
+
+        if any(
+            any((wave_root / queue_name).glob("*.task"))
+            for wave_root, _wave in wave_roots
+            for queue_name in ("pending", "running")
+        ):
+            time.sleep(0.2)
+            continue
+
+        for wave_root, wave in wave_roots:
+            if not _finalize_wave(
+                wave_root=wave_root,
+                wave=wave,
+                task_by_id=task_by_id,
+                worker_id=worker_id,
+            ):
+                return 1
+        return 0
+
+
 def run_worker(
     *,
     manifest_path: Path,
@@ -168,9 +267,23 @@ def run_worker(
     tokenizer = llm.get_tokenizer()
     task_by_id = {str(task["task_id"]): task for task in manifest["tasks"]}
     source_by_dataset = _source_by_dataset(manifest)
+    scheduling = str(execution.get("scheduling", STRICT_WAVE_SCHEDULING))
+    if scheduling == OVERLAP_WAVE_SCHEDULING:
+        return _run_overlapping_waves(
+            manifest=manifest,
+            queue_root=queue_root,
+            worker_id=worker_id,
+            task_by_id=task_by_id,
+            source_by_dataset=source_by_dataset,
+            eval_model_path=eval_model_path,
+            llm=llm,
+            tokenizer=tokenizer,
+            resume=resume,
+        )
+    if scheduling != STRICT_WAVE_SCHEDULING:
+        raise ValueError(f"Unsupported parallel evaluation scheduling mode: {scheduling}")
     for wave in manifest["waves"]:
         wave_root = _wave_queue_root(queue_root, wave)
-        expected_tasks = int(wave["expected_tasks"])
         while True:
             if any((wave_root / "failed").glob("*.task")):
                 LOGGER.error("worker=%d wave=%s has a failed task", worker_id, wave["dataset"])
@@ -196,31 +309,13 @@ def run_worker(
             if pending or running:
                 time.sleep(0.2)
                 continue
-            done_count = len(list((wave_root / "done").glob("*.task")))
-            if done_count != expected_tasks:
-                LOGGER.error(
-                    "worker=%d wave=%s terminal count=%d expected=%d",
-                    worker_id,
-                    wave["dataset"],
-                    done_count,
-                    expected_tasks,
-                )
+            if not _finalize_wave(
+                wave_root=wave_root,
+                wave=wave,
+                task_by_id=task_by_id,
+                worker_id=worker_id,
+            ):
                 return 1
-            missing_markers = [
-                task_id
-                for task_id in wave["task_ids"]
-                if not Path(str(task_by_id[str(task_id)]["success_marker"])).is_file()
-            ]
-            if missing_markers:
-                LOGGER.error(
-                    "worker=%d wave=%s missing success markers=%s",
-                    worker_id,
-                    wave["dataset"],
-                    missing_markers[:4],
-                )
-                return 1
-            wave_root.joinpath("SUCCESS").touch()
-            LOGGER.info("worker=%d completed wave=%s", worker_id, wave["dataset"])
             break
     return 0
 

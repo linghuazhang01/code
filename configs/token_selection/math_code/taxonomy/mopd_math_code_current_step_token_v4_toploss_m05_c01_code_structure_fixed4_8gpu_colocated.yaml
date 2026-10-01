@@ -1,0 +1,27 @@
+# Token V4 revision 3: Math Control Top-P 5% plus unpositioned fixed Structure;
+# Code uses unpositioned Structure-only Top-P 1%, all selected in the current step.
+extends: mopd_math_code_next_step_token_v4_toploss_m05_c01_fixed4_8gpu_colocated.yaml
+
+runtime:
+  wandb_run_id: q1p7b8g-mc-v4-r3-allpos-ungated-current-m05c01-f4-b528-s60
+  wandb_resume: never
+
+audit:
+  control_token_online_selection_timing: current_step
+  versioned_cs_selection_mode_by_domain:
+    math: position_fixed
+    code: structure_only
+  structure_token_position_profile: none
+  code_cs_position_gate_enabled: false
+  output_dir: audit/q1p7b8g-mc-v4-r3-allpos-ungated-current-m05c01-f4-b528-s60
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b8g-mc-v4-r3-allpos-ungated-current-m05c01-f4-b528-s60
+
+huggingface_checkpoint:
+  private: false
+  path_prefix: checkpoints/mopd/q1p7b8g-mc-v4-r3-allpos-ungated-current-m05c01-f4-b528-s60
+
+trainer:
+  experiment_name: q1p7b8g-mc-v4-r3-allpos-ungated-current-m05c01-f4-b528-s60
+  default_local_dir: checkpoints/MOPD/q1p7b8g-mc-v4-r3-allpos-ungated-current-m05c01-f4-b528-s60

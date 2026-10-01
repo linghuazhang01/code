@@ -38,7 +38,7 @@ class OfficialEvalPlusRescoreTest(unittest.TestCase):
                     {
                         "dataset": "HumanEvalPlus",
                         "rollout_index": rollout_index,
-                        "response": f"answer-{rollout_index}",
+                        "completion": f"answer-{rollout_index}",
                         "sample_metadata": {
                             "source_id": "HumanEvalPlus:HumanEval/1"
                         },

@@ -1,0 +1,21 @@
+# Legacy taxonomy: Math Top-P 5%, Code Structure-only Top-P 1%, current step.
+extends: mopd_math_code_toploss_m05_c01_code_structure_fixed4_8gpu_6s2t.yaml
+
+runtime:
+  wandb_run_id: q1p7b8g-mc-legacy-cstruct-current-m05c01-f4-b528-s60-retry1
+  wandb_resume: never
+
+audit:
+  control_token_online_selection_timing: current_step
+  output_dir: audit/q1p7b8g-mc-legacy-cstruct-current-m05c01-f4-b528-s60-retry1
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b8g-mc-legacy-cstruct-current-m05c01-f4-b528-s60-retry1
+
+huggingface_checkpoint:
+  private: false
+  path_prefix: checkpoints/mopd/q1p7b8g-mc-legacy-cstruct-current-m05c01-f4-b528-s60-retry1
+
+trainer:
+  experiment_name: q1p7b8g-mc-legacy-cstruct-current-m05c01-f4-b528-s60-retry1
+  default_local_dir: checkpoints/MOPD/q1p7b8g-mc-legacy-cstruct-current-m05c01-f4-b528-s60-retry1

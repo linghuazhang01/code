@@ -92,6 +92,11 @@ def prepare_samples(
             raise ValueError(f"Task {task_id!r} is absent from {source_path}")
         rollout_index = record.get("rollout_index")
         response = record.get("response")
+        completion = record.get("completion")
+        if isinstance(response, str) and isinstance(completion, str) and response != completion:
+            raise ValueError(f"Conflicting response and completion payloads for {task_id}")
+        if not isinstance(response, str):
+            response = completion
         if not isinstance(rollout_index, int) or not isinstance(response, str):
             raise ValueError(f"Invalid rollout payload for {task_id}")
         if rollout_index in selected[task_id]:

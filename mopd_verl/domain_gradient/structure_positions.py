@@ -145,6 +145,8 @@ def validated_control_position_mask(
     )
     if version not in TOKEN_TAXONOMY_VERSIONS:
         return valid_mask
+    if str(_cfg_get(config, "structure_token_position_profile", "none")) == "none":
+        return valid_mask
     mask = batch.batch.get("mopd_control_position_mask")
     if mask is None:
         raise ValueError("Token V4/V5 requires mopd_control_position_mask.")
@@ -239,6 +241,8 @@ def attach_structure_position_mask(batch: Any, tokenizer: Any, config: Any) -> N
     if not bool(_cfg_get(config, "structure_token_loss_weighting_enabled", False)):
         return
     profile = str(_cfg_get(config, "structure_token_position_profile", "none"))
+    if profile == "none":
+        return
     if profile != STRUCTURE_POSITION_PROFILE:
         raise ValueError(f"Unsupported Structure position profile: {profile!r}")
     ids = _cfg_get(config, "domain_structure_token_ids", {})

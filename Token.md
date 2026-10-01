@@ -247,6 +247,24 @@ Fixed4，Code 开关均显式关闭。`mopd_math_code_next_step_token_v4_shared_
 Step 60，并为每份配置使用独立的 run/audit/eval/checkpoint 路径。它们尚未启动，
 也未同步到 GPU 训练服务器。
 
+为单独比较 Code Structure，Current-Step V4/V5 另允许
+`versioned_cs_selection_mode_by_domain.<domain>=structure_only`。该模式只在
+`control_token_online_selection_timing=current_step` 下合法：候选池严格使用对应
+domain 的冻结 Structure 集合。默认仅统计/加权既满足 Structure position mask、又在
+同一步 TopLoss/TopP 中入选的 occurrence；Code 可显式设置
+`code_cs_position_gate_enabled=false`，此时 Code 的冻结 Structure token 在全部 valid
+response 位置参与统计、TopLoss 排名和加权，Math 的位置规则不变。该 domain 的
+Control 保持权重 1，Structure 不再额外整池固定加权，避免重复计权。TopP 分母仍是该
+domain 全部 valid response tokens，严格出现次数门槛、Fixed4/Fixed8 和
+microbatch/domain mean-one 规则不变。`position_fixed` 及现有 Next-Step 三种模式的语义
+不变。
+
+显式的 Current-Step 无位置消融可以设置
+`structure_token_position_profile=none`。此时 Math Control、Math 固定 Structure 与 Code
+Structure-only 都在全部有效 response 位置统计和加权，不生成 Control/Structure
+位置掩码；该设置仅允许 Current-Step，不能用于 Next-Step 配置。当前对应实验为
+`q1p7b8g-mc-v4-r3-allpos-ungated-current-m05c01-f4-b528-s60`。
+
 ## 1. 名称与状态
 
 | 名称 | 状态 | 含义 |

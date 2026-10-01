@@ -28,6 +28,9 @@ from eval.lcb_official import (
 from eval.report import _compact_record, _detail_record, summarize_records, write_report
 
 SEED_STRIDE = 1_000_003
+STRICT_WAVE_SCHEDULING = "strict_dataset_wave_dynamic_microshards"
+OVERLAP_WAVE_SCHEDULING = "overlap_dataset_waves_dynamic_microshards"
+SCHEDULING_MODES = (STRICT_WAVE_SCHEDULING, OVERLAP_WAVE_SCHEDULING)
 
 
 @dataclass(frozen=True)
@@ -127,6 +130,9 @@ def build_manifest(
     max_model_len: int = 18432,
     max_num_batched_tokens: int = 32768,
     max_num_seqs: int = 24,
+    scheduling: str = STRICT_WAVE_SCHEDULING,
+    enforce_eager: bool = True,
+    enable_chunked_prefill: bool = False,
     score_code: bool = True,
     code_sandbox_image: str = "verlai/verl:vllm023.dev1",
     code_sandbox_image_id: str = "unresolved",
@@ -141,6 +147,8 @@ def build_manifest(
         raise ValueError("worker_count must be positive")
     if base_seed < 0:
         raise ValueError("base_seed must be non-negative")
+    if scheduling not in SCHEDULING_MODES:
+        raise ValueError(f"Unsupported parallel evaluation scheduling mode: {scheduling}")
     if max_samples_per_dataset is not None and max_samples_per_dataset < 1:
         raise ValueError("max_samples_per_dataset must be positive when provided")
     for name, value in (
@@ -295,7 +303,7 @@ def build_manifest(
             "backend": "vllm",
             "tensor_parallel_size": 1,
             "parallelism": "data_parallel_gpu_worker_pool",
-            "scheduling": "strict_dataset_wave_dynamic_microshards",
+            "scheduling": scheduling,
             "worker_count": worker_count,
             "shards_per_dataset": shards_per_dataset,
             "min_rows_per_shard": min_rows_per_shard,
@@ -304,8 +312,8 @@ def build_manifest(
             "max_model_len": max_model_len,
             "max_num_batched_tokens": max_num_batched_tokens,
             "max_num_seqs": max_num_seqs,
-            "enforce_eager": True,
-            "enable_chunked_prefill": False,
+            "enforce_eager": enforce_eager,
+            "enable_chunked_prefill": enable_chunked_prefill,
             "score_code": score_code,
             "code_scorer": {
                 "backend": "docker" if score_code else "disabled",
@@ -739,6 +747,21 @@ def parse_args() -> argparse.Namespace:
     plan_parser.add_argument("--max-model-len", type=int, default=18432)
     plan_parser.add_argument("--max-num-batched-tokens", type=int, default=32768)
     plan_parser.add_argument("--max-num-seqs", type=int, default=24)
+    plan_parser.add_argument(
+        "--scheduling",
+        choices=SCHEDULING_MODES,
+        default=STRICT_WAVE_SCHEDULING,
+    )
+    plan_parser.add_argument(
+        "--enforce-eager",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    plan_parser.add_argument(
+        "--enable-chunked-prefill",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     plan_parser.add_argument("--code-sandbox-image", default="verlai/verl:vllm023.dev1")
     plan_parser.add_argument("--code-sandbox-image-id", default="unresolved")
     plan_parser.add_argument("--no-score-code", action="store_true")
@@ -778,6 +801,9 @@ def main() -> int:
             max_model_len=args.max_model_len,
             max_num_batched_tokens=args.max_num_batched_tokens,
             max_num_seqs=args.max_num_seqs,
+            scheduling=args.scheduling,
+            enforce_eager=args.enforce_eager,
+            enable_chunked_prefill=args.enable_chunked_prefill,
             score_code=not args.no_score_code,
             code_sandbox_image=args.code_sandbox_image,
             code_sandbox_image_id=args.code_sandbox_image_id,

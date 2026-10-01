@@ -8,6 +8,9 @@ from typing import Any
 import torch
 
 from mopd_verl.domain_gradient.current_step_selection import CurrentStepSelection
+from mopd_verl.domain_gradient.occurrence_config import (
+    uses_ungated_current_step_code_structure,
+)
 from mopd_verl.domain_gradient.structure_positions import (
     validated_control_position_mask,
 )
@@ -52,15 +55,32 @@ def install_current_step_masks(
     structure_enabled = bool(
         getattr(config, "structure_token_loss_weighting_enabled", False)
     )
+    structure_positions_ungated = (
+        getattr(config, "structure_token_position_profile", "none") == "none"
+    )
+    structure_only_domains = {
+        domain
+        for domain, mode in config.versioned_cs_selection_mode_map().items()
+        if mode == "structure_only"
+    }
+    ungated_structure_only_domains = (
+        {"code"} if uses_ungated_current_step_code_structure(config) else set()
+    )
     for index, (batch, mask, labels) in enumerate(templates):
         inputs = {**batch.batch, **batch.non_tensor_batch}
         ids = aligned_response_token_ids(inputs, inputs["response_mask"]).cpu()
         control_mask = validated_control_position_mask(batch, config, mask)
-        positioned_structure = batch.batch.get("mopd_structure_position_mask")
-        if structure_enabled and positioned_structure is None:
-            raise ValueError(
-                "Fixed Structure weighting requires mopd_structure_position_mask."
-            )
+        positioned_structure = None
+        if structure_enabled:
+            if structure_positions_ungated:
+                positioned_structure = mask
+            elif "mopd_structure_position_mask" not in batch.batch:
+                raise ValueError(
+                    "Fixed Structure weighting requires "
+                    "mopd_structure_position_mask."
+                )
+            else:
+                positioned_structure = batch.batch["mopd_structure_position_mask"]
         if positioned_structure is not None:
             positioned_structure = positioned_structure.detach().bool().cpu()
             if positioned_structure.shape != mask.shape:
@@ -77,10 +97,19 @@ def install_current_step_masks(
             valid = rows & mask
             if not valid.any():
                 continue
+            selection_position_mask = (
+                mask
+                if domain in ungated_structure_only_domains
+                else (
+                    positioned_structure
+                    if domain in structure_only_domains
+                    else control_mask
+                )
+            )
             head = _mark(
                 selection.head[domain],
                 ids,
-                valid & control_mask,
+                valid & selection_position_mask,
                 unit=unit,
                 rank=rank,
                 batch_index=index,
@@ -88,7 +117,7 @@ def install_current_step_masks(
             tail = _mark(
                 selection.tail[domain],
                 ids,
-                valid & control_mask,
+                valid & selection_position_mask,
                 unit=unit,
                 rank=rank,
                 batch_index=index,
@@ -101,12 +130,24 @@ def install_current_step_masks(
                     structure_ids[domain], dtype=ids.dtype
                 )
                 structure_occurrences = valid & torch.isin(ids, domain_structure_ids)
-                structure = structure_occurrences & positioned_structure
+                structure_position_mask = (
+                    mask
+                    if domain in ungated_structure_only_domains
+                    else positioned_structure
+                )
+                structure = structure_occurrences & structure_position_mask
                 structure_candidates[domain] += int(structure_occurrences.sum())
                 structure_applied[domain] += int(structure.sum())
-                if ((head | tail) & structure).any():
+                if domain in structure_only_domains:
+                    if ((head | tail) & ~structure).any():
+                        raise RuntimeError(
+                            "Current-step Structure-only selection escaped its "
+                            "eligible positions"
+                        )
+                elif ((head | tail) & structure).any():
                     raise RuntimeError("Current-step Control and Structure overlap")
-                weights[structure] = config.structure_token_loss_weight
+                if domain not in structure_only_domains:
+                    weights[structure] = config.structure_token_loss_weight
             weights[head] = config.control_token_weight
             weights[tail] = config.control_token_tail_weight
             denominator = weights[valid].mean()

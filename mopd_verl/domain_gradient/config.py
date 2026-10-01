@@ -233,7 +233,7 @@ class DomainGradientConfig:
     domain_structure_token_ids: tuple[tuple[str, tuple[int, ...]], ...] = ()
 
     def versioned_cs_selection_mode_map(self) -> dict[str, str]:
-        """Return each domain's fixed-S or shared C+S selector mode."""
+        """Return each domain's fixed-S, S-only, or shared C+S mode."""
 
         modes = dict(self.versioned_cs_selection_mode_by_domain)
         return {
