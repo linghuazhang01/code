@@ -105,3 +105,26 @@
 - 2026-09-07: W&B actual-config mechanism inventory: `../experiments_records/eval/_comparisons/config_mechanisms_20260907/CONFIG_MECHANISMS.md`, 12 frozen run configs and method-config-index.json; Summary updated, baseline fields blank.
 
 - 2026-09-08: Summary Math main table merged with 4 config/mechanism columns + 5 C/S statistics columns; source per_run_domain.csv; original metrics preserved.
+
+## 2026-09-27 Current-step head/tail implementation
+
+2026-09-27T16:05:10+08:00，`/daily-coding` implementation：same-step/low-loss/TC；226 tests passed；未启动训练。
+
+- Runtime/docs: `docs/current-step-token-weighting.md`、`mopd_verl/domain_gradient/current_step_selection.py`、`mopd_verl/domain_gradient/current_step_weights.py`。
+- Historical profiles under `configs/token_selection/math_code/taxonomy/`: `mopd_math_code_current_step_loss_teacher_confidence_m05_c01_tailhalf_4gpu.yaml`、`mopd_math_code_current_step_teacher_confidence_m05_c01_tailhalf_4gpu.yaml`、`mopd_math_code_current_step_toploss_m05_c01_fixed4_4gpu.yaml`、`mopd_math_code_current_step_toploss_m05_c01_tailhalf_4gpu.yaml`、`mopd_math_code_current_step_toploss_m05_c01_tailzero_4gpu.yaml`。
+- Regression tests: `tests/test_current_step_config.py`、`tests/test_current_step_runtime.py`、`tests/test_current_step_selection.py`。
+- Research records: `.claude/project-memory/opsa-paper-reading-20260927.md`、`/Users/linghuazhang/Desktop/Project/Notes/Obsidian/Research/opd/Experiments/Current-Step-Head-Tail-Weighting.md`、`/Users/linghuazhang/Desktop/Project/Notes/Obsidian/Research/opd/Daily/2026-09-27.md`。
+
+## 2026-09-28 Token V4/V5 four-baseline revision 2
+
+- Imported four-baseline-supported V4/V5 definitions, strict `>20`, JSON/CSV/NPZ evidence and preserved revision-1 artifacts/config snapshot.
+- Added matching Code Control scoring/application position gates and precise Structure I/O/signature/entry gates; Math lowercase final is supported.
+- Updated 18 w4 configurations with revision-2 namespaces and supplied 18 explicit shared C/S w8 overlays; top-p, batch 528 and existing topology preserved.
+- Report: `plan/token-v4-v5-fourbaseline-20260928/implementation-report.md`; 203 focused tests plus 3 real two-rank CPU tests passed (206 distinct cases). No GPU training or remote sync.
+
+## 2026-09-28 Token V4/V5 revision 3
+
+- Adopted the third-revision AnswerWord-to-Structure definition: V4 Math/Code C=119/153, V5 C=61/72, shared S=9/45; 2,664 CSV/NPZ counts match exactly with strict `>20` support.
+- Updated two taxonomy bases and 36 existing public profiles to r3, preserving top-p, batch528, GPU3/4/8 colocated topology and shared w4/w8 weights; r2 artifact/provenance and 44 config source snapshots preserved.
+- Added shared final/answer/conclusion prose-label rules and Math boxed-line eligibility; Code labels stay outside every fenced block and the I/O token branch.
+- Report: `plan/token-v4-v5-revision3-20260928/implementation-report.md`; 257 focused cases passed. No distributed wiring changes, GPU training, remote sync, commit or push.

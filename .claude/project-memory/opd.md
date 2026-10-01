@@ -11,6 +11,104 @@ auto_sync: true
 ---
 # 项目记忆: opd
 
+## 2026-10-01：当前 V6 Math5%/Code1% Current-Step 只读核对
+
+- 最新Rising补全后的pool为Math C118/S156=274；Code V6 C23/S196=219（S lexical144/format52）、V7 S196、V8 S341。下方早先审计记录为补全前冻结版本。
+- 四卡config为`mopd_math_code_current_step_token_v6_toploss_m05_c01_fixed4_4gpu_colocated.yaml`；实际current_step/token_id/joint top_loss，Math5%/Code1% occurrence budget，strict>20，raw4/1后rank-local microbatch/domain归一。Code C/S均在全部valid位置参与，无fence gate；Structure不是全池固定增权。
+- Student1.7B、teacher30B-A3B-Instruct-2507、teacher-support Top32 RKL、batch528/MB1、60steps、seed42、colocated4GPU。专项40tests通过。Code C23精确清单与[参数核对](/Users/linghuazhang/Desktop/Project/OPD/code/plan/v6-next-step-definition-audit-20261001/current-v6-inspection.md)已保存。
+- 用户最新要求先查看；未新增Next-Step、未修改训练config/源码/Token.md/生成器，未启动任务。发现runtime文档旧数量与Token.md code_structure旧M263/C21残留，以及generator恒真subset/type推断，尚未修正。
+
+## 2026-10-01：Current-Step G0124 GPU 利用率诊断
+
+- 后续按用户授权完成独立teacher chunk通用默认：`topk_logprob_chunk_enabled=true`、1024，`enabled=false`或四卡colocated不再屏蔽chunk；batch/MoE/统计guard、ref/actor MB1及collective顺序保留。AGENTS固化不得随profile/resume静默回退，显存fallback有effective chunk/原因回执。250 passed / 1 skipped，428profile覆盖、mypy/核心lint通过；CPU FP32/BF16固定输入16/256/1024的Top32/logP/loss一致。[实现与验收](/Users/linghuazhang/Desktop/Project/OPD/code/plan/current-step-g0124-performance-20261001/teacher-chunk-implementation.md)。仅本地修改，未同步/重启当前worker；新代码在后续worker初始化生效，当前拓扑GPU收益与峰值未测。
+
+- Chunk回退补查：9月7日`29ad9e6`已持久化1024，job223读回确认生效；9月22日`c3ea0eb`创建四卡base时显式`teacher_performance.enabled=false`，本run继承后chunk1024字段仍在但wrapper未装，forward实际默认16。应表述为已有优化在四卡profile失效，不能当成从未完成的新调优；chunk须与多rank动态batching保护分开验证接线。[Git证据](/Users/linghuazhang/Desktop/Project/OPD/code/profile_output/current-step-g0124-util-20261001/chunk-provenance.json)。本次追踪未改训练代码或运行状态。
+- 02:57远端只读快照：原launcher52670与四worker55523–55526继续运行，日志完整Step29/60，正执行下一步ref；W&B读取时Step28。九个关键源码SHA与本地一致。本轮未重启、改参、同步或启动任务。
+- 最新Step21–29平均57.886分钟：teacher26.385（45.58%）、actor12.172（21.03%）、CPU reward8.384（14.48%）、gen7.408（12.80%）。Current-Step prepass50.111秒仅1.44%，属于update内部；不能将残差全叫audit。
+- 物理GPU0/1/2/4；全恢复13.07小时设备均值48.99/48.57/48.31/62.42%，GPU4另有1768MiB外部进程，不能解释为本run独占利用率。012互为NV6，4到012为SYS；teacher FULL_SHARD4的通信开销需要trace定量。
+- 优先现有async reward重叠（理论完整隐藏时wall time最多减14.48%，未测）；teacher默认chunk16需独立接通，enabled直接打开会因colocated多rankguard回退。保留actor MB1以保持microbatch/domain mean-one，复制teacher或3+1布局属于后续验收/独立实验。
+- 完整[诊断与变更清单](/Users/linghuazhang/Desktop/Project/OPD/code/profile_output/current-step-g0124-util-20261001/REPORT.md)、[后续计划](/Users/linghuazhang/Desktop/Project/OPD/code/plan/current-step-g0124-performance-20261001/PLAN.md)；修改前备份在同profile目录，未改eval Summary或Hub。
+
+## 2026-10-01：Token V6/V7/V8 候选池配置审计与定义登记
+
+- [Token.md §0.4](/Users/linghuazhang/Desktop/Project/OPD/code/Token.md:250) 登记 V6/V7/V8 为 active global taxonomy 的 candidate-pool versions，保持 legacy runtime；共同 Math C116/S147=263，Code 分别为 C21/S164=185、C0/S164、C0/S316。
+- 48 配置加载/launcher 与逐 ID provenance 全部通过；36 run 实为24 namespace、18种配置组合。V6 Code Structure-only与V7参数等价，V7/V8的该变体为同namespace精确alias。Code无位置门控，旧Next-Step剪枝与教师context proxy不能证明新Current-Step效果。
+- 补入冻结ID fingerprint回归与HF Step60精确断言，114项相关CPU tests通过；48配置生效值未变，未启动训练/评测。完整[审计报告](/Users/linghuazhang/Desktop/Project/OPD/code/plan/token-v6-v8-config-audit-20261001/audit-report.md)及逐文件JSON已保存。
+- 按用户后续要求修复Git ignore：新增5行完整命名白名单，48新YAML与专项测试全部可见；12个protected path检查通过。48配置展开后的96个Math/Code候选池按decoded文本复核，包含`**`的ID为0，完整词表仍保留这些IDs。见 Obsidian `Experiments/Token-V6-V8-Candidate-Pools.md` 与 `Daily/2026-10-01.md`。
+
+## 2026-09-30：M05/C01 与 M05/C02 Structure-only token 审计
+
+- 已绑定 31.66% Macro8 的 C01 8GPU 与 30.64% 的 C02 4GPU；两者候选集相同：Math Control124/Structure266，Code Control0/Structure551。C02 60 步在线 audit 的字段内容已取回并验证 59 对 source→next lag，完整[分析报告](/Users/linghuazhang/Desktop/Project/OPD/analysis-output/c01-c02-structure-token-audit-20260930/analysis-report.md)。
+- C02 source-step 零次入选：Math Control8、Math Structure131、Code Structure253；Code 高频 `not`、`Output`、` Python`、`---\n\n` 为 60/60。Code 有 298/551 个 Structure ID 曾入选，完整逐 ID 与逐 step 清单在分析目录。
+- C01 W&B 仅有 60 步数量，Code 每步新选均值50.88（C02 76.22），缺原始 token ID audit；C01 零次/高频具体 ID 不可核实，不以 C02 名单代替。
+- 用户要求按精确 run ID 复查远端：CityU 上 C02 有 60 份 selector audit；C01 只有 Step60 HF 恢复模型的 9 个文件及评测。HF 对象仓库同样只有这 9 个文件，未列 C01 audit；原启智 `/mnt/tidal-alsh01/...` 在 CityU 未挂载，不能断言原训练盘不存在。证据见[远端搜索记录](/Users/linghuazhang/Desktop/Project/OPD/analysis-output/c01-c02-structure-token-audit-20260930/remote-cityu-search.md)及[C01 来源记录](/Users/linghuazhang/Desktop/Project/OPD/analysis-output/c01-c02-structure-token-audit-20260930/c01/SOURCE.md)。C01 精确 run 为 8GPU 6+2，C02 为 4GPU。
+- C02 对 C01 的 Code4 Avg@8 +0.2653 pp、Math4 −2.2917 pp、Macro8 −1.0132 pp；Code TopP 1%→2% 与训练拓扑同时变化，各仅一个 checkpoint/seed，不能归因于 token 或单独的 TopP。
+
+## 2026-09-30：V4/V5 token 逐 step 选择审计
+
+- 已按 `Token.md` revision-3 核对 V4 默认、V5 默认、V5 C+S Shared TopLoss 三条 Next-Step run 的 step 1–60，并导出逐步数量、可得的 token ID/词面、零次与高频表；完整材料在 [分析报告](/Users/linghuazhang/Desktop/Project/OPD/analysis-output/token-v4-v5-selection-20260930/analysis-report.md)。
+- V4 默认 Control Math/Code 分别有 117/119、137/153 个 ID 在 60 次 source-step 选择中至少入选一次，零次为 2/16；V5 Shared 的 Math Control/Structure 均全覆盖，Code Control/Structure 零次为 4/18。两条 run 的逐 ID audit 已校验；V5 默认 W&B 仅能恢复逐步 Control 数量与固定 Structure 的加权汇总数，不能推断逐 ID 频次。
+- 历史 Current-Step V4/V5 仍缺可绑定的 run ID/audit，不能以配置快照或评测分数反推出 60 步选择。三条现有轨迹机制不同，不能将其差异归因为 taxonomy 单因素效果。
+
+## 2026-09-29：V4/V5 Math+Code 八项结果与下一步决策
+
+- 用户提供现在 V4、旧 V4、旧 V5 的 Macro8 Avg@8 / Pass@8，分别为
+  `29.76/48.88`、`30.80/46.42`、`29.86/46.21`（%）。现在 V4 − 旧 V4 的
+  Math4/Code4/Macro8 Avg@8 为 `−1.88/−0.22/−1.04 pp`，Math Pass@8 `+5.00 pp`。
+  旧两组的 run ID、训练配置与逐题原始记录未确认，不能把差异归因于 taxonomy 或时序。
+- 用户已取消先评测再训练的旧顺序；V5 r3 C+S Shared TopLoss 四卡 run 已启动，
+  最近本地状态见 `plan/v5-shared-toploss-direct-4gpu-20260929/RUN_MANIFEST.md`。
+  本轮没有查询实时远端状态、启动或排队新的 GPU 任务。
+- 条件式计划见 `plan/v4-v5-post-eval-20260929/PLAN.md`：先做逐题配对与配置
+  provenance 审计；完成既有 V5 shared 的同协议评测；首个建议新增训练是匹配四卡
+  V5 r3 Next-Step + Structure position-fixed，用来与现在 V4/新 V5 shared 形成最小矩阵。
+  Code 门控与 Current-Step 时序对照仅在前述结果支持时再考虑。
+
+## 2026-09-28 23:31 +08：V4/V5 Step60 双模型评测准备
+
+- GPU0/1/2/4 的 V4 r3 Next-Step 四卡训练仍在运行，远端日志已到 Step 50/60；Step60
+  模型尚未保存，公开上传程序仍等待完整 checkpoint。
+- 最近的 8-GPU Token V5 r3 run 已完成 Step60；公开 HF 固定提交
+  `52ef604f8daa7797ca0893876af65d2cb5204c46` 的九文件模型已恢复到远端独立
+  `checkpoints/HF_RESTORED/<V5-run>/global_step_60/actor/huggingface`，模型/tokenizer
+  LFS SHA-256 与 safetensors 结构均验收通过。
+- 用户授权删除七个明确列出的旧非最终 checkpoint，实测释放 312.04 GiB；相关 `/`
+  挂载在 V5 恢复后约有 683.42 GiB 可用。保留所有旧 Step60、旧 TopLoss Step30 与
+  当前 V4 训练文件；最终评测启动前仍须实时确认 ≥500 GiB 与四张 GPU 空闲。
+- 用户确认“MAS”指 Math，本次评测允许 GPU4。V4 Step60 与上传完成后，以两个互不
+  重叠的 DP2/TP1 lane 做 Math4+Code4、K8、seed42 八项专项评测，标记
+  partial/non-canonical；小时监控 `opd-v4-next-step` 持续跟进。执行依据见
+  `plan/v4-v5-step60-math-code-eval-20260928/PLAN.md`。
+
+## 2026-09-28：V4/V5 动态 Code C/S 位置开关已本地实现
+
+- 动态 `top_loss` / `top_teacher_confidence` 的 Code C∪S 继续共同排名、共享一份
+  TopP 预算；新开关 `audit.code_cs_position_gate_enabled` 关闭时 C/S 均可在全部有效
+  response 位置参与来源 step 排名和下一 step 加权，开启时分别使用现有 Control 与
+  Structure mask。旧 `position_fixed` 与 Math 规则保持。
+- 同一位置资格用于 TopLoss、Teacher Confidence 与实际加权；有效策略纳入 selector
+  checkpoint 签名，审计记录来源 C/S eligible 次数、预算/缺口及当前加权位置数。
+  独立审查的非 train metadata 和旧 fixed checkpoint 签名问题均已修复。
+- 274 项相关 CPU 回归通过；扩大套件的 7 项历史 Qwen4B profile 测试因仓库缺少
+  两个非 Git 跟踪的旧 YAML 而失败。三个对照配置均未启动，现有 GPU0/1/2/4 V4
+  训练未重启、未同步此本地改动。计划与验证见
+  `plan/versioned-shared-cs-selection-20260928/CODE_POSITION_GATE_PLAN.md`。
+
+当前 Math+Code 评测状态（2026-09-27）见 [六卡恢复记录](math-code-eval-20260927.md)：用户已授权所有6卡，controller2594875运行中；后文9月26日四卡队列和等待恢复记录均为历史状态。
+
+## 2026-09-28：Token V4/V5 Current-Step 实现完成，尚未启动训练
+
+- 冻结 Qwen3 Token V4/V5：V4 Math/Code Control=121/154，V5=59/65；共享
+  Structure=6/32，artifact SHA256 为
+  `27884fadeea94145df23ede69109c7f8181c866de2f1c9f93d7659786719d817`。
+- runtime 已分离 Control 与 Structure：Control-only 做 Current-Step TopLoss，Structure
+  按答案格式位置 Fixed4，两者合并后只做一次 per-domain mean-one normalization。
+- 已生成 18 个 Math5/Code5,2,1 × Token V4/V5 × 3/4/8 GPU profile；全部 batch528。
+  8-GPU 是 8 actor + 8-way FSDP teacher colocated，旧 6+2 保留作为 fallback。
+- 166 个 focused tests 通过；无 GPU smoke、无训练提交、无远端同步。下一步先做 1–2 step
+  8-GPU colocated memory/throughput smoke。详见 Obsidian
+  `Experiments/Token-V4-V5-Current-Step.md`。
+
 ## 2026-09-15：Math-only full-vocabulary Top-Loss 两种拓扑配置完成
 
 - 新增两份 `Math-only / full_vocabulary / Top-Loss / Top-P=5% / i1-w1 /
@@ -734,3 +832,368 @@ W&B最新batch summary字段写入后未能独立读回；当前有效设置以f
   记录 scope、tokenizer universe 与 observed/effective candidate counts。
 - 相关测试 `206 passed`（含真实 two-rank CPU/Gloo all-reduce），compile/diff check
   通过；尚未启动训练、commit 或 push。
+
+
+# 2026-09-20 论文叙事更新
+
+依据当前Standard10归档，推荐主线为结构先验约束的在线token-ID增权，替代旧ASCR phase controller故事。
+
+- 主候选m05_c01_s01：10-dataset macro Avg@8=34.30%，OPD=31.88%；Math=25.00% vs20.10%。属于探索性单run观察。
+- 相对EOPD的macro优势仅0.29pp，主要来自Math；Overall/Pass@8无全面领先。多次benchmark调参需披露。
+- 优先补matched多seed、全词表/非语义匹配候选池、固定token集合对照。taxonomy内随机不够证明结构语义价值。
+- 实际机制：lagged TopLoss，occurrence coverage5%/1%/1%，raw Fixed4、domain normalization；Science含teacher confidence信号；非选中token仍接受监督。
+- 完整大纲：[PAPER_PLAN.md](/Users/linghuazhang/Desktop/Project/OPD/PAPER_PLAN.md)。已完成独立GPT-6-Astra xhigh审阅；未新启动实验、未改训练代码或评测总表。
+
+
+## 2026-09-20 性能优化实验设计
+
+优先冻结Math5%/w4，做Code/Science额外增权2×2开关（仍三域训练）；按结果决定selector与局部p/weight搜索。第一批3个新run，未启动。最终同recipe OPD/anchor/final多training seeds确认。
+
+已查到full-vocabulary Math-only5%/w4结果23.85%；此前主文仅定位Standard10证据，后续不应说全词表对照完全不存在。历史taxonomy26.04存在recipe/provenance混杂，不能直接证明结构优越。
+
+详细方案：[EXPERIMENT_PLAN.md](/Users/linghuazhang/Desktop/Project/OPD/refine-logs/EXPERIMENT_PLAN.md)。
+
+
+## 2026-09-20 MOPD是否保留：研究方向建议（尚未采纳为执行变更）
+
+独立reviewer：广泛优于强基线claim=no，Math集中收益partial，confidence medium、same-family/provisional。建议保留全部多领域结果作为适用性/边界证据，暂停广泛Code/Science调参，优先确认Math matched baselines、多training seeds和未调参测试集。不能宣称负迁移或Math-only必然更优。没有删除数据、取消任务、启动实验或改写既有执行计划。
+
+
+## 2026-09-20 用户约束：20天不做multi-seed
+
+用户明确计算成本过高，本轮所有新增设置只用一个固定training seed，不把multi-seed设为完成门槛。计划改为六种核心设置（ours/OPD/strong baseline/fullvocab/matched随机pool/frozen IDs），合规旧run复用；可选最多两个新run，用于邻域调参或第二规模成对验证。D12冻结结果，D20(10/9)形成可提交稿。单seed限制如实披露；未启动/取消任何远端任务。
+
+当前计划：[PAPER_SPRINT.md](/Users/linghuazhang/Desktop/Project/OPD/plan/paper-sprint-20260920/PAPER_SPRINT.md)。
+
+
+## 2026-09-20 Math实验复用与Math+Code方向
+
+用户指出Math搜索已较完整，建议只Math+Code做MOPD。本轮计划改为复用Math，不重开网格；双域OPD/ours/仅Math增权/一个强baseline四行，条件性补机制对照。单seed约束持续有效。双域8benchmarks专项不称Standard10；旧Science结果保留，三域抽取两域分数不等于双域训练。仅规划，未启动任务。当前方案：refine-logs/EXPERIMENT_PLAN.md。
+
+
+## 2026-09-20 2Domain 4/8卡审阅计划
+
+推荐4H200共置，若8张同规格且全部可用则2×4并行；旧8卡日志为L20Y，不能据卡数断言更快。建议global batch528保持不随GPU改变、双域264/264，单seed42、60steps；四行MC1完整增权/MC0同RKL32无增权/MC2仅Math增权/MC3 TIP rho0.5。MC0不能误用native chosen-token PG。8benchmark1004题8032rollouts，专项不称Standard10。用户要求先看，未生成生产配置或启动任务。
+
+[计划](/Users/linghuazhang/Desktop/Project/OPD/plan/two-domain-20260920/EXPERIMENT_PLAN.md)。
+
+
+## 2026-09-20 用户要求纳入全部已跑baseline
+
+双域计划扩为10训练设置：OPD TopK32、OPD Native、EOPD、ExOPD、TIP TopK32、FiRE Native六baseline，加完整方法/仅Math增权、V1 KL+Entropy/V1 Speed历史对照。Base/Teacher优先复用评测，SFT历史checkpoint/协议待查。仅存在profile但未确认完成的其他方法列查漏项，不伪称已跑。单seed60step不变；8同型H200可5波2×4，4卡串行；未启动。
+
+
+## 2026-09-20 Math+Code 六 baseline 配置落地
+
+用户最新明确 batch 约512、vLLM显存比例0.75。本轮在 code/configs/baselines/math_code 新建12个入口（六方法×四卡共置/八卡6+2）、_common.yaml和README。统一batch516（最接近512且被4/6整除），Math/Code每步258/258；此设置取代此前规划中的528，仅限本次新双域配置。seed42、60steps，HF仅Step60。方法为OPD TopK32 Uniform、OPD Native、EOPD Native(tau0.8/alpha1/K16)、ExOPD lambda1.25、TIP TopK32 rho0.5、FiRE Native。共置teacher FSDP4且关闭自适应batching；独立teacher FSDP2且开启同步batching。
+
+全部12份通过typed配置加载、canonical actor字段比较、领域/batch/placement检查、launcher dry-run；独立code reviewer未发现阻塞问题。没有GPU测试或启动训练。本地缺模型/Eurus数据，沿用现有remote路径约定。0.75不等于算力利用率。建议四卡能稳定运行时优先两组四卡并行，八卡耗时需小于四卡一半才赢得该六方法排程总耗时与卡时；实际依赖硬件与峰值显存。正式评测另走Step60双域8dataset×K8，不能冒称Standard10。
+
+[配置与布局说明](/Users/linghuazhang/Desktop/Project/OPD/code/configs/baselines/math_code/README.md)
+
+
+## 2026-09-20 双域配置审计与提交
+
+已审计并本地提交 math_code 配置、README、AUDIT，共15文件，commit df9c503。12个新配置contract与launcher dry-run通过；关联回归100通过、3失败，均为HEAD已有缺失的旧Math配置引用，详见configs/baselines/math_code/AUDIT.md。未包含其他工作区改动，未运行GPU。已通过系统配置的本地代理推送到 origin/main（0ad5844→df9c503），分支与远端同步。
+
+
+## 2026-09-20 EOPD→ExOPD 远端串行训练
+
+用户要求用 `start.sh` 轮流运行 EOPD 与 ExOPD。远端 EOPD 已由 `start.sh --local --foreground` 启动，run_id=`eopd_native_4gpu_colocate_b516_s42_20260920`，GPU0–3，目标60 steps；配置与本地 sha256 一致。启动前检查显示 GPU4 为独立 vLLM 服务、GPU5 空闲，根文件系统可用约1.57TB；全代码 rsync dry-run/实际同步完成，0个文件变化。
+
+已创建当前线程 heartbeat `eopd-exopd`，每30分钟监控 EOPD 的 step、日志、GPU、磁盘和错误；仅当 EOPD 成功退出且 `global_step_60/actor/huggingface` 存在、GPU0–3空闲时，再用同一 `start.sh --local` 启动 ExOPD run_id=`exopd_native_lambda1p25_4gpu_colocate_b516_s42_20260920`。不得占用 GPU4/5，不重复启动，不自动重启失败任务。EOPD 当前处于初始化/首 step，日志显示 Total training steps=60、Math+Code batch516。
+
+
+## 2026-09-26 八模型 Step60 Math+Code 评测启动
+
+用户授权现有4模型先评测，并下载原清单缺失4项；已从 public icemoon28/opd-checkpoints 固定 revision 221e385514f877f0817e7b03c21e7a8bee586281 恢复 OPD Uniform、TIP、MOPD C05、MOPD C01 cstruct，SHA256/Hub LFS/safetensors/tokenizer均验证。baseline上传路径使用config stem，已核对experiment_name精确对应。
+
+远端控制器744860，配置 plan/mc-step60-eval-queue-20260926/all8_ready.json。四波 EOPD+C01、ExOPD+FiRE、OPD Uniform+C05、TIP+C01 cstruct；各GPU0,1/2,3、DP2/TP1，不用4/5。首波两模型18:58 +08已开始AIME24，首分片完成，无D状态/CUDA错误。八datasets×K8、seed42、temp1、top_p1、16384tokens，Code Docker async2/pending2、官方EvalPlus sanitize+base+plus后才判完成。Math+Code partial/non-canonical，不写作Standard10。
+
+远端 logs/status 在 experiments_records/eval/mc_step60_queue_20260926/all8_ready；每suite位于 experiments_records/eval/<run_tag>。每项 QUEUE_EVAL_SUCCESS/status complete才完整完成，失败停止后波不重试。heartbeat math-code-c01已改为监控自动队列，全部归档后删除。M05/C02训练已完成但不纳入本次八模型。
+
+修复 sparse G-OPD 缺LCB runner：从本地固定37371a4c源码同步并验证v5=167/v6=175数据hash。首次控制器仅在preflight误判常驻Xorg后退出，无eval已启动；改为无compute、0util、<1GiB的Xorg可用后正常启动。未手动nvidia-smi、未杀进程、未覆盖旧结果。详情 plan/mc-step60-eval-queue-20260926/README.md。
+
+
+## 2026-09-26 22:54 +08：首波失败，后续六模型未启动
+
+SSH 恢复后的实时核验：controller 744860 已退出，队列 FAILED.json 记录 22:40:37 +08 Wave 1 failed; all subsequent waves halted。含官方评分的完整完成数为 0/8。
+
+- EOPD：86/128 分片有 SUCCESS（四项 Math 各 16/16、HumanEval+ 16/16、MBPP+ 6/16、LCB v5/v6 0/16）。20:20 +08 worker 日志显示 Docker 评分 15 秒超时，随后 docker rm 清理又 5 秒超时，异常导致退出。
+- MOPD C01 regular：128/128 分片有 SUCCESS，merge.log 确认 merged shards=128；official EvalPlus finalizer 因 Missing MERGE_SUCCESS 在入口退出，官方评分尚未完成。suite_manifest 的 complete/普通 SUCCESS 不等于完整评测完成。
+- 其余六模型没有启动。未重启、未重试、未杀进程；保留全部输出和缓存。heartbeat 已更新为失败后的只读状态，不重复通知相同错误，等待用户恢复指令。
+
+远端证据：experiments_records/eval/mc_step60_queue_20260926/all8_ready/FAILED.json、两项 status.json 与 .log；EOPD logs/gpu_worker_1.log；MOPD C01 logs/merge.log。
+
+
+## 2026-09-26 23:14 +08：恢复代码验证完成，启动前检查退出
+
+已修复 start.sh local launcher 的 custom8 official EvalPlus finalization、worker --resume 传递、defer merge旧完成标记撤销；Docker cleanup仅对专属容器有界重试并确认清理，评分timeout/隔离参数不变。相关本地59项测试、远端22项unittest、实际Docker pass/resource-limit测试与两suite resume signature校验通过。远端无pytest，未安装额外包。
+
+恢复配置 all8_recovery_20260926.json 计划第一波保留EOPD86/128、MOPD128/128分片并resume，余六首次启动。源码同步前dry-run通过；旧远端源码保存于all8_recovery_20260926/sources_before。cleanup hash仅显式from/to迁移、原shard provenance保留。
+
+nohup controller2591024于15:12:32 UTC在preflight发现系统colord-sane PID2591028为D状态，立即退出；没有GPU查询、没有新suite或worker、没有修改原suite manifest。只读复查该PID已消失。按既定“不自动重试”要求未再次提交，当前仍0/8完整完成。新FAILED.json与recovery_cpu_preflight.json在远端experiments_records/eval/mc_step60_queue_20260926/all8_recovery_20260926。heartbeat已记最新状态，等待明确恢复指令。
+
+
+## 2026-09-27：SAPD 查新与定位
+
+主分析和独立Codex评审5/10、PROCEED WITH CAUTION；TIP/DEAR核心重叠，Rock Tokens机制边界，待验证语义身份的条件效用。Claude Code Opus5.5及授权opus fallback均403，无跨家族意见。详见 [查新记录](sapd-novelty-20260927.md) 与Obsidian `Papers/SAPD-Novelty-and-Positioning.md`。未启动训练或改变现有队列。
+
+
+## 2026-09-27：SAPD motivation 跨模型辩论完成
+
+按用户指定，实际使用 gpt-6-astra / medium 与 Claude Code claude-opus-5-5 / xhigh。两轮Claude调用成功：沿用已有bridge代理，通过临时npx Claude Code2.1.283解决默认2.1.274版本不支持问题，未修改默认安装/认证。此前403为历史状态。
+
+双方收敛为：保留具体阶段观察与类别覆盖差异，由此提出功能先验能否改善误差驱动选择；phase share不是因果效用，entropy类别低覆盖不自动证明同一批high-gap遗漏，TopLoss不是已测得学习价值。V3有phase构造provenance；缺少本轮联合核验不等于作者未做；runtime时序按实际版本说明。
+
+完整往返与最终草稿：[DEBATE_SUMMARY.md](/Users/linghuazhang/Desktop/Project/OPD/plan/sapd-story-debate-20260927/DEBATE_SUMMARY.md)、[MOTIVATION_DRAFT.md](/Users/linghuazhang/Desktop/Project/OPD/plan/sapd-story-debate-20260927/MOTIVATION_DRAFT.md)。未改代码、未启动训练，无新增实验结论。
+
+
+## 2026-09-27 SAPD Introduction
+
+完整英文六段稿：`../plan/sapd-introduction-20260927/INTRODUCTION_DRAFT.md`。Codex生成，Astra6 medium分析，Claude Code Opus5.5 xhigh两轮对抗已完成；12篇引用独立核验通过。删除未支持的beyond-mismatch承诺，正面对SAPD适用Rock Tokens风险，区分category density与neighborhood halo。未补造SAPD vs OPD数值，作者主结果待补。详细修订：同目录REVISION_LOG.md；Obsidian Writing/SAPD-Introduction-Draft.md。
+
+## 2026-09-28：Token V4/V5 四 baseline 第二版
+
+按用户要求主代理规划、gpt-6-sol/max 执行新版定义。V4 Control Math/Code=121/154；V5=64/74；共享Structure=6/37。V5新增sibling后不再是V4子集，交集59/65。647行membership的2588个baseline计数与NPZ一致，严格>20，artifact SHA为c45b5f7b6bd824140922706b2cf75630dce7130d580c346c638a3358833fd97b。
+
+Code Control代码块外同一mask参与评分与加权；Structure仅最终闭合块I/O、签名、入口语句，排除注释和字符串。Math支持小写final标题。原18个w4配置迁移r2，另18个C/S同时w8变体；Math5/Code5,2,1、batch528、3/4/8GPU拓扑不变。r1 artifact及配置有快照。报告：`plan/token-v4-v5-fourbaseline-20260928/implementation-report.md`。未启动GPU或同步远端。
+
+## 2026-09-28：Token V4/V5 第三版
+
+用户提供r3后，由主代理规划、GPT-6 Sol/max执行最小迁移。C类final/answer/conclusion整体移到Structure：V4 Math119/9 Code153/45，V5 Math61/9 Code72/45。666行membership与四baseline共2664个NPZ计数一致，source与runtime JSON逐字节一致。第三版SHA：2a6e62db4c0986d4bd4825bc0891cf223fb2b1a955d1bc5404eed2ff42dd22d8。
+
+保留36个原配置路径与超参数，更新r3 pins/namespace并备份r2。Code答案标记限代码块外标题/加粗；Math另允许答案词与字面\\boxed同一行。报告：`plan/token-v4-v5-revision3-20260928/implementation-report.md`。未训练、未同步远端。
+
+## 2026-09-28 05:15 +08：远端 GPU 拓扑只读检查
+
+CityU GlobalProtect 连接成功后实查：6张H200 NVL；0/1/2/4/5各14MiB且无compute进程，3被vLLM占用。0–3两两NV6、NUMA0；4/5在NUMA1，相互NODE，与0–3为SYS，无NVLink。驱动P2P read/write全部非对角OK，跨组PCIe P2P为OK，因此不能将缺少NVLink等同于完全无法通信。未做CUDA传输/NCCL实测，不保证五卡联训稳定或加速。V4/V5 batch528不可均分5个actor；3学生+2教师可作为待验证设计。GPU4/5归属限制保留，未占用或启动任务。证据：`profile_output/gpu-topology-20260928/REPORT.md`。
+
+## 2026-09-28：用户指定 GPU 0/1/2/4，先核对 V4 配置
+
+用户已明确授权本次通信测试和V4四卡训练使用物理GPU0/1/2/4，构成GPU4限制的本次例外；不包括GPU5。用户要求先仔细说明config，本轮展开并校验 `mopd_math_code_current_step_token_v4_toploss_m05_c01_fixed4_4gpu_colocated.yaml`：r3、Math5%/Code1%、C/S raw4、batch528、60steps、teacher FSDP4、colocated、BF16；taxonomy SHA匹配，原配置没有NCCL环境覆盖。05:21 +08只读复核四张目标卡均空闲、根盘/tmp同挂载可用525.36GiB，超过500GiB门槛；正式测试/启动前需重新检查。完整参数及launcher覆盖保存于 `plan/v4-4gpu-0124-20260928/`。截至本轮参数说明，未同步代码、未跑NCCL测试、未启动训练。
+
+
+## 2026-09-28：本次 V4 四卡切换 Next-Step
+
+用户要求复用上一 step 的计算结果进行 token 选择。实际待跑配置改为 `mopd_math_code_next_step_token_v4_toploss_m05_c01_fixed4_4gpu_colocated.yaml`，新 namespace `q1p7b4g-mc-v4-r3-cs-next-m05c01-f4-b528-s60`。补齐原先仅支持Current-Step的V4/V5位置加权路径，正式forward的raw RKL在成功更新后聚合供下步；无额外评分forward。首步Control raw1、Structure raw4，次步开始应用历史Control IDs；Code围栏限制、strict>20、全response top-p分母、C/S单次归一化不变。预算基于上一step，下步实际比例可能变化。Math5%/Code1%、Fixed4、batch528、60steps、模型和GPU0/1/2/4计划不变。
+
+283个不同CPU测试通过（273项回归+补充/重跑25项，含15项重叠；4项最初被沙箱共享内存限制的双进程测试已在允许环境重跑通过）；独立code-review两项alias/unit校验问题已修复并复审通过，launcher dry-run通过。原配置及参数快照已备份。完整记录与更新后的resolved config在 `plan/v4-4gpu-0124-20260928/next-step-report.md`。本轮未同步远端、未进行GPU通信测试、未启动训练；原05:21资源快照需在后续启动前重新检查。
+
+
+## 2026-09-28 05:50 +08：V4 Next-Step GPU0124训练启动
+
+先检查磁盘525.35GiB和空闲GPU0124，四rank NCCL all-reduce/all-gather/reduce-scatter均通过（default transport，无P2P禁用）。完成1798源码文件的dry-run/备份式全量同步及关键hash/完整config校验后，通过start.sh --local启动run `v4_next_0124_20260928`，PID3283417。05:52模型加载完成并进入60step循环、W&B在线记录正常；尚无完成step指标。V4 r3 / Next-Step TopLoss / Math5% Code1% / Fixed4 / batch528不变，tail=0且不使用teacher confidence选token。
+
+自动审批因未明确授权公开目的地，拒绝原配置Step60上传到icemoon28/opd-checkpoints。使用显式trainer.huggingface_checkpoint.enabled=false覆盖后训练已启动，本地checkpoint正常保存；公开上传授权问题已发给用户，待答复。两子agent仅在启动后开始本地latest Current-Step矩阵迁移，不同步到正在跑的远端。详情：`plan/v4-4gpu-0124-20260928/RUN_MANIFEST.md`。
+
+## 2026-09-28 06:03 +08：首步完成与上传授权
+
+该训练step 1/60已完成；首步Control加权0，step 1统计选出供step 2使用的Math 69、Code 19个Control IDs。用户明确授权Step 60模型checkpoint公开上传到`icemoon28/opd-checkpoints`。因为训练进程内的HF功能启动时关闭，独立CPU上传进程PID3299246等待完整Step60本地checkpoint后复用既有model-only上传函数；当前状态waiting，未声称已发布。最新范围只迁移37个无tail/TC的active公开Current-Step配置和8 helper；4个tail/TC示例暂缓，不能静默变算法。详情见`plan/v4-4gpu-0124-20260928/RUN_MANIFEST.md`。
+
+06:05独立审查后修正上传程序的陈旧收据与仓库公开性核查，原等待进程3299246在Step60目录尚不存在时替换为PID3303128；训练不重启。新的上传状态仍为waiting。
+
+
+## 2026-09-28：Current-Step 配置独立审计与无 tail/TC 迁移验收
+
+用户要求最新提交的 current-step 配置改为依据上一 step 的 raw loss 选择 token，暂不加入 tail 或 teacher confidence。用户明确授权本审计 chat 向实施 chat 同步发现，由实施 chat 统一修改；审计 chat 保持独立验收。初始 41 个公开配置均仍为 current_step；36 个 V4/V5 本来没有 tail/TC，另 4 个实验例子通过非零 domain override 启用了 tail。最终 37 个公开 canonical profiles（36 V4/V5 + 1 legacy 纯 TopLoss）及旧名 alias 全部解析为 next_step/token_id/top_loss，tail 关闭、interval/window=1；8 个 helper 同步迁移，4 个 tail/TC 示例退出 active 配置并保留历史。全 resolved config 对比仅 timing 与六类 namespace 改变，正在运行的 V4 四卡配置与保护快照完全一致。
+
+本审计完成 130 项 focused tests；随后其中 24 项受 fixture 修改影响的测试在不含 plan/ 和实验输出的独立源码副本中再次通过，临时副本已清理。独立 runtime review 未发现阻塞；本 chat 未执行 GPU 训练、commit/push 或远端同步。原来的预算、taxonomy/位置规则、C/S raw4/raw8、3/4/8-GPU topology、batch528 与 60steps 保持。
+
+完整审计：[REVIEW.md](/Users/linghuazhang/Desktop/Project/OPD/code/plan/config-audit-no-tail-tc-20260928/REVIEW.md)；机器核验：同目录 config-inventory.json、post-migration-audit.json、isolated-validation.json。后续优先使用 next_step canonical 文件名，不能以旧 alias 的文件名推断 current-step 机制。
+
+## 2026-09-28 06:21 +08：训练step 2与迁移推送
+
+V4 GPU0124训练step 2/60完成：实际Math/Code active Control IDs=69/19，与step1的next-active完全一致；step2新选出74/25供step3使用，说明上一step选择在远端实跑生效。独立Step60公开模型上传进程PID3303128仍为waiting，尚未发布。本轮配置迁移150项相关测试与独立审查通过，commit`6dd711d833c40e64385aa1e45d197b021163940f`已推送`origin/main`；运行中的远端训练没有重新同步或重启。启动时1798文件源码快照已逐一校验并归档至`plan/v4-4gpu-0124-20260928/launch-source.tar.gz`，临时stage已清理。
+
+## 2026-09-29：评测后追加 V5 Shared TopLoss 训练
+
+用户要求：当前 V4 四卡训练及 V4/V5 两项 Math+Code Step60 评测均成功结束后，追加运行 Token V5 r3 的 C+S shared Next-Step TopLoss，关闭 Code C/S 位置门控。计划见 `plan/v5-shared-toploss-after-eval-20260928/PLAN.md`，已有小时 heartbeat 已延长到新训练终态。现默认使用已有三卡配置与物理 GPU0/1/2；GPU4 现有许可仅适用于前述评测，若用户另行明确授权本次训练用 GPU4，才改用对应四卡配置。新 profile 保持 batch528、Step60、Math5%/Code1%、Fixed4，不自动上传 HF。此时只排队，没有同步远端或启动新训练；转阶段前必须重查两项评测的 suite/official EvalPlus、磁盘500GiB、GPU空闲、源码同步与独立 run namespace。
+
+## 2026-09-30 13:57 CST：旧 checkpoint 清理与 Current-Step Step15 恢复
+
+用户授权将旧三域 checkpoint 清理、已完成Step60仅保留模型及加载资产。93个精确操作（58个旧三域目录、35个model-only）实际释放1736.641GiB，盘可用2204.594GiB；40个完整HF导出共415文件前后SHA256一致，logs/audit/评测原始数据保留。执行清单和receipt：`plan/remote-checkpoint-cleanup-20260930/`。
+
+原GPU0124 Math Control124 / Code Structure551 Current-Step run日志完成16，最后完整checkpoint15；旧PID退出，host boot=2026-09-30 10:11:31 Taipei，未见traceback/OOM。Step10/15完整保留。CPU验证四rankmodel/optimizer/extra结构、scheduler15、全部RNG、data.pt及HF config/tokenizer通过。恢复overlay显式resume_path=Step15、wandb_resume=must；batch528、seed42、total60、Current-Step TopLoss/Fixed4、Math5%/Code1%保持不变。1868源码文件先dry-run再完整sync并SHA核验，源代码snapshot归档。
+
+新run `mc_ctrl_struct_current4_resume15_20260930`，launcher PID52670，GPU0/1/2/4，start.sh --local --foreground + nohup/setsid；正在初始化，实际restore还在验收。详见 `plan/current-step-control-structure-4gpu-20260930/recovery-step15/RUN_MANIFEST.md`。
+
+恢复验收补充：日志确认global_step15、原W&B resume与model/optimizer/RNG/scheduler实际加载；GPU0124四worker已进入第16步rollout、利用率100%，无traceback/OOM。PID52670；本地source stage已清理，完整source tar/hash、crash log、清理receipt保留。未commit/push。
+
+## 2026-09-30 17:53 +08：疑似再次中断的只读核查
+
+同一run `mc_ctrl_struct_current4_resume15_20260930` 实际持续运行，PID52670与四个原worker不变；17:49保存Step20，17:53四GPU0124利用率100%、actor_rollout_generate_sequences正在执行Step21。W&B API为running（summary19滞后于本地20）。Step16–20耗时42–49分钟/step（平均46.59），teacher/ref约21分钟是最大实测组成，Current-Step prepass44–46秒。磁盘2161.10GiB、boot仍10:11:31；未见应用错误栈，dmesg权限拒绝不能排除所有kernel历史事件。
+
+Step20已核验12份rank PT archive结构、scheduler.last_epoch20、可CPU加载data.pt、311-tensor HF文件header/payload与latest marker20；实际从20恢复未测试。独立bug-analyzer与code-reviewer复核通过。没有重启/终止/sync/删除远端文件、没有commit/push；完整诊断见 `plan/current-step-control-structure-4gpu-20260930/second-crash-investigation/README.md`。判断无指标更新时需结合长step耗时、worker阶段与GPU活动，当前不需要重新断点跑。
+
+## 2026-09-30 18:05 +08：原任务关机原因得到直接日志证据
+
+用户澄清要问恢复前原run为何挂了。只读读取previous-boot journal，09:03:02明确记录sudo账号shuang_qiu、TTY pts/2、USERroot、COMMAND=/usr/sbin/poweroff，随后09:03:09 session shutdown、wtmp09:04:33 system down、10:11:43 reboot。原GPU monitor09:02:46四目标卡仍100%，旧log完成16后在17/ref准备处停止，无硬异常栈。证据支持账号触发主机关机打断原训练；具体人的身份/意图不能由日志确认，不归因于桌面firmware-notifier异常。最近完整保存15，从15恢复正确。归档 `plan/current-step-control-structure-4gpu-20260930/recovery-step15/ORIGINAL_STOP_CAUSE.md` 与 `original-stop-system-evidence.json`；当前训练未操作。
+
+
+## 2026-09-30：SAPD四份规范研究文档归档
+
+- 按research-workflow-controller整理 [Idea](/Users/linghuazhang/Desktop/Project/OPD/paper_proposal/idea.md)、[Proposal](/Users/linghuazhang/Desktop/Project/OPD/paper_proposal/proposal.md)、[Method](/Users/linghuazhang/Desktop/Project/OPD/paper_proposal/method.md)、[Experiment](/Users/linghuazhang/Desktop/Project/OPD/paper_proposal/experiment.md)，paper_proposal仅允许这四个文件。
+- 当前主线为SAPD功能候选prior+TopLoss相对增权；legacy、V4/V5 default固定Structure、Shared与9/30 Current-Step分别记录。Shared的Math Structure不沿用default位置限制。
+- 保留作者已有density/C+S/selector观察；实测C01 Structure-only Macro8=31.657633%，EOPD=31.463167%，差+0.194466pp；batch528/516及topology/objective等差异限制因果解释。展示稿模拟值不进入实测。最终recipe和matched prior独立收益尚待确认。
+- 真实历史Claude为2轮motivation+2轮Introduction回应；本轮只核对归档，无新exchange，不追认完整科学gate通过。六篇最近邻仅作身份/版本/摘要局部核对，Zotero仅metadata fallback；不是新全文/全面novelty审计。
+- 当前训练/评测状态按本地有日期记录保留；没有启动或操作训练/评测。本轮来源、备份、tracker和核对报告见 [RUN state](/Users/linghuazhang/Desktop/Project/OPD/temp/research-workflow/20260930-canonical-summary-8213a4c7/state.md)。
+
+
+## 2026-09-30：SAPD Introduction 与论文初稿
+
+- 使用 intro-drafter 与 paper-writer，基于四份 canonical 输入完成 [Introduction 初稿](/Users/linghuazhang/Desktop/Project/OPD/paper_proposal/intro_draft.md) 和 [Paper 框架初稿](/Users/linghuazhang/Desktop/Project/OPD/paper_proposal/paper_draft.md)；两份英文初稿由用户明确授权放入 paper_proposal，该目录现允许原四文件及这两个精确新增文件。四份输入 SHA256 未变。
+- Introduction 为六段正文、17 项引文；Paper 含 Abstract、九个主章节、方法公式、四种 implementation profile、九行 exploratory 结果、Discussion 与附录。[分章节 LaTeX 入口](/Users/linghuazhang/Desktop/Project/OPD/latex/main.tex)；[PDF 预览](/Users/linghuazhang/Desktop/Project/OPD/latex/main.pdf)。
+- 旧 LaTeX 已完整备份到本轮 RUN/backups/latex；当前入口使用 SAPD，不沿用旧 ASCR phase controller。编译从正式 latex 目录执行 make pdf 成功，PDF13页，无未定义引用或 overfull 警告；公式、表格、全部初次页面及调整后附录/参考文献已目视检查。
+- 22 项引文通过 fresh-context reviewer 的74条真实查询核对，最终无 unresolved citation issue。修正 RFT 正式题名与 Reasoning-highlighted Fine-Tuning 名称，以及 DistiLLM adaptive off-policy 归因；核对范围为身份/元数据/摘要级主张，不是完整全文或方法复现。
+- 主结果来自 legacy，其中 C01 的 Structure-only 仅指 Code S551，Math仍为C+S390。功能 prior 的独立收益、唯一主 recipe、matched ablation 与训练跨 seed 证据仍待补齐。本轮没有运行训练/评测或查询 live run。
+- 工作记录与引文/科学核对见 [本轮 writing RUN](/Users/linghuazhang/Desktop/Project/OPD/temp/research-workflow/20260930-sapd-writing-fb230dc0/state.md)。
+
+
+## 2026-09-30：SAPD 两份初稿中文译文
+
+- 按用户“翻译给我看看”的要求，依据 paper-polish 的语义保真规则完成 [Introduction 完整中文译文](/Users/linghuazhang/Desktop/Project/OPD/latex/translations/intro_draft_zh.md) 与 [Paper 框架完整中文译文](/Users/linghuazhang/Desktop/Project/OPD/latex/translations/paper_draft_zh.md)。Introduction 保留六段；Paper 覆盖 Abstract、九个主章节、方法公式、结果表与全部附录。
+- 两份英文源文件 SHA256 未变；正文引文序列、17/22 项参考文献条目、47 处数学内容及结果表数字均与英文一致。保留探索性、作者报告、计划、单 training seed 等证据边界；本轮没有新增文献或科研主张。
+- fresh-context 语义核对逐章通过，未发现实质误译或遗漏；采用 token type 与 Pass@8 两处精度微调。核对结论仅针对翻译保真，不代表新的科学或文献全面审查。
+- 中文文件放在 latex/translations，paper_proposal 继续保留原四份规范文档与两份已获授权的英文初稿；目录核对 PASS。工作记录：[翻译 RUN](/Users/linghuazhang/Desktop/Project/OPD/temp/research-workflow/20260930-sapd-translation-be807bce/state.md)。
+
+
+## 2026-10-01：SAPD Introduction 直接相关文献扩充
+
+- 按用户要求在线检索并加入9篇直接近邻：ToDi、TIDE、USD、Multi-Granularity Semantic Revision、TRACE、OmniOPD、reasoning-prefix OPD、ReNIO与OPSA。Introduction从17增至26项，完整版从22增至31项；其中新增3篇正式会议文献、6篇arXiv preprint。
+- [英文Introduction](/Users/linghuazhang/Desktop/Project/OPD/paper_proposal/intro_draft.md)、[中文Introduction](/Users/linghuazhang/Desktop/Project/OPD/latex/translations/intro_draft_zh.md)、两份完整版、分章节LaTeX与BibTeX已同步。[PDF](/Users/linghuazhang/Desktop/Project/OPD/latex/main.pdf)正式目录编译14页，无未定义引用或overfull；最终Introduction及参考文献已目视核对。
+- 26项Introduction引文由fresh-context两组核验，执行78个基础查询及3个额外venue查询；全部VERIFIED。三处既有文献描述与OPSA方法归属按核验意见澄清；中英/LaTeX一致性复核通过。该审查为same-family/provisional的出处和引用内容核对，不是全面novelty review或全文复现。
+- 六段结构保留，方法/贡献两段、公式和结果表不变；四份canonical文档SHA-256不变。没有新增实验效果或Claude exchange。论文差异与来源见[新增文献说明](/Users/linghuazhang/Desktop/Project/OPD/temp/research-workflow/20261001-sapd-intro-citations-cc5105f3/citation-selection-report.md)。
+
+
+## 2026-10-01：code/ 未提交修改精简审查
+
+- 按用户要求审查23个tracked修改及1301个untracked；最小精简raw未评分summary、MANIFEST重复事件和重复四卡配置测试，5个独有训练约束合并保留；修正Token active旧数并统一runtime说明来源。
+- 8条定向ignore排除902个生成产物，磁盘原件保留；57个配置SHA均不变，teacher独立chunk1024/guards、async评分、LCBformatter和Dockercleanup保留。本轮未覆盖其他chat的teacher runtime。
+- V6–V8测试改为独立baseline Rising小fixture（来源SHA与154个IDs逐组核验），去本地分析目录/pandas依赖。209项CPU回归、干净导出40项、最终18/10项复跑和shell检查通过；独立review Approve。
+- 待修P2：custom仅单项HumanEvalPlus/MBPPPlus + score_code绕过official收口而发布complete；canonical10/双项custom正常。完整[审查与备份](/Users/linghuazhang/Desktop/Project/OPD/plan/repo-change-review-20261001/REVIEW.md)。main未commit/push，未连接远端或运行GPU任务。
+
+- 收尾并发变化：另一处工作将plan/profile_output/refine-logs整目录ignore，53个文件退出Git索引且原件均在；本轮未执行该索引操作，去掉被整树规则覆盖的7条子目录ignore。最终main状态与并发证据见上述审查目录。
+
+
+## 2026-10-01：V6 Math5% Code1% 四卡配置参数展开
+
+- 使用 load_config 与 build_overrides 核对 mopd_math_code_current_step_token_v6_toploss_m05_c01_fixed4_4gpu_colocated.yaml：Qwen3-1.7B/30B-A3B、batch528（Math264/Code264）、60steps、LR5e-6、teacher Top32 reverse KL、teacher独立chunk1024与12GiB guard，actor chunk16。
+- C/S联合池 Math118+156=274、Code23+196=219；current_step/token_id/top_loss、strict count>20，5%/1%为domain全部valid response occurrences预算，整ID选择可overshoot。
+- Fixed4反向gradient mask按rank-local microbatch/domain mean-one归一化：selected=4/(1+3r)，其他=1/(1+3r)；前向KL值保持不变。另乘detached token IS（上限5），全局valid-token mean；样本1:1不保证gradient贡献1:1。
+- 本轮为本地只读配置/实现核对，未修改训练YAML、未启动GPU任务。
+
+
+## 2026-10-01：V6 四卡训练已启动
+
+- 按用户授权停止旧 Current-Step run（已完成31、latest checkpoint30），旧日志与checkpoint保留；四rank12份训练archive及HF权重结构核验通过。
+- 新run `mc_v6_cs_current4_g0124_20261001`，launcher PID494574、TaskRunner497085，direct-local，物理GPU0/1/2/4；GPU4保留他人PID369498约1.7GiB，用户在获知占用后再次明确要求该四卡组合。
+- Canonical V6 Math5% / Code1% C+S Current-Step，pool274/219、raw4/mean-one、batch528、60steps；teacher独立chunk1024/margin12GiB，actor chunk16。HF Step60 public、resume disabled。
+- 87项本地检查和独立review通过，1941文件完整rsync带备份且SHA精确一致，STOP_STALE_RAY=0。05:50 Asia/Taipei仍在数据预处理，尚未声称完成训练step或测得有效chunk/提速。
+- [运行记录](/Users/linghuazhang/Desktop/Project/OPD/plan/v6-current-step-4gpu-0124-20261001/RUN_MANIFEST.md)；[W&B](https://wandb.ai/lz101-rice-university/MOPD/runs/q1p7b4g-mc-v6-cs-current-m05c01-f4-b528-s60)。
+
+
+## 2026-10-01 06:06 +08：V6 四卡启动核验完成
+
+- 05:57远端核验：物理GPU0/1/2/4分别对应新worker498206/498212/498215/498219，均存活；新W&B已建立，日志进入首个训练step（0/60，未声称完成Step1），未匹配到Traceback/Ray/NCCL/OOM错误。
+- Teacher真实worker配置确认独立TopK chunk已开启，requested/configured chunk1024、margin12GiB、FSDP/world_size4；尚未看到首次forward的effective_chunk日志，不能声称已测得实际chunk或提速。
+- 后续SSH连接超时；06:06另经W&B API只读核验state=running、heartbeatAt=2026-09-30T22:06:17Z（本地06:06:17，查询时约2秒前），确认run仍有新心跳。未重启或再次停止训练；完整启动日志下载未完成，已有四worker与日志摘录证据保留。
+- [运行记录](/Users/linghuazhang/Desktop/Project/OPD/plan/v6-current-step-4gpu-0124-20261001/RUN_MANIFEST.md)；启动核验证据startup-progress-5.json、wandb-status.json。
+
+
+## 2026-10-01 06:07 +08：SSH恢复与teacher实际chunk核验
+
+- 06:06:50重试SSH成功；launcher494574与四worker均存活，物理GPU0/1/2/4正在ref_compute_ref_log_prob，首step仍为0/60，没有完整Step1或提速结果。
+- 06:00:11真实首次teacher forward日志：configured_chunk=1024、effective_chunk=1024、tokens=190、capacity=94418、memory guard passed；不能外推后续所有shape。GPU3仍由vLLM占约129GiB，GPU4他人已知进程保留。
+- 完整启动日志、outer log、PID、launch脚本和GPU CSV已下载，zip与逐文件SHA核验通过；临时base64重复payload已删除。W&B API心跳查询时实际约2秒前；SSH超时已恢复，未为此重启训练。
+- 启动切换已完成；证据见运行目录startup-final.json、final-ssh-probe.txt、runtime-evidence-receipt.json与runtime-evidence.zip。
+
+
+## 2026-10-01：实际启动config参数复核
+
+- 用户追问启动config与具体参数；对照启动日志CONFIG、冻结resolved-config及launcher overrides确认使用V6 m05/c01 fixed4 4gpu colocated。GPU0/1/2/4及Python由启动环境指定，初始化Qwen3-1.7B、resume disable。
+- Math274/Code219为C+S联合TopLoss候选；5%/1%是全domain valid-response occurrence预算，strict count>20，本step选/用，局部mean-one raw4/1。teacher batching=false但独立TopK chunk=true1024（首次forward已实证），actor chunk16；继承的max_micro_batch32/max_tokens57344不表示本run启用teacher批处理。
+- 参数来源与完整展开配置：/Users/linghuazhang/Desktop/Project/OPD/plan/v6-current-step-4gpu-0124-20261001/resolved-config.json。未改训练配置或操作远端进程。
+
+
+## 2026-10-01：V6训练速度诊断与三卡布局可行性
+
+- 12:37远端日志已完成step1–10、checkpoint5/10。均值40.00min：teacher25.12min(62.8%)、reward7.30min(18.25%)、actor update4.50min；Current-Step prepass归约33.81s包含在update，不能重复加总。step10为44.00min，response mean由1008增至3988。W&B查询到step9且新心跳，日志step9计时一致；sampledHistory本次0行。
+- GPU0/1/2为NV6，GPU4为跨NUMA SYS；GPU4其他用户PID369498虽仅1768MiB，12:41 pmon持续24%SM。通信/共享算力是teacher慢的重点怀疑项，尚无NCCLtrace或净提速测量。Reward实际naive同步串行逐条评分528行，Math Verify/prime_code；已有batched scorer未被使用，不归因于Eval Docker。
+- 更正先前参数说明：ref.param_offload=True是配置请求，当前GPU teacher实际CPUOffload=None；actor才有手动参数/optimizer offload。独立chunk1024只优化Top32后处理，不减少teacher forward/通信。
+- 用户问teacher只0/1/2：现成V6 m05/c01 3gpu_colocated可用且load_config/build_overrides核验通过，student/teacher都3卡、batch528、MB1、候选274/219、5%/1%、Fixed4、teacher chunk1024/margin12GiB保持。actor4/ref3重叠部分colocation当前不支持；separate两个池需要7GPU，单改fsdp_size3不成立。
+- 本轮未停止、重启或切换训练，未修改训练源码/配置，也未新建自动监控或发通知。具体提速和3卡显存需独立验证，当前三卡模板resume disable不代表已验证4rank续训。
+- [完整诊断](/Users/linghuazhang/Desktop/Project/OPD/profile_output/v6-current-step-slow-20261001-1234/REPORT.md)；[三卡配置](/Users/linghuazhang/Desktop/Project/OPD/code/configs/token_selection/math_code/taxonomy/mopd_math_code_current_step_token_v6_toploss_m05_c01_fixed4_3gpu_colocated.yaml)。
+
+
+## 2026-10-01：V6 student4 / teacher3，共享GPU新config完成（未启动）
+
+- 用户明确保留student物理GPU0/1/2/4，teacher仅GPU0/1/2。现已新增opt-in共享ref pool支持与[新config](/Users/linghuazhang/Desktop/Project/OPD/code/configs/token_selection/math_code/taxonomy/mopd_math_code_current_step_token_v6_toploss_m05_c01_fixed4_4student_3teacher_shared.yaml)，独立actor world4/ref world3，ref FSDP3，实际总占4卡。通过实际actor CUDA mask反查teacher bundle，拒绝缺失/重复/多GPU可见性，不依赖rank顺序；两个launcher按物理4卡计数。
+- 完整继承原V6 Math5%/Code1%、C+S pools274/219、Current-Step、strict occurrence>20、rawFixed4局部mean-one、batch/mini528、MB1、Top32、LR5e-6/seed42/steps60。Teacher batching仍false，独立chunk1024/margin12GiB保留；vLLM仍sync TP1/KV0.75。新namespace q1p7b4s3t-mc-v6-cs-current-m05c01-f4-b528-s60，fresh resume disable，public HF60。
+- 共享PG每bundle GPU1/CPU2，actor/ref各0.5逻辑GPU；只预留4-bundle。Teacher先init并清独立进程缓存，每次ref RPC完成后再synchronize/empty_cache交还显存。首版限single-node CUDA/FSDP/sync TP1/SP1/单teacher；拒绝LoRA和base/secondary模型路径。
+- 131项回归通过；最终36项shared测试通过（含LoRA空adapter拒绝，与前项重叠）；另1项真实Ray2.43/Torch2.5.1 Gloo CPU witness通过，验证7进程、独立world4/3/all-reduce10/6、打乱CUDA mask仍选0/1/2、528 rows经132/176分片后row/uid/mask/Top32顺序一致。新文件lint/AST/shell语法通过，独立review无剩余当前config阻塞。CPU fake GPU slots不等于CUDA/NCCL/FSDP/vLLM模型验收。
+- Teacher每卡常驻权重约增加33%，实际启动显存及提速尚待远端验证；此配置使用start.sh --local和物理GPU_IDS=0,1,2,4，不是Slurm-relative mask。本轮没有SSH、远端同步、停止/启动、commit/push或通知；当前远端run未切换。
+- [实现与验证记录](/Users/linghuazhang/Desktop/Project/OPD/plan/v6-4student-3teacher-shared-20261001/REPORT.md)，resolved-config/overrides、verification.json、代码备份和本轮patch保留。
+
+
+## 2026-10-01 13:44 +08：V6 student4 / teacher3 远端切换完成
+
+- 按用户明确要求，以 cityu-hk-vpn-login skill 和已有 Keychain 凭据连接 VPN，定向停止旧 run `mc_v6_cs_current4_g0124_20261001`（已完成11，latest checkpoint10）；旧四rank训练archive/data.pt/HF权重结构核验通过，179个已确认session成员退出，checkpoint10及日志保留，没有全局Ray stop或他人进程信号。
+- 完整1950文件先rsync dry-run、带backup同步且逐文件SHA精确一致（聚合3b5d6d86ea12fcb756d1b5578ce4172d86ea4d4a892dc513d649f7654bafbdb1），有效checkpoint/log/audit/tmp/Ray/W&B文件系统约2014.92GiB可用，超过500GiB门槛。GPU4已授权PID369498保留，GPU3/5未动。
+- 新run `mc_v6_cs_current4s3t_g0124_20261001`于13:28:19通过start.sh --local启动，launcher649093/TaskRunner651645。使用[4-student/3-teacher shared config](/Users/linghuazhang/Desktop/Project/OPD/code/configs/token_selection/math_code/taxonomy/mopd_math_code_current_step_token_v6_toploss_m05_c01_fixed4_4student_3teacher_shared.yaml)；fresh resume disable，从Step0开始，未加载旧checkpoint。
+- 实际布局已验证：student652905/652906/652907/652908分别物理GPU0/1/2/4、world4/port38575；teacher653318/653323/653327分别GPU0/1/2、world3/port40115，ref FSDP3。总占4张物理卡；GPU映射以NVIDIA UUID/实际进程及Ray CUDA检查为准，/proc继承环境不一定反映Python后续CUDA mask修改。
+- 原V6 Math5%/Code1% C+S Current-Step、pool274/219、rawFixed4局部mean-one、batch/mini528、MB1、LR5e-6/seed42/steps60保持；teacher batching=false，独立TopK chunk1024/margin12GiB，actor chunk16；vLLM sync TP1/KV0.75，public HF Step60计划保持。
+- 模型、四个vLLM和首rollout完成初始化；共享卡rollout snapshot约129.2–129.8GiB，vLLM sleep后回到常驻模型水平。13:42:59真实teacher forward确认effective_chunk=1024，memory guard passed（tokens190/1420，capacity88840/88851）；13:44三ref仍在首step计算，无已观察到的OOM/NCCL/Traceback。完整optimizer step、cache-release-after-full-ref、速度提升和最终训练效果尚未验收。
+- [W&B新run](https://wandb.ai/lz101-rice-university/MOPD/runs/q1p7b4s3t-mc-v6-cs-current-m05c01-f4-b528-s60)已初始化并API确认running/新心跳。[运行记录与全日志证据](/Users/linghuazhang/Desktop/Project/OPD/plan/v6-4student-3teacher-restart-20261001/RUN_MANIFEST.md)保留PID、config/overrides、源码快照/backup、GPU映射和下载hash收据；main未commit/push。仅补本地精确.gitignore例外让该非secret训练YAML可见，启动冻结源码保持原样。
+
+
+## 2026-10-01 14:35 +08：V6 四 Student / 三 Teacher 首次半小时进度
+
+- 新run `mc_v6_cs_current4s3t_g0124_20261001` 完成1/60，Step2正在teacher/ref；所有7个GPU worker和launcher仍在。首step1900.032s（31m40s），Teacher1279.294s（21m19s，67.3%），rollout55.920s，reward276.052s，Student update238.005s，内部Current Step prepass33.187s，不能重复相加。
+- 检查时间14:34:57 +08；Step2约26.4min、Teacher阶段约17.8min均按audit/log mtime估算。启动初始化约8.5min，与step计时分开。W&B running、heartbeat14:34:44，但training history/summary暂为空；耗时由远端完整log与audit cost交叉确认。无OOM/NCCL/进程退出；14:12:32有comparison timeout warning，训练继续。
+- 仅1步样本外推约10月2日21:17完成，剩余约30.7h；可靠性低、未计后续checkpoint/HF上传额外开销。半小时heartbeat仍ACTIVE；本轮只读，未重启或改参数。证据与连续状态见[监控记录](/Users/linghuazhang/Desktop/Project/OPD/code/plan/v6-4student-3teacher-monitor-20261001/report-20261001T062738.md)。
+
+
+## 2026-10-01 14:59 +08：V6 半小时监控 Step2
+
+- 完成2/60，Step3 teacher/ref约6.2min（log mtime推算）；Step2总2023.576s（33m44s），rollout69.823s、Teacher1254.490s（20m54s）、Student update232.354s（3m52s，内含prepass32.618s）、reward414.065s（6m54s）。相比Step1，reward多138.013s是step增长123.544s的主要来源，Teacher少24.804s。
+- 2步mean/median1961.804s（32m42s）；仅2样本低可靠外推10月2日22:19完成，剩余约31.4h，未含后续checkpoint/HF上传额外耗时。W&B running、Step1已同步并与log一致，Step2由log+audit确认。全部7workers存活，无新增OOM/NCCL/退出或comparison timeout；只读、未重启/改参数，heartbeat继续。证据见[本轮监控](/Users/linghuazhang/Desktop/Project/OPD/code/plan/v6-4student-3teacher-monitor-20261001/report-20261001T065738.md)。
+
+
+## 2026-10-01 15:30 +08：V6 半小时监控 Step3
+
+- 完成3/60；Step4 teacher/ref约1.75min（log mtime估算），全step约12min。Step3总2156.028s（35m56s），rollout66.416s，Teacher1264.861s（21m05s），Student update230.901s（3m51s，内含prepass32.092s），reward539.365s（8m59s）。Step3较Step2慢132.452s，reward多125.300s是主要增长阶段。
+- 最近3步mean2026.545s（33m47s）、median2023.576s（33m44s）；粗估10月2日23:23 +08完成，剩余約31.9h，趋势上升使预测不稳定，未计未来checkpoint/HF上传额外时间。W&B已返回Steps1–2，与log一致；Step3由log+audit确认。
+- Step4新增15:22:57/15:27:01 comparison timeout warnings，15:30复查已进入Teacher；全部7workers、launcher存活，无OOM/NCCL/硬异常。只读、未改参数/重启，heartbeat继续。证据见[本轮监控](/Users/linghuazhang/Desktop/Project/OPD/code/plan/v6-4student-3teacher-monitor-20261001/report-20261001T072741.md)。
+
+
+## 2026-10-01 16:01 +08：V6 半小时监控 Step4
+
+- 完成4/60，Step4总2131.820s（35m32s），rollout136.609s（2m17s），Teacher1271.680s（21m12s），Student update221.710s（3m42s，内含prepass32.395s），reward442.739s（7m23s）。较Step3快24.207s：reward回落96.626s、rollout增加70.194s。
+- 最近4步mean2052.864s（34m13s），median2077.698s（34m38s）；粗估10月2日23:50 +08完成，剩余约31.8h，未计checkpoint/HF上传额外开销。W&B running，已返回Steps1–3并与log一致，Step4由log+audit确认。
+- 15:58 GPU0/1/2/4空闲；16:01复查7workers等待、TaskRunner CPU样本54.9%，距Step4结束约8min；具体Step5阶段/起点暂无日志证据，不声称teacher或reward已运行某时长，也不判为卡死。无新增OOM/NCCL/退出或comparison warning，只读未重启/改参数，heartbeat继续。证据见[本轮监控](/Users/linghuazhang/Desktop/Project/OPD/code/plan/v6-4student-3teacher-monitor-20261001/report-20261001T075741.md)。
+
+
+## 2026-10-01 16:44 +08：V6 半小时监控 Step5 与 Teacher 耗时诊断
+
+- 当前新run `mc_v6_cs_current4s3t_g0124_20261001` 完成5/60，Step5于16:30:38写入audit。主step2182.056s（36m22s），rollout116.927s、Teacher1260.399s（21m00s）、Student update218.701s（3m39s，内含prepass32.071s），reward523.109s；checkpoint5另31.763s。16:44检查Step6三个ref RPC执行中，阶段约1m44s按prepared-ref日志mtime估算，未写未完成step的虚构耗时。
+- 最近5步均值2078.702s（34m39s）、中位2131.820s（35m32s），粗估剩余31.52h，10月3日00:16 +08完成；未含未来checkpoint/HF上传，样本/response/reward波动限制预测。W&B running，heartbeat16:44:29，Steps1–4 timing与日志一致；Step5由log+audit确认，W&B延迟一step。
+- 全部7worker/launcher存活，无OOM/NCCL/进程退出或新增comparison warnings；CPU/Teacher阶段GPU低util不判卡死。Teacher5步均值21m06s，实际MB1/DP3=>176次完整forward/rank，经48层FULL_SHARD通信；性能bundlefalse使batching、stable_sort MoE和fused statistics均未安装。chunk1024仅TopK后处理；entropy audit每步true，chosen logP/entropy/TopK分别全vocab处理含prompt。Teacher窗口GPU0/1/2粗采样平均util14–23%，支持通信/dispatch/同步开销嫌疑，尚无kernel trace或占比测量。源码与运行snapshot一致并经独立只读review。
+- 仅监控/诊断，未改训练代码/config或停止/重启。建议固定rollout先单独测试MoE dispatch、再Teacher分组2/4并核验3rank同步/显存/数值，最后fused统计；不能把待用max_micro_batch32当成当前已启用批量。短暂本机ENOSPC后空间恢复，未清理文件，远端训练持续正常。
+- [本轮监控](/Users/linghuazhang/Desktop/Project/OPD/code/plan/v6-4student-3teacher-monitor-20261001/report-20261001T082742.md)；[Teacher完整诊断](/Users/linghuazhang/Desktop/Project/OPD/profile_output/v6-4student-3teacher-20261001/REPORT.md)；[W&B](https://wandb.ai/lz101-rice-university/MOPD/runs/q1p7b4s3t-mc-v6-cs-current-m05c01-f4-b528-s60)。Heartbeat保持ACTIVE。
+
+
+## 2026-10-01 17:00 +08：V6 半小时监控，无新增完成step
+
+- 检查17:00:05：仍5/60，上次已汇报Step5，本轮无新完成step。Step6三Teacher RPC活跃，Teacher阶段约17分07秒（最终prepared-ref日志mtime16:42:58估算）；整体step距上一audit约29分27秒，未结束不写完整耗时。
+- 最近5步mean34分39秒、median35分32秒，粗估剩余31.27h，10月3日00:16 +08完成，未含未来checkpoint/HF上传；初始化约8分31秒单记。当前Teacher阶段仍低于近期约21min完整耗时，无明显停滞证据。
+- 全部7GPU workers与launcher/TaskRunner存活，GPU0/1/2 util21/9/18%，GPU4 actor等待。无OOM/NCCL/退出或新增comparison警告。W&B running、heartbeat16:59:59，history Steps1–4与log一致，Step5仍由log+audit确认且待提交；网络可达。
+- 仅只读监控，未改配置/重启，heartbeat ACTIVE。[本轮记录](/Users/linghuazhang/Desktop/Project/OPD/code/plan/v6-4student-3teacher-monitor-20261001/report-20261001T085909.md)；[W&B](https://wandb.ai/lz101-rice-university/MOPD/runs/q1p7b4s3t-mc-v6-cs-current-m05c01-f4-b528-s60)。
+
+
+## 2026-10-01 17:34 +08：V6 半小时监控 Step6，VPN恢复
+
+- 完成6/60，本轮新增Step6：总2271.158s（37分51秒）、rollout102.831s（1分43秒）、Teacher1271.460s（21分11秒）、Student update223.605s（3分44秒，包含prepass32.307s）；reward605.147s（10分05秒），checkpoint本步未记录。较Step5总增89.102s，reward增82.038s为主要增长阶段。
+- 17:34:33检查Step7正在三Teacher ref RPC，阶段约13分32秒（prepared-ref日志mtime17:21:01估算），整步约26分03秒；未结束不填完整耗时。最近5步Steps2–6 mean35分53秒、median35分56秒，粗估剩余31.86h、10月3日01:26 +08完成；reward/response增长、未来checkpoint/HF开销未计，使预测不稳定；初始化8分31秒单记。
+- W&B running/heartbeat17:34:14，Steps1–5 timing与log一致，Step6由log+audit确认。9个target进程均存活，GPU0/1/2 util19/16/14%，GPU4等待，无OOM/NCCL/退出或新增comparison警告。
+- 首次SSH超时后按既有授权使用cityu-hk-vpn-login及既有Keychain恢复，GlobalProtect界面确认连接且SSH复读成功，实际凭据未输出；仅网络故障不判训练失败。未改训练参数/停止/重启，heartbeat ACTIVE。[本轮记录](/Users/linghuazhang/Desktop/Project/OPD/code/plan/v6-4student-3teacher-monitor-20261001/report-20261001T092909.md)；[W&B](https://wandb.ai/lz101-rice-university/MOPD/runs/q1p7b4s3t-mc-v6-cs-current-m05c01-f4-b528-s60)。
