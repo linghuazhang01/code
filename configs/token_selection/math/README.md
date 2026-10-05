@@ -100,6 +100,13 @@ up-weighting and online selection switched off, so every valid position keeps
 weight 1 under the unchanged Top-32 reverse-KL objective. It uses the same
 per-step checkpoint cadence as the two 4-GPU random profiles.
 
+The full-vocabulary random baseline and the equal-weight reference also have
+six-GPU variants on the existing `6gpu_4a2t_b256` layout (4 actor + 2 teacher,
+batch256, teacher FSDP-sharded across the two ref GPUs):
+[full-vocabulary random](full_vocabulary/mopd_qwen1p7b_30b_a3b_instruct_2507_6gpu_math_fullvocab_random_topp05_fixed4_4a2t_b256.yaml)
+and [equal-weight](taxonomy/uniform_top32kl_no_weighting_6gpu_4a2t_b256.yaml).
+They differ from their 4-GPU profiles only in topology and identifiers.
+
 All configs use Qwen3-1.7B, teacher Top-32 reverse-KL training, and the strict
 source gate `occurrence >20` at every source-window step. Selected-token raw
 weight is fixed at 4 unless the profile explicitly uses `lossratio` weighting.

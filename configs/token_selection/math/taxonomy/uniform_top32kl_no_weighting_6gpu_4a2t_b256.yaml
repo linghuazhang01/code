@@ -1,0 +1,41 @@
+# Six-GPU variant of the equal-weight Top-32 reverse-KL reference.
+# Topology: 4 actor/rollout GPUs + 2 ref/teacher GPUs; global batch size 256.
+# The 30B teacher is explicitly FSDP-sharded across the two ref-policy GPUs.
+# Token up-weighting and online selection stay off; objective, seeds, schedule
+# and the save-every-step / keep-two checkpoint cadence follow the 4-GPU profile.
+extends: uniform_top32kl_no_weighting_4gpu_3a1t_b255.yaml
+
+runtime:
+  slurm_allocation_gpus: 6
+  wandb_run_id: q1p7b-math-top32kl-uniform-noweight-6g4a2t-b256
+
+data:
+  train_batch_size: 256
+
+actor:
+  ppo_mini_batch_size: 256
+
+worker_placement:
+  actor_rollout: {n_gpus_per_node: 4, nnodes: 1}
+  ref_policy: {n_gpus_per_node: 2, nnodes: 1}
+
+audit:
+  output_dir: audit/q1p7b-math-top32kl-uniform-noweight-6g4a2t-b256
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-top32kl-uniform-noweight-6g4a2t-b256
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-top32kl-uniform-noweight-6g4a2t-b256
+
+trainer:
+  experiment_name: q1p7b-math-top32kl-uniform-noweight-6g4a2t-b256
+  n_gpus_per_node: 4
+  default_local_dir: checkpoints/MOPD/q1p7b-math-top32kl-uniform-noweight-6g4a2t-b256
+
+extra_overrides:
+  - custom_reward_function.path=mopd_verl/mixed_reward.py
+  - custom_reward_function.name=compute_score
+  - trainer.resume_mode=disable
+  - actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+  - actor_rollout_ref.ref.fsdp_config.fsdp_size=2
