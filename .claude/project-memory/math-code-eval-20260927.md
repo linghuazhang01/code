@@ -28,7 +28,7 @@ heartbeat `math-code-c01` 已更新为当前六卡独立队列，每30分钟监�
 
 ## 2026-09-29：31.66% C01 Structure-only 后续判断
 
-八模型八项归档结果中，C01 Structure-only 8GPU 的 Macro8 Avg@8 为31.6576%，EOPD Native31.4632%，C01 regular 4GPU30.9850%。Structure-only相对regular的+0.673 pp来自Math4 +1.354 pp，Code4约持平。旧8GPU Structure-only与现有8GPU regular基类仅Code候选集551个Structure vs708个C+S及运行命名空间不同；但已评测regular使用4GPU/Step30续训，不能证明候选池因果效果。后续先确认冻结源码与已有8GPU regular Step60，再补匹配对照；C02 Structure-only 8GPU HF导出候选尚待验收。具体方案：`plan/c01-structure-followup-20260929/PLAN.md`。本轮未启动新实验。
+八模型八项归档结果中，C01 Structure-only 8GPU 的 Macro8 Avg@8 为31.6576%，EOPD Native 30.07%（seed42 CUDA graph 重评，与其余 eager 行执行方式不同），C01 regular 4GPU30.9850%。Structure-only相对regular的+0.673 pp来自Math4 +1.354 pp，Code4约持平。旧8GPU Structure-only与现有8GPU regular基类仅Code候选集551个Structure vs708个C+S及运行命名空间不同；但已评测regular使用4GPU/Step30续训，不能证明候选池因果效果。后续先确认冻结源码与已有8GPU regular Step60，再补匹配对照；C02 Structure-only 8GPU HF导出候选尚待验收。具体方案：`plan/c01-structure-followup-20260929/PLAN.md`。本轮未启动新实验。
 
 补充机制复核：Code regular 被删的157个Control ID中114个同时在Math候选池，只是跨域干扰的静态线索。C02真实step30排名的离线预算重放见`plan/c01-structure-followup-20260929/MECHANISM_REVIEW.md`与`c02_step30_top_p_replay.csv`：Code 0.5/1/2%对应实际覆盖0.512/1.295/2.052%；1%因纳入高频` **`出现58%选中质量。上下文比例仍是教师文本代理，不能当学生逐位置实测。Claude Code两轮只读讨论后，优先路径更新为找8GPU regular checkpoint；否则同源码4GPU regular/S-only从头成对训练，之后按C01实际audit择一测试Code位置门控或0.5%/ID cap。远端SSH认证失败，未启动GPU。
 

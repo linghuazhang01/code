@@ -1035,7 +1035,7 @@ Step20已核验12份rank PT archive结构、scheduler.last_epoch20、可CPU加�
 
 - 按research-workflow-controller整理 [Idea](/Users/linghuazhang/Desktop/Project/OPD/paper_proposal/idea.md)、[Proposal](/Users/linghuazhang/Desktop/Project/OPD/paper_proposal/proposal.md)、[Method](/Users/linghuazhang/Desktop/Project/OPD/paper_proposal/method.md)、[Experiment](/Users/linghuazhang/Desktop/Project/OPD/paper_proposal/experiment.md)，paper_proposal仅允许这四个文件。
 - 当前主线为SAPD功能候选prior+TopLoss相对增权；legacy、V4/V5 default固定Structure、Shared与9/30 Current-Step分别记录。Shared的Math Structure不沿用default位置限制。
-- 保留作者已有density/C+S/selector观察；实测C01 Structure-only Macro8=31.657633%，EOPD=31.463167%，差+0.194466pp；batch528/516及topology/objective等差异限制因果解释。展示稿模拟值不进入实测。最终recipe和matched prior独立收益尚待确认。
+- 保留作者已有density/C+S/selector观察；实测C01 Structure-only Macro8=31.657633%，EOPD=30.07%（seed42 CUDA graph 重评，与 eager 行执行方式不同）；batch528/516及topology/objective等差异限制因果解释。展示稿模拟值不进入实测。最终recipe和matched prior独立收益尚待确认。
 - 真实历史Claude为2轮motivation+2轮Introduction回应；本轮只核对归档，无新exchange，不追认完整科学gate通过。六篇最近邻仅作身份/版本/摘要局部核对，Zotero仅metadata fallback；不是新全文/全面novelty审计。
 - 当前训练/评测状态按本地有日期记录保留；没有启动或操作训练/评测。本轮来源、备份、tracker和核对报告见 [RUN state](/Users/linghuazhang/Desktop/Project/OPD/temp/research-workflow/20260930-canonical-summary-8213a4c7/state.md)。
 
@@ -1197,3 +1197,38 @@ Step20已核验12份rank PT archive结构、scheduler.last_epoch20、可CPU加�
 - 17:34:33检查Step7正在三Teacher ref RPC，阶段约13分32秒（prepared-ref日志mtime17:21:01估算），整步约26分03秒；未结束不填完整耗时。最近5步Steps2–6 mean35分53秒、median35分56秒，粗估剩余31.86h、10月3日01:26 +08完成；reward/response增长、未来checkpoint/HF开销未计，使预测不稳定；初始化8分31秒单记。
 - W&B running/heartbeat17:34:14，Steps1–5 timing与log一致，Step6由log+audit确认。9个target进程均存活，GPU0/1/2 util19/16/14%，GPU4等待，无OOM/NCCL/退出或新增comparison警告。
 - 首次SSH超时后按既有授权使用cityu-hk-vpn-login及既有Keychain恢复，GlobalProtect界面确认连接且SSH复读成功，实际凭据未输出；仅网络故障不判训练失败。未改训练参数/停止/重启，heartbeat ACTIVE。[本轮记录](/Users/linghuazhang/Desktop/Project/OPD/code/plan/v6-4student-3teacher-monitor-20261001/report-20261001T092909.md)；[W&B](https://wandb.ai/lz101-rice-university/MOPD/runs/q1p7b4s3t-mc-v6-cs-current-m05c01-f4-b528-s60)。
+
+
+## 2026-10-01：手写中文引言贡献补全
+
+- 用户所称 idea_draft_zh.md 未在工作区找到；按内容匹配，补全 [手写中文引言](/Users/linghuazhang/Desktop/Project/OPD/paper_proposal/intro_draft_zh.md) 中三处贡献占位。其余正文及参考文献逐字保留。
+- 三点为功能 token 学习动态观察、功能候选与 TopLoss 结合的 SAPD、区分功能先验增量价值的对照与消融设计。Math/Code 观察强弱分开，第三点仅描述验证设计，不宣称已完成公平对照或取得性能优势。
+- 原稿备份：/Users/linghuazhang/Desktop/Project/OPD/temp/intro-contributions-20261001/intro_draft_zh.before.md。定稿仍需主配方冻结及 matched 对照证据；未新增引用、训练或评测。
+
+
+## 2026-10-01：配套中文正文讨论稿
+
+- 新建 [中文正文](/Users/linghuazhang/Desktop/Project/OPD/paper_proposal/body_draft_zh.md)，涵盖 Related Work、Motivation、Method、Experiments、Preliminary Results、Discussion 与 Conclusion。与当前手写引言的统一功能候选叙事对应。
+- 方法按 Token V9 与 Current-Step 规范说明，未声称已完成训练或主配方效果确认；九行结果保留 legacy 来源及历史条件差异。阶段分析明确为准确率拐点提案。
+- 8篇引用通过fresh-context官方摘要/metadata核对；引用编号、数学块与九行结果一致性检查通过。未改旧稿、代码或实验。写作证据见 [记录](/Users/linghuazhang/Desktop/Project/OPD/plan/sapd-chinese-body-20261001/EVIDENCE.md)。
+
+
+## 2026-10-01：五章双语组织与维护约束
+
+- 按用户要求，将正文重组为 Related Work、Methodology、Experiment、Analysis、Discussion and Limitation；每章独立 `_zh.md` 与 `_en.md`，共10份文件。入口及章节范围/同步规则：[SECTIONS.md](/Users/linghuazhang/Desktop/Project/OPD/paper_proposal/SECTIONS.md)。
+- 功能定义移入Methodology，训练动态与legacy结果集中Analysis，原Conclusion保留为Discussion末节。原body_draft_zh.md改为导航；完整原稿备份于temp/sapd-bilingual-sections-20261001/body_draft_zh.before.md。旧研究材料与引言保留。
+- 原正文段落保全检查、双语公式/表格数字/引用/章节编号检查通过；独立只读语义复核通过，8项引用未超出此前核验范围。未新增实验主张或运行实验。
+
+
+## 2026-10-01：补充 Abstract 与 Introduction 双语章节
+
+- 新增 abstract_zh/en.md、introduction_zh/en.md，统一为七部分十四文件；[章节索引](/Users/linghuazhang/Desktop/Project/OPD/paper_proposal/SECTIONS.md)含内容边界及双语同步约束。
+- Abstract总结现有设计、描述性观察与legacy局限。Introduction基于手写稿，仅清理表达/占位示例；三项贡献保留，原手写稿未修改。独立引用核对后澄清DEAR机制与RLVR研究范围。
+- 十四文件存在、引用与链接对应、公式一致、索引链接检查通过。引言Math/Code强相关与Code较弱的张力及Figure2绑定待决，已列于plan/sapd-chinese-body-20261001/INTRODUCTION_NOTES.md，未新增实验事实。
+
+
+## 2026-10-02：SAPD两阶段候选与双语方法修订
+
+作者明确全domain CodeLex、OPD-1.7B至少两个step occurrence>20。复算Math394/Code704/Science365，双语方法及公式已更新，训练配置和历史结果不变。细节：[sapd-methodology-20261002.md](sapd-methodology-20261002.md)；已完成两轮Claude Opus5.5讨论并修订正文，效果与成本证据仍待实验。
+
+作者随后要求去掉 Science：当前中英文 methodology 与表 1 仅保留 Math/Code（394/704），两域均包含 CodeLex；原始复算记录保留溯源。
