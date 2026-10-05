@@ -92,3 +92,20 @@ def test_worker_mapping_and_manifest(tmp_path: Path, ids: str) -> None:
         assert f"gpu={gpu_id} " in log.read_text()
         assert f"--worker-id {worker_id}" in log.read_text()
     assert (suite / "COMPLETED_AT_UTC").exists()
+
+
+def test_cuda_graphs_is_an_explicit_custom_suite_opt_in(tmp_path: Path) -> None:
+    default = run_launcher(tmp_path, ["--dry_run"])
+    assert default.returncode == 0, default.stderr
+    assert "--cuda-graphs" not in default.stdout
+
+    enabled = run_launcher(tmp_path, ["--cuda_graphs", "--dry_run"])
+    assert enabled.returncode == 0, enabled.stderr
+    assert "--cuda-graphs" in shlex.split(enabled.stdout.splitlines()[1])
+
+    standard = run_launcher(
+        tmp_path,
+        ["--standard_protocol", "--gopd_dir", str(tmp_path), "--cuda_graphs", "--dry_run"],
+    )
+    assert standard.returncode == 2
+    assert "--standard_protocol keeps eager" in standard.stderr

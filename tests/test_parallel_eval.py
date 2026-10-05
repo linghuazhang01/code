@@ -160,7 +160,13 @@ class ParallelEvalTest(unittest.TestCase):
                 temperature=1.0,
                 code_sandbox_image_id="sha256:changed",
             )
+            cuda_graphs = build_manifest(
+                **common, score_code=True, temperature=1.0, cuda_graphs=True
+            )
 
+        self.assertTrue(scored["execution"]["enforce_eager"])
+        self.assertFalse(cuda_graphs["execution"]["enforce_eager"])
+        self.assertNotEqual(resume_signature(scored), resume_signature(cuda_graphs))
         self.assertNotEqual(scored["execution"], unscored["execution"])
         self.assertNotEqual(scored["generation"], changed_sampling["generation"])
         self.assertNotEqual(resume_signature(scored), resume_signature(unscored))

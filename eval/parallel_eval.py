@@ -134,6 +134,7 @@ def build_manifest(
     code_scoring_workers: int = 0,
     code_scoring_pending_shards: int = 2,
     seed_sequence_offset: int = 0,
+    cuda_graphs: bool = False,
 ) -> dict[str, Any]:
     """Create a deterministic shard manifest for one model and evaluation suite."""
     if shards_per_dataset < 1:
@@ -316,7 +317,10 @@ def build_manifest(
             "max_model_len": max_model_len,
             "max_num_batched_tokens": max_num_batched_tokens,
             "max_num_seqs": max_num_seqs,
-            "enforce_eager": True,
+            # Eager is the protocol default. CUDA graphs are an explicit opt-in
+            # for CPU-bound hosts; they change kernels, so samples are not
+            # bitwise comparable with eager suites.
+            "enforce_eager": not cuda_graphs,
             "enable_chunked_prefill": False,
             "score_code": score_code,
             "code_scorer": {
@@ -768,6 +772,7 @@ def parse_args() -> argparse.Namespace:
     plan_parser.add_argument("--code-scoring-pending-shards", type=int, default=2)
     plan_parser.add_argument("--max-samples-per-dataset", type=int)
     plan_parser.add_argument("--include-mmlupro-500", action="store_true")
+    plan_parser.add_argument("--cuda-graphs", action="store_true")
     plan_parser.add_argument("--resume", action="store_true")
 
     merge_parser = subparsers.add_parser("merge", help="Merge all successful shards.")
@@ -810,6 +815,7 @@ def main() -> int:
             worker_count=args.worker_count,
             code_scoring_workers=args.code_scoring_workers,
             code_scoring_pending_shards=args.code_scoring_pending_shards,
+            cuda_graphs=args.cuda_graphs,
         )
         manifest_path = write_plan(manifest, resume=args.resume)
         print(f"[parallel-eval] planned shards={manifest['total_shards']} manifest={manifest_path}")
