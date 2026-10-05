@@ -94,6 +94,12 @@ variant (an `extends` overlay cannot empty inherited groups) and differs from
 it only in the candidate scope, the empty groups and the identifiers.
 CPU tests pass (`tests/test_random_selector.py`); GPU smoke has not been run.
 
+The [equal-weight reference](taxonomy/uniform_top32kl_no_weighting_4gpu_3a1t_b255.yaml)
+closes the family: it extends the same 4-GPU TopLoss profile with token
+up-weighting and online selection switched off, so every valid position keeps
+weight 1 under the unchanged Top-32 reverse-KL objective. It uses the same
+per-step checkpoint cadence as the two 4-GPU random profiles.
+
 All configs use Qwen3-1.7B, teacher Top-32 reverse-KL training, and the strict
 source gate `occurrence >20` at every source-window step. Selected-token raw
 weight is fixed at 4 unless the profile explicitly uses `lossratio` weighting.

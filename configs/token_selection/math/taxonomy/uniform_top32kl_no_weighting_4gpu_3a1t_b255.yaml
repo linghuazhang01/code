@@ -1,0 +1,28 @@
+# Equal-weight Top-32 reverse-KL reference for the Math-only ablation family.
+# It extends the 4-GPU rerun of the best FullTaxonomy TopP5% Fixed4 profile and
+# switches token up-weighting and online selection off, so every valid response
+# position keeps weight 1 and no gradient gate is applied. Objective, data,
+# batch 255, 3 actor + 1 teacher GPUs, seeds and schedule are unchanged.
+# Checkpoints are saved every step and only the latest two are kept, so the
+# step-60 model survives only as its Hugging Face upload.
+extends: top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_4gpu_3a1t_b255_r20260911.yaml
+
+runtime:
+  wandb_run_id: q1p7b-math-top32kl-uniform-noweight-4g3a1t-b255
+
+audit:
+  control_token_loss_weighting_enabled: false
+  control_token_online_selection_enabled: false
+  output_dir: audit/q1p7b-math-top32kl-uniform-noweight-4g3a1t-b255
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-top32kl-uniform-noweight-4g3a1t-b255
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-top32kl-uniform-noweight-4g3a1t-b255
+
+trainer:
+  save_freq: 1
+  max_actor_ckpt_to_keep: 2
+  experiment_name: q1p7b-math-top32kl-uniform-noweight-4g3a1t-b255
+  default_local_dir: checkpoints/MOPD/q1p7b-math-top32kl-uniform-noweight-4g3a1t-b255
