@@ -302,18 +302,44 @@ def prepare_occurrence_masks(
         torch.distributed.all_gather_object(ranks, (counts, positions, error))
     fractions = dict(config.control_token_online_top_p_by_domain)
     if current_step:
-        from mopd_verl.domain_gradient.current_step_selection import select_current_step
+        from mopd_verl.domain_gradient.current_step_selection import (
+            current_step_selection_record,
+            select_current_step,
+        )
         from mopd_verl.domain_gradient.current_step_weights import install_current_step_masks
 
+        head_fractions = {
+            d: fractions.get(d, config.control_token_online_top_p) for d in config.domains
+        }
+        tail_budget_fractions = {
+            d: tail_fractions.get(d, config.control_token_tail_top_p) for d in config.domains
+        }
         selection = select_current_step(
             ranks, candidates,
-            {d: fractions.get(d, config.control_token_online_top_p) for d in config.domains},
-            {d: tail_fractions.get(d, config.control_token_tail_top_p) for d in config.domains},
+            head_fractions,
+            tail_budget_fractions,
             config.control_token_online_min_mean_occurrences_per_step,
             config.control_token_online_strict_occurrence_gate,
             unit=config.control_token_online_selection_unit,
             head_modes=selection_modes, tail_mode=config.control_token_tail_selection_mode,
         )
+        # The audit writes this record after the prepass; a logging fault must
+        # never abort a training step.
+        try:
+            audit._current_step_selection_record = current_step_selection_record(
+                ranks, candidates, selection,
+                step=config.step,
+                unit=config.control_token_online_selection_unit,
+                head_fractions=head_fractions,
+                tail_fractions=tail_budget_fractions,
+                minimum=config.control_token_online_min_mean_occurrences_per_step,
+                strict=config.control_token_online_strict_occurrence_gate,
+            )
+        except Exception as exc:  # noqa: BLE001
+            audit._current_step_selection_record = {
+                "step": int(getattr(config, "step", -1)),
+                "error": f"{type(exc).__name__}: {exc}",
+            }
         rank = torch.distributed.get_rank() if distributed else 0
         metrics = dict(selection.metrics)
         metrics.update(install_current_step_masks(audit, templates, selection, rank=rank))

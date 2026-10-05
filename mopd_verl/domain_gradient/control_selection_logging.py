@@ -40,6 +40,56 @@ def _score_distribution_record(
     }
 
 
+def _candidate_step_statistics_record(
+    state: OnlineControlSelectionState,
+    observed_step: int,
+) -> dict[str, Any] | None:
+    """Return every observed candidate's TopLoss statistics for one step.
+
+    The selection record otherwise keeps only the chosen IDs, which makes the
+    ranking impossible to replay offline under other windows or gates.
+    """
+
+    if not state.history or state.history[-1][0] != observed_step:
+        return None
+    step, domain_rows = state.history[-1]
+    valid_counts = dict(dict(state.valid_token_count_history).get(step, ()))
+    return {
+        "step": int(step),
+        "score": "abs_configured_token_loss",
+        "domains": {
+            str(domain): {
+                "valid_token_count": int(valid_counts.get(domain, 0)),
+                "token_ids": [int(token_id) for token_id, _, _ in statistics],
+                "abs_loss_sums": [float(loss_sum) for _, loss_sum, _ in statistics],
+                "counts": [int(count) for _, _, count in statistics],
+            }
+            for domain, statistics in domain_rows
+        },
+    }
+
+
+def append_current_step_selection_jsonl(
+    *,
+    output_dir: str,
+    record: Mapping[str, Any],
+) -> None:
+    """Persist one current-step selection record from rank zero."""
+
+    if (
+        torch.distributed.is_available()
+        and torch.distributed.is_initialized()
+        and torch.distributed.get_rank() != 0
+    ):
+        return
+    destination = step_jsonl_dir(output_dir, int(record["step"]), create=True)
+    with (destination / "current_step_selection.jsonl").open(
+        "a",
+        encoding="utf-8",
+    ) as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
 def append_online_control_selection_jsonl(
     *,
     output_dir: str,
@@ -163,6 +213,9 @@ def append_online_control_selection_jsonl(
         },
         "next_active_token_ids": state.active_map(),
         "next_active_token_weights": state.active_weight_map(),
+        "candidate_step_statistics": _candidate_step_statistics_record(
+            state, outcome.observed_step
+        ),
         "domains": {
             result.domain: {
                 "top_p": state.top_p_for_domain(result.domain),

@@ -165,6 +165,70 @@ def _take(
     return frozenset(chosen), count
 
 
+def current_step_selection_record(
+    ranks: Sequence[tuple[dict[str, int], Sequence[Position], str | None]],
+    candidates: dict[str, Sequence[int]],
+    selection: CurrentStepSelection,
+    *,
+    step: int,
+    unit: str,
+    head_fractions: dict[str, float],
+    tail_fractions: dict[str, float],
+    minimum: float,
+    strict: bool,
+) -> dict[str, object]:
+    """Describe one current-step selection, including every candidate's TopLoss.
+
+    Read-only: it summarizes the gathered positions and never alters selection.
+    """
+    domains = {}
+    for domain, ids in candidates.items():
+        allowed = set(ids)
+        sums: dict[int, float] = defaultdict(float)
+        counts: dict[int, int] = defaultdict(int)
+        for _, positions, _ in ranks:
+            for p in positions:
+                if p.domain == domain and p.token_id in allowed:
+                    # Compacted token-ID positions carry a mean |loss|; raw
+                    # occurrence positions carry one signed loss with count 1.
+                    sums[p.token_id] += abs(p.score) * p.occurrence_count
+                    counts[p.token_id] += p.occurrence_count
+        token_ids = sorted(counts)
+        entry: dict[str, object] = {
+            "valid_token_count": int(
+                sum(rank_counts.get(domain, 0) for rank_counts, _, _ in ranks)
+            ),
+            "top_p": float(head_fractions[domain]),
+            "tail_top_p": float(tail_fractions[domain]),
+            "token_ids": token_ids,
+            "abs_loss_sums": [float(sums[token_id]) for token_id in token_ids],
+            "counts": [int(counts[token_id]) for token_id in token_ids],
+        }
+        for name, selected in (
+            ("head", selection.head.get(domain, frozenset())),
+            ("tail", selection.tail.get(domain, frozenset())),
+        ):
+            if unit == "token_id":
+                entry[name + "_token_ids"] = sorted(key[0] for key in selected)
+            else:
+                entry[name + "_position_count"] = len(selected)
+            prefix = f"{domain}/current_step/{name}/"
+            entry[name + "_budget_count"] = selection.metrics.get(prefix + "budget_count")
+            entry[name + "_selected_count"] = selection.metrics.get(
+                prefix + "selected_count"
+            )
+        domains[str(domain)] = entry
+    return {
+        "step": int(step),
+        "selection_timing": "current_step",
+        "unit": unit,
+        "score": "abs_selector_rkl",
+        "min_occurrences": float(minimum),
+        "strict_occurrence_gate": bool(strict),
+        "domains": domains,
+    }
+
+
 def select_current_step(
     ranks: Sequence[tuple[dict[str, int], Sequence[Position], str | None]],
     candidates: dict[str, Sequence[int]],

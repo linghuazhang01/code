@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 from dataclasses import dataclass, replace
 from typing import Any, Sequence
@@ -132,6 +133,8 @@ from mopd_verl.full_gradient.loss_support import (
     selected_teacher_entropy,
     selected_teacher_log_prob,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -2544,6 +2547,25 @@ class DomainGradientAudit:
             signed_shares,
         )
 
+    def _write_current_step_selection_record(self) -> None:
+        """Persist the prepass selection record; logging never aborts training."""
+
+        record = getattr(self, "_current_step_selection_record", None)
+        self._current_step_selection_record = None
+        if not record or int(record.get("step", -1)) < 0:
+            return
+        from mopd_verl.domain_gradient.control_selection_logging import (
+            append_current_step_selection_jsonl,
+        )
+
+        try:
+            append_current_step_selection_jsonl(
+                output_dir=self.config.output_dir,
+                record=record,
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            LOGGER.warning("Current-step selection log skipped: %s", exc)
+
     def run_before_training(
         self,
         micro_batches: Sequence[Any],
@@ -2560,6 +2582,7 @@ class DomainGradientAudit:
                 self, micro_batches, loss_scales,
                 on_policy=on_policy, temperature=temperature,
             )
+            self._write_current_step_selection_record()
         return {
             **self._run_before_training_replay(
                 micro_batches, loss_scales, on_policy=on_policy, temperature=temperature,
