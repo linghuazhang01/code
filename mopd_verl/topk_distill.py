@@ -470,16 +470,23 @@ def topk_log_probs_from_logits(
         gather_shape = tuple(gather_ids.shape[-1:])
         flat_gather_ids = gather_ids.reshape(-1, int(gather_ids.shape[-1]))
 
+    needs_vocab_normalizer = (
+        topk_count is not None
+        or logprob_mode == TOPK_LOGPROB_MODE_FULL_VOCAB
+        or (flat_gather_ids is not None and normalize_gathered)
+    )
+    if not needs_vocab_normalizer:
+        # Raw support logits need no vocabulary pass, so one gather suffices.
+        # Per-chunk slices would each backpropagate a full [tokens, vocab]
+        # zero gradient, which makes the Student backward quadratic in length.
+        gathered_logits = flat_logits.gather(dim=-1, index=flat_gather_ids)
+        return None, None, gathered_logits.reshape(*prefix_shape, *gather_shape)
+
     topk_id_chunks: list[torch.Tensor] = []
     topk_log_prob_chunks: list[torch.Tensor] = []
     gathered_log_prob_chunks: list[torch.Tensor] = []
     for start in range(0, int(flat_logits.shape[0]), chunk_size):
         end = min(start + chunk_size, int(flat_logits.shape[0]))
-        needs_vocab_normalizer = (
-            topk_count is not None
-            or logprob_mode == TOPK_LOGPROB_MODE_FULL_VOCAB
-            or (flat_gather_ids is not None and normalize_gathered)
-        )
         raw_logits_chunk = flat_logits[start:end]
         logits_chunk = raw_logits_chunk.float() if needs_vocab_normalizer else raw_logits_chunk
         log_norm = torch.logsumexp(logits_chunk, dim=-1, keepdim=True) if needs_vocab_normalizer else None

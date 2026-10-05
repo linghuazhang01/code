@@ -433,6 +433,9 @@ class TrainerConfig:
     critic_warmup: int = 0
     val_before_train: bool = True
     log_val_generations: int = 10
+    # Rule-based rewards only feed advantages/metrics read at the adv stage, so
+    # scoring them in a Ray task overlaps CPU scoring with the GPU log-prob work.
+    launch_reward_fn_async: bool = True
 
 
 @dataclass(frozen=True)

@@ -29,6 +29,7 @@ settings.json
 !/tests/test_token_v9_current_step_configs.py
 !/configs/token_selection/math_code/taxonomy/mopd_math_code_current_step_token_v6_toploss_m05_c01_fixed4_4student_3teacher_shared.yaml
 !/configs/token_selection/math_code/taxonomy/mopd_math_code_current_step_token_v6_toploss_m05_c01_fixed4_3student_1teacher.yaml
+!/configs/token_selection/math_code/taxonomy/mopd_math_code_current_step_token_v6_toploss_m05_c01_fixed4_3student_1teacher_resume.yaml
 !third_party/verl/tests/workers/rollout/test_sglang_async_rollout_w_tools_token_out.py
 
 # Python

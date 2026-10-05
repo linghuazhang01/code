@@ -11,6 +11,7 @@ from mopd_verl.settings import load_config
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs/token_selection/math_code/taxonomy"
 SHARED = CONFIG_DIR / "mopd_math_code_current_step_token_v6_toploss_m05_c01_fixed4_4student_3teacher_shared.yaml"
 DEDICATED = CONFIG_DIR / "mopd_math_code_current_step_token_v6_toploss_m05_c01_fixed4_3student_1teacher.yaml"
+RESUME = CONFIG_DIR / "mopd_math_code_current_step_token_v6_toploss_m05_c01_fixed4_3student_1teacher_resume.yaml"
 RUN_ID = "q1p7b3s1t-mc-v6-cs-current-m05c01-f4-b528-s60"
 
 
@@ -48,3 +49,28 @@ def test_three_student_one_teacher_keeps_shared_recipe() -> None:
         for key, value in shared[section].items():
             if key not in excluded:
                 assert dedicated[section][key] == value, f"{section}.{key}"
+
+
+def test_resume_profile_only_switches_resume_settings() -> None:
+    dedicated, resume = load_config(DEDICATED), load_config(RESUME)
+    dedicated_raw, resume_raw = asdict(dedicated), asdict(resume)
+    for section, values in dedicated_raw.items():
+        if section in {"runtime", "extra_overrides"}:
+            continue
+        assert resume_raw[section] == values, section
+    for key, value in dedicated_raw["runtime"].items():
+        if key != "wandb_resume":
+            assert resume_raw["runtime"][key] == value, f"runtime.{key}"
+    assert dedicated.runtime.wandb_resume == "never"
+    assert resume.runtime.wandb_resume == "allow"
+    assert resume.runtime.wandb_run_id == RUN_ID
+
+    dedicated_overrides = build_overrides(dedicated)
+    resume_overrides = build_overrides(resume)
+    assert "trainer.resume_mode=disable" in dedicated_overrides
+    assert "trainer.resume_mode=auto" in resume_overrides
+    assert "trainer.resume_mode=disable" not in resume_overrides
+    assert [item for item in resume_overrides if item != "trainer.resume_mode=auto"] == [
+        item for item in dedicated_overrides if item != "trainer.resume_mode=disable"
+    ]
+    assert "reward_model.launch_reward_fn_async=True" in resume_overrides

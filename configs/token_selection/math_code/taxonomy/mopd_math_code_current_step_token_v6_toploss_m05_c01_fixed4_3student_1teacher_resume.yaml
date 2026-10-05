@@ -1,0 +1,17 @@
+# Resume the V6 3-student / 1-teacher run from its latest checkpoint into the same
+# W&B run. trainer.resume_mode=auto reads latest_checkpointed_iteration.txt, and the
+# checkpoint restores the dataloader and domain-sampler state. Recipe and placement
+# are unchanged; resumed steps use the exact one-gather Student Top-K backward and
+# asynchronous rule-based reward scoring.
+extends: mopd_math_code_current_step_token_v6_toploss_m05_c01_fixed4_3student_1teacher.yaml
+
+runtime:
+  wandb_resume: allow
+
+# Lists replace the parent's list; only resume_mode differs from the parent.
+extra_overrides:
+- custom_reward_function.path=mopd_verl/mixed_reward.py
+- custom_reward_function.name=compute_score
+- trainer.resume_mode=auto
+- actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+- actor_rollout_ref.ref.fsdp_config.fsdp_size=1

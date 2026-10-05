@@ -704,6 +704,7 @@ def build_overrides(config: MOPDConfig) -> list[str]:
         "actor_rollout_ref.ref.fsdp_config.model_dtype=bfloat16",
         "algorithm.use_kl_in_reward=False",
         "reward_model.reward_manager=naive",
+        f"reward_model.launch_reward_fn_async={_bool(trainer.launch_reward_fn_async)}",
         f"+trainer.seed={trainer.seed}",
         f"trainer.critic_warmup={trainer.critic_warmup}",
         f"trainer.val_before_train={_bool(trainer.val_before_train)}",

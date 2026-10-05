@@ -84,6 +84,16 @@ class PerformanceConfigCoverageTests(unittest.TestCase):
                             expected_settings,
                         )
                         overrides = build_overrides(config)
+                        # Rewards are read only at the adv stage, so every
+                        # profile overlaps rule-based scoring with log-prob work.
+                        self.assertEqual(
+                            [
+                                item
+                                for item in overrides
+                                if item.startswith("reward_model.launch_reward_fn_async=")
+                            ],
+                            ["reward_model.launch_reward_fn_async=True"],
+                        )
                         self.assertIn("+actor_rollout_ref.ref.teacher_performance.topk_logprob_chunk_enabled=true", overrides)
                         self.assertIn("+actor_rollout_ref.ref.teacher_performance.expandable_segments=true", overrides)
                         self.assertIn(
