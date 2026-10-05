@@ -54,6 +54,46 @@ entropy. Invalid entropy, empty domains or zero denominators fail explicitly.
 This requires the new selector code, not just YAML on an older checkout.
 CPU tests and two-rank witnesses pass; GPU smoke has not been run.
 
+## Ranking ablation: random order + Fixed4 (5 GPUs)
+
+[Random config](taxonomy/random_next_step_full_taxonomy_unified_topp0p05_i1_w1_fixed4_5gpu_4a1t_b256.yaml)
+inherits FullTaxonomy TopP5% Fixed4; resolved differences are only the selector
+and six run/output identifiers. It keeps 4 actor + 1 teacher, batch256, seed42.
+
+`random` ablates the Next-Step ranking signal. Eligible IDs (FullTaxonomy 390,
+strict count>20) are ordered by a SHA-256 hash of (domain, source step, token
+ID) instead of mean abs configured loss, then whole IDs are accumulated to the
+unchanged joint TopP5% budget and applied with the t→t+1 lag, raw weight 4 and
+mean-one normalization. The order is redrawn every source step; it has no seed
+field and no generator state, so actor ranks and resumed runs agree.
+
+A random order reaches the budget with fewer, more frequent IDs than TopLoss,
+and the last whole ID overshoots more: compare `selected_occurrence_fraction`
+in `online_control_selection.jsonl`, not only the nominal 5%. The logged
+`mean_abs_loss` and score distributions are the observed loss of the randomly
+selected IDs, not the sort key. Configured pools and the `full_vocabulary`
+scope are supported with `next_step`/`token_id` and fixed weights; other
+combinations fail explicitly.
+
+```bash
+GPU_IDS=0,1,2,3,6 bash start.sh --local --config configs/token_selection/math/taxonomy/random_next_step_full_taxonomy_unified_topp0p05_i1_w1_fixed4_5gpu_4a1t_b256.yaml
+```
+
+Pick five GPUs that are actually free; GPUs 4/5 are excluded by default.
+
+The [4-GPU variant](taxonomy/random_next_step_full_taxonomy_unified_topp0p05_i1_w1_fixed4_4gpu_3a1t_b255.yaml)
+extends the 4-GPU rerun of the same TopLoss profile (3 actor + 1 teacher,
+batch255) and differs only in the selector, the checkpoint cadence and the
+run/output identifiers. Both 4-GPU random profiles save every step and keep
+the latest two checkpoints; step 60 is then available only from Hugging Face.
+
+The [full-vocabulary random baseline](full_vocabulary/mopd_qwen1p7b_30b_a3b_instruct_2507_4gpu_math_fullvocab_random_topp05_fixed4_3a1t_b255.yaml)
+drops the candidate pool as well: every valid Math token type passing the >20
+gate is ordered by the same hash. It is a standalone resolved copy of the 4-GPU
+variant (an `extends` overlay cannot empty inherited groups) and differs from
+it only in the candidate scope, the empty groups and the identifiers.
+CPU tests pass (`tests/test_random_selector.py`); GPU smoke has not been run.
+
 All configs use Qwen3-1.7B, teacher Top-32 reverse-KL training, and the strict
 source gate `occurrence >20` at every source-window step. Selected-token raw
 weight is fixed at 4 unless the profile explicitly uses `lossratio` weighting.

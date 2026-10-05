@@ -25,6 +25,7 @@ from mopd_verl.domain_gradient.control_loss_teacher_confidence import (
 )
 from mopd_verl.domain_gradient.control_selection_scoring import (
     PAIRED_SIGNAL_SELECTION_MODES,
+    RANDOM_SELECTION_MODE,
     TOP_LOSS_TEACHER_CONFIDENCE_SELECTION_MODE,
     TOP_LOSS_SELECTION_MODE,
     TOP_Q_LOSS_ENTROPY_SELECTION_MODE,
@@ -100,10 +101,11 @@ def global_candidate_loss_statistics_with_valid_counts(
         if set(effective_modes.values()) - {
             TOP_LOSS_SELECTION_MODE,
             TOP_SPEED_SELECTION_MODE,
+            RANDOM_SELECTION_MODE,
         }:
             raise ValueError(
                 "Full-vocabulary online Control statistics support only "
-                "top_loss and top_speed selection."
+                "top_loss, top_speed and random selection."
             )
         if candidate_token_ids or any(
             token_ids for token_ids in (domain_candidate_token_ids or {}).values()

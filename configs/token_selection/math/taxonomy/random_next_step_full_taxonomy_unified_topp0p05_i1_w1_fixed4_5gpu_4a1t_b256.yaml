@@ -1,0 +1,26 @@
+# Ablation of the Next-Step ranking signal: only replace the TopLoss order with
+# a loss-independent random order over the eligible FullTaxonomy Math IDs.
+# The order is redrawn at every source step from a stateless hash of
+# (domain, step, token ID), so all actor ranks and resumed runs agree.
+# Pool (124 Control + 266 Structure), strict >20 gate, joint TopP5% whole-ID
+# budget, t -> t+1 lag, Fixed4 and per-domain mean-one normalization stay.
+extends: top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_5gpu_b256.yaml
+
+runtime:
+  wandb_run_id: q1p7b-math-top32kl-taxonomy-topp05-randsel-w4-5g4a1t-b256
+
+audit:
+  control_token_online_selection_mode: random
+  control_token_online_weight_mode: fixed
+  control_token_loss_weight: 4.0
+  output_dir: audit/q1p7b-math-top32kl-taxonomy-topp05-randsel-w4-5g4a1t-b256
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-top32kl-taxonomy-topp05-randsel-w4-5g4a1t-b256
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-top32kl-taxonomy-topp05-randsel-w4-5g4a1t-b256
+
+trainer:
+  experiment_name: q1p7b-math-top32kl-taxonomy-topp05-randsel-w4-5g4a1t-b256
+  default_local_dir: checkpoints/MOPD/q1p7b-math-top32kl-taxonomy-topp05-randsel-w4-5g4a1t-b256

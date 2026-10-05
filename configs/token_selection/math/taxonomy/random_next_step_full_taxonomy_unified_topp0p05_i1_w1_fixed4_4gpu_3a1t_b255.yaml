@@ -1,0 +1,30 @@
+# Four-GPU variant of the random-order ranking ablation. It extends the 4-GPU
+# rerun of the best FullTaxonomy TopP5% Fixed4 profile (3 actor/rollout GPUs +
+# 1 teacher GPU, batch 255), so the only resolved differences from that TopLoss
+# run are the selector, the checkpoint cadence and the run/output identifiers.
+# Checkpoints are saved every step and only the latest two are kept, so the
+# step-60 model survives only as its Hugging Face upload. The 2026-10-06 run
+# math_randsel_topp05_f4_3a1t_g0124_20261006 started before this cadence change
+# and used save_freq 5 with four retained checkpoints.
+extends: top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_4gpu_3a1t_b255_r20260911.yaml
+
+runtime:
+  wandb_run_id: q1p7b-math-top32kl-taxonomy-topp05-randsel-w4-4g3a1t-b255
+
+audit:
+  control_token_online_selection_mode: random
+  control_token_online_weight_mode: fixed
+  control_token_loss_weight: 4.0
+  output_dir: audit/q1p7b-math-top32kl-taxonomy-topp05-randsel-w4-4g3a1t-b255
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-top32kl-taxonomy-topp05-randsel-w4-4g3a1t-b255
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-top32kl-taxonomy-topp05-randsel-w4-4g3a1t-b255
+
+trainer:
+  save_freq: 1
+  max_actor_ckpt_to_keep: 2
+  experiment_name: q1p7b-math-top32kl-taxonomy-topp05-randsel-w4-4g3a1t-b255
+  default_local_dir: checkpoints/MOPD/q1p7b-math-top32kl-taxonomy-topp05-randsel-w4-4g3a1t-b255

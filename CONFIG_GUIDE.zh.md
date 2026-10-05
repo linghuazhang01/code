@@ -449,6 +449,15 @@ sumL/sumH/sumLH/N再计算每个ID的mean Q，非逐response max、非均值乘�
 当前只支持i1/w1和fixed weighting；R2配置为联合TopP5% + Fixed4。Q不截断、
 不反向传播，零/空分母或负/非有限entropy显式报错。旧paired selector语义保持。
 
+`random` selector 是 Next-Step 排序信号的消融：候选池、严格 `>20` gate、
+Top-K/Top-P whole-ID 预算、`t→t+1` lag、fixed weighting 与归一化不变，只把排序换成
+与 loss 无关的随机顺序。顺序由 `(domain, source step, token ID)` 的 SHA-256 无状态
+哈希决定，每个 source step 重抽，各 actor rank 与 resume 结果一致；没有 seed 字段。
+统计仍汇总 abs configured loss，日志中的 `mean_abs_loss` 与 score distribution 是
+随机入选 ID 的实际 loss，不是排序键。支持 configured pool 与 `full_vocabulary` scope，
+要求 `next_step`/`token_id` 与 fixed weighting；`current_step`、`loss_ratio`、`paired`
+显式报错。
+
 Online selector 默认在固定的 domain candidate pools 上提供多种 ranking mode，
 并把 token-ID selection 与入选后的 weighting 独立配置。若要做全集候选对照，
 可把候选范围切到 tokenizer vocabulary；此时不再配置 candidate IDs/groups：
@@ -465,8 +474,8 @@ audit:
 `full_vocabulary` 表示所有通过 configured-loss mask 的 valid response token
 occurrences；prompt、padding 和 masked positions 不进入候选或 Top-P 分母。候选轴按
 `len(tokenizer)` 构造，并校验 model vocabulary 不小于该值；只把当前 window 中实际
-出现的 token IDs 写入 selector state/history。当前该 scope 只支持 `top_loss` 与
-`top_speed`，不支持 grouped candidates 或 paired/Q selectors。
+出现的 token IDs 写入 selector state/history。当前该 scope 只支持 `top_loss`、
+`top_speed` 与 `random`，不支持 grouped candidates 或 paired/Q selectors。
 
 常规 configured-pool 示例：
 
@@ -474,7 +483,7 @@ occurrences；prompt、padding 和 masked positions 不进入候选或 Top-P 分
 audit:
   control_token_loss_weighting_enabled: true
   control_token_online_selection_enabled: true
-  # top_loss | top_logp_diff | top_speed | top_kl_student_entropy |
+  # top_loss | top_logp_diff | top_speed | random | top_kl_student_entropy |
   # top_teacher_confidence_student_entropy
   control_token_online_selection_mode: top_kl_student_entropy
   control_token_online_weight_mode: paired  # fixed | paired | loss_ratio

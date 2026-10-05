@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import struct
 from collections.abc import Mapping, Sequence
@@ -16,6 +17,7 @@ TOP_LOSS_SELECTION_MODE = "top_loss"
 TOP_TEACHER_CONFIDENCE_SELECTION_MODE = "top_teacher_confidence"
 TOP_LOGP_DIFF_SELECTION_MODE = "top_logp_diff"
 TOP_SPEED_SELECTION_MODE = "top_speed"
+RANDOM_SELECTION_MODE = "random"
 TOP_Q_LOSS_ENTROPY_SELECTION_MODE = "top_q_loss_entropy"
 TOP_LOSS_TEACHER_CONFIDENCE_SELECTION_MODE = "top_loss_teacher_confidence"
 TOP_KL_STUDENT_ENTROPY_SELECTION_MODE = "top_kl_student_entropy"
@@ -34,6 +36,7 @@ ONLINE_CONTROL_SELECTION_MODES = frozenset(
         TOP_TEACHER_CONFIDENCE_SELECTION_MODE,
         TOP_LOGP_DIFF_SELECTION_MODE,
         TOP_SPEED_SELECTION_MODE,
+        RANDOM_SELECTION_MODE,
         TOP_Q_LOSS_ENTROPY_SELECTION_MODE,
         TOP_LOSS_TEACHER_CONFIDENCE_SELECTION_MODE,
         *PAIRED_SIGNAL_SELECTION_MODES,
@@ -56,6 +59,17 @@ ONLINE_CONTROL_WEIGHT_MODES = frozenset(
 )
 
 LOSS_RATIO_EPSILON = 1e-12
+
+
+def random_selection_rank(domain: str, step: int, token_id: int) -> int:
+    """Return the loss-independent sort key of one token type at one step.
+
+    The key is a stateless hash, so every actor rank draws the same order and
+    a resumed run replays it without checkpointing generator state.
+    """
+
+    digest = hashlib.sha256(f"{domain}\0{int(step)}\0{int(token_id)}".encode())
+    return int.from_bytes(digest.digest()[:8], "big")
 
 
 def validate_q_selection_contract(

@@ -144,7 +144,7 @@ def test_full_scope_rejects_configured_ids_and_paired_selector() -> None:
     }
     with pytest.raises(ValueError, match="cannot be combined"):
         initial_online_control_selection_state(("math",), (7,), **common)
-    with pytest.raises(ValueError, match="only top_loss and top_speed"):
+    with pytest.raises(ValueError, match="only top_loss, top_speed and random"):
         initial_online_control_selection_state(
             ("math",),
             (),

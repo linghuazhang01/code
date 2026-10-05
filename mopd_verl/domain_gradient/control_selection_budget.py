@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from decimal import ROUND_CEILING, Decimal
 
 from mopd_verl.domain_gradient.control_selection_scoring import (
+    RANDOM_SELECTION_MODE,
     TOP_LOSS_SELECTION_MODE,
     TOP_P_BUDGET_MODE,
     TOP_SPEED_SELECTION_MODE,
@@ -78,11 +79,12 @@ def validate_candidate_scope_contract(
     unsupported_modes = set(selection_modes) - {
         TOP_LOSS_SELECTION_MODE,
         TOP_SPEED_SELECTION_MODE,
+        RANDOM_SELECTION_MODE,
     }
     if unsupported_modes:
         raise ValueError(
             "Full-vocabulary online Control candidate scope currently supports "
-            "only top_loss and top_speed selection."
+            "only top_loss, top_speed and random selection."
         )
     if require_full_vocab_size and candidate_vocab_size is None:
         raise ValueError(

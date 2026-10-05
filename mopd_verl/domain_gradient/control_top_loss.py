@@ -23,6 +23,7 @@ from mopd_verl.domain_gradient.control_selection_scoring import (
     FIXED_ONLINE_WEIGHT_MODE,
     LOSS_RATIO_ONLINE_WEIGHT_MODE,
     PAIRED_ONLINE_WEIGHT_MODE,
+    RANDOM_SELECTION_MODE,
     TOP_K_BUDGET_MODE,
     TOP_LOSS_SELECTION_MODE,
     TOP_P_BUDGET_MODE,
@@ -31,6 +32,7 @@ from mopd_verl.domain_gradient.control_selection_scoring import (
     normalize_online_weight_mode,
     normalize_selection_mode,
     occurrence_weighted_optimization_speed,
+    random_selection_rank,
     selected_to_other_loss_ratio_weight,
     validate_online_control_mode_contracts,
 )
@@ -458,6 +460,12 @@ def _select_from_history(
         selection_mode = state.selection_mode_for_domain(domain)
         weight_mode = state.weight_mode_for_domain(domain)
         top_p = state.top_p_for_domain(domain)
+        # Random ranking still observes the abs configured loss, so report it.
+        loss_scored = selection_mode in {
+            TOP_LOSS_SELECTION_MODE,
+            TOP_SPEED_SELECTION_MODE,
+            RANDOM_SELECTION_MODE,
+        }
         eligible: list[SelectedControlToken] = []
         for token_id, (loss_sum, count) in totals[domain].items():
             frequency = count / float(state.window_steps)
@@ -474,7 +482,7 @@ def _select_from_history(
                 occurrence_weighted_optimization_speed(
                     observations[domain].get(token_id, ())
                 )
-                if selection_mode in {TOP_LOSS_SELECTION_MODE, TOP_SPEED_SELECTION_MODE}
+                if loss_scored
                 else None
             )
             if selection_mode == TOP_SPEED_SELECTION_MODE and speed is None:
@@ -484,12 +492,7 @@ def _select_from_history(
                     token_id=token_id,
                     occurrence_count=count,
                     mean_occurrences_per_step=frequency,
-                    mean_abs_loss=(
-                        loss_sum / count
-                        if selection_mode
-                        in {TOP_LOSS_SELECTION_MODE, TOP_SPEED_SELECTION_MODE}
-                        else None
-                    ),
+                    mean_abs_loss=(loss_sum / count if loss_scored else None),
                     mean_selection_score=loss_sum / count,
                     optimization_speed=(None if speed is None else speed.value),
                     observed_step_count=(
@@ -502,6 +505,17 @@ def _select_from_history(
                 eligible,
                 key=lambda item: (
                     -cast(float, item.optimization_speed),
+                    item.token_id,
+                ),
+            )
+        elif selection_mode == RANDOM_SELECTION_MODE:
+            # Ablation of the ranking signal: same pool, gate and budget, but
+            # an order redrawn at every source step and independent of loss.
+            source_step = history[-1][0]
+            ranked = sorted(
+                eligible,
+                key=lambda item: (
+                    random_selection_rank(domain, source_step, item.token_id),
                     item.token_id,
                 ),
             )
