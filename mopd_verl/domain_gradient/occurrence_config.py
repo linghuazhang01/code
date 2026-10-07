@@ -329,6 +329,7 @@ def validate_occurrence_config(config: Any, actor: Any = None) -> None:
         CONTROL_TOKEN_IDS,
         STRUCTURE_TOKEN_IDS,
         TOKEN_V9_CONTROL_IDS,
+        TOKEN_V10_CANDIDATE_IDS,
     )
 
     groups = dict(config.domain_control_token_candidate_groups)
@@ -344,8 +345,11 @@ def validate_occurrence_config(config: Any, actor: Any = None) -> None:
     if taxonomy_version == "legacy" and not (
         configured <= CONTROL_TOKEN_IDS | STRUCTURE_TOKEN_IDS
         or configured <= TOKEN_V9_CONTROL_IDS
+        or configured <= TOKEN_V10_CANDIDATE_IDS
     ):
-        raise ValueError("occurrence requires configured C+S or Token V9 candidate IDs")
+        raise ValueError(
+            "occurrence requires configured C+S or Token V9 or Token V10 candidate IDs"
+        )
     if actor is None:
         return
 

@@ -1,0 +1,27 @@
+# Token V10-lean current-step, Math top_p=0.05, Code top_p=0.01, 3-GPU colocated.
+# Math = 390 (the best Math+Code run's Math pool) / Code = 379 (V10-lean). Only the Code pool differs
+# from the best run's pools; compare against the same recipe with the current Code 551/704 pool and
+# with a no-prior (full-vocabulary / matched-random) control.
+extends: _mopd_math_code_current_step_token_v10lean_fixed4_3gpu_colocated.yaml
+
+runtime:
+  wandb_run_id: q1p7b3g-mc-v10lean-m390c379-current-m05c01-f4-b528-s60
+  wandb_resume: never
+
+audit:
+  control_token_online_top_p: 0.05
+  control_token_online_top_p_by_domain:
+    math: 0.05
+    code: 0.01
+  output_dir: audit/q1p7b3g-mc-v10lean-m390c379-current-m05c01-f4-b528-s60
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b3g-mc-v10lean-m390c379-current-m05c01-f4-b528-s60
+
+huggingface_checkpoint:
+  private: false
+  path_prefix: checkpoints/mopd/q1p7b3g-mc-v10lean-m390c379-current-m05c01-f4-b528-s60
+
+trainer:
+  experiment_name: q1p7b3g-mc-v10lean-m390c379-current-m05c01-f4-b528-s60
+  default_local_dir: checkpoints/MOPD/q1p7b3g-mc-v10lean-m390c379-current-m05c01-f4-b528-s60

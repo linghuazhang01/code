@@ -1,6 +1,6 @@
 # Control、Structure、Other 与 VR Token 定义
 
-更新日期：2026-10-01
+更新日期：2026-10-06
 
 本文档是当前项目中 Control、Control-44、Connective、Structure、Other 和 VR token
 集合的规范定义。除非另有说明，token ID 均绑定 Qwen3 tokenizer，不能直接复用于
@@ -475,6 +475,63 @@ loss 计算不变；`token_source_metrics` 仍按第 0 节分类记录，V9 独�
 `V9_tokens.md`；构造入口 `build_control_set.py` → `build_v9.py` → `build_v9_configs.py`。
 配置契约测试为 `tests/test_token_v9_current_step_configs.py`。审计语料为评测回答而非训练 rollout，
 Code 语料来自 HumanEvalPlus/MBPPPlus（非 Eurus 训练 prompt）；这些都不是训练收益证据。
+
+### 0.6 Token V10-lean（Code 候选池重构，Current-Step 候选池；2026-10-06 提案）
+
+V10-lean 是 **Code 域的 candidate-pool 版本**，不新增完整词表 taxonomy，也不覆盖第 0 节的 809-token
+taxonomy。它只替换 Code 候选池；Math 候选池 = 当前 best run 的 Math 池（`_mopd_math_code_structure_toploss_fixed4_*`
+的 `math` 列表，390 个 ID：809-token taxonomy 的 Control ∪ Structure 经 `>20` 出现过滤），本节不改变其定义。
+（2026-10-07 改写：10-06 提案原用 394 个 ID 的 2026-10-02 方法论池；该版本已删除，未产出结果。）选词器与第 0.4/0.5 节 V6–V9 完全相同。
+
+**动机。** Code Rising 速度 Top-200 中约 80% 为 lexical_identifier（回答骨架词、Python/算法词汇、标识符），
+PDTB 连接词仅 8–11%，格式/边界 6–8%；现行 Code 池 704 中 380 个为纯标点/空白（富集 0.54×），整池对 Code
+Rising Top-200 的富集为 0.89–1.01。V10-lean 按"分叉点"标准重定类别：回答结构标签、算法承诺词、代码边界。
+
+**构造（全程不读 gap / speed / loss / Top-200）。** 输入为教师 Code 回答 1,000 条
+（`code/eval_outputs/training_random1000/2026-07-27/.../code_results_2026-07-27.jsonl`）、ctx.py 位置标注、
+冻结词表 inventory、四 baseline `M_{b,code}(t)`。`core(t)` 去前导空白、前缀 `( . [ \ { * # -`、后缀 `: *`。
+按优先级每个 ID 只属一类，全部要求四 baseline `M_{b,code}(t) > 20`，排除含 `**` 的 ID：
+
+| 类别 | 规则 | 数量 |
+|---|---|---:|
+| Boundary | 含 "```" 的 ID；strip 后 ∈ {`---`,`##`,`###`,`####`}；EOS 151645 | 9 |
+| Control | 沿用现行 Code Control 157（PDTB ∪ Control-44）；6 个未过四 baseline 支持被剪 | 151 |
+| Scaffold | 首字母大写英文词，语料 n ≥ 30，且位于 Markdown 标题 / 加粗 label 内的占比 ≥ 0.5 | 25 |
+| AlgoLex | 教师 python 围栏（须 `compile` 通过）内标识符，去字符串/注释后正则扫描，非关键字/非 builtin（冻结 3.10 名单）、长度 ≥ 2、出现在 ≥ 20 条回答；**只取前导空格变体** | 63 |
+| CodeLex | 沿用现行 CodeLex（Python 关键字 / builtin / 标准 API），去掉已被上面类别吸收者 | 131 |
+
+删除现行 Code Structure 中其余 375 个纯标点/空白 ID。完整版 V10（541，含 Opener 107 与 AlgoLex 无空格变体 55）
+与 `without_opener`（434）同时登记在 `analysis-output/code-pool-v10-20261006/tables/code_pool_v10_ids.json`，
+**当前配置只使用 `lean`（379）**。V10-lean 中 77 个 ID 在第 0 节 taxonomy 中为 Other，271 个不在 V9 内。
+
+| 集合 | Token count | ID fingerprint SHA256（口径同第 0.4 节） |
+|---|---:|---|
+| Math 390（best run 的 Math 池，未变） | 390 | `3467edb63771921d3fc65fe81852ebe7617799c4df2acc941acb63d6259fb96c` |
+| Code V10-lean | 379 | `967d3929b757a216e1369649b84b501e45bb817ed08e864a6050450540a8dfcc` |
+| Math 390 ∪ Code 379（运行时登记集） | 586 | `f01ef060b1ce24b41b19cc3f173c5b768bc837038b508a80e0fddabfd6b50c85` |
+
+对四条 baseline Code Rising/Stable Top-200（§0.1 历史边界）的命中：现行 704 为 R62/65/59/59、Top-20 命中 8/10/8/8；
+V10-lean 为 R71/63/68/65、Stable 21/20/37/25、Top-20 命中 12/14/9/11。只有命中数，没有相对合格词表的富集倍数；
+命中不等于训练收益。
+
+**配置。** 7 个文件位于 `configs/token_selection/math_code/taxonomy/`：pool helper
+`_mopd_math_code_current_step_token_v10lean_fixed4.yaml`（继承 `_mopd_math_code_toploss_fixed4_4gpu.yaml`）、
+3/4/8-GPU colocated topology helper、以及
+`mopd_math_code_current_step_token_v10lean_toploss_m05_c01_fixed4_{3,4,8}gpu_colocated.yaml`。
+Math top-p=0.05、Code top-p=0.01、Current-Step TopLoss、token_id、raw w=4、rank-local microbatch/domain
+mean-one、tail=0、`token_taxonomy_version=legacy`、无 fenced-code 门控、batch/mini-batch=528、60 steps、公开 HF
+checkpoint `[60]`、`teacher_performance.enabled: true`。run namespace 为
+`q1p7b{3,4,8}g-mc-v10lean-m390c379-current-m05c01-f4-b528-s60`。4-GPU 版于 2026-10-07 在 CityU GPU 0,1,2,4 启动。配套对照臂为同配方的
+Code 551/704 池与无先验（全词表 TopLoss 或频次匹配 random）；未跑对照前不得把 V10-lean 的结果归因于功能先验。
+
+**运行时改动。** `mopd_verl/domain_gradient/frozen_taxonomy.py` 登记 `TOKEN_V10_CANDIDATE_IDS`
+（586 = Math 390 ∪ Code 379）；`occurrence_config.py` 在原"候选 ⊆ C∪S"或"⊆ V9"之外接受"⊆ V10"，三者不可混用。
+Math 390 本身 ⊆ 809 taxonomy；登记 V10 集合是为了 Code 379 中 77 个 taxonomy-Other 的 ID 能通过运行时校验。loss 计算不变；`token_source_metrics` 仍按第 0 节分类，
+V10 独有 ID 记为 other。配置契约测试为 `tests/test_token_v10_lean_current_step_configs.py`。
+
+机器可读来源：`analysis-output/code-pool-v10-20261006/`（`README.md`、`audit_corpus.py` → `build_v10.py` →
+`build_v10_configs.py`、`tables/code_pool_v10_ids.json`、逐 ID `code_pool_v10_membership.csv`、
+`dropped_from_current_704.csv`、全词表用法审计 `token_ctx_full.csv`、`identifiers.csv`）。
 
 ## 1. 名称与状态
 
