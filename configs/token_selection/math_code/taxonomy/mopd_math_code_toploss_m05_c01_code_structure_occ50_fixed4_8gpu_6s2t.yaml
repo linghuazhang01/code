@@ -1,0 +1,29 @@
+# Best Math+Code profile (Math 5% / Code 1%, Code Structure-only, Next-Step TopLoss, Fixed4)
+# with the strict occurrence gate raised from 20 to 50: a candidate token is eligible for a
+# step only if it occurred MORE than 50 times in that domain's batch on every step of the
+# window (window 1), instead of more than 20. Pools (Math 390 / Code 551), budgets, weight,
+# batch, steps and the 6 actor + 2 teacher topology are identical to the best run
+# q1p7b4g-mc-tl-m05c01-cstruct-8g6s2t-b528-s60. Compare against that run.
+# Runtime-only deviation: vLLM gpu_memory_utilization 0.6 (best run used 0.75).
+extends: mopd_math_code_toploss_m05_c01_code_structure_fixed4_8gpu_6s2t.yaml
+
+runtime:
+  wandb_run_id: q1p7b8g-mc-tl-m05c01-cstruct-occ50-f4-6s2t-b528-s60
+  wandb_resume: never
+
+rollout:
+  gpu_memory_utilization: 0.6
+
+audit:
+  control_token_online_min_mean_occurrences_per_step: 50.0
+  output_dir: audit/q1p7b8g-mc-tl-m05c01-cstruct-occ50-f4-6s2t-b528-s60
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b8g-mc-tl-m05c01-cstruct-occ50-f4-6s2t-b528-s60
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/mopd/q1p7b8g-mc-tl-m05c01-cstruct-occ50-f4-6s2t-b528-s60
+
+trainer:
+  experiment_name: q1p7b8g-mc-tl-m05c01-cstruct-occ50-f4-6s2t-b528-s60
+  default_local_dir: checkpoints/MOPD/q1p7b8g-mc-tl-m05c01-cstruct-occ50-f4-6s2t-b528-s60

@@ -1,0 +1,44 @@
+# Occurrence-50 variant of the best Math+Code profile (see the 8gpu_6s2t file) on the CityU
+# server layout used by the V6 3s1t and disc33 runs: 3 actor/rollout GPUs (physical 0,1,2) and
+# one dedicated teacher GPU (physical 4); teacher world size 1 keeps teacher batching and
+# stable_sort dispatch. Batch 528 = 3 x 176. Use start.sh --local.
+extends: mopd_math_code_toploss_m05_c01_code_structure_occ50_fixed4_8gpu_6s2t.yaml
+
+runtime:
+  cuda_visible_devices: "0,1,2,4"
+  slurm_allocation_gpus: 4
+  wandb_run_id: q1p7b3s1t-mc-tl-m05c01-cstruct-occ50-f4-b528-s60
+  wandb_resume: never
+
+worker_placement:
+  separate_ref_policy: true
+  actor_rollout:
+    n_gpus_per_node: 3
+    nnodes: 1
+    process_on_nodes: null
+  ref_policy:
+    n_gpus_per_node: 1
+    nnodes: 1
+    process_on_nodes: null
+
+# Lists replace the parent's list; retain all existing non-topology overrides.
+extra_overrides:
+- custom_reward_function.path=mopd_verl/mixed_reward.py
+- custom_reward_function.name=compute_score
+- trainer.resume_mode=disable
+- actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+- actor_rollout_ref.ref.fsdp_config.fsdp_size=1
+
+audit:
+  output_dir: audit/q1p7b3s1t-mc-tl-m05c01-cstruct-occ50-f4-b528-s60
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b3s1t-mc-tl-m05c01-cstruct-occ50-f4-b528-s60
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/mopd/q1p7b3s1t-mc-tl-m05c01-cstruct-occ50-f4-b528-s60
+
+trainer:
+  experiment_name: q1p7b3s1t-mc-tl-m05c01-cstruct-occ50-f4-b528-s60
+  default_local_dir: checkpoints/MOPD/q1p7b3s1t-mc-tl-m05c01-cstruct-occ50-f4-b528-s60
+  n_gpus_per_node: 3
