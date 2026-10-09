@@ -1,0 +1,619 @@
+{
+ "source": "data/eval_data/results/partial_math_20260902/q1p7b_taxonomy_topp0p05_step60_math4_dp1_k8_seed42_20260902/suite_manifest.json",
+ "execution": {
+  "backend": "vllm",
+  "tensor_parallel_size": 1,
+  "parallelism": "data_parallel_gpu_worker_pool",
+  "scheduling": "strict_dataset_wave_dynamic_microshards",
+  "worker_count": 1,
+  "shards_per_dataset": 16,
+  "min_rows_per_shard": 1,
+  "batch_size": 24,
+  "gpu_memory": 0.85,
+  "max_model_len": 18432,
+  "max_num_batched_tokens": 32768,
+  "max_num_seqs": 24,
+  "enforce_eager": true,
+  "enable_chunked_prefill": false,
+  "score_code": true,
+  "code_scorer": {
+   "backend": "docker",
+   "image": "verlai/verl:vllm023.dev1",
+   "image_id": "disabled",
+   "source_sha256": {
+    "eval/domains/scoring.py": "bbab051787dc255ff6d47f23238e12e13abb3fcffde31b844b20e72d2b269f1f",
+    "mopd_verl/code_reward.py": "b5acd3437b08cb63f6dd788aa517deb0d1d26eb19643f9c230bf6f2f0f85d41c"
+   }
+  }
+ },
+ "generation": {
+  "math_samples": 8,
+  "code_samples": 8,
+  "science_samples": 8,
+  "mmlupro_samples": 8,
+  "base_seed": 42,
+  "standard_shard_seed_rule": "base_seed + task_sequence * 1000003",
+  "mmlupro_seed_rule": "fixed base_seed for every prompt shard",
+  "max_new_tokens": 16384,
+  "temperature": 1.0,
+  "top_p": 1.0
+ },
+ "tasks": [
+  {
+   "sequence": 0,
+   "task_id": "0000_math_aime24_00_000000_000001",
+   "dataset": "aime24",
+   "source_start": 0,
+   "source_end_exclusive": 1,
+   "num_samples": 8,
+   "generation_seed": 42
+  },
+  {
+   "sequence": 1,
+   "task_id": "0001_math_aime24_01_000001_000003",
+   "dataset": "aime24",
+   "source_start": 1,
+   "source_end_exclusive": 3,
+   "num_samples": 8,
+   "generation_seed": 1000045
+  },
+  {
+   "sequence": 2,
+   "task_id": "0002_math_aime24_02_000003_000005",
+   "dataset": "aime24",
+   "source_start": 3,
+   "source_end_exclusive": 5,
+   "num_samples": 8,
+   "generation_seed": 2000048
+  },
+  {
+   "sequence": 3,
+   "task_id": "0003_math_aime24_03_000005_000007",
+   "dataset": "aime24",
+   "source_start": 5,
+   "source_end_exclusive": 7,
+   "num_samples": 8,
+   "generation_seed": 3000051
+  },
+  {
+   "sequence": 4,
+   "task_id": "0004_math_aime24_04_000007_000009",
+   "dataset": "aime24",
+   "source_start": 7,
+   "source_end_exclusive": 9,
+   "num_samples": 8,
+   "generation_seed": 4000054
+  },
+  {
+   "sequence": 5,
+   "task_id": "0005_math_aime24_05_000009_000011",
+   "dataset": "aime24",
+   "source_start": 9,
+   "source_end_exclusive": 11,
+   "num_samples": 8,
+   "generation_seed": 5000057
+  },
+  {
+   "sequence": 6,
+   "task_id": "0006_math_aime24_06_000011_000013",
+   "dataset": "aime24",
+   "source_start": 11,
+   "source_end_exclusive": 13,
+   "num_samples": 8,
+   "generation_seed": 6000060
+  },
+  {
+   "sequence": 7,
+   "task_id": "0007_math_aime24_07_000013_000015",
+   "dataset": "aime24",
+   "source_start": 13,
+   "source_end_exclusive": 15,
+   "num_samples": 8,
+   "generation_seed": 7000063
+  },
+  {
+   "sequence": 8,
+   "task_id": "0008_math_aime24_08_000015_000016",
+   "dataset": "aime24",
+   "source_start": 15,
+   "source_end_exclusive": 16,
+   "num_samples": 8,
+   "generation_seed": 8000066
+  },
+  {
+   "sequence": 9,
+   "task_id": "0009_math_aime24_09_000016_000018",
+   "dataset": "aime24",
+   "source_start": 16,
+   "source_end_exclusive": 18,
+   "num_samples": 8,
+   "generation_seed": 9000069
+  },
+  {
+   "sequence": 10,
+   "task_id": "0010_math_aime24_10_000018_000020",
+   "dataset": "aime24",
+   "source_start": 18,
+   "source_end_exclusive": 20,
+   "num_samples": 8,
+   "generation_seed": 10000072
+  },
+  {
+   "sequence": 11,
+   "task_id": "0011_math_aime24_11_000020_000022",
+   "dataset": "aime24",
+   "source_start": 20,
+   "source_end_exclusive": 22,
+   "num_samples": 8,
+   "generation_seed": 11000075
+  },
+  {
+   "sequence": 12,
+   "task_id": "0012_math_aime24_12_000022_000024",
+   "dataset": "aime24",
+   "source_start": 22,
+   "source_end_exclusive": 24,
+   "num_samples": 8,
+   "generation_seed": 12000078
+  },
+  {
+   "sequence": 13,
+   "task_id": "0013_math_aime24_13_000024_000026",
+   "dataset": "aime24",
+   "source_start": 24,
+   "source_end_exclusive": 26,
+   "num_samples": 8,
+   "generation_seed": 13000081
+  },
+  {
+   "sequence": 14,
+   "task_id": "0014_math_aime24_14_000026_000028",
+   "dataset": "aime24",
+   "source_start": 26,
+   "source_end_exclusive": 28,
+   "num_samples": 8,
+   "generation_seed": 14000084
+  },
+  {
+   "sequence": 15,
+   "task_id": "0015_math_aime24_15_000028_000030",
+   "dataset": "aime24",
+   "source_start": 28,
+   "source_end_exclusive": 30,
+   "num_samples": 8,
+   "generation_seed": 15000087
+  },
+  {
+   "sequence": 16,
+   "task_id": "0016_math_aime25_00_000000_000001",
+   "dataset": "aime25",
+   "source_start": 0,
+   "source_end_exclusive": 1,
+   "num_samples": 8,
+   "generation_seed": 16000090
+  },
+  {
+   "sequence": 17,
+   "task_id": "0017_math_aime25_01_000001_000003",
+   "dataset": "aime25",
+   "source_start": 1,
+   "source_end_exclusive": 3,
+   "num_samples": 8,
+   "generation_seed": 17000093
+  },
+  {
+   "sequence": 18,
+   "task_id": "0018_math_aime25_02_000003_000005",
+   "dataset": "aime25",
+   "source_start": 3,
+   "source_end_exclusive": 5,
+   "num_samples": 8,
+   "generation_seed": 18000096
+  },
+  {
+   "sequence": 19,
+   "task_id": "0019_math_aime25_03_000005_000007",
+   "dataset": "aime25",
+   "source_start": 5,
+   "source_end_exclusive": 7,
+   "num_samples": 8,
+   "generation_seed": 19000099
+  },
+  {
+   "sequence": 20,
+   "task_id": "0020_math_aime25_04_000007_000009",
+   "dataset": "aime25",
+   "source_start": 7,
+   "source_end_exclusive": 9,
+   "num_samples": 8,
+   "generation_seed": 20000102
+  },
+  {
+   "sequence": 21,
+   "task_id": "0021_math_aime25_05_000009_000011",
+   "dataset": "aime25",
+   "source_start": 9,
+   "source_end_exclusive": 11,
+   "num_samples": 8,
+   "generation_seed": 21000105
+  },
+  {
+   "sequence": 22,
+   "task_id": "0022_math_aime25_06_000011_000013",
+   "dataset": "aime25",
+   "source_start": 11,
+   "source_end_exclusive": 13,
+   "num_samples": 8,
+   "generation_seed": 22000108
+  },
+  {
+   "sequence": 23,
+   "task_id": "0023_math_aime25_07_000013_000015",
+   "dataset": "aime25",
+   "source_start": 13,
+   "source_end_exclusive": 15,
+   "num_samples": 8,
+   "generation_seed": 23000111
+  },
+  {
+   "sequence": 24,
+   "task_id": "0024_math_aime25_08_000015_000016",
+   "dataset": "aime25",
+   "source_start": 15,
+   "source_end_exclusive": 16,
+   "num_samples": 8,
+   "generation_seed": 24000114
+  },
+  {
+   "sequence": 25,
+   "task_id": "0025_math_aime25_09_000016_000018",
+   "dataset": "aime25",
+   "source_start": 16,
+   "source_end_exclusive": 18,
+   "num_samples": 8,
+   "generation_seed": 25000117
+  },
+  {
+   "sequence": 26,
+   "task_id": "0026_math_aime25_10_000018_000020",
+   "dataset": "aime25",
+   "source_start": 18,
+   "source_end_exclusive": 20,
+   "num_samples": 8,
+   "generation_seed": 26000120
+  },
+  {
+   "sequence": 27,
+   "task_id": "0027_math_aime25_11_000020_000022",
+   "dataset": "aime25",
+   "source_start": 20,
+   "source_end_exclusive": 22,
+   "num_samples": 8,
+   "generation_seed": 27000123
+  },
+  {
+   "sequence": 28,
+   "task_id": "0028_math_aime25_12_000022_000024",
+   "dataset": "aime25",
+   "source_start": 22,
+   "source_end_exclusive": 24,
+   "num_samples": 8,
+   "generation_seed": 28000126
+  },
+  {
+   "sequence": 29,
+   "task_id": "0029_math_aime25_13_000024_000026",
+   "dataset": "aime25",
+   "source_start": 24,
+   "source_end_exclusive": 26,
+   "num_samples": 8,
+   "generation_seed": 29000129
+  },
+  {
+   "sequence": 30,
+   "task_id": "0030_math_aime25_14_000026_000028",
+   "dataset": "aime25",
+   "source_start": 26,
+   "source_end_exclusive": 28,
+   "num_samples": 8,
+   "generation_seed": 30000132
+  },
+  {
+   "sequence": 31,
+   "task_id": "0031_math_aime25_15_000028_000030",
+   "dataset": "aime25",
+   "source_start": 28,
+   "source_end_exclusive": 30,
+   "num_samples": 8,
+   "generation_seed": 31000135
+  },
+  {
+   "sequence": 32,
+   "task_id": "0032_math_hmmt25feb_00_000000_000001",
+   "dataset": "hmmt25feb",
+   "source_start": 0,
+   "source_end_exclusive": 1,
+   "num_samples": 8,
+   "generation_seed": 32000138
+  },
+  {
+   "sequence": 33,
+   "task_id": "0033_math_hmmt25feb_01_000001_000003",
+   "dataset": "hmmt25feb",
+   "source_start": 1,
+   "source_end_exclusive": 3,
+   "num_samples": 8,
+   "generation_seed": 33000141
+  },
+  {
+   "sequence": 34,
+   "task_id": "0034_math_hmmt25feb_02_000003_000005",
+   "dataset": "hmmt25feb",
+   "source_start": 3,
+   "source_end_exclusive": 5,
+   "num_samples": 8,
+   "generation_seed": 34000144
+  },
+  {
+   "sequence": 35,
+   "task_id": "0035_math_hmmt25feb_03_000005_000007",
+   "dataset": "hmmt25feb",
+   "source_start": 5,
+   "source_end_exclusive": 7,
+   "num_samples": 8,
+   "generation_seed": 35000147
+  },
+  {
+   "sequence": 36,
+   "task_id": "0036_math_hmmt25feb_04_000007_000009",
+   "dataset": "hmmt25feb",
+   "source_start": 7,
+   "source_end_exclusive": 9,
+   "num_samples": 8,
+   "generation_seed": 36000150
+  },
+  {
+   "sequence": 37,
+   "task_id": "0037_math_hmmt25feb_05_000009_000011",
+   "dataset": "hmmt25feb",
+   "source_start": 9,
+   "source_end_exclusive": 11,
+   "num_samples": 8,
+   "generation_seed": 37000153
+  },
+  {
+   "sequence": 38,
+   "task_id": "0038_math_hmmt25feb_06_000011_000013",
+   "dataset": "hmmt25feb",
+   "source_start": 11,
+   "source_end_exclusive": 13,
+   "num_samples": 8,
+   "generation_seed": 38000156
+  },
+  {
+   "sequence": 39,
+   "task_id": "0039_math_hmmt25feb_07_000013_000015",
+   "dataset": "hmmt25feb",
+   "source_start": 13,
+   "source_end_exclusive": 15,
+   "num_samples": 8,
+   "generation_seed": 39000159
+  },
+  {
+   "sequence": 40,
+   "task_id": "0040_math_hmmt25feb_08_000015_000016",
+   "dataset": "hmmt25feb",
+   "source_start": 15,
+   "source_end_exclusive": 16,
+   "num_samples": 8,
+   "generation_seed": 40000162
+  },
+  {
+   "sequence": 41,
+   "task_id": "0041_math_hmmt25feb_09_000016_000018",
+   "dataset": "hmmt25feb",
+   "source_start": 16,
+   "source_end_exclusive": 18,
+   "num_samples": 8,
+   "generation_seed": 41000165
+  },
+  {
+   "sequence": 42,
+   "task_id": "0042_math_hmmt25feb_10_000018_000020",
+   "dataset": "hmmt25feb",
+   "source_start": 18,
+   "source_end_exclusive": 20,
+   "num_samples": 8,
+   "generation_seed": 42000168
+  },
+  {
+   "sequence": 43,
+   "task_id": "0043_math_hmmt25feb_11_000020_000022",
+   "dataset": "hmmt25feb",
+   "source_start": 20,
+   "source_end_exclusive": 22,
+   "num_samples": 8,
+   "generation_seed": 43000171
+  },
+  {
+   "sequence": 44,
+   "task_id": "0044_math_hmmt25feb_12_000022_000024",
+   "dataset": "hmmt25feb",
+   "source_start": 22,
+   "source_end_exclusive": 24,
+   "num_samples": 8,
+   "generation_seed": 44000174
+  },
+  {
+   "sequence": 45,
+   "task_id": "0045_math_hmmt25feb_13_000024_000026",
+   "dataset": "hmmt25feb",
+   "source_start": 24,
+   "source_end_exclusive": 26,
+   "num_samples": 8,
+   "generation_seed": 45000177
+  },
+  {
+   "sequence": 46,
+   "task_id": "0046_math_hmmt25feb_14_000026_000028",
+   "dataset": "hmmt25feb",
+   "source_start": 26,
+   "source_end_exclusive": 28,
+   "num_samples": 8,
+   "generation_seed": 46000180
+  },
+  {
+   "sequence": 47,
+   "task_id": "0047_math_hmmt25feb_15_000028_000030",
+   "dataset": "hmmt25feb",
+   "source_start": 28,
+   "source_end_exclusive": 30,
+   "num_samples": 8,
+   "generation_seed": 47000183
+  },
+  {
+   "sequence": 48,
+   "task_id": "0048_math_hmmt25nov_00_000000_000001",
+   "dataset": "hmmt25nov",
+   "source_start": 0,
+   "source_end_exclusive": 1,
+   "num_samples": 8,
+   "generation_seed": 48000186
+  },
+  {
+   "sequence": 49,
+   "task_id": "0049_math_hmmt25nov_01_000001_000003",
+   "dataset": "hmmt25nov",
+   "source_start": 1,
+   "source_end_exclusive": 3,
+   "num_samples": 8,
+   "generation_seed": 49000189
+  },
+  {
+   "sequence": 50,
+   "task_id": "0050_math_hmmt25nov_02_000003_000005",
+   "dataset": "hmmt25nov",
+   "source_start": 3,
+   "source_end_exclusive": 5,
+   "num_samples": 8,
+   "generation_seed": 50000192
+  },
+  {
+   "sequence": 51,
+   "task_id": "0051_math_hmmt25nov_03_000005_000007",
+   "dataset": "hmmt25nov",
+   "source_start": 5,
+   "source_end_exclusive": 7,
+   "num_samples": 8,
+   "generation_seed": 51000195
+  },
+  {
+   "sequence": 52,
+   "task_id": "0052_math_hmmt25nov_04_000007_000009",
+   "dataset": "hmmt25nov",
+   "source_start": 7,
+   "source_end_exclusive": 9,
+   "num_samples": 8,
+   "generation_seed": 52000198
+  },
+  {
+   "sequence": 53,
+   "task_id": "0053_math_hmmt25nov_05_000009_000011",
+   "dataset": "hmmt25nov",
+   "source_start": 9,
+   "source_end_exclusive": 11,
+   "num_samples": 8,
+   "generation_seed": 53000201
+  },
+  {
+   "sequence": 54,
+   "task_id": "0054_math_hmmt25nov_06_000011_000013",
+   "dataset": "hmmt25nov",
+   "source_start": 11,
+   "source_end_exclusive": 13,
+   "num_samples": 8,
+   "generation_seed": 54000204
+  },
+  {
+   "sequence": 55,
+   "task_id": "0055_math_hmmt25nov_07_000013_000015",
+   "dataset": "hmmt25nov",
+   "source_start": 13,
+   "source_end_exclusive": 15,
+   "num_samples": 8,
+   "generation_seed": 55000207
+  },
+  {
+   "sequence": 56,
+   "task_id": "0056_math_hmmt25nov_08_000015_000016",
+   "dataset": "hmmt25nov",
+   "source_start": 15,
+   "source_end_exclusive": 16,
+   "num_samples": 8,
+   "generation_seed": 56000210
+  },
+  {
+   "sequence": 57,
+   "task_id": "0057_math_hmmt25nov_09_000016_000018",
+   "dataset": "hmmt25nov",
+   "source_start": 16,
+   "source_end_exclusive": 18,
+   "num_samples": 8,
+   "generation_seed": 57000213
+  },
+  {
+   "sequence": 58,
+   "task_id": "0058_math_hmmt25nov_10_000018_000020",
+   "dataset": "hmmt25nov",
+   "source_start": 18,
+   "source_end_exclusive": 20,
+   "num_samples": 8,
+   "generation_seed": 58000216
+  },
+  {
+   "sequence": 59,
+   "task_id": "0059_math_hmmt25nov_11_000020_000022",
+   "dataset": "hmmt25nov",
+   "source_start": 20,
+   "source_end_exclusive": 22,
+   "num_samples": 8,
+   "generation_seed": 59000219
+  },
+  {
+   "sequence": 60,
+   "task_id": "0060_math_hmmt25nov_12_000022_000024",
+   "dataset": "hmmt25nov",
+   "source_start": 22,
+   "source_end_exclusive": 24,
+   "num_samples": 8,
+   "generation_seed": 60000222
+  },
+  {
+   "sequence": 61,
+   "task_id": "0061_math_hmmt25nov_13_000024_000026",
+   "dataset": "hmmt25nov",
+   "source_start": 24,
+   "source_end_exclusive": 26,
+   "num_samples": 8,
+   "generation_seed": 61000225
+  },
+  {
+   "sequence": 62,
+   "task_id": "0062_math_hmmt25nov_14_000026_000028",
+   "dataset": "hmmt25nov",
+   "source_start": 26,
+   "source_end_exclusive": 28,
+   "num_samples": 8,
+   "generation_seed": 62000228
+  },
+  {
+   "sequence": 63,
+   "task_id": "0063_math_hmmt25nov_15_000028_000030",
+   "dataset": "hmmt25nov",
+   "source_start": 28,
+   "source_end_exclusive": 30,
+   "num_samples": 8,
+   "generation_seed": 63000231
+  }
+ ]
+}

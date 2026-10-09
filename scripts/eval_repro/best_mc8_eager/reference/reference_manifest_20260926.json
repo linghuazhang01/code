@@ -1,0 +1,1333 @@
+{
+ "source": "experiments_records/eval/mc8_k8_s60_mopd_c01_cstruct_20260926/suite_manifest.json",
+ "execution": {
+  "async_code_scoring": {
+   "workers": 2,
+   "pending_shards": 2
+  },
+  "backend": "vllm",
+  "tensor_parallel_size": 1,
+  "parallelism": "data_parallel_gpu_worker_pool",
+  "scheduling": "strict_dataset_wave_dynamic_microshards",
+  "worker_count": 2,
+  "shards_per_dataset": 16,
+  "min_rows_per_shard": 1,
+  "batch_size": 24,
+  "gpu_memory": 0.85,
+  "max_model_len": 18432,
+  "max_num_batched_tokens": 32768,
+  "max_num_seqs": 24,
+  "enforce_eager": true,
+  "enable_chunked_prefill": false,
+  "score_code": true,
+  "code_scorer": {
+   "backend": "docker",
+   "image": "verlai/verl:vllm023.dev1",
+   "image_id": "sha256:b3b9c791e2d49f01927e454e6d500d5caf4d62a6ff585a239cdcbe62271e5325",
+   "source_sha256": {
+    "eval/domains/scoring.py": "bbab051787dc255ff6d47f23238e12e13abb3fcffde31b844b20e72d2b269f1f",
+    "mopd_verl/code_reward.py": "e2a91743e3429c543c05ac4d19618d71845b3324c2185c0f2755994cb2704ac8"
+   }
+  }
+ },
+ "generation": {
+  "math_samples": 8,
+  "code_samples": 8,
+  "science_samples": 8,
+  "mmlupro_samples": 8,
+  "base_seed": 42,
+  "standard_shard_seed_rule": "base_seed + task_sequence * 1000003",
+  "mmlupro_seed_rule": "fixed base_seed for every prompt shard",
+  "max_new_tokens": 16384,
+  "temperature": 1.0,
+  "top_p": 1.0
+ },
+ "lcb": {
+  "formatter": "Qwen3-4B-NonThinking",
+  "formatter_tokenizer": "Qwen/Qwen3-4B",
+  "enable_thinking": false,
+  "scorer": "G-OPD LiveCodeBench official public+private scorer"
+ },
+ "tasks": [
+  {
+   "sequence": 0,
+   "task_id": "0000_math_aime24_00_000000_000001",
+   "task_type": "standard",
+   "dataset": "aime24",
+   "source_start": 0,
+   "source_end_exclusive": 1,
+   "num_samples": 8,
+   "generation_seed": 42
+  },
+  {
+   "sequence": 1,
+   "task_id": "0001_math_aime24_01_000001_000003",
+   "task_type": "standard",
+   "dataset": "aime24",
+   "source_start": 1,
+   "source_end_exclusive": 3,
+   "num_samples": 8,
+   "generation_seed": 1000045
+  },
+  {
+   "sequence": 2,
+   "task_id": "0002_math_aime24_02_000003_000005",
+   "task_type": "standard",
+   "dataset": "aime24",
+   "source_start": 3,
+   "source_end_exclusive": 5,
+   "num_samples": 8,
+   "generation_seed": 2000048
+  },
+  {
+   "sequence": 3,
+   "task_id": "0003_math_aime24_03_000005_000007",
+   "task_type": "standard",
+   "dataset": "aime24",
+   "source_start": 5,
+   "source_end_exclusive": 7,
+   "num_samples": 8,
+   "generation_seed": 3000051
+  },
+  {
+   "sequence": 4,
+   "task_id": "0004_math_aime24_04_000007_000009",
+   "task_type": "standard",
+   "dataset": "aime24",
+   "source_start": 7,
+   "source_end_exclusive": 9,
+   "num_samples": 8,
+   "generation_seed": 4000054
+  },
+  {
+   "sequence": 5,
+   "task_id": "0005_math_aime24_05_000009_000011",
+   "task_type": "standard",
+   "dataset": "aime24",
+   "source_start": 9,
+   "source_end_exclusive": 11,
+   "num_samples": 8,
+   "generation_seed": 5000057
+  },
+  {
+   "sequence": 6,
+   "task_id": "0006_math_aime24_06_000011_000013",
+   "task_type": "standard",
+   "dataset": "aime24",
+   "source_start": 11,
+   "source_end_exclusive": 13,
+   "num_samples": 8,
+   "generation_seed": 6000060
+  },
+  {
+   "sequence": 7,
+   "task_id": "0007_math_aime24_07_000013_000015",
+   "task_type": "standard",
+   "dataset": "aime24",
+   "source_start": 13,
+   "source_end_exclusive": 15,
+   "num_samples": 8,
+   "generation_seed": 7000063
+  },
+  {
+   "sequence": 8,
+   "task_id": "0008_math_aime24_08_000015_000016",
+   "task_type": "standard",
+   "dataset": "aime24",
+   "source_start": 15,
+   "source_end_exclusive": 16,
+   "num_samples": 8,
+   "generation_seed": 8000066
+  },
+  {
+   "sequence": 9,
+   "task_id": "0009_math_aime24_09_000016_000018",
+   "task_type": "standard",
+   "dataset": "aime24",
+   "source_start": 16,
+   "source_end_exclusive": 18,
+   "num_samples": 8,
+   "generation_seed": 9000069
+  },
+  {
+   "sequence": 10,
+   "task_id": "0010_math_aime24_10_000018_000020",
+   "task_type": "standard",
+   "dataset": "aime24",
+   "source_start": 18,
+   "source_end_exclusive": 20,
+   "num_samples": 8,
+   "generation_seed": 10000072
+  },
+  {
+   "sequence": 11,
+   "task_id": "0011_math_aime24_11_000020_000022",
+   "task_type": "standard",
+   "dataset": "aime24",
+   "source_start": 20,
+   "source_end_exclusive": 22,
+   "num_samples": 8,
+   "generation_seed": 11000075
+  },
+  {
+   "sequence": 12,
+   "task_id": "0012_math_aime24_12_000022_000024",
+   "task_type": "standard",
+   "dataset": "aime24",
+   "source_start": 22,
+   "source_end_exclusive": 24,
+   "num_samples": 8,
+   "generation_seed": 12000078
+  },
+  {
+   "sequence": 13,
+   "task_id": "0013_math_aime24_13_000024_000026",
+   "task_type": "standard",
+   "dataset": "aime24",
+   "source_start": 24,
+   "source_end_exclusive": 26,
+   "num_samples": 8,
+   "generation_seed": 13000081
+  },
+  {
+   "sequence": 14,
+   "task_id": "0014_math_aime24_14_000026_000028",
+   "task_type": "standard",
+   "dataset": "aime24",
+   "source_start": 26,
+   "source_end_exclusive": 28,
+   "num_samples": 8,
+   "generation_seed": 14000084
+  },
+  {
+   "sequence": 15,
+   "task_id": "0015_math_aime24_15_000028_000030",
+   "task_type": "standard",
+   "dataset": "aime24",
+   "source_start": 28,
+   "source_end_exclusive": 30,
+   "num_samples": 8,
+   "generation_seed": 15000087
+  },
+  {
+   "sequence": 16,
+   "task_id": "0016_math_aime25_00_000000_000001",
+   "task_type": "standard",
+   "dataset": "aime25",
+   "source_start": 0,
+   "source_end_exclusive": 1,
+   "num_samples": 8,
+   "generation_seed": 16000090
+  },
+  {
+   "sequence": 17,
+   "task_id": "0017_math_aime25_01_000001_000003",
+   "task_type": "standard",
+   "dataset": "aime25",
+   "source_start": 1,
+   "source_end_exclusive": 3,
+   "num_samples": 8,
+   "generation_seed": 17000093
+  },
+  {
+   "sequence": 18,
+   "task_id": "0018_math_aime25_02_000003_000005",
+   "task_type": "standard",
+   "dataset": "aime25",
+   "source_start": 3,
+   "source_end_exclusive": 5,
+   "num_samples": 8,
+   "generation_seed": 18000096
+  },
+  {
+   "sequence": 19,
+   "task_id": "0019_math_aime25_03_000005_000007",
+   "task_type": "standard",
+   "dataset": "aime25",
+   "source_start": 5,
+   "source_end_exclusive": 7,
+   "num_samples": 8,
+   "generation_seed": 19000099
+  },
+  {
+   "sequence": 20,
+   "task_id": "0020_math_aime25_04_000007_000009",
+   "task_type": "standard",
+   "dataset": "aime25",
+   "source_start": 7,
+   "source_end_exclusive": 9,
+   "num_samples": 8,
+   "generation_seed": 20000102
+  },
+  {
+   "sequence": 21,
+   "task_id": "0021_math_aime25_05_000009_000011",
+   "task_type": "standard",
+   "dataset": "aime25",
+   "source_start": 9,
+   "source_end_exclusive": 11,
+   "num_samples": 8,
+   "generation_seed": 21000105
+  },
+  {
+   "sequence": 22,
+   "task_id": "0022_math_aime25_06_000011_000013",
+   "task_type": "standard",
+   "dataset": "aime25",
+   "source_start": 11,
+   "source_end_exclusive": 13,
+   "num_samples": 8,
+   "generation_seed": 22000108
+  },
+  {
+   "sequence": 23,
+   "task_id": "0023_math_aime25_07_000013_000015",
+   "task_type": "standard",
+   "dataset": "aime25",
+   "source_start": 13,
+   "source_end_exclusive": 15,
+   "num_samples": 8,
+   "generation_seed": 23000111
+  },
+  {
+   "sequence": 24,
+   "task_id": "0024_math_aime25_08_000015_000016",
+   "task_type": "standard",
+   "dataset": "aime25",
+   "source_start": 15,
+   "source_end_exclusive": 16,
+   "num_samples": 8,
+   "generation_seed": 24000114
+  },
+  {
+   "sequence": 25,
+   "task_id": "0025_math_aime25_09_000016_000018",
+   "task_type": "standard",
+   "dataset": "aime25",
+   "source_start": 16,
+   "source_end_exclusive": 18,
+   "num_samples": 8,
+   "generation_seed": 25000117
+  },
+  {
+   "sequence": 26,
+   "task_id": "0026_math_aime25_10_000018_000020",
+   "task_type": "standard",
+   "dataset": "aime25",
+   "source_start": 18,
+   "source_end_exclusive": 20,
+   "num_samples": 8,
+   "generation_seed": 26000120
+  },
+  {
+   "sequence": 27,
+   "task_id": "0027_math_aime25_11_000020_000022",
+   "task_type": "standard",
+   "dataset": "aime25",
+   "source_start": 20,
+   "source_end_exclusive": 22,
+   "num_samples": 8,
+   "generation_seed": 27000123
+  },
+  {
+   "sequence": 28,
+   "task_id": "0028_math_aime25_12_000022_000024",
+   "task_type": "standard",
+   "dataset": "aime25",
+   "source_start": 22,
+   "source_end_exclusive": 24,
+   "num_samples": 8,
+   "generation_seed": 28000126
+  },
+  {
+   "sequence": 29,
+   "task_id": "0029_math_aime25_13_000024_000026",
+   "task_type": "standard",
+   "dataset": "aime25",
+   "source_start": 24,
+   "source_end_exclusive": 26,
+   "num_samples": 8,
+   "generation_seed": 29000129
+  },
+  {
+   "sequence": 30,
+   "task_id": "0030_math_aime25_14_000026_000028",
+   "task_type": "standard",
+   "dataset": "aime25",
+   "source_start": 26,
+   "source_end_exclusive": 28,
+   "num_samples": 8,
+   "generation_seed": 30000132
+  },
+  {
+   "sequence": 31,
+   "task_id": "0031_math_aime25_15_000028_000030",
+   "task_type": "standard",
+   "dataset": "aime25",
+   "source_start": 28,
+   "source_end_exclusive": 30,
+   "num_samples": 8,
+   "generation_seed": 31000135
+  },
+  {
+   "sequence": 32,
+   "task_id": "0032_math_hmmt25feb_00_000000_000001",
+   "task_type": "standard",
+   "dataset": "hmmt25feb",
+   "source_start": 0,
+   "source_end_exclusive": 1,
+   "num_samples": 8,
+   "generation_seed": 32000138
+  },
+  {
+   "sequence": 33,
+   "task_id": "0033_math_hmmt25feb_01_000001_000003",
+   "task_type": "standard",
+   "dataset": "hmmt25feb",
+   "source_start": 1,
+   "source_end_exclusive": 3,
+   "num_samples": 8,
+   "generation_seed": 33000141
+  },
+  {
+   "sequence": 34,
+   "task_id": "0034_math_hmmt25feb_02_000003_000005",
+   "task_type": "standard",
+   "dataset": "hmmt25feb",
+   "source_start": 3,
+   "source_end_exclusive": 5,
+   "num_samples": 8,
+   "generation_seed": 34000144
+  },
+  {
+   "sequence": 35,
+   "task_id": "0035_math_hmmt25feb_03_000005_000007",
+   "task_type": "standard",
+   "dataset": "hmmt25feb",
+   "source_start": 5,
+   "source_end_exclusive": 7,
+   "num_samples": 8,
+   "generation_seed": 35000147
+  },
+  {
+   "sequence": 36,
+   "task_id": "0036_math_hmmt25feb_04_000007_000009",
+   "task_type": "standard",
+   "dataset": "hmmt25feb",
+   "source_start": 7,
+   "source_end_exclusive": 9,
+   "num_samples": 8,
+   "generation_seed": 36000150
+  },
+  {
+   "sequence": 37,
+   "task_id": "0037_math_hmmt25feb_05_000009_000011",
+   "task_type": "standard",
+   "dataset": "hmmt25feb",
+   "source_start": 9,
+   "source_end_exclusive": 11,
+   "num_samples": 8,
+   "generation_seed": 37000153
+  },
+  {
+   "sequence": 38,
+   "task_id": "0038_math_hmmt25feb_06_000011_000013",
+   "task_type": "standard",
+   "dataset": "hmmt25feb",
+   "source_start": 11,
+   "source_end_exclusive": 13,
+   "num_samples": 8,
+   "generation_seed": 38000156
+  },
+  {
+   "sequence": 39,
+   "task_id": "0039_math_hmmt25feb_07_000013_000015",
+   "task_type": "standard",
+   "dataset": "hmmt25feb",
+   "source_start": 13,
+   "source_end_exclusive": 15,
+   "num_samples": 8,
+   "generation_seed": 39000159
+  },
+  {
+   "sequence": 40,
+   "task_id": "0040_math_hmmt25feb_08_000015_000016",
+   "task_type": "standard",
+   "dataset": "hmmt25feb",
+   "source_start": 15,
+   "source_end_exclusive": 16,
+   "num_samples": 8,
+   "generation_seed": 40000162
+  },
+  {
+   "sequence": 41,
+   "task_id": "0041_math_hmmt25feb_09_000016_000018",
+   "task_type": "standard",
+   "dataset": "hmmt25feb",
+   "source_start": 16,
+   "source_end_exclusive": 18,
+   "num_samples": 8,
+   "generation_seed": 41000165
+  },
+  {
+   "sequence": 42,
+   "task_id": "0042_math_hmmt25feb_10_000018_000020",
+   "task_type": "standard",
+   "dataset": "hmmt25feb",
+   "source_start": 18,
+   "source_end_exclusive": 20,
+   "num_samples": 8,
+   "generation_seed": 42000168
+  },
+  {
+   "sequence": 43,
+   "task_id": "0043_math_hmmt25feb_11_000020_000022",
+   "task_type": "standard",
+   "dataset": "hmmt25feb",
+   "source_start": 20,
+   "source_end_exclusive": 22,
+   "num_samples": 8,
+   "generation_seed": 43000171
+  },
+  {
+   "sequence": 44,
+   "task_id": "0044_math_hmmt25feb_12_000022_000024",
+   "task_type": "standard",
+   "dataset": "hmmt25feb",
+   "source_start": 22,
+   "source_end_exclusive": 24,
+   "num_samples": 8,
+   "generation_seed": 44000174
+  },
+  {
+   "sequence": 45,
+   "task_id": "0045_math_hmmt25feb_13_000024_000026",
+   "task_type": "standard",
+   "dataset": "hmmt25feb",
+   "source_start": 24,
+   "source_end_exclusive": 26,
+   "num_samples": 8,
+   "generation_seed": 45000177
+  },
+  {
+   "sequence": 46,
+   "task_id": "0046_math_hmmt25feb_14_000026_000028",
+   "task_type": "standard",
+   "dataset": "hmmt25feb",
+   "source_start": 26,
+   "source_end_exclusive": 28,
+   "num_samples": 8,
+   "generation_seed": 46000180
+  },
+  {
+   "sequence": 47,
+   "task_id": "0047_math_hmmt25feb_15_000028_000030",
+   "task_type": "standard",
+   "dataset": "hmmt25feb",
+   "source_start": 28,
+   "source_end_exclusive": 30,
+   "num_samples": 8,
+   "generation_seed": 47000183
+  },
+  {
+   "sequence": 48,
+   "task_id": "0048_math_hmmt25nov_00_000000_000001",
+   "task_type": "standard",
+   "dataset": "hmmt25nov",
+   "source_start": 0,
+   "source_end_exclusive": 1,
+   "num_samples": 8,
+   "generation_seed": 48000186
+  },
+  {
+   "sequence": 49,
+   "task_id": "0049_math_hmmt25nov_01_000001_000003",
+   "task_type": "standard",
+   "dataset": "hmmt25nov",
+   "source_start": 1,
+   "source_end_exclusive": 3,
+   "num_samples": 8,
+   "generation_seed": 49000189
+  },
+  {
+   "sequence": 50,
+   "task_id": "0050_math_hmmt25nov_02_000003_000005",
+   "task_type": "standard",
+   "dataset": "hmmt25nov",
+   "source_start": 3,
+   "source_end_exclusive": 5,
+   "num_samples": 8,
+   "generation_seed": 50000192
+  },
+  {
+   "sequence": 51,
+   "task_id": "0051_math_hmmt25nov_03_000005_000007",
+   "task_type": "standard",
+   "dataset": "hmmt25nov",
+   "source_start": 5,
+   "source_end_exclusive": 7,
+   "num_samples": 8,
+   "generation_seed": 51000195
+  },
+  {
+   "sequence": 52,
+   "task_id": "0052_math_hmmt25nov_04_000007_000009",
+   "task_type": "standard",
+   "dataset": "hmmt25nov",
+   "source_start": 7,
+   "source_end_exclusive": 9,
+   "num_samples": 8,
+   "generation_seed": 52000198
+  },
+  {
+   "sequence": 53,
+   "task_id": "0053_math_hmmt25nov_05_000009_000011",
+   "task_type": "standard",
+   "dataset": "hmmt25nov",
+   "source_start": 9,
+   "source_end_exclusive": 11,
+   "num_samples": 8,
+   "generation_seed": 53000201
+  },
+  {
+   "sequence": 54,
+   "task_id": "0054_math_hmmt25nov_06_000011_000013",
+   "task_type": "standard",
+   "dataset": "hmmt25nov",
+   "source_start": 11,
+   "source_end_exclusive": 13,
+   "num_samples": 8,
+   "generation_seed": 54000204
+  },
+  {
+   "sequence": 55,
+   "task_id": "0055_math_hmmt25nov_07_000013_000015",
+   "task_type": "standard",
+   "dataset": "hmmt25nov",
+   "source_start": 13,
+   "source_end_exclusive": 15,
+   "num_samples": 8,
+   "generation_seed": 55000207
+  },
+  {
+   "sequence": 56,
+   "task_id": "0056_math_hmmt25nov_08_000015_000016",
+   "task_type": "standard",
+   "dataset": "hmmt25nov",
+   "source_start": 15,
+   "source_end_exclusive": 16,
+   "num_samples": 8,
+   "generation_seed": 56000210
+  },
+  {
+   "sequence": 57,
+   "task_id": "0057_math_hmmt25nov_09_000016_000018",
+   "task_type": "standard",
+   "dataset": "hmmt25nov",
+   "source_start": 16,
+   "source_end_exclusive": 18,
+   "num_samples": 8,
+   "generation_seed": 57000213
+  },
+  {
+   "sequence": 58,
+   "task_id": "0058_math_hmmt25nov_10_000018_000020",
+   "task_type": "standard",
+   "dataset": "hmmt25nov",
+   "source_start": 18,
+   "source_end_exclusive": 20,
+   "num_samples": 8,
+   "generation_seed": 58000216
+  },
+  {
+   "sequence": 59,
+   "task_id": "0059_math_hmmt25nov_11_000020_000022",
+   "task_type": "standard",
+   "dataset": "hmmt25nov",
+   "source_start": 20,
+   "source_end_exclusive": 22,
+   "num_samples": 8,
+   "generation_seed": 59000219
+  },
+  {
+   "sequence": 60,
+   "task_id": "0060_math_hmmt25nov_12_000022_000024",
+   "task_type": "standard",
+   "dataset": "hmmt25nov",
+   "source_start": 22,
+   "source_end_exclusive": 24,
+   "num_samples": 8,
+   "generation_seed": 60000222
+  },
+  {
+   "sequence": 61,
+   "task_id": "0061_math_hmmt25nov_13_000024_000026",
+   "task_type": "standard",
+   "dataset": "hmmt25nov",
+   "source_start": 24,
+   "source_end_exclusive": 26,
+   "num_samples": 8,
+   "generation_seed": 61000225
+  },
+  {
+   "sequence": 62,
+   "task_id": "0062_math_hmmt25nov_14_000026_000028",
+   "task_type": "standard",
+   "dataset": "hmmt25nov",
+   "source_start": 26,
+   "source_end_exclusive": 28,
+   "num_samples": 8,
+   "generation_seed": 62000228
+  },
+  {
+   "sequence": 63,
+   "task_id": "0063_math_hmmt25nov_15_000028_000030",
+   "task_type": "standard",
+   "dataset": "hmmt25nov",
+   "source_start": 28,
+   "source_end_exclusive": 30,
+   "num_samples": 8,
+   "generation_seed": 63000231
+  },
+  {
+   "sequence": 64,
+   "task_id": "0064_code_humaneval_plus_00_000000_000010",
+   "task_type": "standard",
+   "dataset": "humaneval_plus",
+   "source_start": 0,
+   "source_end_exclusive": 10,
+   "num_samples": 8,
+   "generation_seed": 64000234
+  },
+  {
+   "sequence": 65,
+   "task_id": "0065_code_humaneval_plus_01_000010_000020",
+   "task_type": "standard",
+   "dataset": "humaneval_plus",
+   "source_start": 10,
+   "source_end_exclusive": 20,
+   "num_samples": 8,
+   "generation_seed": 65000237
+  },
+  {
+   "sequence": 66,
+   "task_id": "0066_code_humaneval_plus_02_000020_000030",
+   "task_type": "standard",
+   "dataset": "humaneval_plus",
+   "source_start": 20,
+   "source_end_exclusive": 30,
+   "num_samples": 8,
+   "generation_seed": 66000240
+  },
+  {
+   "sequence": 67,
+   "task_id": "0067_code_humaneval_plus_03_000030_000041",
+   "task_type": "standard",
+   "dataset": "humaneval_plus",
+   "source_start": 30,
+   "source_end_exclusive": 41,
+   "num_samples": 8,
+   "generation_seed": 67000243
+  },
+  {
+   "sequence": 68,
+   "task_id": "0068_code_humaneval_plus_04_000041_000051",
+   "task_type": "standard",
+   "dataset": "humaneval_plus",
+   "source_start": 41,
+   "source_end_exclusive": 51,
+   "num_samples": 8,
+   "generation_seed": 68000246
+  },
+  {
+   "sequence": 69,
+   "task_id": "0069_code_humaneval_plus_05_000051_000061",
+   "task_type": "standard",
+   "dataset": "humaneval_plus",
+   "source_start": 51,
+   "source_end_exclusive": 61,
+   "num_samples": 8,
+   "generation_seed": 69000249
+  },
+  {
+   "sequence": 70,
+   "task_id": "0070_code_humaneval_plus_06_000061_000071",
+   "task_type": "standard",
+   "dataset": "humaneval_plus",
+   "source_start": 61,
+   "source_end_exclusive": 71,
+   "num_samples": 8,
+   "generation_seed": 70000252
+  },
+  {
+   "sequence": 71,
+   "task_id": "0071_code_humaneval_plus_07_000071_000082",
+   "task_type": "standard",
+   "dataset": "humaneval_plus",
+   "source_start": 71,
+   "source_end_exclusive": 82,
+   "num_samples": 8,
+   "generation_seed": 71000255
+  },
+  {
+   "sequence": 72,
+   "task_id": "0072_code_humaneval_plus_08_000082_000092",
+   "task_type": "standard",
+   "dataset": "humaneval_plus",
+   "source_start": 82,
+   "source_end_exclusive": 92,
+   "num_samples": 8,
+   "generation_seed": 72000258
+  },
+  {
+   "sequence": 73,
+   "task_id": "0073_code_humaneval_plus_09_000092_000102",
+   "task_type": "standard",
+   "dataset": "humaneval_plus",
+   "source_start": 92,
+   "source_end_exclusive": 102,
+   "num_samples": 8,
+   "generation_seed": 73000261
+  },
+  {
+   "sequence": 74,
+   "task_id": "0074_code_humaneval_plus_10_000102_000112",
+   "task_type": "standard",
+   "dataset": "humaneval_plus",
+   "source_start": 102,
+   "source_end_exclusive": 112,
+   "num_samples": 8,
+   "generation_seed": 74000264
+  },
+  {
+   "sequence": 75,
+   "task_id": "0075_code_humaneval_plus_11_000112_000123",
+   "task_type": "standard",
+   "dataset": "humaneval_plus",
+   "source_start": 112,
+   "source_end_exclusive": 123,
+   "num_samples": 8,
+   "generation_seed": 75000267
+  },
+  {
+   "sequence": 76,
+   "task_id": "0076_code_humaneval_plus_12_000123_000133",
+   "task_type": "standard",
+   "dataset": "humaneval_plus",
+   "source_start": 123,
+   "source_end_exclusive": 133,
+   "num_samples": 8,
+   "generation_seed": 76000270
+  },
+  {
+   "sequence": 77,
+   "task_id": "0077_code_humaneval_plus_13_000133_000143",
+   "task_type": "standard",
+   "dataset": "humaneval_plus",
+   "source_start": 133,
+   "source_end_exclusive": 143,
+   "num_samples": 8,
+   "generation_seed": 77000273
+  },
+  {
+   "sequence": 78,
+   "task_id": "0078_code_humaneval_plus_14_000143_000153",
+   "task_type": "standard",
+   "dataset": "humaneval_plus",
+   "source_start": 143,
+   "source_end_exclusive": 153,
+   "num_samples": 8,
+   "generation_seed": 78000276
+  },
+  {
+   "sequence": 79,
+   "task_id": "0079_code_humaneval_plus_15_000153_000164",
+   "task_type": "standard",
+   "dataset": "humaneval_plus",
+   "source_start": 153,
+   "source_end_exclusive": 164,
+   "num_samples": 8,
+   "generation_seed": 79000279
+  },
+  {
+   "sequence": 80,
+   "task_id": "0080_code_mbpp_plus_00_000000_000023",
+   "task_type": "standard",
+   "dataset": "mbpp_plus",
+   "source_start": 0,
+   "source_end_exclusive": 23,
+   "num_samples": 8,
+   "generation_seed": 80000282
+  },
+  {
+   "sequence": 81,
+   "task_id": "0081_code_mbpp_plus_01_000023_000047",
+   "task_type": "standard",
+   "dataset": "mbpp_plus",
+   "source_start": 23,
+   "source_end_exclusive": 47,
+   "num_samples": 8,
+   "generation_seed": 81000285
+  },
+  {
+   "sequence": 82,
+   "task_id": "0082_code_mbpp_plus_02_000047_000070",
+   "task_type": "standard",
+   "dataset": "mbpp_plus",
+   "source_start": 47,
+   "source_end_exclusive": 70,
+   "num_samples": 8,
+   "generation_seed": 82000288
+  },
+  {
+   "sequence": 83,
+   "task_id": "0083_code_mbpp_plus_03_000070_000094",
+   "task_type": "standard",
+   "dataset": "mbpp_plus",
+   "source_start": 70,
+   "source_end_exclusive": 94,
+   "num_samples": 8,
+   "generation_seed": 83000291
+  },
+  {
+   "sequence": 84,
+   "task_id": "0084_code_mbpp_plus_04_000094_000118",
+   "task_type": "standard",
+   "dataset": "mbpp_plus",
+   "source_start": 94,
+   "source_end_exclusive": 118,
+   "num_samples": 8,
+   "generation_seed": 84000294
+  },
+  {
+   "sequence": 85,
+   "task_id": "0085_code_mbpp_plus_05_000118_000141",
+   "task_type": "standard",
+   "dataset": "mbpp_plus",
+   "source_start": 118,
+   "source_end_exclusive": 141,
+   "num_samples": 8,
+   "generation_seed": 85000297
+  },
+  {
+   "sequence": 86,
+   "task_id": "0086_code_mbpp_plus_06_000141_000165",
+   "task_type": "standard",
+   "dataset": "mbpp_plus",
+   "source_start": 141,
+   "source_end_exclusive": 165,
+   "num_samples": 8,
+   "generation_seed": 86000300
+  },
+  {
+   "sequence": 87,
+   "task_id": "0087_code_mbpp_plus_07_000165_000189",
+   "task_type": "standard",
+   "dataset": "mbpp_plus",
+   "source_start": 165,
+   "source_end_exclusive": 189,
+   "num_samples": 8,
+   "generation_seed": 87000303
+  },
+  {
+   "sequence": 88,
+   "task_id": "0088_code_mbpp_plus_08_000189_000212",
+   "task_type": "standard",
+   "dataset": "mbpp_plus",
+   "source_start": 189,
+   "source_end_exclusive": 212,
+   "num_samples": 8,
+   "generation_seed": 88000306
+  },
+  {
+   "sequence": 89,
+   "task_id": "0089_code_mbpp_plus_09_000212_000236",
+   "task_type": "standard",
+   "dataset": "mbpp_plus",
+   "source_start": 212,
+   "source_end_exclusive": 236,
+   "num_samples": 8,
+   "generation_seed": 89000309
+  },
+  {
+   "sequence": 90,
+   "task_id": "0090_code_mbpp_plus_10_000236_000259",
+   "task_type": "standard",
+   "dataset": "mbpp_plus",
+   "source_start": 236,
+   "source_end_exclusive": 259,
+   "num_samples": 8,
+   "generation_seed": 90000312
+  },
+  {
+   "sequence": 91,
+   "task_id": "0091_code_mbpp_plus_11_000259_000283",
+   "task_type": "standard",
+   "dataset": "mbpp_plus",
+   "source_start": 259,
+   "source_end_exclusive": 283,
+   "num_samples": 8,
+   "generation_seed": 91000315
+  },
+  {
+   "sequence": 92,
+   "task_id": "0092_code_mbpp_plus_12_000283_000307",
+   "task_type": "standard",
+   "dataset": "mbpp_plus",
+   "source_start": 283,
+   "source_end_exclusive": 307,
+   "num_samples": 8,
+   "generation_seed": 92000318
+  },
+  {
+   "sequence": 93,
+   "task_id": "0093_code_mbpp_plus_13_000307_000330",
+   "task_type": "standard",
+   "dataset": "mbpp_plus",
+   "source_start": 307,
+   "source_end_exclusive": 330,
+   "num_samples": 8,
+   "generation_seed": 93000321
+  },
+  {
+   "sequence": 94,
+   "task_id": "0094_code_mbpp_plus_14_000330_000354",
+   "task_type": "standard",
+   "dataset": "mbpp_plus",
+   "source_start": 330,
+   "source_end_exclusive": 354,
+   "num_samples": 8,
+   "generation_seed": 94000324
+  },
+  {
+   "sequence": 95,
+   "task_id": "0095_code_mbpp_plus_15_000354_000378",
+   "task_type": "standard",
+   "dataset": "mbpp_plus",
+   "source_start": 354,
+   "source_end_exclusive": 378,
+   "num_samples": 8,
+   "generation_seed": 95000327
+  },
+  {
+   "sequence": 96,
+   "task_id": "0096_code_lcb_v5_00_000000_000010",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v5",
+   "source_start": 0,
+   "source_end_exclusive": 10,
+   "num_samples": 8,
+   "generation_seed": 96000330
+  },
+  {
+   "sequence": 97,
+   "task_id": "0097_code_lcb_v5_01_000010_000020",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v5",
+   "source_start": 10,
+   "source_end_exclusive": 20,
+   "num_samples": 8,
+   "generation_seed": 97000333
+  },
+  {
+   "sequence": 98,
+   "task_id": "0098_code_lcb_v5_02_000020_000031",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v5",
+   "source_start": 20,
+   "source_end_exclusive": 31,
+   "num_samples": 8,
+   "generation_seed": 98000336
+  },
+  {
+   "sequence": 99,
+   "task_id": "0099_code_lcb_v5_03_000031_000041",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v5",
+   "source_start": 31,
+   "source_end_exclusive": 41,
+   "num_samples": 8,
+   "generation_seed": 99000339
+  },
+  {
+   "sequence": 100,
+   "task_id": "0100_code_lcb_v5_04_000041_000052",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v5",
+   "source_start": 41,
+   "source_end_exclusive": 52,
+   "num_samples": 8,
+   "generation_seed": 100000342
+  },
+  {
+   "sequence": 101,
+   "task_id": "0101_code_lcb_v5_05_000052_000062",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v5",
+   "source_start": 52,
+   "source_end_exclusive": 62,
+   "num_samples": 8,
+   "generation_seed": 101000345
+  },
+  {
+   "sequence": 102,
+   "task_id": "0102_code_lcb_v5_06_000062_000073",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v5",
+   "source_start": 62,
+   "source_end_exclusive": 73,
+   "num_samples": 8,
+   "generation_seed": 102000348
+  },
+  {
+   "sequence": 103,
+   "task_id": "0103_code_lcb_v5_07_000073_000083",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v5",
+   "source_start": 73,
+   "source_end_exclusive": 83,
+   "num_samples": 8,
+   "generation_seed": 103000351
+  },
+  {
+   "sequence": 104,
+   "task_id": "0104_code_lcb_v5_08_000083_000093",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v5",
+   "source_start": 83,
+   "source_end_exclusive": 93,
+   "num_samples": 8,
+   "generation_seed": 104000354
+  },
+  {
+   "sequence": 105,
+   "task_id": "0105_code_lcb_v5_09_000093_000104",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v5",
+   "source_start": 93,
+   "source_end_exclusive": 104,
+   "num_samples": 8,
+   "generation_seed": 105000357
+  },
+  {
+   "sequence": 106,
+   "task_id": "0106_code_lcb_v5_10_000104_000114",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v5",
+   "source_start": 104,
+   "source_end_exclusive": 114,
+   "num_samples": 8,
+   "generation_seed": 106000360
+  },
+  {
+   "sequence": 107,
+   "task_id": "0107_code_lcb_v5_11_000114_000125",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v5",
+   "source_start": 114,
+   "source_end_exclusive": 125,
+   "num_samples": 8,
+   "generation_seed": 107000363
+  },
+  {
+   "sequence": 108,
+   "task_id": "0108_code_lcb_v5_12_000125_000135",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v5",
+   "source_start": 125,
+   "source_end_exclusive": 135,
+   "num_samples": 8,
+   "generation_seed": 108000366
+  },
+  {
+   "sequence": 109,
+   "task_id": "0109_code_lcb_v5_13_000135_000146",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v5",
+   "source_start": 135,
+   "source_end_exclusive": 146,
+   "num_samples": 8,
+   "generation_seed": 109000369
+  },
+  {
+   "sequence": 110,
+   "task_id": "0110_code_lcb_v5_14_000146_000156",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v5",
+   "source_start": 146,
+   "source_end_exclusive": 156,
+   "num_samples": 8,
+   "generation_seed": 110000372
+  },
+  {
+   "sequence": 111,
+   "task_id": "0111_code_lcb_v5_15_000156_000167",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v5",
+   "source_start": 156,
+   "source_end_exclusive": 167,
+   "num_samples": 8,
+   "generation_seed": 111000375
+  },
+  {
+   "sequence": 112,
+   "task_id": "0112_code_lcb_v6_00_000000_000010",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v6",
+   "source_start": 0,
+   "source_end_exclusive": 10,
+   "num_samples": 8,
+   "generation_seed": 112000378
+  },
+  {
+   "sequence": 113,
+   "task_id": "0113_code_lcb_v6_01_000010_000021",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v6",
+   "source_start": 10,
+   "source_end_exclusive": 21,
+   "num_samples": 8,
+   "generation_seed": 113000381
+  },
+  {
+   "sequence": 114,
+   "task_id": "0114_code_lcb_v6_02_000021_000032",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v6",
+   "source_start": 21,
+   "source_end_exclusive": 32,
+   "num_samples": 8,
+   "generation_seed": 114000384
+  },
+  {
+   "sequence": 115,
+   "task_id": "0115_code_lcb_v6_03_000032_000043",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v6",
+   "source_start": 32,
+   "source_end_exclusive": 43,
+   "num_samples": 8,
+   "generation_seed": 115000387
+  },
+  {
+   "sequence": 116,
+   "task_id": "0116_code_lcb_v6_04_000043_000054",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v6",
+   "source_start": 43,
+   "source_end_exclusive": 54,
+   "num_samples": 8,
+   "generation_seed": 116000390
+  },
+  {
+   "sequence": 117,
+   "task_id": "0117_code_lcb_v6_05_000054_000065",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v6",
+   "source_start": 54,
+   "source_end_exclusive": 65,
+   "num_samples": 8,
+   "generation_seed": 117000393
+  },
+  {
+   "sequence": 118,
+   "task_id": "0118_code_lcb_v6_06_000065_000076",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v6",
+   "source_start": 65,
+   "source_end_exclusive": 76,
+   "num_samples": 8,
+   "generation_seed": 118000396
+  },
+  {
+   "sequence": 119,
+   "task_id": "0119_code_lcb_v6_07_000076_000087",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v6",
+   "source_start": 76,
+   "source_end_exclusive": 87,
+   "num_samples": 8,
+   "generation_seed": 119000399
+  },
+  {
+   "sequence": 120,
+   "task_id": "0120_code_lcb_v6_08_000087_000098",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v6",
+   "source_start": 87,
+   "source_end_exclusive": 98,
+   "num_samples": 8,
+   "generation_seed": 120000402
+  },
+  {
+   "sequence": 121,
+   "task_id": "0121_code_lcb_v6_09_000098_000109",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v6",
+   "source_start": 98,
+   "source_end_exclusive": 109,
+   "num_samples": 8,
+   "generation_seed": 121000405
+  },
+  {
+   "sequence": 122,
+   "task_id": "0122_code_lcb_v6_10_000109_000120",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v6",
+   "source_start": 109,
+   "source_end_exclusive": 120,
+   "num_samples": 8,
+   "generation_seed": 122000408
+  },
+  {
+   "sequence": 123,
+   "task_id": "0123_code_lcb_v6_11_000120_000131",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v6",
+   "source_start": 120,
+   "source_end_exclusive": 131,
+   "num_samples": 8,
+   "generation_seed": 123000411
+  },
+  {
+   "sequence": 124,
+   "task_id": "0124_code_lcb_v6_12_000131_000142",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v6",
+   "source_start": 131,
+   "source_end_exclusive": 142,
+   "num_samples": 8,
+   "generation_seed": 124000414
+  },
+  {
+   "sequence": 125,
+   "task_id": "0125_code_lcb_v6_13_000142_000153",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v6",
+   "source_start": 142,
+   "source_end_exclusive": 153,
+   "num_samples": 8,
+   "generation_seed": 125000417
+  },
+  {
+   "sequence": 126,
+   "task_id": "0126_code_lcb_v6_14_000153_000164",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v6",
+   "source_start": 153,
+   "source_end_exclusive": 164,
+   "num_samples": 8,
+   "generation_seed": 126000420
+  },
+  {
+   "sequence": 127,
+   "task_id": "0127_code_lcb_v6_15_000164_000175",
+   "task_type": "official_lcb",
+   "dataset": "lcb_v6",
+   "source_start": 164,
+   "source_end_exclusive": 175,
+   "num_samples": 8,
+   "generation_seed": 127000423
+  }
+ ]
+}
