@@ -1,0 +1,53 @@
+# SAPD candidate sets of paper/paper.md section 1.3 on the best Math+Code profile
+# (Math 5% / Code 1%, Next-Step TopLoss ID-mean ranking, >20 occurrence gate, Fixed4, per-domain mean-one).
+#   Math = 124 Control IDs (SHA256 ccb1adb8eda11b0935c20e77b714f1e8f1de0b79c8dcfe87458ca72bc9bc8bda): `pool == Control` rows of
+#     analysis-output/c01-c02-selection-stepdiff-20260930/pruned_pool/math_candidates_{kept,dropped}.csv
+#     (84 PDTB-3 connectives + 40 Control-44).
+#   Code = 163 programming-vocabulary IDs (SHA256 9a7120d1bb8768bb4e7491987e2722bcecdd1d26b2f633359910c93c1895a265): `taxonomy == code_lexical_structure`
+#     rows of pruned_pool/code_candidates_{kept,dropped}.csv; no Code Control ID, no format/punctuation ID.
+# Same lists as the paper's motivating analysis (Rising gap-decline advantage in all four uniform
+# baselines) and submit_analysis/figure2_weighting/sapd_select.py.
+# Eight GPUs: 6 actor/rollout + 2 dedicated teacher (the 31.66% best-run topology); only the two
+# pools and the run names differ from the parent.
+extends: mopd_math_code_toploss_m05_c01_code_structure_fixed4_8gpu_6s2t.yaml
+
+runtime:
+  wandb_run_id: q1p7b4g-mc-tl-m05c01-mctrl-cprog-8g6s2t-b528-s60
+  wandb_resume: never
+
+audit:
+  output_dir: audit/q1p7b4g-mc-tl-m05c01-mctrl-cprog-8g6s2t-b528-s60
+  domain_control_token_candidate_ids:
+    math: [
+      258, 263, 269, 300, 304, 323, 333, 369, 389, 421, 437, 438, 448, 476, 504, 553,
+      641, 704, 714, 758, 770, 773, 911, 979, 983, 1075, 1083, 1156, 1172, 1221, 1249, 1283,
+      1380, 1393, 1416, 1431, 1499, 1573, 1576, 1597, 1634, 1694, 1752, 1790, 1913, 1925, 1958, 1986,
+      1988, 2041, 2055, 2058, 2121, 2195, 2461, 2474, 2521, 2661, 2679, 2870, 2938, 3036, 3055, 3197,
+      3243, 3425, 3498, 3602, 3650, 3830, 3983, 4197, 4226, 4354, 4416, 4518, 4623, 4751, 4803, 5005,
+      5338, 5542, 5627, 5937, 6788, 7039, 7241, 8088, 8450, 8704, 9064, 9112, 9211, 9658, 10694, 11209,
+      11284, 11683, 12209, 12549, 12824, 13023, 13394, 15277, 15484, 16085, 17949, 19357, 21806, 22043, 22477, 23322,
+      25156, 27653, 28996, 30787, 31040, 38770, 41968, 44500, 54815, 67691, 73877, 92014,
+    ]
+    code: [
+      265, 285, 307, 312, 374, 396, 436, 455, 470, 474, 495, 526, 536, 537, 539, 541,
+      607, 633, 678, 689, 707, 729, 738, 746, 750, 877, 878, 894, 914, 917, 943, 1049,
+      1065, 1140, 1142, 1159, 1173, 1242, 1308, 1313, 1334, 1349, 1350, 1355, 1430, 1438, 1465, 1492,
+      1494, 1539, 1607, 1633, 1653, 1714, 1787, 1887, 1921, 1932, 1946, 2088, 2224, 2240, 2243, 2256,
+      2415, 2420, 2422, 2432, 2505, 2508, 2514, 2550, 2629, 2647, 2750, 2810, 2892, 3006, 3007, 3060,
+      3265, 3270, 3343, 3378, 3435, 3557, 3561, 3589, 3644, 3647, 3649, 3661, 3741, 3767, 3817, 3890,
+      4049, 4051, 4057, 4194, 4208, 4409, 4778, 4828, 4869, 5090, 5097, 5175, 5367, 5399, 5419, 5552,
+      5571, 5638, 5656, 5708, 5820, 5987, 6013, 6351, 6451, 6718, 6860, 6863, 6875, 6888, 6894, 6960,
+      7546, 7791, 7834, 8156, 8290, 8296, 8374, 8737, 9258, 9544, 9669, 9752, 9931, 10308, 10374, 10615,
+      12371, 12458, 12669, 13027, 13036, 13105, 13252, 13316, 14405, 15302, 15983, 19496, 21743, 25903, 27437, 28131,
+      28298, 41331, 56466,
+    ]
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b4g-mc-tl-m05c01-mctrl-cprog-8g6s2t-b528-s60
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/mopd/q1p7b4g-mc-tl-m05c01-mctrl-cprog-8g6s2t-b528-s60
+
+trainer:
+  experiment_name: q1p7b4g-mc-tl-m05c01-mctrl-cprog-8g6s2t-b528-s60
+  default_local_dir: checkpoints/MOPD/q1p7b4g-mc-tl-m05c01-mctrl-cprog-8g6s2t-b528-s60
