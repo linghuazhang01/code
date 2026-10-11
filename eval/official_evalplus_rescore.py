@@ -7,6 +7,8 @@ import argparse
 import hashlib
 import json
 import os
+import signal
+import threading
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -57,11 +59,40 @@ def _source_task_id(record: Mapping[str, Any], record_name: str) -> str:
     return source_id[len(prefix) :]
 
 
+# Per-sample cap on sanitize. Degenerate ~16k-token looping completions can keep evalplus.sanitize busy
+# for hours (2026-10-10: sapd s2042 MBPP prepare stalled >100 min on one sample). A timed-out sample is
+# written as an empty solution, which EvalPlus scores as a failure, and is listed in the prepare manifest.
+# 0 disables the cap.
+DEFAULT_SANITIZE_TIMEOUT_SECONDS = 300.0
+
+
+class _SanitizeTimeout(Exception):
+    pass
+
+
+def _raise_sanitize_timeout(signum: int, frame: Any) -> None:
+    raise _SanitizeTimeout()
+
+
 def _apply_sanitizer(
-    payload: tuple[Callable[[str, str], str], str, str],
-) -> str:
-    sanitizer, response, entry_point = payload
-    return sanitizer(response, entry_point)
+    payload: tuple[Callable[[str, str], str], str, str, float],
+) -> tuple[str, bool]:
+    """Sanitize one response; return (solution, timed_out)."""
+    sanitizer, response, entry_point, timeout = payload
+    # SIGALRM only works in the main thread; pool workers run tasks there.
+    use_alarm = timeout > 0 and threading.current_thread() is threading.main_thread()
+    if use_alarm:
+        previous = signal.signal(signal.SIGALRM, _raise_sanitize_timeout)
+        signal.setitimer(signal.ITIMER_REAL, timeout)
+    try:
+        solution, timed_out = sanitizer(response, entry_point), False
+    except _SanitizeTimeout:
+        solution, timed_out = "", True
+    finally:
+        if use_alarm:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous)
+    return solution, timed_out
 
 
 def _official_sanitize(response: str, entry_point: str) -> str:
@@ -78,6 +109,7 @@ def prepare_samples(
     sanitizer: Callable[[str, str], str],
     expected_rollouts: int = 8,
     parallel: int = 1,
+    sanitize_timeout: float = DEFAULT_SANITIZE_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Convert archived raw responses to the exact EvalPlus solution format."""
     config = DATASET_CONFIG[dataset]
@@ -107,7 +139,7 @@ def prepare_samples(
     if parallel < 1:
         raise ValueError(f"parallel must be positive, got {parallel}")
 
-    ordered_samples: list[tuple[str, str, str]] = []
+    ordered_samples: list[tuple[str, int, str, str]] = []
     for task_id in source:
         rollout_map = selected[task_id]
         if set(rollout_map) != expected_indices:
@@ -117,26 +149,34 @@ def prepare_samples(
             )
         entry_point = source[task_id]["entry_point"]
         ordered_samples.extend(
-            (task_id, rollout_map[rollout_index], entry_point)
+            (task_id, rollout_index, rollout_map[rollout_index], entry_point)
             for rollout_index in range(expected_rollouts)
         )
 
     sanitizer_inputs = (
-        (sanitizer, response, entry_point)
-        for _, response, entry_point in ordered_samples
+        (sanitizer, response, entry_point, sanitize_timeout)
+        for _, _, response, entry_point in ordered_samples
     )
     if parallel == 1:
-        sanitized = list(map(_apply_sanitizer, sanitizer_inputs))
+        results = list(map(_apply_sanitizer, sanitizer_inputs))
     else:
         with ProcessPoolExecutor(max_workers=parallel) as executor:
-            sanitized = list(
+            results = list(
                 executor.map(_apply_sanitizer, sanitizer_inputs, chunksize=1)
             )
+    sanitized = [solution for solution, _ in results]
+    timeouts = [
+        {"task_id": task_id, "rollout_index": rollout_index, "response_chars": len(response)}
+        for (task_id, rollout_index, response, _), (_, timed_out) in zip(
+            ordered_samples, results, strict=True
+        )
+        if timed_out
+    ]
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     sample_count = 0
     with output_path.open("w", encoding="utf-8") as handle:
-        for (task_id, _, _), solution in zip(ordered_samples, sanitized, strict=True):
+        for (task_id, _, _, _), solution in zip(ordered_samples, sanitized, strict=True):
             handle.write(
                 json.dumps(
                     {"task_id": task_id, "solution": solution},
@@ -156,6 +196,9 @@ def prepare_samples(
         "task_count": len(source),
         "rollouts_per_task": expected_rollouts,
         "sanitize_processes": parallel,
+        "sanitize_timeout_seconds": sanitize_timeout,
+        "sanitize_timeout_count": len(timeouts),
+        "sanitize_timeouts": timeouts,
         "sample_count": sample_count,
         "samples_path": str(output_path.resolve()),
         "samples_sha256": _sha256(output_path),
@@ -234,6 +277,7 @@ def _prepare_command(args: argparse.Namespace) -> None:
         sanitizer=_official_sanitize,
         expected_rollouts=args.expected_rollouts,
         parallel=args.parallel,
+        sanitize_timeout=args.sanitize_timeout,
     )
     _write_json(args.manifest, payload)
 
@@ -256,6 +300,12 @@ def _parser() -> argparse.ArgumentParser:
     prepare.add_argument("--manifest", type=Path, required=True)
     prepare.add_argument("--expected-rollouts", type=int, default=8)
     prepare.add_argument("--parallel", type=int, default=1)
+    prepare.add_argument(
+        "--sanitize-timeout",
+        type=float,
+        default=float(os.environ.get("EVALPLUS_SANITIZE_TIMEOUT_S", DEFAULT_SANITIZE_TIMEOUT_SECONDS)),
+        help="Seconds per sample before it is written as an empty (failing) solution; 0 disables.",
+    )
     prepare.set_defaults(func=_prepare_command)
 
     summarize = subparsers.add_parser("summarize")
