@@ -32,9 +32,7 @@
 #   OUTPUT_ROOT  default CODE_DIR/experiments_records/eval
 #   MODEL_ROOT   download dir, default CODE_DIR/checkpoints/hf_eval_evmode
 #   GOPD_DIR     G-OPD checkout, needed for mc8 jobs
-#   EOPD_MC_DIR  HF-format Math+Code EOPD checkpoint, needed for mc8 eopd jobs; it is not on the Hub
-#                (README.md)
-#   TIP_MC_DIR, EXOPD_MATH_DIR  optional local copies; the Hub copy is downloaded otherwise
+#   EXOPD_MATH_DIR, TIP_MC_DIR, EOPD_MC_DIR  optional local copies; the Hub copy is downloaded otherwise
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -49,14 +47,14 @@ GOPD_DIR="${GOPD_DIR:-}"
 GOPD_COMMIT="37371a4c31ad7947746200d234161769191f4748"
 SANDBOX_IMAGE="${MOPD_CODE_SANDBOX_IMAGE:-verlai/verl:vllm023.dev1}"
 HF_REPO="icemoon28/opd-checkpoints"
-HF_REVISION="767a71392bdcbc1895a62e9587bdf97c3acfc999"   # 2026-10-11 main; both files below verified at it
+HF_REVISION="e5903df7d42e244bf10e790a1213e3a44ed2a6ce"   # 2026-10-11, after the EOPD upload; all three verified
 
-# model | Hub path_in_repo ("" = not on the Hub) | sha256 of model.safetensors (= the weights of the CityU
+# model | Hub path_in_repo | sha256 of model.safetensors (= the weights of the CityU
 # reference suites) | env var of an optional local copy
 MODELS=(
   "exopd_math|checkpoints/math/qwen1p7b-30b-math-exopd-lambda1p25-4gpu-b255/global_step_60/actor/huggingface|1f8cf3726bbbbaade4e8ffcefa24b6d562ebebd6195998de15104f4991b802ce|EXOPD_MATH_DIR"
   "tip_mc|checkpoints/baselines/math_code/tip_topk32_rho50_8gpu_6s2t_b516/global_step_60|f3a0e14642ae31b0507c50365d4d0816d9bdef1b8477898571d29684fa80f10d|TIP_MC_DIR"
-  "eopd_mc||1f7b3213e9944bfa4b0d308241fd16a4d0e344c2b64ceb2bfc68e74dbb6fd1da|EOPD_MC_DIR"
+  "eopd_mc|checkpoints/baselines/math_code/qwen1p7b-30b-math-code-eopd-native-4gpu-colocate-b516-s42/global_step_60|1f7b3213e9944bfa4b0d308241fd16a4d0e344c2b64ceb2bfc68e74dbb6fd1da|EOPD_MC_DIR"
 )
 declare -A JOB_MODEL=([math4:exopd]=exopd_math [mc8:tip]=tip_mc [mc8:eopd]=eopd_mc)
 declare -A DATASETS=(

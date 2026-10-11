@@ -22,8 +22,8 @@ Before any GPU work, `eval_modes.py check-plan` checks every planned suite's sha
 
 1. This repo with the mopd-verl environment. The CityU references used vllm 0.23.0, torch 2.11.0+cu130 and transformers 4.57.6 on H200 NVL. Other versions and GPUs work, but the rollouts are then new draws, not reproductions.
 2. Checkpoints. Each one is verified by the SHA-256 of `model.safetensors`.
-   - ExOPD Math-only and TIP Math+Code are downloaded from HF `icemoon28/opd-checkpoints@767a7139` into `MODEL_ROOT`. To use local copies instead, set `EXOPD_MATH_DIR` / `TIP_MC_DIR`.
-   - **EOPD Math+Code is not on the Hub.** Copy the `actor/huggingface` directory of the CityU run `checkpoints/MOPD/qwen1p7b-30b-math-code-eopd-native-4gpu-colocate-b516-s42/global_step_60` to the new machine. Set `EOPD_MC_DIR` to it (sha256 `1f7b3213…`).
+   - All three are downloaded from HF `icemoon28/opd-checkpoints@e5903df7` into `MODEL_ROOT`. To use local copies instead, set `EXOPD_MATH_DIR` / `TIP_MC_DIR` / `EOPD_MC_DIR`.
+   - EOPD Math+Code (`checkpoints/baselines/math_code/qwen1p7b-30b-math-code-eopd-native-4gpu-colocate-b516-s42/global_step_60`, sha256 `1f7b3213…`) was uploaded on 2026-10-11. It is the `actor/huggingface` export of the CityU run that the EOPD pool suites evaluated.
 3. For the mc8 jobs only, the code-scoring setup:
    - G-OPD at `37371a4c31ad7947746200d234161769191f4748` (`GOPD_DIR`), with the LiveCodeBench files `code_eval/coding/LiveCodeBench/code_generation_lite/test5.jsonl` and `test6.jsonl`. These can be copied from the CityU G-OPD checkout; their SHA-256 values are pinned.
    - Docker image `verlai/verl:vllm023.dev1`.
@@ -33,7 +33,7 @@ Before any GPU work, `eval_modes.py check-plan` checks every planned suite's sha
 
 ```bash
 cd <repo>/scripts/eval_repro/eager_vs_cg
-export PYTHON=/path/to/mopd-verl/bin/python GOPD_DIR=/path/to/G-OPD EOPD_MC_DIR=/path/to/eopd_mc/actor/huggingface
+export PYTHON=/path/to/mopd-verl/bin/python GOPD_DIR=/path/to/G-OPD
 bash run_eager_vs_cg.sh --setup-evalplus --dry-run   # checks, downloads, plans; no GPU work
 bash run_eager_vs_cg.sh                               # full run; rerun the same command to resume
 ```
