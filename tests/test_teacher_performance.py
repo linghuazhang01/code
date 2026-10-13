@@ -498,3 +498,90 @@ def test_multimodal_forward_retains_original_without_memory_probe(monkeypatch: p
 
     wrapped = perf._chunk_wrapper(original, perf._Tuning(1024, 32, 57344, 12 * 1024**3), 100)
     assert wrapped({"multi_modal_inputs": {}}) is None
+
+
+def _bf16_policy(calls: list | None = None) -> SimpleNamespace:
+    def forward(micro_batch: dict, topk_logprob_chunk_size: int | None = None) -> None:
+        return None
+
+    def compute_log_prob(data: object) -> tuple:
+        if calls is not None:
+            calls.append(data)
+        return (data.ids,) if hasattr(data, "ids") else (data,)
+
+    return SimpleNamespace(
+        _forward_micro_batch=forward,
+        compute_log_prob=compute_log_prob,
+        use_fused_kernels=False,
+        use_remove_padding=True,
+        ulysses_sequence_parallel_size=1,
+        actor_optimizer=None,
+        actor_module=SimpleNamespace(
+            config=SimpleNamespace(torch_dtype=torch.bfloat16, vocab_size=100)
+        ),
+    )
+
+
+@pytest.mark.parametrize("fsdp_size", [4, 2])
+def test_colocated_multi_rank_teacher_enables_synchronized_batching(
+    monkeypatch: pytest.MonkeyPatch, fsdp_size: int,
+) -> None:
+    """A teacher colocated with the actor (separate_ref_policy=false) batches with
+    boundaries reduced on the worker process group, exactly like a dedicated
+    multi-rank teacher; it is no longer left on the unbatched stock path."""
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(perf, "install_moe_dispatch", lambda model, mode: 48)
+    batch_world_sizes = []
+    original_batch_wrapper = perf._batch_wrapper
+
+    def record(*args: object, **kwargs: object) -> object:
+        batch_world_sizes.append(kwargs["distributed_world_size"])
+        return original_batch_wrapper(*args, **kwargs)
+
+    monkeypatch.setattr(perf, "_batch_wrapper", record)
+    policy = _bf16_policy()
+    original_compute = policy.compute_log_prob
+    state = perf.configure_teacher_performance(
+        policy, {"enabled": True}, world_size=4, teacher_model_device="gpu",
+        dedicated_teacher=False, fsdp_size=fsdp_size,
+    )
+    assert state["enabled"] is True
+    assert state["distributed_batch_sync"] is True
+    assert state["replicated_teacher"] is False
+    assert state["moe_blocks"] == 48
+    assert state["world_size"] == 4 and state["fsdp_size"] == fsdp_size
+    assert "reason" not in state
+    assert batch_world_sizes == [4]
+    assert policy.compute_log_prob is not original_compute
+
+
+def test_colocated_batching_keeps_rank_boundaries_aligned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every boundary decision goes through the process-group minimum, so a rank
+    with more free memory cannot take a larger group than its peers."""
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(perf, "install_moe_dispatch", lambda model, mode: 48)
+    monkeypatch.setattr(perf, "_available", lambda tuning: 10**12)
+    reduced = []
+
+    def peer_min(value: int, world_size: int) -> int:
+        assert world_size == 4
+        reduced.append(int(value))
+        if len(reduced) <= 2:
+            return int(value)  # rank-local batch sizes agree (5 rows everywhere)
+        # Peers can fit at most two rows per group; 0/1 flags pass through.
+        return min(int(value), 2)
+
+    monkeypatch.setattr(perf, "_distributed_min", peer_min)
+    calls: list = []
+    policy = _bf16_policy(calls)
+    perf.configure_teacher_performance(
+        policy, {"enabled": True}, world_size=4, teacher_model_device="gpu",
+        dedicated_teacher=False, fsdp_size=4,
+    )
+    data = Batch(torch.arange(5)[:, None], [7, 9, 4, 6, 3])
+    policy.compute_log_prob(data)
+    assert [len(piece) for piece in calls] == [2, 2, 1]
+    assert reduced[:2] == [5, -5]  # local size agreed on the group first
+    assert all(len(piece) <= 2 for piece in calls)

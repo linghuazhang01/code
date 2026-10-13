@@ -62,7 +62,7 @@ def _unexpected(*args: Any, **kwargs: Any) -> Any:
 
 @pytest.mark.parametrize("config,world_size,dedicated", [
     ({}, 1, False), ({}, 4, False),
-    ({"enabled": False}, 4, False), ({"enabled": True}, 4, False),
+    ({"enabled": False}, 4, False),
     ({"enabled": False}, 4, True),
 ])
 @pytest.mark.parametrize("available,expected_chunk", [(10**10, 1024), (0, 16)])

@@ -1,13 +1,14 @@
 """Memory-aware teacher batching and TopK postprocessing defaults.
 
-The guard is a conservative heuristic, not an OOM guarantee. Dedicated
-multi-rank reference workers synchronize batch boundaries before entering the
-model, while unsupported worker layouts retain their original path, including
-their collective call ordering. Memory-guarded TopK chunking is independent of
-batching and is enabled by default on supported colocated teachers as well.
-The independent expandable_segments setting
-applies before model construction on dedicated CUDA teachers, including
-multi-rank workers with batching disabled.
+The guard is a conservative heuristic, not an OOM guarantee. Multi-rank
+reference workers, dedicated or colocated with the actor, synchronize every
+batch boundary on the worker process group before entering the model, so all
+ranks issue the same number of forwards in the same order and the FSDP
+collectives stay aligned. A replicated dedicated teacher (fsdp_size 1) batches
+each rank independently. Unsupported layouts (CPU teacher, fused kernels,
+sequence parallel, non-BF16) retain their original path. Memory-guarded TopK
+chunking is independent of batching. The independent expandable_segments
+setting applies before model construction on dedicated CUDA teachers only.
 """
 
 import functools
@@ -306,7 +307,10 @@ def configure_teacher_performance(
     if reasons:
         logging.getLogger(__name__).warning("Teacher performance fallback: %s", "; ".join(reasons))
         return {"enabled": False, "topk_logprob_chunk_enabled": False, "reason": "; ".join(reasons)}
-    bundle_enabled = bundle_requested and (world_size == 1 or dedicated_teacher)
+    # Colocated multi-rank teachers share the worker process group with the actor;
+    # the batch wrapper reduces every boundary on that group, so the ranks keep a
+    # common forward count and collective order (see _distributed_min).
+    bundle_enabled = bool(bundle_requested)
     tuning = _Tuning(
         chunk=requested.topk_logprob_chunk_size if requested.topk_logprob_chunk_enabled else 16,
         max_sequences=requested.max_micro_batch_size,
@@ -321,7 +325,7 @@ def configure_teacher_performance(
         and fsdp_size == 1
     )
     batch_sync_world_size = (
-        world_size if dedicated_teacher and not replicated_teacher else 1
+        world_size if world_size > 1 and not replicated_teacher else 1
     )
     if requested.topk_logprob_chunk_enabled:
         policy._forward_micro_batch = _chunk_wrapper(
@@ -352,7 +356,7 @@ def configure_teacher_performance(
         "world_size": world_size,
     }
     if not bundle_enabled:
-        state["reason"] = "disabled" if not bundle_requested else "multi-rank collective ordering"
+        state["reason"] = "disabled"
     policy._teacher_performance_config = state
     logger.info("Teacher performance configured: %s", state)
     return state
