@@ -22,6 +22,8 @@ CODE_SCORING_WORKERS=0
 CODE_SCORING_PENDING_SHARDS=2
 STANDARD_PROTOCOL=0
 CUDA_GRAPHS=0
+GPU_MEMORY=0.85
+MAX_NUM_SEQS=24
 OFFICIAL_EVALPLUS=0
 RESUME=0
 DRY_RUN=0
@@ -52,6 +54,8 @@ Options:
   --standard_protocol         Enforce canonical 10-dataset, K=8, seed-42 protocol.
   --cuda_graphs               Run vLLM with CUDA graphs instead of eager mode (custom
                               suites only; samples are not bitwise comparable).
+  --gpu_memory F              vLLM gpu_memory_utilization per worker (default: 0.85;
+                              custom suites only, e.g. to share GPUs with other jobs).
   --resume                    Resume a compatible existing suite.
   --dry_run                  Print the direct-local plan without launching workers.
   -h, --help                 Show this help.
@@ -86,6 +90,8 @@ while [[ $# -gt 0 ]]; do
     --code_scoring_pending_shards|--code-scoring-pending-shards) CODE_SCORING_PENDING_SHARDS="${2:?$1 requires a value}"; shift 2 ;;
     --standard_protocol) STANDARD_PROTOCOL=1; shift ;;
     --cuda_graphs|--cuda-graphs) CUDA_GRAPHS=1; shift ;;
+    --gpu_memory|--gpu-memory) GPU_MEMORY="${2:?$1 requires a value}"; shift 2 ;;
+    --max_num_seqs|--max-num-seqs) MAX_NUM_SEQS="${2:?$1 requires a value}"; shift 2 ;;
     --resume) RESUME=1; shift ;;
     --dry_run|--dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -138,6 +144,14 @@ fi
 [[ "${SEED_SEQUENCE_OFFSET}" =~ ^(0|[1-9][0-9]*)$ ]] || {
   echo "--seed_sequence_offset must be a non-negative integer without leading zeros" >&2; exit 2;
 }
+[[ "${MAX_NUM_SEQS}" =~ ^[1-9][0-9]*$ ]] || { echo "--max_num_seqs must be a positive integer" >&2; exit 2; }
+[[ "${GPU_MEMORY}" =~ ^(0\.[0-9]*[1-9][0-9]*|1|1\.0+)$ ]] || {
+  echo "--gpu_memory must be a decimal in (0, 1]" >&2; exit 2;
+}
+if [[ "${STANDARD_PROTOCOL}" == "1" && "${GPU_MEMORY}" != "0.85" ]]; then
+  echo "--standard_protocol keeps gpu_memory 0.85; drop --gpu_memory" >&2
+  exit 2
+fi
 if [[ "${STANDARD_PROTOCOL}" == "1" && "${CUDA_GRAPHS}" == "1" ]]; then
   echo "--standard_protocol keeps eager vLLM execution; drop --cuda_graphs" >&2
   exit 2
@@ -251,10 +265,10 @@ PLAN_ARGS=(
   --temperature 1.0
   --top-p 1.0
   --batch-size 24
-  --gpu-memory 0.85
+  --gpu-memory "${GPU_MEMORY}"
   --max-model-len 18432
   --max-num-batched-tokens 32768
-  --max-num-seqs 24
+  --max-num-seqs "${MAX_NUM_SEQS}"
   --code-scoring-workers "${CODE_SCORING_WORKERS}"
   --code-scoring-pending-shards "${CODE_SCORING_PENDING_SHARDS}"
 )
@@ -299,7 +313,7 @@ cat > "${SUITE_ROOT}/RUN_MANIFEST.md" <<EOF
 - rollouts: K=8 per prompt/domain, temperature=1.0, top_p=1.0
 - generation seed: base_seed=${BASE_SEED}, seed_sequence_offset=${SEED_SEQUENCE_OFFSET}; shard seed=base_seed+(task_sequence+seed_sequence_offset)*1000003
 - generation: max_new_tokens=16384, max_model_len=18432
-- execution: batch_size=24, max_num_batched_tokens=32768, max_num_seqs=24, gpu_memory=0.85, enforce_eager=$(if [[ "${CUDA_GRAPHS}" == "1" ]]; then printf 'False (CUDA graphs)'; else printf 'True'; fi)
+- execution: batch_size=24, max_num_batched_tokens=32768, max_num_seqs=${MAX_NUM_SEQS}, gpu_memory=${GPU_MEMORY}, enforce_eager=$(if [[ "${CUDA_GRAPHS}" == "1" ]]; then printf 'False (CUDA graphs)'; else printf 'True'; fi)
 - code scoring: $(if [[ "${SCORE_CODE}" == "1" ]]; then printf 'enabled via Docker (%s)' "${CODE_SANDBOX_IMAGE}"; else printf 'disabled'; fi)
 - asynchronous Code scoring: ${CODE_SCORING_WORKERS} threads per GPU worker, at most ${CODE_SCORING_PENDING_SHARDS} pending shards
 - official EvalPlus: ${OFFICIAL_EVALPLUS} (sanitize + base + plus before suite completion)

@@ -109,3 +109,26 @@ def test_cuda_graphs_is_an_explicit_custom_suite_opt_in(tmp_path: Path) -> None:
     )
     assert standard.returncode == 2
     assert "--standard_protocol keeps eager" in standard.stderr
+
+
+def test_gpu_memory_is_a_custom_suite_option(tmp_path: Path) -> None:
+    def plan(result: subprocess.CompletedProcess[str]) -> list[str]:
+        assert result.returncode == 0, result.stderr
+        return shlex.split(result.stdout.splitlines()[1])
+
+    default = plan(run_launcher(tmp_path, ["--dry_run"]))
+    assert default[default.index("--gpu-memory") + 1] == "0.85"
+    custom = plan(run_launcher(tmp_path, ["--gpu_memory", "0.70", "--dry_run"]))
+    assert custom[custom.index("--gpu-memory") + 1] == "0.70"
+
+    for bad in ["0", "0.0", "1.5", "x", ".7", "-0.5"]:
+        result = run_launcher(tmp_path, ["--gpu_memory", bad, "--dry_run"])
+        assert result.returncode == 2, bad
+        assert "--gpu_memory must be" in result.stderr
+
+    standard = run_launcher(
+        tmp_path,
+        ["--standard_protocol", "--gopd_dir", str(tmp_path), "--gpu_memory", "0.70", "--dry_run"],
+    )
+    assert standard.returncode == 2
+    assert "--standard_protocol keeps gpu_memory 0.85" in standard.stderr
