@@ -2,7 +2,8 @@
 # Math = 390 IDs: the best Math+Code run's Math pool (Control + Structure union of the 809-token
 #   taxonomy under the >20 occurrence filter), exactly the `math` list of
 #   _mopd_math_code_structure_toploss_fixed4_8gpu_6s2t.yaml / _4gpu.yaml. Rewritten on 2026-10-07 from
-#   the 394-ID methodology pool so that only the Code pool differs from the best run.
+#   the 394-ID methodology pool so that the Math pool equals the best run's. The Code pool AND the
+#   selection timing (current_step here, next_step in the best run) still differ from the best run.
 # Code = 379 IDs: V10-lean from analysis-output/code-pool-v10-20261006 — Boundary 9 (code fence,
 #   markdown heading/hr, EOS) + Control 151 (current PDTB ∪ Control-44 under four-baseline support)
 #   + Scaffold 25 (capitalised words with >=0.5 heading/bold-label share in the teacher corpus)

@@ -483,6 +483,17 @@ taxonomy。它只替换 Code 候选池；Math 候选池 = 当前 best run 的 Ma
 的 `math` 列表，390 个 ID：809-token taxonomy 的 Control ∪ Structure 经 `>20` 出现过滤），本节不改变其定义。
 （2026-10-07 改写：10-06 提案原用 394 个 ID 的 2026-10-02 方法论池；该版本已删除，未产出结果。）选词器与第 0.4/0.5 节 V6–V9 完全相同。
 
+**与 best run 的差异不只 Code 池（2026-10-08 更正）。** 以 resolved config 对比 best run
+`mopd_math_code_toploss_m05_c01_code_structure_fixed4_8gpu_6s2t.yaml` 与
+`mopd_math_code_current_step_token_v10lean_toploss_m05_c01_fixed4_4gpu_colocated.yaml`：
+(1) Math 池相同（390，同一 fingerprint）；(2) Code 池 551 → 379：best run 的 551 = Code DomainStructure 全集、0 个 Control，
+V10-lean 为 Control 151 + Structure 151 + taxonomy-Other 77，两者仅共享 151 个 ID（Boundary 6、CodeLex 131、AlgoLex 14），
+去掉 400 个、新增 228 个（Control 151、Scaffold 25、AlgoLex 49、Boundary 3），即 Code 从 Structure-only 变为含 Control；
+(3) 选词时机 `next_step` → `current_step`（方法差异）；(4) 运行差异：8-GPU 6 actor + 2 teacher → 4-GPU colocated
+（ref fsdp 2 → 4），vLLM 0.75 → 0.6，teacher `fused_statistics`/`compact_topk_ids` 开启（仅性能）。
+batch 528、lr、Top-p 5%/1%、Fixed w=4、`>20` gate、tail 0、60 steps、seed 42 相同。
+因此 V10-lean − best run 不能单独归因于 Code 池；单变量对照是同配方 Current-Step + Code 551 池。
+
 **动机。** Code Rising 速度 Top-200 中约 80% 为 lexical_identifier（回答骨架词、Python/算法词汇、标识符），
 PDTB 连接词仅 8–11%，格式/边界 6–8%；现行 Code 池 704 中 380 个为纯标点/空白（富集 0.54×），整池对 Code
 Rising Top-200 的富集为 0.89–1.01。V10-lean 按"分叉点"标准重定类别：回答结构标签、算法承诺词、代码边界。

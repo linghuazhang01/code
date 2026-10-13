@@ -5,6 +5,16 @@
 1. 禁止在 login node 上运行 Python 计算进程；如确需在 login node 启动 Python 进程，同一时刻同时运行的数量不得超过 10 个。
 2. 所有任务都应在 Slurm 提供的计算节点上进行（通过 `sbatch`、`srun` 或进入已有 allocation）；login node 只用于登录、提交和管理作业。
 
+## Proposal 文档位置与写入审核（用户明确要求，2026-10-07，必须遵守）
+
+1. `proposal.md`、`method.md` 及同类 proposal / method 正式文档统一放在本项目的 `paper_proposal/` 目录下；不得在根目录、`plan/` 或其他位置另建主版本。
+2. 这些文件只有经用户审核通过后才能写入。新建、修改、覆盖、移动、重命名或删除之前，先在对话中给出完整的拟写内容或 diff，等用户明确表示审核通过后再写入。用户要求“修改 / 更新 / 同步 proposal”只表示可以起草，不代表内容已经审核通过。
+3. 一次审核只覆盖当次给用户看过的内容；之后再改须重新提交审核。不得以任务需要、skill 默认流程、其他条款的同步要求或“只是小改”为由跳过审核。
+4. 待审稿如需保存成文件，放在 `paper_proposal/` 之外（如 `plan/`），文件开头标明“待用户审核，非主版本”，不得作为正式版本引用。
+5. 目前位于 `paper_proposal/` 之外的 proposal / method 文件，在用户审核同意迁移前保持原位，可照常读取和引用；迁移本身同样须经用户审核，不得自行移动。
+6. 本节优先于本文件中其他涉及 proposal / method 写入、同步或 `paper_proposal/` 编辑授权的条款：那些要求仍然有效，但一律改为先提交审核、通过后再写入。
+7. 本项目说明：本项目的 `paper_proposal/` 位于仓库上一级 `OPD/paper_proposal/`（从本目录看是 `../paper_proposal/`）。其中 `proposal.md`、`method.md` 及中英文版本 `method_zh.md`、`method_en.md` 受本节约束。
+
 ## 已验证 teacher 性能能力的继承约束
 
 - **Teacher/ref TopK logprob chunk 默认开启，默认 `1024`**。通用开关为 `teacher_performance.topk_logprob_chunk_enabled: true`，独立于 `teacher_performance.enabled`。所有新配置、继承配置、resume 和 colocated/dedicated 布局都必须通过统一配置解析与 launcher 传递此能力；不得因四卡、多 rank 或关闭 batching 而静默退回原始 `16`。

@@ -112,6 +112,8 @@ def test_profile_contract(gpus: int, tmp_path: Path) -> None:
     assert config.data.train_batch_size % gpus == 0
     # The 4-GPU server run shares GPU 0 with another process, so it reserves less vLLM memory.
     assert config.rollout.gpu_memory_utilization == (0.6 if gpus == 4 else 0.75)
+    assert config.teacher_performance.fused_statistics is (gpus == 4)
+    assert config.teacher_performance.compact_topk_ids is (gpus == 4)
 
     domain = _runtime_metadata(config, tmp_path)
     assert domain.control_token_online_selection_timing == "current_step"
