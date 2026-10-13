@@ -49,7 +49,7 @@ dist/
 !third_party/verl/**/*.whl
 
 # Experiment outputs
-/analysis-output/
+/analysis-output
 audit/
 mopd_audit/
 checkpoints/

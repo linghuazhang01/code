@@ -547,6 +547,20 @@ types”，而是按 token type 的 occurrence-mean selection score 排序，选
 coverage 可能超过 5%。当 `strict_occurrence_gate: true` 且阈值为 20 时，资格条件为
 rolling-window mean count 严格大于 20，而不是大于等于 20。
 
+不想受 occurrence budget 限制、让候选池里每个 token 都加权时，把 budget mode
+设为 `all`：
+
+```yaml
+audit:
+  control_token_online_budget_mode: all
+```
+
+`all` 下 `control_token_online_top_p`、`control_token_online_top_p_by_domain`
+和 `control_token_online_top_k` 被忽略；通过 occurrence gate（`>20` 等）的全部
+候选 token 都被选中并按 `control_token_loss_weight` 加权，per-domain mean-one
+归一化照常进行。它对 `current_step`、`next_step` 和 occurrence unit 三条路径都
+生效。
+
 `control_token_online_weight_mode=loss_ratio` 只允许搭配 `top_loss`。对每个
 domain 的 source window，设 `S` 为本次入选 token ID 的全部 occurrence，`V` 为
 全部 valid response-token occurrence，则：

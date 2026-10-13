@@ -15,6 +15,7 @@ from mopd_verl.domain_gradient.occurrence_config import (
 from mopd_verl.domain_gradient.control_selection_budget import (
     top_p_target_occurrence_count,
 )
+from mopd_verl.domain_gradient.control_selection_scoring import ALL_BUDGET_MODE
 from mopd_verl.domain_gradient.structure_positions import (
     validated_control_position_mask,
 )
@@ -300,7 +301,15 @@ def prepare_occurrence_masks(
     )
     if distributed:
         torch.distributed.all_gather_object(ranks, (counts, positions, error))
-    fractions = dict(config.control_token_online_top_p_by_domain)
+    # budget_mode "all": a fraction of 1.0 makes the occurrence budget equal the
+    # valid-token count, so every gated candidate is selected (see _take).
+    all_pool = config.control_token_online_budget_mode == ALL_BUDGET_MODE
+    default_fraction = 1.0 if all_pool else config.control_token_online_top_p
+    fractions = (
+        {d: 1.0 for d in config.domains}
+        if all_pool
+        else dict(config.control_token_online_top_p_by_domain)
+    )
     if current_step:
         from mopd_verl.domain_gradient.current_step_selection import (
             current_step_selection_record,
@@ -309,7 +318,7 @@ def prepare_occurrence_masks(
         from mopd_verl.domain_gradient.current_step_weights import install_current_step_masks
 
         head_fractions = {
-            d: fractions.get(d, config.control_token_online_top_p) for d in config.domains
+            d: fractions.get(d, default_fraction) for d in config.domains
         }
         tail_budget_fractions = {
             d: tail_fractions.get(d, config.control_token_tail_top_p) for d in config.domains
@@ -350,10 +359,7 @@ def prepare_occurrence_masks(
     selected, means, metrics = select_positions(
         ranks,
         candidates,
-        {
-            d: fractions.get(d, config.control_token_online_top_p)
-            for d in config.domains
-        },
+        {d: fractions.get(d, default_fraction) for d in config.domains},
         config.control_token_online_min_mean_occurrences_per_step,
         config.control_token_online_strict_occurrence_gate,
         selection_modes=selection_modes,

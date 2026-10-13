@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from decimal import ROUND_CEILING, Decimal
 
 from mopd_verl.domain_gradient.control_selection_scoring import (
+    ALL_BUDGET_MODE,
     RANDOM_SELECTION_MODE,
     TOP_LOSS_SELECTION_MODE,
     TOP_P_BUDGET_MODE,
@@ -254,9 +255,11 @@ def select_ranked_tokens(
     top_p: float,
     valid_token_count: int = 0,
 ) -> tuple[SelectedControlToken, ...]:
-    """Apply a fixed-count or valid-token-occurrence budget."""
+    """Apply a fixed-count or valid-token-occurrence budget, or none at all."""
 
     ordered = tuple(ranked)
+    if budget_mode == ALL_BUDGET_MODE:
+        return ordered
     if budget_mode != TOP_P_BUDGET_MODE:
         return ordered[:top_k]
     if not ordered or valid_token_count <= 0:

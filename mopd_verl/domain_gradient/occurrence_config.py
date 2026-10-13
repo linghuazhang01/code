@@ -283,7 +283,6 @@ def validate_occurrence_config(config: Any, actor: Any = None) -> None:
         "control_token_online_candidate_scope": "configured",
         "control_token_online_audit_interval_steps": 1,
         "control_token_online_window_steps": 1,
-        "control_token_online_budget_mode": "top_p",
         "control_token_online_weight_mode": "fixed",
         "control_token_online_top_k_per_group": None,
         "control_token_loss_ratio_alpha": 1.0,
@@ -291,6 +290,10 @@ def validate_occurrence_config(config: Any, actor: Any = None) -> None:
     for key, value in expected.items():
         if getattr(config, key) != value:
             raise ValueError(f"occurrence requires {key}={value!r}")
+    if config.control_token_online_budget_mode not in {"top_p", "all"}:
+        raise ValueError(
+            "occurrence requires control_token_online_budget_mode='top_p' or 'all'"
+        )
     for key in (
         "control_token_adaptive_neighborhood_enabled",
         "control_token_phase_gate_enabled",

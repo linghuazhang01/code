@@ -45,7 +45,12 @@ ONLINE_CONTROL_SELECTION_MODES = frozenset(
 
 TOP_K_BUDGET_MODE = "top_k"
 TOP_P_BUDGET_MODE = "top_p"
-ONLINE_CONTROL_BUDGET_MODES = frozenset({TOP_K_BUDGET_MODE, TOP_P_BUDGET_MODE})
+# "all": no occurrence or count budget; every candidate token that passes the
+# occurrence gate is selected and weighted. top_k / top_p are ignored.
+ALL_BUDGET_MODE = "all"
+ONLINE_CONTROL_BUDGET_MODES = frozenset(
+    {TOP_K_BUDGET_MODE, TOP_P_BUDGET_MODE, ALL_BUDGET_MODE}
+)
 
 FIXED_ONLINE_WEIGHT_MODE = "fixed"
 PAIRED_ONLINE_WEIGHT_MODE = "paired"
