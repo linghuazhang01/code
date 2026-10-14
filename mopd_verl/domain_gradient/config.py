@@ -223,6 +223,7 @@ class DomainGradientConfig:
     control_token_tail_top_p_by_domain: tuple[tuple[str, float], ...] = ()
     control_token_tail_weight: float = 1.0
     control_token_tail_selection_mode: str = "bottom_loss"
+    control_token_other_weight: float = 1.0
     token_taxonomy_version: str = "legacy"
     token_taxonomy_artifact_sha256: str = ""
     structure_token_loss_weighting_enabled: bool = False
@@ -493,6 +494,7 @@ class DomainGradientConfig:
                 _get(meta, "control_token_loss_weighting_enabled", False)
             ),
             control_token_weight=float(_get(meta, "control_token_loss_weight", 1.0)),
+            control_token_other_weight=float(_get(meta, "control_token_other_weight", 1.0)),
             control_token_ids=tuple(
                 dict.fromkeys(
                     int(token_id) for token_id in _get(meta, "control_token_ids", ())

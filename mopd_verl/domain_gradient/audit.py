@@ -816,6 +816,7 @@ class DomainGradientAudit:
                         normalize_per_domain=(
                             self.config.control_token_normalize_per_domain
                         ),
+                        other_weight=self.config.control_token_other_weight,
                     )
                 gradient_weights = gradient_weights * token_weights
             gradient_weights = gradient_weights * token_gradient_weights(

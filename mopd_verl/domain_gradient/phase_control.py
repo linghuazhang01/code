@@ -179,8 +179,12 @@ def phase_token_weights(
     span_length: int,
     span_decay_tau: float,
     normalize_per_domain: bool,
+    other_weight: float = 1.0,
 ) -> torch.Tensor:
-    """Build fixed domain-token or phase-shifted marker/span weights."""
+    """Build fixed domain-token or phase-shifted marker/span weights.
+
+    Non-target valid positions get ``other_weight`` (1.0 = standard).
+    """
 
     marker_mask, _ = domain_control_masks(
         token_ids,
@@ -209,7 +213,7 @@ def phase_token_weights(
     else:
         targeting = marker_mask.float()
 
-    weights = 1.0 + (float(control_weight) - 1.0) * targeting
+    weights = float(other_weight) + (float(control_weight) - float(other_weight)) * targeting
     if not normalize_per_domain:
         return weights
 

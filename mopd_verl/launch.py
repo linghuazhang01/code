@@ -319,6 +319,7 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         "+mopd_audit.control_token_loss_weighting_enabled="
         f"{str(audit.control_token_loss_weighting_enabled).lower()}",
         "+mopd_audit.control_token_loss_weight=" f"{audit.control_token_loss_weight}",
+        "+mopd_audit.control_token_other_weight=" f"{audit.control_token_other_weight}",
         "+mopd_audit.control_token_ids=" f"{_hydra_int_list(audit.control_token_ids)}",
         "+mopd_audit.domain_control_token_ids="
         f"{_hydra_int_list_dict(audit.domain_control_token_ids)}",

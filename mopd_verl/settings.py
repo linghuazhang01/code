@@ -317,6 +317,9 @@ class AuditConfig:
     dynamic_domain_loss_weighting_max: float = 3.0
     control_token_loss_weighting_enabled: bool = False
     control_token_loss_weight: float = 1.0
+    # Weight of every valid position whose ID is NOT in domain_control_token_ids (fixed weighting only).
+    # 1.0 = standard; 0.0 with control_token_loss_weight 1.0 trains only the listed tokens.
+    control_token_other_weight: float = 1.0
     control_token_ids: list[int] = field(default_factory=list)
     domain_control_token_ids: dict[str, list[int]] = field(default_factory=dict)
     control_token_candidate_ids: list[int] = field(default_factory=list)
@@ -1096,6 +1099,38 @@ def load_config(path: str | Path) -> MOPDConfig:
         raise ValueError(
             "audit.control_token_loss_weight must be finite and non-negative."
         )
+    if (
+        not math.isfinite(audit.control_token_other_weight)
+        or audit.control_token_other_weight < 0.0
+    ):
+        raise ValueError(
+            "audit.control_token_other_weight must be finite and non-negative."
+        )
+    if audit.control_token_other_weight != 1.0:
+        if not (
+            audit.control_token_loss_weighting_enabled
+            and audit.domain_control_token_ids
+            and not audit.control_token_ids
+        ):
+            raise ValueError(
+                "audit.control_token_other_weight != 1 requires fixed per-domain "
+                "Control weighting (domain_control_token_ids, no shared control_token_ids)."
+            )
+        if (
+            audit.control_token_online_selection_enabled
+            or audit.control_token_speed_weighting_enabled
+            or audit.control_token_phase_gate_enabled
+            or audit.control_token_span_weighting_enabled
+            or audit.control_token_adaptive_neighborhood_enabled
+            or audit.control_token_normalize_per_domain
+        ):
+            raise ValueError(
+                "audit.control_token_other_weight != 1 supports only fixed weighting "
+                "without online selection, speed/phase/span/adaptive weighting or "
+                "per-domain normalisation."
+            )
+        if audit.control_token_other_weight == 0.0 and audit.control_token_loss_weight == 0.0:
+            raise ValueError("control_token_loss_weight and control_token_other_weight cannot both be 0.")
     if (
         audit.control_token_loss_weighting_enabled
         and not audit.control_token_ids

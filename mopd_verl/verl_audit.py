@@ -1020,6 +1020,9 @@ class MOPDAuditLogger:
         self.control_token_loss_weight = float(
             _cfg_get(audit_config, "control_token_loss_weight", 1.0)
         )
+        self.control_token_other_weight = float(
+            _cfg_get(audit_config, "control_token_other_weight", 1.0)
+        )
         self.token_taxonomy_version = str(
             _cfg_get(audit_config, "token_taxonomy_version", "legacy")
         )
@@ -2017,6 +2020,7 @@ class MOPDAuditLogger:
                     self.control_token_loss_weighting_enabled and mode == "train"
                 ),
                 "control_token_loss_weight": self.control_token_loss_weight,
+                "control_token_other_weight": self.control_token_other_weight,
                 "token_taxonomy_version": self.token_taxonomy_version,
                 "token_taxonomy_artifact_sha256": (
                     self.token_taxonomy_artifact_sha256

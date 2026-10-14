@@ -48,6 +48,7 @@ def with_post_snapshot_defaults(snapshot: dict) -> dict:
     switch became explicit, and shared-ref placement added two optional keys.
     2026-10-02: rule-based rewards are scored asynchronously by default.
     2026-10-14: the candidate-occurrence audit log added default-off switches.
+    2026-10-15: control_token_other_weight (default 1.0, standard OPD) was added.
     """
     updated = deepcopy(snapshot)
     assert updated["teacher_performance"]["enabled"] is False
@@ -63,6 +64,7 @@ def with_post_snapshot_defaults(snapshot: dict) -> dict:
             "candidate_occurrence_log_freq_steps": 1,
             "candidate_occurrence_reference_fraction": 0.01,
             "candidate_occurrence_log_compression": "gzip",
+            "control_token_other_weight": 1.0,
         }
     )
     return updated
