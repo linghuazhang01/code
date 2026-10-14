@@ -14,6 +14,24 @@ from mopd_verl.domain_gradient.structure_positions import (
 from mopd_verl.domain_gradient.token_weighting import aligned_response_token_ids
 
 
+def _local_positions(
+    selected: frozenset[tuple[int, ...]],
+    rank: int,
+) -> dict[int, tuple[list[int], list[int]]]:
+    """Index this rank's selected (row, column) pairs by local micro-batch once.
+
+    Occurrence selections hold every selected position of every rank; scanning
+    the whole set once per micro-batch is O(micro-batches x selected).
+    """
+    local: dict[int, tuple[list[int], list[int]]] = {}
+    for owner, batch, row, column in selected:
+        if owner == rank:
+            rows, columns = local.setdefault(batch, ([], []))
+            rows.append(row)
+            columns.append(column)
+    return local
+
+
 def _mark(
     selected: frozenset[tuple[int, ...]],
     ids: torch.Tensor,
@@ -22,14 +40,17 @@ def _mark(
     unit: str,
     rank: int,
     batch_index: int,
+    local: dict[int, tuple[list[int], list[int]]] | None = None,
 ) -> torch.Tensor:
     if unit == "token_id":
         tokens = torch.tensor([key[0] for key in selected], dtype=ids.dtype)
         return torch.isin(ids, tokens) & mask
+    if local is None:
+        local = _local_positions(selected, rank)
     marked = torch.zeros_like(mask)
-    for owner, batch, row, column in selected:
-        if owner == rank and batch == batch_index:
-            marked[row, column] = True
+    rows, columns = local.get(batch_index, ((), ()))
+    if rows:
+        marked[list(rows), list(columns)] = True
     return marked & mask
 
 
@@ -52,6 +73,20 @@ def install_current_step_masks(
     structure_enabled = bool(
         getattr(config, "structure_token_loss_weighting_enabled", False)
     )
+    local_head: dict[str, dict[int, tuple[list[int], list[int]]] | None] = {}
+    local_tail: dict[str, dict[int, tuple[list[int], list[int]]] | None] = {}
+    for domain in config.domains:
+        occurrence = unit != "token_id"
+        local_head[domain] = (
+            _local_positions(selection.head.get(domain, frozenset()), rank)
+            if occurrence
+            else None
+        )
+        local_tail[domain] = (
+            _local_positions(selection.tail.get(domain, frozenset()), rank)
+            if occurrence
+            else None
+        )
     for index, (batch, mask, labels) in enumerate(templates):
         inputs = {**batch.batch, **batch.non_tensor_batch}
         ids = aligned_response_token_ids(inputs, inputs["response_mask"]).cpu()
@@ -84,6 +119,7 @@ def install_current_step_masks(
                 unit=unit,
                 rank=rank,
                 batch_index=index,
+                local=local_head[domain],
             )
             tail = _mark(
                 selection.tail[domain],
@@ -92,6 +128,7 @@ def install_current_step_masks(
                 unit=unit,
                 rank=rank,
                 batch_index=index,
+                local=local_tail[domain],
             )
             if (head & tail).any():
                 raise RuntimeError("Current-step head and tail overlap")

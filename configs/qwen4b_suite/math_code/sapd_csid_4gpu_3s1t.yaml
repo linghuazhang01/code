@@ -1,0 +1,18 @@
+# Qwen3-4B math_code / sapd_csid: S9-ID (control arm): Current-Step selection at the token-ID level (ID-mean TopLoss, whole-ID budget), isolating timing vs the next-step SAPD file and unit vs sapd_pos.
+# Pools (Math Connective 124 / Code Programming 163), gamma=4, per-(micro-batch, domain) mean-one,
+# topology, batch and data are inherited unchanged from sapd_4gpu_3s1t.yaml; only the selection
+# timing/unit and the run names differ.
+extends: sapd_4gpu_3s1t.yaml
+runtime:
+  wandb_run_id: q4b-mc-sapdcsid-4g3s1t-b528-s42
+audit:
+  control_token_online_selection_timing: current_step
+  control_token_online_selection_unit: token_id
+  output_dir: audit/q4b-mc-sapdcsid-4g3s1t-b528-s42
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q4b-mc-sapdcsid-4g3s1t-b528-s42
+huggingface_checkpoint:
+  path_prefix: checkpoints/qwen4b/math_code/q4b-mc-sapdcsid-4g3s1t-b528-s42
+trainer:
+  experiment_name: q4b-mc-sapdcsid-4g3s1t-b528-s42
+  default_local_dir: checkpoints/MOPD/q4b-mc-sapdcsid-4g3s1t-b528-s42

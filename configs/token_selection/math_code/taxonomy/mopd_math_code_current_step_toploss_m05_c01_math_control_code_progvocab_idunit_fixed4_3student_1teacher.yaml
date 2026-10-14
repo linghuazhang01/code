@@ -1,0 +1,27 @@
+# S9-ID (control arm): SAPD with Current-Step selection at the token-ID level.
+# Same pools (inherited unchanged from the paper config), budget, >20 gate, gamma=4 and mean-one scope
+# as S9 and the paper config, but every occurrence of each selected ID is up-weighted (ID-mean loss
+# ranking, whole-ID budget overshoot as in the paper). Compared with the paper config it isolates
+# Current- vs Next-Step timing; compared with S9 it isolates position vs ID units.
+# Only selection timing/unit and run names differ from the paper config.
+# Student3 + dedicated teacher1 (physical GPUs 0/1/2 actor, 4 teacher); use start.sh --local.
+extends: mopd_math_code_toploss_m05_c01_math_control_code_progvocab_fixed4_3student_1teacher.yaml
+
+runtime:
+  wandb_run_id: q1p7b3s1t-mc-tl-m05c01-mctrl-cprog-current-id-f4-b528-s60
+  wandb_resume: never
+
+audit:
+  control_token_online_selection_timing: current_step
+  control_token_online_selection_unit: token_id
+  output_dir: audit/q1p7b3s1t-mc-tl-m05c01-mctrl-cprog-current-id-f4-b528-s60
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b3s1t-mc-tl-m05c01-mctrl-cprog-current-id-f4-b528-s60
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/mopd/q1p7b3s1t-mc-tl-m05c01-mctrl-cprog-current-id-f4-b528-s60
+
+trainer:
+  experiment_name: q1p7b3s1t-mc-tl-m05c01-mctrl-cprog-current-id-f4-b528-s60
+  default_local_dir: checkpoints/MOPD/q1p7b3s1t-mc-tl-m05c01-mctrl-cprog-current-id-f4-b528-s60

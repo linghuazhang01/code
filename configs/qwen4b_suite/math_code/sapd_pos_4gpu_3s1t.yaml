@@ -1,0 +1,18 @@
+# Qwen3-4B math_code / sapd_pos: S9 (position-level budget): Current-Step selection over individual candidate positions, scored by each position's own pre-update Top-32 RKL from an extra student prepass; budget = exactly ceil(p x all valid domain tokens across ranks) positions (Math 5% / Code 1%), >20 per-step occurrence gate (set control_token_online_min_mean_occurrences_per_step: 0.0 to disable).
+# Pools (Math Connective 124 / Code Programming 163), gamma=4, per-(micro-batch, domain) mean-one,
+# topology, batch and data are inherited unchanged from sapd_4gpu_3s1t.yaml; only the selection
+# timing/unit and the run names differ.
+extends: sapd_4gpu_3s1t.yaml
+runtime:
+  wandb_run_id: q4b-mc-sapdpos-4g3s1t-b528-s42
+audit:
+  control_token_online_selection_timing: current_step
+  control_token_online_selection_unit: occurrence
+  output_dir: audit/q4b-mc-sapdpos-4g3s1t-b528-s42
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q4b-mc-sapdpos-4g3s1t-b528-s42
+huggingface_checkpoint:
+  path_prefix: checkpoints/qwen4b/math_code/q4b-mc-sapdpos-4g3s1t-b528-s42
+trainer:
+  experiment_name: q4b-mc-sapdpos-4g3s1t-b528-s42
+  default_local_dir: checkpoints/MOPD/q4b-mc-sapdpos-4g3s1t-b528-s42

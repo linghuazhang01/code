@@ -26,6 +26,16 @@ The SAPD pools are the paper lists (SHA256 in the 1.7B config header):
 `analysis/c01-c02-selection-stepdiff-20260930/pruned_pool/`. The Math-only
 SAPD uses only the 124 list with a 5% budget.
 
+### Position-budget arms (Math+Code only, added 2026-10-14)
+
+`math_code/sapd_pos_{topology}.yaml` (S9) and `math_code/sapd_csid_{topology}.yaml` (S9-ID)
+extend `math_code/sapd_{topology}.yaml` and change only
+`control_token_online_selection_timing: current_step` plus
+`control_token_online_selection_unit: occurrence` (S9, one candidate position at a time,
+budget filled exactly) or `token_id` (S9-ID, whole IDs), and the run names
+`q4b-mc-{sapdpos|sapdcsid}-{3g3c|4g3s1t|8g6s2t}-b528-s42`. Both run one extra
+no-grad student prepass per step. Contract test: `tests/test_current_step_position_budget.py`.
+
 ## Topologies
 
 | Suffix | GPUs | Layout | Math batch | Math+Code batch | ref FSDP | vLLM mem |
