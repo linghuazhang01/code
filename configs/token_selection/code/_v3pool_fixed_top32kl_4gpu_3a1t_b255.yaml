@@ -26,3 +26,9 @@ audit:
       21806, 22043, 22614, 26274, 26487, 26840, 27427, 28996, 39365, 41331, 47726, 50524, 52324, 54815, 56466, 58606,
       62965, 65287, 67691, 69950, 73877, 74123, 85545
     ]
+
+# Train 60 steps and evaluate step 60.
+trainer:
+  total_training_steps: 60
+huggingface_checkpoint:
+  steps: [60]

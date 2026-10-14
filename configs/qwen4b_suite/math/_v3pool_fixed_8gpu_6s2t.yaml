@@ -22,8 +22,8 @@ audit:
       85545, 90408
     ]
 
-# Train 65 steps and evaluate step 60 (constant LR, no warmup: the step-60 model equals a 60-step run's).
+# Train 60 steps and evaluate step 60.
 trainer:
-  total_training_steps: 65
+  total_training_steps: 60
 huggingface_checkpoint:
-  steps: [55, 60, 65]
+  steps: [60]
