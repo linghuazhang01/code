@@ -21,3 +21,9 @@ audit:
       21806, 22043, 24391, 27427, 27653, 31040, 38770, 39365, 41968, 44500, 47446, 54815, 62965, 67691, 73877, 74123,
       85545, 90408
     ]
+
+# Train 65 steps and evaluate step 60 (constant LR, no warmup: the step-60 model equals a 60-step run's).
+trainer:
+  total_training_steps: 65
+huggingface_checkpoint:
+  steps: [55, 60, 65]

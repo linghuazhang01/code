@@ -1,5 +1,6 @@
 # Shared Qwen3-4B student budget for the code setting (Code-only twin of ../math/_common.yaml;
-# only training data, validation/eval sets, teacher mapping and audit domain differ). Not launchable by itself:
+# only training data, validation/eval sets, teacher mapping and audit domain differ; trains 65 steps and
+# uploads steps 55/60/65 so step 60 is evaluated, as in the Qwen3-1.7B Math-only suite). Not launchable by itself:
 # every user-facing file in this directory extends a method fragment and sets one topology.
 # Teacher: Qwen3-30B-A3B-Instruct-2507 (shared across domains). Only the student path,
 # the ExOPD reference and the run names differ from the Qwen3-1.7B paper suites
@@ -151,7 +152,7 @@ paper_eval:
   datasets: [humaneval_plus, mbpp_plus, lcb]
 huggingface_checkpoint:
   enabled: true
-  steps: [60]
+  steps: [55, 60, 65]
   repo_id: icemoon28/opd-checkpoints
   private: false
   token_env_var: HF_TOKEN
@@ -163,7 +164,7 @@ trainer:
   save_freq: 5
   test_freq: -1
   total_epochs: 3
-  total_training_steps: 60
+  total_training_steps: 65
   critic_warmup: 0
   val_before_train: false
   log_val_generations: 10
