@@ -118,3 +118,33 @@ def test_training_gradient_mask_applies_pool_weights(tmp_path: Path, arm: str, m
     expected = torch.tensor([[pool_w, other_w, pool_w if m_in_c else other_w, 0.0],
                              [pool_w, other_w, pool_w if c_in_m else other_w, 0.0]])
     torch.testing.assert_close(w, expected)
+
+
+SINGLE = (
+    [(ROOT / f"configs/token_selection/{d}/{'taxonomy/' if d == 'math' else ''}v3pool_{arm}_top32kl_{t}.yaml", d, arm)
+     for d in ("math", "code") for arm in ("ignore", "only") for t in ("4gpu_3a1t_b255", "6gpu_4a2t_b256")]
+    + [(ROOT / f"configs/qwen4b_suite/{d}/opd_v3pool_{arm}_{t}.yaml", d, arm)
+       for d in ("math", "code") for arm in ("ignore", "only") for t in ("3gpu_3c", "4gpu_3s1t", "8gpu_6s2t")]
+)
+
+
+@pytest.mark.parametrize("path,domain,arm", SINGLE, ids=lambda x: getattr(x, "name", str(x)))
+def test_single_domain_configs(path: Path, domain: str, arm: str) -> None:
+    cfg = load_config(path)
+    audit = cfg.audit
+    assert audit.domains == [domain]
+    assert set(audit.domain_control_token_ids) == {domain}
+    assert len(set(audit.domain_control_token_ids[domain])) == {"math": 98, "code": 167}[domain]
+    assert (audit.control_token_loss_weight, audit.control_token_other_weight) == ((1.0, 0.0) if arm == "only" else (0.0, 1.0))
+    assert not audit.control_token_online_selection_enabled and not audit.control_token_normalize_per_domain
+    assert 255 <= cfg.data.train_batch_size <= 258
+    assert set(cfg.data.domain_train_files) == {domain}
+
+
+@pytest.mark.parametrize("path", [ROOT / "configs/token_selection/code/uniform_top32kl_no_weighting_4gpu_3a1t_b255.yaml",
+                                  ROOT / "configs/qwen4b_suite/code/opd_4gpu_3s1t.yaml"], ids=lambda p: p.name)
+def test_code_only_references_are_equal_weight(path: Path) -> None:
+    cfg = load_config(path)
+    assert cfg.audit.domains == ["code"]
+    assert not cfg.audit.control_token_loss_weighting_enabled
+    assert cfg.actor.distill_mode == "topk_renormalized_reverse_kl"

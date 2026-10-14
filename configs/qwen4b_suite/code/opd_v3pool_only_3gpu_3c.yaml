@@ -1,0 +1,15 @@
+# Qwen3-4B code / OPD that learns only v3-pool positions (weight 1); other valid positions weight 0.
+extends: _v3pool_fixed_3gpu_3c.yaml
+runtime:
+  wandb_run_id: q4b-code-opdv3only-3g3c-b255-s42
+audit:
+  control_token_loss_weight: 1.0
+  control_token_other_weight: 0.0
+  output_dir: audit/q4b-code-opdv3only-3g3c-b255-s42
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q4b-code-opdv3only-3g3c-b255-s42
+huggingface_checkpoint:
+  path_prefix: checkpoints/qwen4b/code/q4b-code-opdv3only-3g3c-b255-s42
+trainer:
+  experiment_name: q4b-code-opdv3only-3g3c-b255-s42
+  default_local_dir: checkpoints/MOPD/q4b-code-opdv3only-3g3c-b255-s42

@@ -1,0 +1,23 @@
+# v3 math pool (98 IDs; analysis/code-vocab-neighbor-20261014/v3_proposal.md), single-domain math training.
+# Fixed weights, no online selection, no normalisation: pool positions get control_token_loss_weight, all other valid
+# positions get control_token_other_weight. Weight 0 gates the gradient of every loss term at that position.
+# Base: Qwen3-4B math-only equal-weight OPD (Top-32 RKL).
+extends: opd_4gpu_3s1t.yaml
+audit:
+  control_token_loss_weighting_enabled: true
+  control_token_online_selection_enabled: false
+  control_token_normalize_per_domain: false
+  control_token_phase_gate_enabled: false
+  control_token_span_weighting_enabled: false
+  control_token_speed_weighting_enabled: false
+  control_token_ids: []
+  domain_control_token_ids:
+    math: [
+      269, 304, 323, 369, 382, 389, 421, 437, 438, 448, 476, 504, 510, 553, 624, 641,
+      704, 758, 773, 1083, 1156, 1172, 1221, 1249, 1283, 1416, 1447, 1499, 1576, 1597, 1694, 1752,
+      1790, 1913, 1925, 1986, 2012, 2041, 2055, 2058, 2121, 2195, 2461, 2661, 2679, 2870, 2938, 3036,
+      3243, 3830, 3983, 4192, 4226, 4416, 4623, 5005, 5542, 6260, 6762, 7039, 8450, 8704, 9064, 9112,
+      9577, 9658, 11209, 11284, 12209, 12549, 12824, 13023, 13394, 14223, 14512, 15277, 16085, 16448, 17949, 19357,
+      21806, 22043, 24391, 27427, 27653, 31040, 38770, 39365, 41968, 44500, 47446, 54815, 62965, 67691, 73877, 74123,
+      85545, 90408
+    ]

@@ -1,0 +1,21 @@
+# OPD that learns only v3-pool positions (weight 1); other valid positions weight 0.
+extends: _v3pool_fixed_top32kl_6gpu_4a2t_b256.yaml
+
+runtime:
+  wandb_run_id: q1p7b-math-top32kl-v3only-6g4a2t-b256
+  wandb_resume: never
+
+audit:
+  control_token_loss_weight: 1.0
+  control_token_other_weight: 0.0
+  output_dir: audit/q1p7b-math-top32kl-v3only-6g4a2t-b256
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-top32kl-v3only-6g4a2t-b256
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-top32kl-v3only-6g4a2t-b256
+
+trainer:
+  experiment_name: q1p7b-math-top32kl-v3only-6g4a2t-b256
+  default_local_dir: checkpoints/MOPD/q1p7b-math-top32kl-v3only-6g4a2t-b256
