@@ -1,0 +1,77 @@
+# Qwen3-4B student suite (Math-only and Math+Code)
+
+Second-student replication of the paper's comparison: the same six methods, the
+same Qwen3-30B-A3B-Instruct-2507 teacher, data, optimizer, rollout and
+evaluation protocol as the Qwen3-1.7B runs, with only the student (and the
+ExOPD reference) changed to `../mopd/models/Qwen3-4B`.
+Generated on 2026-10-14 by a script; every user-facing file is
+`{method}_{topology}.yaml` and extends `_methods/{method}.yaml`, which extends
+`_common.yaml`. The fragments are not experiment cells.
+
+## Methods (`_methods/`)
+
+| File | Method | Objective / rule | Mirrors (1.7B) |
+|---|---|---|---|
+| `opd` | **OPD** (paper row) | equal-weight Top-32 renormalized reverse KL, the objective SAPD reweights | `token_selection/math/taxonomy/uniform_top32kl_*`, `baselines/math_code/topk32_uniform_*` |
+| `opd_native` | OPD Native (extra) | chosen-token OPD policy gradient | `baselines/math/_methods/opd`, `baselines/math_code/opd_native_*` |
+| `tip_topk32` | TIP-TopK32, rho=0.5 | Soft-OR of q98-clipped student entropy and Top-32 RKL disagreement, top half per response, seq-mean-token-mean | `baselines/*/tip_topk32*` |
+| `eopd` | EOPD | chosen-token OPD + teacher-entropy>0.8 gated Top-16 forward KL, alpha=1, rollout IS off | `baselines/*/eopd*` |
+| `exopd` | ExOPD, lambda=1.25 | G-OPD extrapolation, frozen initial Qwen3-4B as reference | `baselines/*/exopd*` |
+| `fire_opd` | FiRe-OPD | drop bottom-20% trajectories by mean teacher chosen-token log-prob, mean-one teacher-confidence x student-confusion weights | `baselines/*/fire_opd*` |
+| `sapd` | **SAPD** (paper.md 1.3) | Top-32 RKL + fixed pools (Math Connective 124 / Code Programming 163), next-step ID-mean TopLoss ranking, >20 occurrence gate, whole-ID budget Math 5% / Code 1%, gamma=4, per-domain mean-one | `token_selection/math_code/taxonomy/mopd_math_code_toploss_m05_c01_math_control_code_progvocab_fixed4_*` |
+
+The SAPD pools are the paper lists (SHA256 in the 1.7B config header):
+124 Connective IDs = `pool == Control` rows and 163 Programming IDs =
+`taxonomy == code_lexical_structure` rows of
+`analysis/c01-c02-selection-stepdiff-20260930/pruned_pool/`. The Math-only
+SAPD uses only the 124 list with a 5% budget.
+
+## Topologies
+
+| Suffix | GPUs | Layout | Math batch | Math+Code batch | ref FSDP | vLLM mem |
+|---|---:|---|---:|---:|---:|---:|
+| `3gpu_3c` | 3 | actor + rollout + teacher colocated on all three GPUs | 255 = 3 x 85 | 528 = 3 x 176 | 3 | 0.40 |
+| `4gpu_3s1t` | 4 | 3 actor/rollout + 1 dedicated teacher (paper Math-only / 3s1t) | 255 = 3 x 85 | 528 = 3 x 176 | 1 | 0.60 |
+| `8gpu_6s2t` | 8 | 6 actor/rollout + 2 dedicated teacher ranks (paper Math+Code) | 258 = 6 x 43 | 528 = 6 x 88 | 2 | 0.60 |
+
+Notes on the budget:
+
+- Math-only batches follow `configs/baselines/math` (nearest integer to 256
+  divisible by the actor count); 60 steps, HF checkpoint at 60.
+- Math+Code uses 528 for all three layouts (the batch of the 1.7B SAPD
+  3s1t and 8g6s2t runs; the 1.7B `baselines/math_code` suite used 516). 60
+  steps, HF checkpoint at step 60. `multi_teacher_distill: true` as in the
+  SAPD runs; all domain teacher paths alias the same 30B checkpoint.
+- vLLM `gpu_memory_utilization` is lowered to 0.5 / 0.6 because the 4B student
+  shares its GPUs with rollout (and, on `3gpu_3c`, with the teacher). The
+  colocated 3-GPU layout has not been smoke-tested with a 4B student; run one
+  step with `--dry-run` and then a short real step before queueing it.
+- Heavy per-step vector logging (token gap / logp / entropy vocab vectors) is
+  off. To reproduce the paper's Section 3 gap analysis on the 4B runs, add
+  to the chosen OPD file:
+  `audit: {token_gap_enabled: true, token_gap_freq_steps: 1, token_gap_vocab_vector_enabled: true, token_gap_vocab_vector_freq_steps: 1, entropy_enabled: true, entropy_vocab_vector_enabled: true}`.
+- `runtime.cuda_visible_devices` is null; set it when the physical GPU ids are
+  not contiguous (the 1.7B 3s1t runs used `"0,1,2,4"`).
+
+## Launch
+
+```bash
+# resolve and print the command without starting anything
+bash scripts/run_mopd.sh configs/qwen4b_suite/math/sapd_4gpu_3s1t.yaml --dry-run
+```
+
+```bash
+# local launch on an allocated set of GPUs
+GPU_IDS=0,1,2,4 bash start.sh --local --config configs/qwen4b_suite/math_code/sapd_4gpu_3s1t.yaml
+```
+
+```bash
+# Slurm
+bash scripts/run_mopd.sh configs/qwen4b_suite/math_code/opd_8gpu_6s2t.yaml --slurm --slurm-args "--mem=800G"
+```
+
+Run names follow `q4b-{math|mc}-{method}-{3g3c|4g3s1t|8g6s2t}-b{batch}-s42`
+and are unique across audit, checkpoint, HF and W&B paths. All 42 files resolve
+with `mopd_verl.config_profiles.load_raw_config`; the resolved SAPD/EOPD/ExOPD
+files differ from their 1.7B counterparts only in student path, batch (Math+Code),
+memory fraction, names, and defaults made explicit.

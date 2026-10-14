@@ -1,0 +1,41 @@
+# Qwen3-4B math_code / exopd on four GPUs: 3 actor/rollout + 1 dedicated teacher (the paper's Math-only and 3s1t topology).
+# Global batch 528 = 3 actor GPUs x 176 prompts; one optimizer update per step.
+extends: _methods/exopd.yaml
+runtime:
+  slurm_allocation_gpus: 4
+  wandb_run_id: q4b-mc-exopd-4g3s1t-b528-s42
+data:
+  train_batch_size: 528
+actor:
+  ppo_mini_batch_size: 528
+rollout:
+  gpu_memory_utilization: 0.6
+worker_placement:
+  separate_ref_policy: true
+  actor_rollout:
+    n_gpus_per_node: 3
+    nnodes: 1
+  ref_policy:
+    n_gpus_per_node: 1
+    nnodes: 1
+    process_on_nodes: null
+# Lists replace the parent's list, so the reference FSDP size is restated here.
+extra_overrides:
+- custom_reward_function.path=mopd_verl/mixed_reward.py
+- custom_reward_function.name=compute_score
+- trainer.resume_mode=disable
+- actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+- actor_rollout_ref.ref.fsdp_config.fsdp_size=1
+audit:
+  output_dir: audit/q4b-mc-exopd-4g3s1t-b528-s42
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q4b-mc-exopd-4g3s1t-b528-s42
+huggingface_checkpoint:
+  path_prefix: checkpoints/qwen4b/math_code/q4b-mc-exopd-4g3s1t-b528-s42
+trainer:
+  n_gpus_per_node: 3
+  experiment_name: q4b-mc-exopd-4g3s1t-b528-s42
+  default_local_dir: checkpoints/MOPD/q4b-mc-exopd-4g3s1t-b528-s42
+ray_kwargs:
+  ray_init:
+    num_cpus: 24

@@ -1,0 +1,15 @@
+# EOPD: chosen-token OPD + teacher-entropy (>0.8) gated Top-16 forward KL, alpha=1; rollout IS off per the native contract.
+extends: ../_common.yaml
+rollout_correction:
+  rollout_is: null
+actor:
+  distill_loss_builder: eopd
+  distill_mode: chosen_token_policy_gradient
+  token_baseline_method: none
+  topk_distill_enabled: false
+  eopd_entropy_threshold: 0.8
+  eopd_forward_kl_weight: 1.0
+  eopd_topk_k: 16
+  loss_agg_mode: token-mean
+audit:
+  loss_variance_signal: policy_gradient+entropy_gated_topk_forward_kl
