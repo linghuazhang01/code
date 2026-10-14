@@ -66,6 +66,7 @@ def test_trainer_requests_teacher_entropy_for_domain_override(
         should_log_entropy=lambda step: False,
         should_log_entropy_vocab_vector=lambda step: False,
         should_log_response_level=lambda step: False,
+        should_log_candidate_occurrence=lambda step: False,
     )
     expression = ast.Expression(body=assignments[0].value)
     result = eval(

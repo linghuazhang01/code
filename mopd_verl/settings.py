@@ -239,6 +239,10 @@ class AuditConfig:
     response_level_enabled: bool = False
     response_level_freq_steps: int = 1
     response_level_compression: str = "gzip"
+    candidate_occurrence_log_enabled: bool = False
+    candidate_occurrence_log_freq_steps: int = 1
+    candidate_occurrence_reference_fraction: float = 0.01
+    candidate_occurrence_log_compression: str = "gzip"
     log_validation_metrics: bool = True
     log_validation_metrics_freq_steps: int = 1
     tier2_window_size: int = 20

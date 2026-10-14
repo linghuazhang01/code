@@ -47,6 +47,7 @@ def with_post_snapshot_defaults(snapshot: dict) -> dict:
     2026-10-01: teacher batching became the base for every profile, the TopK chunk
     switch became explicit, and shared-ref placement added two optional keys.
     2026-10-02: rule-based rewards are scored asynchronously by default.
+    2026-10-14: the candidate-occurrence audit log added default-off switches.
     """
     updated = deepcopy(snapshot)
     assert updated["teacher_performance"]["enabled"] is False
@@ -56,6 +57,14 @@ def with_post_snapshot_defaults(snapshot: dict) -> dict:
     for pool in ("actor_rollout", "ref_policy"):
         updated["worker_placement"][pool]["gpu_ids"] = None
     updated["trainer"]["launch_reward_fn_async"] = True
+    updated["audit"].update(
+        {
+            "candidate_occurrence_log_enabled": False,
+            "candidate_occurrence_log_freq_steps": 1,
+            "candidate_occurrence_reference_fraction": 0.01,
+            "candidate_occurrence_log_compression": "gzip",
+        }
+    )
     return updated
 
 

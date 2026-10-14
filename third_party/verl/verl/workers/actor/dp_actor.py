@@ -757,6 +757,11 @@ class DataParallelPPOActor(BasePPOActor):
                 False,
             )
         )
+        # Candidate-occurrence audit: return the exact per-position token
+        # multiplier passed to the production backward.
+        return_applied_token_weight = bool(
+            data.meta_info.get("mopd_return_applied_token_weight", False)
+        )
         select_keys = [
             "responses",
             "response_mask",
@@ -837,6 +842,7 @@ class DataParallelPPOActor(BasePPOActor):
         configured_token_loss_epoch_batches = []
         adaptive_center_mask_batches = []
         adaptive_threshold_pass_mask_batches = []
+        applied_token_weight_batches = []
         audit = DomainGradientAudit(self, data.meta_info.get("mopd_full_gradient", {}))
         online_selection_modes = set(audit.config.online_selection_mode_map().values())
         if self.ulysses_sequence_parallel_size > 1 and (
@@ -947,6 +953,9 @@ class DataParallelPPOActor(BasePPOActor):
             if return_configured_token_loss:
                 configured_token_loss_batches = []
                 configured_token_loss_mask_batches = []
+            # Keep only the final PPO epoch; every weighted selection path
+            # requires ppo_epochs == 1.
+            applied_token_weight_batches = []
             for mini_batch in mini_batches:
                 if self.config.use_dynamic_bsz:
                     max_token_len = self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
@@ -999,15 +1008,29 @@ class DataParallelPPOActor(BasePPOActor):
                 micro_batch_adaptive_metric_components = []
                 micro_batch_adaptive_center_mask = []
                 micro_batch_adaptive_threshold_pass_mask = []
+                micro_batch_applied_token_weight = []
                 for micro_batch, loss_scale in zip(micro_batches, loss_scales, strict=True):
+                    training_gradient_mask = audit.training_gradient_mask(micro_batch)
+                    if return_applied_token_weight:
+                        micro_response_mask = micro_batch.batch["response_mask"]
+                        micro_batch_applied_token_weight.append(
+                            (
+                                micro_response_mask.float()
+                                if training_gradient_mask is None
+                                else training_gradient_mask.float()
+                                * micro_response_mask.to(
+                                    training_gradient_mask.device
+                                ).float()
+                            )
+                            .detach()
+                            .cpu()
+                        )
                     result = build_actor_micro_batch_loss(
                         self,
                         micro_batch,
                         loss_scale_factor=loss_scale,
                         on_policy=on_policy,
-                        gradient_mask_override=(
-                            audit.training_gradient_mask(micro_batch)
-                        ),
+                        gradient_mask_override=training_gradient_mask,
                         include_metrics=True,
                         return_teacher_student_cross_entropy=(
                             return_teacher_student_cross_entropy
@@ -1105,6 +1128,19 @@ class DataParallelPPOActor(BasePPOActor):
                     configured_token_loss_mask_batches.append(
                         mini_batch_configured_token_loss_mask
                     )
+                if micro_batch_applied_token_weight:
+                    mini_batch_applied_token_weight = torch.cat(
+                        micro_batch_applied_token_weight,
+                        dim=0,
+                    )
+                    if batch_idx_list is not None:
+                        mini_batch_applied_token_weight = restore_dynamic_batch(
+                            mini_batch_applied_token_weight,
+                            batch_idx_list,
+                        )
+                    applied_token_weight_batches.append(
+                        mini_batch_applied_token_weight
+                    )
                 if micro_batch_adaptive_metric_components:
                     append_to_dict(
                         metrics,
@@ -1189,6 +1225,11 @@ class DataParallelPPOActor(BasePPOActor):
                 ).mean(dim=0)
                 auxiliary_outputs["configured_token_loss_mask"] = torch.cat(
                     configured_token_loss_mask_batches,
+                    dim=0,
+                )
+            if applied_token_weight_batches:
+                auxiliary_outputs["mopd_applied_token_weight"] = torch.cat(
+                    applied_token_weight_batches,
                     dim=0,
                 )
             if adaptive_center_mask_batches:

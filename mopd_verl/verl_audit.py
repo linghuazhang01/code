@@ -20,6 +20,12 @@ from mopd_verl.audit_proxy import (
     extract_teacher_domains,
     response_mask_from_batch,
 )
+from mopd_verl.audit_candidate_occurrence_logging import (
+    APPLIED_TOKEN_WEIGHT_KEY,
+    CandidateOccurrenceBatch,
+    normalize_reference_fraction,
+    write_candidate_occurrence_log,
+)
 from mopd_verl.audit_response_logging import (
     ResponseAuditBatch,
     normalize_response_compression,
@@ -638,6 +644,20 @@ class MOPDAuditLogger:
         self.response_level_compression = normalize_response_compression(
             str(_cfg_get(audit_config, "response_level_compression", "gzip"))
         )
+        self.candidate_occurrence_log_enabled = bool(
+            _cfg_get(audit_config, "candidate_occurrence_log_enabled", False)
+        )
+        self.candidate_occurrence_log_freq_steps = max(
+            1,
+            int(_cfg_get(audit_config, "candidate_occurrence_log_freq_steps", 1)),
+        )
+        self.candidate_occurrence_reference_fraction = normalize_reference_fraction(
+            _cfg_get(audit_config, "candidate_occurrence_reference_fraction", 0.01)
+        )
+        self.candidate_occurrence_log_compression = normalize_response_compression(
+            str(_cfg_get(audit_config, "candidate_occurrence_log_compression", "gzip"))
+        )
+        self._candidate_occurrence_batch: CandidateOccurrenceBatch | None = None
         self.log_validation = bool(
             _cfg_get(audit_config, "log_validation_metrics", True)
         )
@@ -1497,6 +1517,8 @@ class MOPDAuditLogger:
         self._seen_sample_ids: dict[str, set[str]] = {
             domain: set() for domain in self.domains
         }
+        if self.enabled and self.candidate_occurrence_log_enabled:
+            self.candidate_occurrence_token_ids()
         if self.enabled:
             self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1565,6 +1587,91 @@ class MOPDAuditLogger:
             self.response_level_enabled,
             self.response_level_freq_steps,
             step,
+        )
+
+    def should_log_candidate_occurrence(self, step: int) -> bool:
+        return self._freq_active(
+            self.candidate_occurrence_log_enabled,
+            self.candidate_occurrence_log_freq_steps,
+            step,
+        )
+
+    def candidate_occurrence_token_ids(
+        self,
+    ) -> tuple[dict[str, tuple[int, ...]], str]:
+        """Return the per-domain up-weighting candidate set and its source."""
+
+        if self.control_token_online_candidate_scope == FULL_VOCABULARY_CANDIDATE_SCOPE:
+            raise ValueError(
+                "candidate_occurrence_log requires a configured candidate set; "
+                "full-vocabulary candidate scope would log every position."
+            )
+        if self.domain_control_token_candidate_groups:
+            return (
+                {
+                    domain: tuple(
+                        sorted({t for ids in groups.values() for t in ids})
+                    )
+                    for domain, groups in (
+                        self.domain_control_token_candidate_groups.items()
+                    )
+                },
+                "domain_control_token_candidate_groups",
+            )
+        if self.domain_control_token_candidate_ids:
+            return (
+                dict(self.domain_control_token_candidate_ids),
+                "domain_control_token_candidate_ids",
+            )
+        if self.control_token_candidate_ids:
+            return (
+                {domain: self.control_token_candidate_ids for domain in self.domains},
+                "control_token_candidate_ids",
+            )
+        return (
+            {
+                domain: tuple(
+                    sorted(
+                        {
+                            *self.control_token_ids,
+                            *self.domain_control_token_ids.get(domain, ()),
+                        }
+                    )
+                )
+                for domain in self.domains
+            },
+            "control_token_ids+domain_control_token_ids",
+        )
+
+    def _applied_weight_path(self) -> tuple[str, str | None]:
+        """Name the production weighting path and why weights may be absent."""
+
+        from mopd_verl.domain_gradient.occurrence_config import (
+            uses_current_step_selection,
+            uses_versioned_next_step_selection,
+        )
+
+        if self.control_token_adaptive_neighborhood_enabled:
+            return (
+                "adaptive_neighborhood",
+                "the same-batch adaptive-neighborhood multiplier is applied "
+                "inside the actor loss and is not returned to the driver",
+            )
+        if uses_current_step_selection(self):
+            path = "current_step"
+        elif uses_versioned_next_step_selection(self):
+            path = "versioned_next_step"
+        elif self.control_token_online_selection_enabled:
+            path = "online_next_step"
+        elif self.control_token_loss_weighting_enabled:
+            path = "fixed_token_ids"
+        else:
+            path = "unweighted"
+        return (
+            path,
+            "the actor update did not return "
+            f"'{APPLIED_TOKEN_WEIGHT_KEY}' (worker without the capture, or "
+            "the trainer did not request it)",
         )
 
     def should_log_validation_metrics(self, step: int) -> bool:
@@ -2298,6 +2405,35 @@ class MOPDAuditLogger:
                 domain_control_token_ids=self.domain_control_token_ids,
                 compression=self.response_level_compression,
             )
+        candidate_batch = self._candidate_occurrence_batch
+        self._candidate_occurrence_batch = None
+        if candidate_batch is not None:
+            try:
+                candidate_ids, candidate_source = (
+                    self.candidate_occurrence_token_ids()
+                )
+                write_candidate_occurrence_log(
+                    output_dir=self.output_dir,
+                    batch=candidate_batch,
+                    domain_candidate_token_ids=candidate_ids,
+                    candidate_source=candidate_source,
+                    reference_fraction=(
+                        self.candidate_occurrence_reference_fraction
+                    ),
+                    compression=self.candidate_occurrence_log_compression,
+                )
+            except Exception as exc:  # pragma: no cover - logging must not kill training
+                self._write_jsonl(
+                    "audit_errors.jsonl",
+                    [
+                        {
+                            "step": step,
+                            "stage": "candidate_occurrence_log",
+                            "error": repr(exc),
+                        }
+                    ],
+                )
+                metrics[self._global_tag("audit", "candidate_occurrence_error")] = 1.0
         return metrics
 
     def log_validation_metrics(
@@ -2544,6 +2680,8 @@ class MOPDAuditLogger:
         )
         sample_level_active = self.should_log_sample_level(step)
         response_level_active = self.should_log_response_level(step)
+        candidate_occurrence_active = self.should_log_candidate_occurrence(step)
+        self._candidate_occurrence_batch = None
 
         opd_losses = _tensor_to_float_list(sample_opd_loss)
         sample_token_opd_loss_means = _tensor_to_float_list(sample_token_opd_loss_mean)
@@ -2579,6 +2717,7 @@ class MOPDAuditLogger:
             token_gap_vocab_compute_active
             or entropy_vocab_active
             or response_level_active
+            or candidate_occurrence_active
         ):
             token_ids = _response_token_id_matrix(
                 tensor_batch, batch_keys, response_mask
@@ -2731,6 +2870,80 @@ class MOPDAuditLogger:
                     if self.control_token_adaptive_neighborhood_enabled
                     else None
                 ),
+            )
+        if candidate_occurrence_active:
+            if token_ids is None:
+                raise ValueError("candidate_occurrence_log requires response token IDs.")
+            weight_path, weight_reason = self._applied_weight_path()
+            applied_token_weight = (
+                tensor_batch[APPLIED_TOKEN_WEIGHT_KEY].detach().float().cpu()
+                if APPLIED_TOKEN_WEIGHT_KEY in batch_keys
+                and weight_path != "adaptive_neighborhood"
+                else None
+            )
+            support_source = str(
+                batch_meta_info.get("topk_distill_support_source", "teacher")
+            )
+            self._candidate_occurrence_batch = CandidateOccurrenceBatch(
+                step=int(step),
+                domains=tuple(labels),
+                sample_ids=tuple(sample_ids),
+                response_token_ids=token_ids,
+                response_mask=response_mask.detach().float().cpu(),
+                student_log_prob=old_log_probs.detach().float().cpu(),
+                teacher_log_prob=teacher_log_probs.detach().float().cpu(),
+                configured_token_loss=configured_token_loss.detach().float().cpu(),
+                student_entropy=(
+                    None if student_entropy is None else student_entropy.cpu()
+                ),
+                teacher_entropy=(
+                    None if teacher_entropy is None else teacher_entropy.cpu()
+                ),
+                teacher_student_cross_entropy=(
+                    None
+                    if teacher_student_cross_entropy is None
+                    else teacher_student_cross_entropy.cpu()
+                ),
+                applied_token_weight=applied_token_weight,
+                control_position_mask=(
+                    tensor_batch["mopd_control_position_mask"].detach().bool().cpu()
+                    if "mopd_control_position_mask" in batch_keys
+                    else None
+                ),
+                applied_weight_path=weight_path,
+                applied_weight_unavailable_reason=weight_reason,
+                signals={
+                    "signal_timing": self.execution_timing,
+                    "configured_token_loss": {
+                        "name": configured_token_loss_name,
+                        "epoch_reduction": configured_token_loss_epoch_reduction,
+                        "epoch_count": configured_token_loss_epoch_count,
+                    },
+                    "teacher_student_cross_entropy": {
+                        "scope": "topk",
+                        "support_source": support_source,
+                        "topk": int(
+                            batch_meta_info.get(
+                                f"{support_source}_topk_k",
+                                self.topk_teacher_student_cross_entropy_k,
+                            )
+                        ),
+                        "include_tail": bool(
+                            batch_meta_info.get(
+                                "topk_distill_include_tail",
+                                self.topk_teacher_student_cross_entropy_include_tail,
+                            )
+                        ),
+                        "temperature": float(
+                            batch_meta_info.get(
+                                "topk_distill_temperature",
+                                self.topk_teacher_student_cross_entropy_temperature,
+                            )
+                        ),
+                    },
+                    "student_log_prob": "old_log_probs (pre-update)",
+                    "tokenizer_name_or_path": self.response_tokenizer_name_or_path,
+                },
             )
         for domain in configured_domains:
             indices = indices_by_domain[domain]

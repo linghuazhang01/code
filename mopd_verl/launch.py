@@ -198,6 +198,14 @@ def _audit_overrides(config: MOPDConfig) -> list[str]:
         f"+mopd_audit.response_level_enabled={str(audit.response_level_enabled).lower()}",
         f"+mopd_audit.response_level_freq_steps={audit.response_level_freq_steps}",
         f"+mopd_audit.response_level_compression={audit.response_level_compression}",
+        "+mopd_audit.candidate_occurrence_log_enabled="
+        f"{str(audit.candidate_occurrence_log_enabled).lower()}",
+        "+mopd_audit.candidate_occurrence_log_freq_steps="
+        f"{audit.candidate_occurrence_log_freq_steps}",
+        "+mopd_audit.candidate_occurrence_reference_fraction="
+        f"{audit.candidate_occurrence_reference_fraction}",
+        "+mopd_audit.candidate_occurrence_log_compression="
+        f"{audit.candidate_occurrence_log_compression}",
         f"+mopd_audit.log_validation_metrics={str(audit.log_validation_metrics).lower()}",
         f"+mopd_audit.log_validation_metrics_freq_steps={audit.log_validation_metrics_freq_steps}",
         f"+mopd_audit.tier2_window_size={audit.tier2_window_size}",

@@ -1896,6 +1896,9 @@ class RayPPOTrainer:
                         or self.mopd_audit_logger.should_log_response_level(
                             self.global_steps
                         )
+                        or self.mopd_audit_logger.should_log_candidate_occurrence(
+                            self.global_steps
+                        )
                     ):
                         batch.meta_info["topk_distill_support_source"] = "teacher"
                         batch.meta_info["teacher_topk_k"] = (
@@ -1925,10 +1928,18 @@ class RayPPOTrainer:
                         or self.mopd_audit_logger.should_log_response_level(
                             self.global_steps
                         )
+                        or self.mopd_audit_logger.should_log_candidate_occurrence(
+                            self.global_steps
+                        )
                     )
                     batch.meta_info["mopd_return_configured_token_loss"] = bool(
                         self.mopd_audit_logger.enabled
                         or self.domain_budget_controller.enabled
+                    )
+                    batch.meta_info["mopd_return_applied_token_weight"] = bool(
+                        self.mopd_audit_logger.should_log_candidate_occurrence(
+                            self.global_steps
+                        )
                     )
                     configured_loss_name = configured_distill_loss_name(
                         policy_loss_config
@@ -2153,6 +2164,9 @@ class RayPPOTrainer:
                             self.global_steps
                         )
                         or self.mopd_audit_logger.should_log_response_level(
+                            self.global_steps
+                        )
+                        or self.mopd_audit_logger.should_log_candidate_occurrence(
                             self.global_steps
                         )
                     )
@@ -2408,6 +2422,14 @@ class RayPPOTrainer:
                         actor_updated_this_step = True
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)
+                        if (
+                            batch.meta_info.get("mopd_return_applied_token_weight", False)
+                            and actor_output.batch is not None
+                            and "mopd_applied_token_weight" in actor_output.batch
+                        ):
+                            batch.batch["mopd_applied_token_weight"] = actor_output.batch[
+                                "mopd_applied_token_weight"
+                            ]
                         if reuse_training_topk_cross_entropy:
                             cross_entropy_key = "teacher_student_cross_entropy"
                             if actor_output.batch is None or cross_entropy_key not in actor_output.batch:
