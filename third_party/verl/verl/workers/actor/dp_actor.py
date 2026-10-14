@@ -1013,17 +1013,31 @@ class DataParallelPPOActor(BasePPOActor):
                     training_gradient_mask = audit.training_gradient_mask(micro_batch)
                     if return_applied_token_weight:
                         micro_response_mask = micro_batch.batch["response_mask"]
-                        micro_batch_applied_token_weight.append(
-                            (
-                                micro_response_mask.float()
-                                if training_gradient_mask is None
-                                else training_gradient_mask.float()
-                                * micro_response_mask.to(
-                                    training_gradient_mask.device
-                                ).float()
+                        applied_weight = (
+                            micro_response_mask.float()
+                            if training_gradient_mask is None
+                            else training_gradient_mask.float()
+                            * micro_response_mask.to(
+                                training_gradient_mask.device
+                            ).float()
+                        )
+                        # Mirror build_actor_micro_batch_loss: a per-sequence
+                        # domain loss scale multiplies the token multiplier.
+                        micro_domain_loss_scale = micro_batch.batch.get(
+                            "mopd_domain_loss_scale"
+                        )
+                        if micro_domain_loss_scale is not None:
+                            from mopd_verl.full_gradient.loss_support import (
+                                domain_loss_gradient_mask,
                             )
-                            .detach()
-                            .cpu()
+
+                            applied_weight = domain_loss_gradient_mask(
+                                micro_domain_loss_scale,
+                                micro_response_mask,
+                                applied_weight,
+                            ) * micro_response_mask.to(applied_weight.device).float()
+                        micro_batch_applied_token_weight.append(
+                            applied_weight.detach().cpu()
                         )
                     result = build_actor_micro_batch_loss(
                         self,
