@@ -1,0 +1,33 @@
+# Qwen3-1.7B math / paper OPD (equal-weight Top-32 RKL, the Math-only reference) with per-token logging;
+# training identical to uniform_top32kl_no_weighting_6gpu_4a2t_b256.yaml except 60 steps (author rule: train 60, evaluate 60).
+extends: uniform_top32kl_no_weighting_6gpu_4a2t_b256.yaml
+runtime:
+  wandb_run_id: q1p7b-math-top32kl-opd-toklog-6g4a2t-b256
+  wandb_resume: never
+audit:
+  # Per-token logging, same switches as the run that produced the per-token data used in
+  # analysis/code-vocab-neighbor-20261014 (qwen0p6b ... math_code_science_topk32_baseline_b528). Logging only:
+  # no switch here changes the loss or the gradients.
+  token_gap_enabled: true
+  token_gap_vocab_vector_enabled: true
+  entropy_enabled: true
+  entropy_vocab_vector_enabled: true
+  entropy_vocab_per_occurrence_mean_vector_enabled: true
+  logp_vector_enabled: true
+  logp_abs_vector_enabled: true
+  logp_vocab_per_occurrence_mean_vector_enabled: true
+  logp_abs_vocab_per_occurrence_mean_vector_enabled: true
+  topk_teacher_student_cross_entropy_vocab_enabled: true
+  response_level_enabled: true
+  response_level_freq_steps: 1
+  response_level_compression: gzip
+  output_dir: audit/q1p7b-math-top32kl-opd-toklog-6g4a2t-b256
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-top32kl-opd-toklog-6g4a2t-b256
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-top32kl-opd-toklog-6g4a2t-b256
+  steps: [60]
+trainer:
+  total_training_steps: 60
+  experiment_name: q1p7b-math-top32kl-opd-toklog-6g4a2t-b256
+  default_local_dir: checkpoints/MOPD/q1p7b-math-top32kl-opd-toklog-6g4a2t-b256
