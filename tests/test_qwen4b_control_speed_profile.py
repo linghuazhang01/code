@@ -157,7 +157,7 @@ class Qwen4bControlSpeedProfileTests(unittest.TestCase):
         )
         self.assertEqual(config.runtime.wandb_resume, "allow")
         self.assertIn("trainer.resume_mode=auto", config.extra_overrides)
-        self.assertEqual(config.trainer.save_freq, 5)
+        self.assertEqual(config.trainer.save_freq, 1)
         self.assertEqual(smoke.runtime.wandb_resume, "allow")
         self.assertIn("trainer.resume_mode=auto", smoke.extra_overrides)
         self.assertNotEqual(

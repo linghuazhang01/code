@@ -160,7 +160,7 @@ trainer:
   seed: 42
   logger: '["console","tensorboard","wandb"]'
   nnodes: 1
-  save_freq: 5
+  save_freq: 1
   test_freq: -1
   total_epochs: 3
   total_training_steps: 60

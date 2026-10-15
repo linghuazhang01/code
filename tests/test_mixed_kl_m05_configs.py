@@ -25,7 +25,7 @@ def test_variant_contract(gpus: int, science: str) -> None:
     assert raw["actor"]["ppo_mini_batch_size"] == 528
     assert raw["actor"]["topk_distill_k"] == 32
     assert raw["trainer"]["total_training_steps"] == 60
-    assert raw["trainer"]["save_freq"] == 5
+    assert raw["trainer"]["save_freq"] == 1
     assert raw["huggingface_checkpoint"]["steps"] == [60]
     assert raw["huggingface_checkpoint"]["private"] is False
     placement = raw["worker_placement"]

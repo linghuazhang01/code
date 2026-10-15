@@ -286,7 +286,7 @@ trainer:
   logger: '["console","tensorboard","wandb"]'
   n_gpus_per_node: 4
   nnodes: 1
-  save_freq: 5
+  save_freq: 1
   test_freq: -1
   total_epochs: 3
   total_training_steps: 65

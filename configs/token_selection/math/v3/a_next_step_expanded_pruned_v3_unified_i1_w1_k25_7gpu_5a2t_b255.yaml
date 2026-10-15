@@ -469,7 +469,7 @@ trainer:
   logger: '["console","tensorboard","wandb"]'
   n_gpus_per_node: 5
   nnodes: 1
-  save_freq: 5
+  save_freq: 1
   default_local_dir: checkpoints/MOPD/q1p7b-math-a-ns-v3-u-i1w1k25-7gpu_5a2t_b255
   test_freq: 20
   total_epochs: 3

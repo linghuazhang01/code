@@ -274,7 +274,7 @@ def test_random_rejects_current_step_timing(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "config_path,base_path,batch,gpus,save_freq,kept",
-    [(CONFIG, BASE, 256, 5, 5, 4), (CONFIG_4GPU, BASE_4GPU, 255, 4, 1, 2)],
+    [(CONFIG, BASE, 256, 5, 1, 4), (CONFIG_4GPU, BASE_4GPU, 255, 4, 1, 2)],
 )
 def test_ablation_config_only_changes_selector_and_identities(
     config_path: Path,
