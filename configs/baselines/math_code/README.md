@@ -68,3 +68,20 @@ GPU_IDS=0,1,2,3,4,5,6,7 bash start.sh --local --config configs/baselines/math_co
 训练内 greedy validation 和旧 `paper_eval` 自动评测关闭。`paper_eval.datasets` 保留的 `lcb` 是旧辅助入口字段，不能代表官方 v5/v6 双 split 的 K=8 评测。正式结果另走项目标准评测流程：Step60、Math 四项 + Code 四项、每项 K=8，Code 使用官方评分。本次两领域结果应单独标记，不能冒充仓库原有十数据集标准总表。
 
 本地验证覆盖全部 12 个 YAML 的继承展开、typed config validation、六个 canonical objective、batch 整除、两领域集合、placement、0.75 显存参数和 launcher dry-run。验证不加载权重，不检查 CUDA OOM、真实吞吐或远端文件存在性。本轮没有启动训练。
+
+## 2026-10-15 speed/robustness update (all 8-GPU profiles)
+
+Every 8-GPU launchable config under `configs/` (baselines, canonical, Math-only
+`*_8gpu_b259`, Math+Code `*_8gpu_6s2t`, token-selection 8-GPU profiles) now sets
+`teacher_performance.fused_statistics: true`, `teacher_performance.compact_topk_ids: true`
+and routes rewards through `custom_reward_function.name=compute_score_batched` +
+`reward_model.reward_manager=batch` (spawn-pool grader with a 120 s hard timeout;
+timed-out samples score 0, which only affects logged training accuracy, never the
+distillation loss). The 1.7B paper runs were trained without these flags; resolved
+configs differ from those runs only in these keys. Measured context: the host CPU
+is no longer throttled since the 2026-10-14 reboots (4.1 GHz vs 605 MHz), which is
+the largest single speed-up.
+
+## 2026-10-15 八卡改为共置（作者要求）
+
+六个 `*_8gpu_6s2t_b516.yaml` 现在是八卡共置：actor、vLLM rollout 与 FSDP-8 teacher 共用全部八张卡（`separate_ref_policy: false`，`trainer.n_gpus_per_node: 8`，`fsdp_size=8`），teacher batching、fused statistics、compact Top-K ids 和 batched reward 都开着。516 不能被 8 整除，global batch = PPO mini batch 改为 **512**（Math / Code 各 256）。文件名仍是 `6s2t_b516`，运行名与输出路径已改为 `8gpu-8c-b512`。上文"固定训练预算"和"布局评估"描述的是改动前的 6+2 布局。

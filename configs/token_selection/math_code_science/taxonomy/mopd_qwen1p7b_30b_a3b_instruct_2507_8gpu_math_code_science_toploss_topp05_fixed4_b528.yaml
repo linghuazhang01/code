@@ -1,3 +1,4 @@
+# 2026-10-15 author request: 8-GPU colocated (actor, vLLM rollout and FSDP-8 teacher share all 8 GPUs); teacher batching, fused statistics, compact ids and batched reward on.
 # Three-domain MOPD taxonomy selector: Top-P 5% with Fixed4 weighting.
 # Math/Code/Science use the active full-vocabulary taxonomy; selected tokens
 # receive raw weight 4 and other tokens receive raw weight 1 before
@@ -6,7 +7,7 @@ extends: ../../../mopd_qwen1p7b_30b_a3b_instruct_2507_5gpu_math_code_science_top
 
 runtime:
   slurm_allocation_gpus: 8
-  wandb_run_id: q1p7b-8g-mcs-taxonomy-toploss-topp05-fixed4-b528-s60
+  wandb_run_id: q1p7b-8g-mcs-taxonomy-toploss-topp05-fixed4-b528-s60-8c
   wandb_resume: never
 
 data:
@@ -16,15 +17,17 @@ actor:
   ppo_mini_batch_size: 528
 
 worker_placement:
-  actor_rollout: {n_gpus_per_node: 6, nnodes: 1}
-  ref_policy: {n_gpus_per_node: 2, nnodes: 1}
+  separate_ref_policy: false
+  actor_rollout: {n_gpus_per_node: 8, nnodes: 1}
+  ref_policy: {n_gpus_per_node: null, nnodes: null, process_on_nodes: null}
 
 extra_overrides:
-  - custom_reward_function.path=mopd_verl/mixed_reward.py
-  - custom_reward_function.name=compute_score
-  - trainer.resume_mode=disable
-  - actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
-  - actor_rollout_ref.ref.fsdp_config.fsdp_size=2
+- custom_reward_function.path=mopd_verl/mixed_reward.py
+- custom_reward_function.name=compute_score_batched
+- reward_model.reward_manager=batch
+- trainer.resume_mode=disable
+- actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+- actor_rollout_ref.ref.fsdp_config.fsdp_size=8
 
 audit:
   domains: [math, code, science]
@@ -169,22 +172,29 @@ audit:
   control_token_online_top_p: 0.05
   control_token_online_selection_mode: top_loss
   control_token_online_weight_mode: fixed
-  output_dir: audit/q1p7b-8g-mcs-taxonomy-toploss-topp05-fixed4-b528-s60
+  output_dir: audit/q1p7b-8g-mcs-taxonomy-toploss-topp05-fixed4-b528-s60-8c
 
 paper_eval:
-  output_dir: eval_outputs/paper_suite/q1p7b-8g-mcs-taxonomy-toploss-topp05-fixed4-b528-s60
+  output_dir: eval_outputs/paper_suite/q1p7b-8g-mcs-taxonomy-toploss-topp05-fixed4-b528-s60-8c
 
 huggingface_checkpoint:
   enabled: true
   steps: [60]
   repo_id: icemoon28/opd-checkpoints
   private: false
-  path_prefix: checkpoints/mopd/q1p7b-8g-mcs-taxonomy-toploss-topp05-fixed4-b528-s60
+  path_prefix: checkpoints/mopd/q1p7b-8g-mcs-taxonomy-toploss-topp05-fixed4-b528-s60-8c
   token_env_var: HF_TOKEN
   env_file: null
 
 trainer:
-  experiment_name: q1p7b-8g-mcs-taxonomy-toploss-topp05-fixed4-b528-s60
-  n_gpus_per_node: 6
+  experiment_name: q1p7b-8g-mcs-taxonomy-toploss-topp05-fixed4-b528-s60-8c
+  n_gpus_per_node: 8
   total_training_steps: 60
-  default_local_dir: checkpoints/MOPD/q1p7b-8g-mcs-taxonomy-toploss-topp05-fixed4-b528-s60
+  default_local_dir: checkpoints/MOPD/q1p7b-8g-mcs-taxonomy-toploss-topp05-fixed4-b528-s60-8c
+# 2026-10-15 speed/robustness update: fused teacher statistics, compact Top-K ids,
+# batched reward grader (spawn pool, 120 s hard timeout; timed-out samples score 0).
+teacher_performance:
+  fused_statistics: true
+  compact_topk_ids: true
+rollout:
+  gpu_memory_utilization: 0.75

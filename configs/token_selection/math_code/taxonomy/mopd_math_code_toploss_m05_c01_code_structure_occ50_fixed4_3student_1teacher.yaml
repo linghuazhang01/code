@@ -42,3 +42,5 @@ trainer:
   experiment_name: q1p7b3s1t-mc-tl-m05c01-cstruct-occ50-f4-b528-s60
   default_local_dir: checkpoints/MOPD/q1p7b3s1t-mc-tl-m05c01-cstruct-occ50-f4-b528-s60
   n_gpus_per_node: 3
+rollout:
+  gpu_memory_utilization: 0.6

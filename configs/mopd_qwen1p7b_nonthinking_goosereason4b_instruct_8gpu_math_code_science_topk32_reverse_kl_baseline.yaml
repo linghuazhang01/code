@@ -134,7 +134,8 @@ rollout_correction:
 
 extra_overrides:
   - custom_reward_function.path=mopd_verl/mixed_reward.py
-  - custom_reward_function.name=compute_score
+  - custom_reward_function.name=compute_score_batched
+  - reward_model.reward_manager=batch
   # A baseline run must start from the configured SFT checkpoint unless the
   # caller explicitly overrides this setting and supplies a resume path.
   - trainer.resume_mode=disable
@@ -247,3 +248,5 @@ teacher_performance:
   max_tokens: 57344
   moe_dispatch: stable_sort
   memory_margin_gib: 12.0
+  fused_statistics: true
+  compact_topk_ids: true

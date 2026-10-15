@@ -1,30 +1,44 @@
+# 2026-10-15 author request: 8-GPU colocated (actor, vLLM rollout and FSDP-8 teacher share all 8 GPUs); teacher batching, fused statistics, compact ids and batched reward on.
 # Eight GPUs: six actor/rollout workers and two dedicated teacher workers.
 # Keep global batch 528 and all domain selector/loss settings from the 4-GPU variant.
 extends: mopd_qwen1p7b_30b_4gpu_m05_c01_s01_sci_teacherconf_cfkl_srkl_fixed4_b528_colocated.yaml
 
 runtime:
   slurm_allocation_gpus: 8
-  wandb_run_id: q1p7b-8g-mcs-m05c01s01-stconf-cfkl-srkl-f4-b528-s60
+  wandb_run_id: q1p7b-8g-mcs-m05c01s01-stconf-cfkl-srkl-f4-b528-s60-8c
   wandb_resume: never
 
 worker_placement:
-  separate_ref_policy: true
-  actor_rollout: {n_gpus_per_node: 6, nnodes: 1}
-  ref_policy: {n_gpus_per_node: 2, nnodes: 1, process_on_nodes: null}
+  separate_ref_policy: false
+  actor_rollout: {n_gpus_per_node: 8, nnodes: 1}
+  ref_policy: {n_gpus_per_node: null, nnodes: null, process_on_nodes: null}
 
 teacher_performance:
   enabled: true
+  fused_statistics: true
+  compact_topk_ids: true
 
 audit:
-  output_dir: audit/q1p7b-8g-mcs-m05c01s01-stconf-cfkl-srkl-f4-b528-s60
+  output_dir: audit/q1p7b-8g-mcs-m05c01s01-stconf-cfkl-srkl-f4-b528-s60-8c
 
 paper_eval:
-  output_dir: eval_outputs/paper_suite/q1p7b-8g-mcs-m05c01s01-stconf-cfkl-srkl-f4-b528-s60
+  output_dir: eval_outputs/paper_suite/q1p7b-8g-mcs-m05c01s01-stconf-cfkl-srkl-f4-b528-s60-8c
 
 huggingface_checkpoint:
-  path_prefix: checkpoints/mopd/q1p7b-8g-mcs-m05c01s01-stconf-cfkl-srkl-f4-b528-s60
+  path_prefix: checkpoints/mopd/q1p7b-8g-mcs-m05c01s01-stconf-cfkl-srkl-f4-b528-s60-8c
 
 trainer:
-  experiment_name: q1p7b-8g-mcs-m05c01s01-stconf-cfkl-srkl-f4-b528-s60
-  n_gpus_per_node: 6
-  default_local_dir: checkpoints/MOPD/q1p7b-8g-mcs-m05c01s01-stconf-cfkl-srkl-f4-b528-s60
+  experiment_name: q1p7b-8g-mcs-m05c01s01-stconf-cfkl-srkl-f4-b528-s60-8c
+  n_gpus_per_node: 8
+  default_local_dir: checkpoints/MOPD/q1p7b-8g-mcs-m05c01s01-stconf-cfkl-srkl-f4-b528-s60-8c
+# 2026-10-15 speed/robustness update: fused teacher statistics, compact Top-K ids,
+# batched reward grader (spawn pool, 120 s hard timeout; timed-out samples score 0).
+extra_overrides:
+- custom_reward_function.path=mopd_verl/mixed_reward.py
+- custom_reward_function.name=compute_score_batched
+- reward_model.reward_manager=batch
+- trainer.resume_mode=disable
+- actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+- actor_rollout_ref.ref.fsdp_config.fsdp_size=8
+rollout:
+  gpu_memory_utilization: 0.75

@@ -157,3 +157,11 @@ teacher_performance:
   max_tokens: 57344
   moe_dispatch: stable_sort
   memory_margin_gib: 12.0
+  fused_statistics: true
+  compact_topk_ids: true
+# 2026-10-15 speed/robustness update: fused teacher statistics, compact Top-K ids,
+# batched reward grader (spawn pool, 120 s hard timeout; timed-out samples score 0).
+extra_overrides:
+- custom_reward_function.path=mopd_verl/mixed_reward.py
+- custom_reward_function.name=compute_score_batched
+- reward_model.reward_manager=batch

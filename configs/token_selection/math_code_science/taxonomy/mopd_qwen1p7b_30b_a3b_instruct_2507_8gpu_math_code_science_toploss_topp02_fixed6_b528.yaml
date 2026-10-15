@@ -1,23 +1,50 @@
+# 2026-10-15 author request: 8-GPU colocated (actor, vLLM rollout and FSDP-8 teacher share all 8 GPUs); teacher batching, fused statistics, compact ids and batched reward on.
 # Eight-GPU three-domain MOPD taxonomy selector: uniform Top-P 2% with Fixed6 weighting.
 # Uses 6 student actor/rollout GPUs and 2 teacher/reference GPUs.
 extends: mopd_qwen1p7b_30b_a3b_instruct_2507_8gpu_math_code_science_toploss_topp05_fixed4_b528.yaml
 
 runtime:
-  wandb_run_id: q1p7b-8g-mcs-taxonomy-toploss-topp02-fixed6-b528-s60
+  wandb_run_id: q1p7b-8g-mcs-taxonomy-toploss-topp02-fixed6-b528-s60-8c
   wandb_resume: never
 
+  slurm_allocation_gpus: 8
 audit:
   control_token_online_top_p: 0.02
   control_token_online_top_p_by_domain: {}
   control_token_loss_weight: 6.0
-  output_dir: audit/q1p7b-8g-mcs-taxonomy-toploss-topp02-fixed6-b528-s60
+  output_dir: audit/q1p7b-8g-mcs-taxonomy-toploss-topp02-fixed6-b528-s60-8c
 
 paper_eval:
-  output_dir: eval_outputs/paper_suite/q1p7b-8g-mcs-taxonomy-toploss-topp02-fixed6-b528-s60
+  output_dir: eval_outputs/paper_suite/q1p7b-8g-mcs-taxonomy-toploss-topp02-fixed6-b528-s60-8c
 
 huggingface_checkpoint:
-  path_prefix: checkpoints/mopd/q1p7b-8g-mcs-taxonomy-toploss-topp02-fixed6-b528-s60
+  path_prefix: checkpoints/mopd/q1p7b-8g-mcs-taxonomy-toploss-topp02-fixed6-b528-s60-8c
 
 trainer:
-  experiment_name: q1p7b-8g-mcs-taxonomy-toploss-topp02-fixed6-b528-s60
-  default_local_dir: checkpoints/MOPD/q1p7b-8g-mcs-taxonomy-toploss-topp02-fixed6-b528-s60
+  experiment_name: q1p7b-8g-mcs-taxonomy-toploss-topp02-fixed6-b528-s60-8c
+  default_local_dir: checkpoints/MOPD/q1p7b-8g-mcs-taxonomy-toploss-topp02-fixed6-b528-s60-8c
+# 2026-10-15 speed/robustness update: fused teacher statistics, compact Top-K ids,
+# batched reward grader (spawn pool, 120 s hard timeout; timed-out samples score 0).
+  n_gpus_per_node: 8
+extra_overrides:
+- custom_reward_function.path=mopd_verl/mixed_reward.py
+- custom_reward_function.name=compute_score_batched
+- reward_model.reward_manager=batch
+- trainer.resume_mode=disable
+- actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+- actor_rollout_ref.ref.fsdp_config.fsdp_size=8
+teacher_performance:
+  fused_statistics: true
+  compact_topk_ids: true
+  enabled: true
+rollout:
+  gpu_memory_utilization: 0.75
+worker_placement:
+  separate_ref_policy: false
+  actor_rollout:
+    n_gpus_per_node: 8
+    nnodes: 1
+  ref_policy:
+    n_gpus_per_node: null
+    nnodes: null
+    process_on_nodes: null

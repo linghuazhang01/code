@@ -15,10 +15,10 @@ worker_placement:
   ref_policy: {n_gpus_per_node: null, nnodes: null, process_on_nodes: null}
 
 extra_overrides:
-  - custom_reward_function.path=mopd_verl/mixed_reward.py
-  - custom_reward_function.name=compute_score
-  - trainer.resume_mode=disable
-  - actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+- custom_reward_function.path=mopd_verl/mixed_reward.py
+- custom_reward_function.name=compute_score
+- trainer.resume_mode=disable
+- actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
 
 teacher_performance:
   # The optimized wrapper requires a single-rank reference worker. The
@@ -38,3 +38,5 @@ trainer:
   experiment_name: q1p7b-4g-mcs-taxonomy-toploss-topp05-fixed4-b528-colocated-s60
   n_gpus_per_node: 4
   default_local_dir: checkpoints/MOPD/q1p7b-4g-mcs-taxonomy-toploss-topp05-fixed4-b528-colocated-s60
+rollout:
+  gpu_memory_utilization: 0.6

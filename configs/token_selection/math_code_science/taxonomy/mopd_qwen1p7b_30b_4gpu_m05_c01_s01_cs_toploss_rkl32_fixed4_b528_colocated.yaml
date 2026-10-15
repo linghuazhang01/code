@@ -28,3 +28,12 @@ trainer:
   experiment_name: q1p7b-4g-mcs-mtl05-ctl01cs-stl01-f4-b528-coloc-s60
   n_gpus_per_node: 4
   default_local_dir: checkpoints/MOPD/q1p7b-4g-mcs-mtl05-ctl01cs-stl01-f4-b528-coloc-s60
+extra_overrides:
+- custom_reward_function.path=mopd_verl/mixed_reward.py
+- custom_reward_function.name=compute_score_batched
+- reward_model.reward_manager=batch
+- trainer.resume_mode=disable
+- actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+- actor_rollout_ref.ref.fsdp_config.fsdp_size=2
+rollout:
+  gpu_memory_utilization: 0.6

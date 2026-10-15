@@ -18,3 +18,5 @@ huggingface_checkpoint:
 trainer:
   experiment_name: q1p7b-4g-mcs-taxonomy-toploss-topp02-fixed4-b528-colocated-s60
   default_local_dir: checkpoints/MOPD/q1p7b-4g-mcs-taxonomy-toploss-topp02-fixed4-b528-colocated-s60
+rollout:
+  gpu_memory_utilization: 0.6

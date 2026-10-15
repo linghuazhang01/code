@@ -85,3 +85,7 @@ and are unique across audit, checkpoint, HF and W&B paths. All 42 files resolve
 with `mopd_verl.config_profiles.load_raw_config`; the resolved SAPD/EOPD/ExOPD
 files differ from their 1.7B counterparts only in student path, batch (Math+Code),
 memory fraction, names, and defaults made explicit.
+
+## 2026-10-15 8-GPU files are colocated
+
+At the author's request every `*_8gpu_6s2t.yaml` here now runs colocated on eight GPUs (actor, vLLM rollout and the FSDP-8 teacher share all GPUs; vLLM memory 0.4 as in `3gpu_3c`). Math and Code batches changed from 258 to 256 (divisible by 8); Math+Code stays 528. File names keep `6s2t`; run names and paths use `8g8c`.

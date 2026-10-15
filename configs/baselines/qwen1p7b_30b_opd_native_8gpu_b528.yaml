@@ -1,3 +1,4 @@
+# 2026-10-15 author request: 8-GPU colocated (actor, vLLM rollout and FSDP-8 teacher share all 8 GPUs); teacher batching, fused statistics, compact ids and batched reward on.
 # OPD native chosen-token objective
 # Qwen3-1.7B student distilled from Qwen3-30B-A3B-Instruct-2507.
 # Topology: 6 actor/student GPUs + 2 ref/teacher GPUs; global batch 528.
@@ -5,9 +6,10 @@
 extends: qwen1p7b_30b_eopd_native_8gpu_b528.yaml
 
 runtime:
-  wandb_run_id: qwen1p7b-30b-opd-native-8gpu-b528
+  wandb_run_id: qwen1p7b-30b-opd-native-8gpu-b528-8c
   wandb_resume: never
 
+  slurm_allocation_gpus: 8
 data:
   train_batch_size: 528
 
@@ -23,11 +25,29 @@ rollout_correction:
   rollout_rs: null
 
 extra_overrides:
-  - custom_reward_function.path=mopd_verl/mixed_reward.py
-  - custom_reward_function.name=compute_score
-  - trainer.resume_mode=disable
-
+- custom_reward_function.path=mopd_verl/mixed_reward.py
+- custom_reward_function.name=compute_score_batched
+- reward_model.reward_manager=batch
+- trainer.resume_mode=disable
+- actor_rollout_ref.ref.fsdp_config.fsdp_size=8
 trainer:
-  experiment_name: qwen1p7b-30b-opd-native-8gpu-b528
-  n_gpus_per_node: 6
-  default_local_dir: checkpoints/MOPD/qwen1p7b-30b-opd-native-8gpu-b528
+  experiment_name: qwen1p7b-30b-opd-native-8gpu-b528-8c
+  n_gpus_per_node: 8
+  default_local_dir: checkpoints/MOPD/qwen1p7b-30b-opd-native-8gpu-b528-8c
+# 2026-10-15 speed/robustness update: fused teacher statistics, compact Top-K ids,
+# batched reward grader (spawn pool, 120 s hard timeout; timed-out samples score 0).
+teacher_performance:
+  fused_statistics: true
+  compact_topk_ids: true
+  enabled: true
+rollout:
+  gpu_memory_utilization: 0.75
+worker_placement:
+  separate_ref_policy: false
+  actor_rollout:
+    n_gpus_per_node: 8
+    nnodes: 1
+  ref_policy:
+    n_gpus_per_node: null
+    nnodes: null
+    process_on_nodes: null

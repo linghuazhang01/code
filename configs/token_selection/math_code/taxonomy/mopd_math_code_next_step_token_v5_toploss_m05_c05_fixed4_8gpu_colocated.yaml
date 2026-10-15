@@ -22,3 +22,15 @@ huggingface_checkpoint:
 trainer:
   experiment_name: q1p7b8g-mc-v5-r3-cs-next-m05c05-f4-b528-s60
   default_local_dir: checkpoints/MOPD/q1p7b8g-mc-v5-r3-cs-next-m05c05-f4-b528-s60
+# 2026-10-15 speed/robustness update: fused teacher statistics, compact Top-K ids,
+# batched reward grader (spawn pool, 120 s hard timeout; timed-out samples score 0).
+extra_overrides:
+- custom_reward_function.path=mopd_verl/mixed_reward.py
+- custom_reward_function.name=compute_score_batched
+- reward_model.reward_manager=batch
+- trainer.resume_mode=disable
+- actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+- actor_rollout_ref.ref.fsdp_config.fsdp_size=8
+teacher_performance:
+  fused_statistics: true
+  compact_topk_ids: true

@@ -1,8 +1,9 @@
+# 2026-10-15 author request: 8-GPU colocated (actor, vLLM rollout and FSDP-8 teacher share all 8 GPUs); teacher batching, fused statistics, compact ids and batched reward on.
 extends: mopd_qwen1p7b_30b_a3b_instruct_2507_4gpu_math_code_science_topp_m05_c02_s02_code_structure_only_science_loss_teacherconf_fixed4_b528_colocated.yaml
 
 runtime:
   slurm_allocation_gpus: 8
-  wandb_run_id: q1p7b-8g-mcs-mtl05-ctl02-sltc02-f4-b528-s60
+  wandb_run_id: q1p7b-8g-mcs-mtl05-ctl02-sltc02-f4-b528-s60-8c
   wandb_resume: never
 
 data:
@@ -11,13 +12,13 @@ data:
     code: [data/G-OPD-Training-Data/Eurus/code_train.parquet]
     science: [data/G-OPD-Training-Data/Science/train.parquet]
   val_files:
-    - data/eval_data/math/AIME24/test.parquet
-    - data/eval_data/math/AIME25/test.parquet
-    - data/eval_data/math/HMMT25Feb/test.parquet
-    - data/eval_data/math/HMMT25Nov/test.parquet
-    - data/eval_data/code/HumanEvalPlus/test.parquet
-    - data/eval_data/code/MBPPPlus/test.parquet
-    - data/eval_data/science/GPQA/test.parquet
+  - data/eval_data/math/AIME24/test.parquet
+  - data/eval_data/math/AIME25/test.parquet
+  - data/eval_data/math/HMMT25Feb/test.parquet
+  - data/eval_data/math/HMMT25Nov/test.parquet
+  - data/eval_data/code/HumanEvalPlus/test.parquet
+  - data/eval_data/code/MBPPPlus/test.parquet
+  - data/eval_data/science/GPQA/test.parquet
 
 model:
   student_path: ../models/Qwen3-1.7B
@@ -29,23 +30,36 @@ model:
     science: models/Qwen3-30B-A3B-Instruct-2507
 
 worker_placement:
-  separate_ref_policy: true
-  actor_rollout: {n_gpus_per_node: 6, nnodes: 1}
-  ref_policy: {n_gpus_per_node: 2, nnodes: 1, process_on_nodes: null}
+  separate_ref_policy: false
+  actor_rollout: {n_gpus_per_node: 8, nnodes: 1}
+  ref_policy: {n_gpus_per_node: null, nnodes: null, process_on_nodes: null}
 
 teacher_performance:
   enabled: true
+  fused_statistics: true
+  compact_topk_ids: true
 
 audit:
-  output_dir: audit/q1p7b-8g-mcs-mtl05-ctl02-sltc02-f4-b528-s60
+  output_dir: audit/q1p7b-8g-mcs-mtl05-ctl02-sltc02-f4-b528-s60-8c
 
 paper_eval:
-  output_dir: eval_outputs/paper_suite/q1p7b-8g-mcs-mtl05-ctl02-sltc02-f4-b528-s60
+  output_dir: eval_outputs/paper_suite/q1p7b-8g-mcs-mtl05-ctl02-sltc02-f4-b528-s60-8c
 
 huggingface_checkpoint:
-  path_prefix: checkpoints/mopd/q1p7b-8g-mcs-mtl05-ctl02-sltc02-f4-b528-s60
+  path_prefix: checkpoints/mopd/q1p7b-8g-mcs-mtl05-ctl02-sltc02-f4-b528-s60-8c
 
 trainer:
-  experiment_name: q1p7b-8g-mcs-mtl05-ctl02-sltc02-f4-b528-s60
-  n_gpus_per_node: 6
-  default_local_dir: checkpoints/MOPD/q1p7b-8g-mcs-mtl05-ctl02-sltc02-f4-b528-s60
+  experiment_name: q1p7b-8g-mcs-mtl05-ctl02-sltc02-f4-b528-s60-8c
+  n_gpus_per_node: 8
+  default_local_dir: checkpoints/MOPD/q1p7b-8g-mcs-mtl05-ctl02-sltc02-f4-b528-s60-8c
+# 2026-10-15 speed/robustness update: fused teacher statistics, compact Top-K ids,
+# batched reward grader (spawn pool, 120 s hard timeout; timed-out samples score 0).
+extra_overrides:
+- custom_reward_function.path=mopd_verl/mixed_reward.py
+- custom_reward_function.name=compute_score_batched
+- reward_model.reward_manager=batch
+- trainer.resume_mode=disable
+- actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+- actor_rollout_ref.ref.fsdp_config.fsdp_size=8
+rollout:
+  gpu_memory_utilization: 0.75
