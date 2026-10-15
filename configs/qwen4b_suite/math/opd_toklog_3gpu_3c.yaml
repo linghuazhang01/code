@@ -20,6 +20,8 @@ audit:
   response_level_enabled: true
   response_level_freq_steps: 1
   response_level_compression: gzip
+  # Per-response sample ID, OPD loss, reward and correctness (loss_variance_sample.jsonl).
+  log_sample_level: true
   output_dir: audit/q4b-math-opd-toklog-3g3c-b255-s42
 paper_eval:
   output_dir: eval_outputs/paper_suite/q4b-math-opd-toklog-3g3c-b255-s42
