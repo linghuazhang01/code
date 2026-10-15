@@ -1,0 +1,16 @@
+# OPD that learns only v3-pool positions (weight 1); other valid positions weight 0; three colocated GPUs.
+extends: _mopd_math_code_v3pool_fixed_3gpu_3c.yaml
+runtime:
+  wandb_run_id: q1p7b3g-mc-opd-v3only-b528-s60
+  wandb_resume: never
+audit:
+  control_token_loss_weight: 1.0
+  control_token_other_weight: 0.0
+  output_dir: audit/q1p7b3g-mc-opd-v3only-b528-s60
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b3g-mc-opd-v3only-b528-s60
+huggingface_checkpoint:
+  path_prefix: checkpoints/mopd/q1p7b3g-mc-opd-v3only-b528-s60
+trainer:
+  experiment_name: q1p7b3g-mc-opd-v3only-b528-s60
+  default_local_dir: checkpoints/MOPD/q1p7b3g-mc-opd-v3only-b528-s60

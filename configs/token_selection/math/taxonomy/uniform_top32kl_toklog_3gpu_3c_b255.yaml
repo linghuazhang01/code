@@ -1,0 +1,29 @@
+# Qwen3-1.7B math / equal-weight Top-32 RKL OPD with per-token logging (same switches as the 4gpu_3a1t toklog config),
+# three colocated GPUs. File name avoids '_token' (.gitignore).
+extends: uniform_top32kl_no_weighting_3gpu_3c_b255.yaml
+runtime:
+  wandb_run_id: q1p7b-math-top32kl-opd-toklog-3g3c-b255
+  wandb_resume: never
+audit:
+  token_gap_enabled: true
+  token_gap_vocab_vector_enabled: true
+  entropy_enabled: true
+  entropy_vocab_vector_enabled: true
+  entropy_vocab_per_occurrence_mean_vector_enabled: true
+  logp_vector_enabled: true
+  logp_abs_vector_enabled: true
+  logp_vocab_per_occurrence_mean_vector_enabled: true
+  logp_abs_vocab_per_occurrence_mean_vector_enabled: true
+  topk_teacher_student_cross_entropy_vocab_enabled: true
+  response_level_enabled: true
+  response_level_freq_steps: 1
+  response_level_compression: gzip
+  log_sample_level: true
+  output_dir: audit/q1p7b-math-top32kl-opd-toklog-3g3c-b255
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-top32kl-opd-toklog-3g3c-b255
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-top32kl-opd-toklog-3g3c-b255
+trainer:
+  experiment_name: q1p7b-math-top32kl-opd-toklog-3g3c-b255
+  default_local_dir: checkpoints/MOPD/q1p7b-math-top32kl-opd-toklog-3g3c-b255

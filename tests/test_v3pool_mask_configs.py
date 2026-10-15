@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TAX = ROOT / "configs/token_selection/math_code/taxonomy"
 Q4B = ROOT / "configs/qwen4b_suite/math_code"
 CONFIGS = (
-    [TAX / f"mopd_math_code_v3pool_{arm}_{topo}.yaml" for arm in ("ignore", "only") for topo in ("8gpu_6s2t", "4gpu", "3student_1teacher")]
+    [TAX / f"mopd_math_code_v3pool_{arm}_{topo}.yaml" for arm in ("ignore", "only") for topo in ("8gpu_6s2t", "4gpu", "3student_1teacher", "3gpu_3c")]
     + [Q4B / f"opd_v3pool_{arm}_{topo}.yaml" for arm in ("ignore", "only") for topo in ("8gpu_6s2t", "4gpu_3s1t", "3gpu_3c")]
 )
 
@@ -122,7 +122,7 @@ def test_training_gradient_mask_applies_pool_weights(tmp_path: Path, arm: str, m
 
 SINGLE = (
     [(ROOT / f"configs/token_selection/{d}/{'taxonomy/' if d == 'math' else ''}v3pool_{arm}_top32kl_{t}.yaml", d, arm)
-     for d in ("math", "code") for arm in ("ignore", "only") for t in ("4gpu_3a1t_b255", "6gpu_4a2t_b256")]
+     for d in ("math", "code") for arm in ("ignore", "only") for t in ("4gpu_3a1t_b255", "6gpu_4a2t_b256", "3gpu_3c_b255")]
     + [(ROOT / f"configs/qwen4b_suite/{d}/opd_v3pool_{arm}_{t}.yaml", d, arm)
        for d in ("math", "code") for arm in ("ignore", "only") for t in ("3gpu_3c", "4gpu_3s1t", "8gpu_6s2t")]
 )
@@ -148,3 +148,16 @@ def test_code_only_references_are_equal_weight(path: Path) -> None:
     assert cfg.audit.domains == ["code"]
     assert not cfg.audit.control_token_loss_weighting_enabled
     assert cfg.actor.distill_mode == "topk_renormalized_reverse_kl"
+
+
+@pytest.mark.parametrize("path", sorted((ROOT / "configs/token_selection").rglob("*3gpu_3c*.yaml")), ids=lambda p: p.name)
+def test_three_gpu_configs_are_colocated(path: Path) -> None:
+    if path.name.startswith("_"):
+        pytest.skip("intermediate file")
+    cfg = load_config(path)
+    if "v3pool" not in path.name and "toklog" not in path.name and "uniform_top32kl_no_weighting" not in path.name:
+        pytest.skip("not part of the v3 / toklog family")
+    assert not cfg.worker_placement.separate_ref_policy
+    assert cfg.worker_placement.actor_rollout.n_gpus_per_node == 3
+    assert cfg.data.train_batch_size % 3 == 0
+    assert cfg.trainer.total_training_steps == 60
