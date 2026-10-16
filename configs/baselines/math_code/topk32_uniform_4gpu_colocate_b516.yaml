@@ -33,6 +33,8 @@ audit:
   loss_variance_signal: topk_renormalized_reverse_kl
 paper_eval:
   output_dir: eval_outputs/paper_suite/qwen1p7b-30b-math-code-topk32-uniform-4gpu-colocate-b516-s42
+huggingface_checkpoint:
+  path_prefix: checkpoints/baselines/math_code/qwen1p7b-30b-math-code-topk32-uniform-4gpu-colocate-b516-s42
 trainer:
   n_gpus_per_node: 4
   experiment_name: qwen1p7b-30b-math-code-topk32-uniform-4gpu-colocate-b516-s42
