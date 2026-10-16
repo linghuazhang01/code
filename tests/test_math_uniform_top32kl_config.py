@@ -34,18 +34,21 @@ def test_uniform_config_only_switches_token_weighting_off() -> None:
     expected["audit"].update(OFF, output_dir=f"audit/{run}")
     expected["runtime"]["wandb_run_id"] = run
     expected["paper_eval"]["output_dir"] = f"eval_outputs/paper_suite/{run}"
-    expected["huggingface_checkpoint"]["path_prefix"] = f"checkpoints/math/{run}"
+    expected["huggingface_checkpoint"].update(
+        path_prefix=f"checkpoints/math/{run}", steps=(60,)
+    )
     expected["trainer"].update(
         experiment_name=run,
         default_local_dir=f"checkpoints/MOPD/{run}",
         save_freq=1,
         max_actor_ckpt_to_keep=2,
+        total_training_steps=60,
     )
     assert asdict(cfg) == expected
     assert cfg.actor.distill_mode == "topk_renormalized_reverse_kl"
     assert cfg.actor.topk_distill_k == 32 and cfg.actor.loss_agg_mode == "token-mean"
     assert cfg.data.train_batch_size == cfg.actor.ppo_mini_batch_size == 255
-    assert cfg.trainer.total_training_steps <= 65
+    assert cfg.trainer.total_training_steps == 60
     command = build_command(cfg)
     assert "+mopd_audit.control_token_loss_weighting_enabled=false" in command
     assert "+mopd_audit.control_token_online_selection_enabled=false" in command

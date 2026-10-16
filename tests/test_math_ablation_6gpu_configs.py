@@ -61,5 +61,7 @@ def test_six_gpu_variant_only_changes_topology_and_identities(
     command = build_command(cfg)
     assert "actor_rollout_ref.ref.fsdp_config.fsdp_size=2" in command
     assert "trainer.n_gpus_per_node=4" in command
-    assert "trainer.total_training_steps=65" in command
+    assert (
+        f"trainer.total_training_steps={base.trainer.total_training_steps}" in command
+    )
     assert "trainer.huggingface_checkpoint.private=False" in command
