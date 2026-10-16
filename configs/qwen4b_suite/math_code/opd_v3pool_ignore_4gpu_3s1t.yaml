@@ -3,6 +3,27 @@ extends: _v3pool_fixed_4gpu_3s1t.yaml
 runtime:
   wandb_run_id: q4b-mc-opdv3ign-4g3s1t-b528-s42
 audit:
+  # Per-token logging (user 2026-10-16): same switches as the toklog runs (opd_toklog_* / uniform_top32kl_toklog_*).
+  # Logging only, no effect on loss or gradients; the gap/logp/entropy vectors cover every valid response token,
+  # including pool positions whose loss weight is 0.
+  token_gap_enabled: true
+  token_gap_freq_steps: 1
+  token_gap_vocab_vector_enabled: true
+  token_gap_vocab_vector_freq_steps: 1
+  entropy_enabled: true
+  entropy_vocab_vector_enabled: true
+  entropy_vocab_per_occurrence_mean_vector_enabled: true
+  logp_vector_enabled: true
+  logp_vector_freq_steps: 1
+  logp_abs_vector_enabled: true
+  logp_abs_vector_freq_steps: 1
+  logp_vocab_per_occurrence_mean_vector_enabled: true
+  logp_abs_vocab_per_occurrence_mean_vector_enabled: true
+  topk_teacher_student_cross_entropy_vocab_enabled: true
+  response_level_enabled: true
+  response_level_freq_steps: 1
+  response_level_compression: gzip
+  log_sample_level: true
   control_token_loss_weight: 0.0
   control_token_other_weight: 1.0
   output_dir: audit/q4b-mc-opdv3ign-4g3s1t-b528-s42
