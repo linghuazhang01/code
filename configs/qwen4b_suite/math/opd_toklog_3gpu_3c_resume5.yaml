@@ -1,0 +1,14 @@
+# Resume of q4b-math-opd-toklog-3g3c-b255-s42 from shuang_qiu's step-5 checkpoint (run killed 12:14 HKT 2026-10-15),
+# continued under the qiushuang account; new checkpoints/audit land under /home/qiushuang/mopd_code.
+extends: opd_toklog_3gpu_3c.yaml
+runtime:
+  wandb_resume: allow
+extra_overrides:
+- custom_reward_function.path=mopd_verl/mixed_reward.py
+- custom_reward_function.name=compute_score_batched
+- reward_model.reward_manager=batch
+- trainer.resume_mode=resume_path
+- trainer.resume_from_path=/home/shuang_qiu/mopd_code/checkpoints/MOPD/q4b-math-opd-toklog-3g3c-b255-s42/global_step_5
+- trainer.del_local_ckpt_after_load=False
+- actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+- actor_rollout_ref.ref.fsdp_config.fsdp_size=3
