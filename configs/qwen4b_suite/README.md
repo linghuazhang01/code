@@ -89,3 +89,7 @@ memory fraction, names, and defaults made explicit.
 ## 2026-10-15 8-GPU files are colocated
 
 At the author's request every `*_8gpu_6s2t.yaml` here now runs colocated on eight GPUs (actor, vLLM rollout and the FSDP-8 teacher share all GPUs; vLLM memory 0.4 as in `3gpu_3c`). Math and Code batches changed from 258 to 256 (divisible by 8); Math+Code stays 528. File names keep `6s2t`; run names and paths use `8g8c`.
+
+## 2026-10-17 Math+Code OPD with per-token logging
+
+`math_code/opd_toklog_{3gpu_3c,4gpu_3s1t,8gpu_6s2t}.yaml` extend the plain `opd_*` files of the same topology and only add the per-token audit block (token gap / entropy / logp vectors, response records, per-response loss) and `-toklog-` run names `q4b-mc-opd-toklog-{3g3c,4g3s1t,8g8c}-b528-s42`. Training is identical to the plain run. The 1.7B counterparts at batch 528 are in `../qwen1p7b_suite/math_code/`.

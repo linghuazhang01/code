@@ -1,0 +1,37 @@
+# Qwen3-4B math_code / equal-weight OPD (Top-32 RKL) with per-token logging; training identical to opd_4gpu_3s1t.yaml.
+# (File name avoids '_token', which .gitignore excludes.)
+extends: opd_4gpu_3s1t.yaml
+runtime:
+  wandb_run_id: q4b-mc-opd-toklog-4g3s1t-b528-s42
+audit:
+  # Per-token logging (user 2026-10-17): same switches as the toklog runs (opd_toklog_* / uniform_top32kl_toklog_*)
+  # and the v3-pool configs. Logging only: no switch here changes the loss or the gradients.
+  token_gap_enabled: true
+  token_gap_freq_steps: 1
+  token_gap_vocab_vector_enabled: true
+  token_gap_vocab_vector_freq_steps: 1
+  entropy_enabled: true
+  entropy_vocab_vector_enabled: true
+  entropy_vocab_per_occurrence_mean_vector_enabled: true
+  logp_vector_enabled: true
+  logp_vector_freq_steps: 1
+  logp_abs_vector_enabled: true
+  logp_abs_vector_freq_steps: 1
+  logp_vocab_per_occurrence_mean_vector_enabled: true
+  logp_abs_vocab_per_occurrence_mean_vector_enabled: true
+  topk_teacher_student_cross_entropy_vocab_enabled: true
+  response_level_enabled: true
+  response_level_freq_steps: 1
+  response_level_compression: gzip
+  # Per-response sample ID, OPD loss, reward and correctness (loss_variance_sample.jsonl).
+  log_sample_level: true
+  output_dir: audit/q4b-mc-opd-toklog-4g3s1t-b528-s42
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q4b-mc-opd-toklog-4g3s1t-b528-s42
+huggingface_checkpoint:
+  path_prefix: checkpoints/qwen4b/math_code/q4b-mc-opd-toklog-4g3s1t-b528-s42
+  steps: [60]
+trainer:
+  total_training_steps: 60
+  experiment_name: q4b-mc-opd-toklog-4g3s1t-b528-s42
+  default_local_dir: checkpoints/MOPD/q4b-mc-opd-toklog-4g3s1t-b528-s42

@@ -85,3 +85,7 @@ the largest single speed-up.
 ## 2026-10-15 八卡改为共置（作者要求）
 
 六个 `*_8gpu_6s2t_b516.yaml` 现在是八卡共置：actor、vLLM rollout 与 FSDP-8 teacher 共用全部八张卡（`separate_ref_policy: false`，`trainer.n_gpus_per_node: 8`，`fsdp_size=8`），teacher batching、fused statistics、compact Top-K ids 和 batched reward 都开着。516 不能被 8 整除，global batch = PPO mini batch 改为 **512**（Math / Code 各 256）。文件名仍是 `6s2t_b516`，运行名与输出路径已改为 `8gpu-8c-b512`。上文"固定训练预算"和"布局评估"描述的是改动前的 6+2 布局。
+
+## 2026-10-17 batch-528 OPD set
+
+A Qwen3-1.7B Math+Code equal-weight Top-32 OPD set at global batch 528 with per-token logging (3 / 4 / 8 GPUs, `multi_teacher_distill: true`, the batch of the 1.7B SAPD runs) lives in `configs/qwen1p7b_suite/math_code/`; see its README. The files in this directory keep 516 / 512.
