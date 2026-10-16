@@ -3,7 +3,7 @@
 extends: uniform_top32kl_no_weighting_3gpu_3c_b255.yaml
 runtime:
   wandb_run_id: q1p7b-math-top32kl-opd-toklog-3g3c-b255
-  wandb_resume: never
+  wandb_resume: allow
 audit:
   token_gap_enabled: true
   token_gap_vocab_vector_enabled: true
@@ -27,3 +27,12 @@ huggingface_checkpoint:
 trainer:
   experiment_name: q1p7b-math-top32kl-opd-toklog-3g3c-b255
   default_local_dir: checkpoints/MOPD/q1p7b-math-top32kl-opd-toklog-3g3c-b255
+# 2026-10-15: batched reward grader (120 s hard timeout) so a pathological answer cannot hang the run;
+# the distillation loss is unchanged (reward only feeds logged accuracy).
+extra_overrides:
+- custom_reward_function.path=mopd_verl/mixed_reward.py
+- custom_reward_function.name=compute_score_batched
+- reward_model.reward_manager=batch
+- trainer.resume_mode=disable
+- actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+- actor_rollout_ref.ref.fsdp_config.fsdp_size=3

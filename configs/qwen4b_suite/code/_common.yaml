@@ -11,7 +11,7 @@ runtime:
   wandb_entity: lz101-rice-university
   env_file: .env.local
   used_model: no_api
-  wandb_resume: never
+  wandb_resume: allow
   cuda_visible_devices: null
 data:
   domain_train_files:
@@ -111,7 +111,8 @@ rollout_correction:
   bypass_mode: false
 extra_overrides:
 - custom_reward_function.path=mopd_verl/mixed_reward.py
-- custom_reward_function.name=compute_score
+- custom_reward_function.name=compute_score_batched
+- reward_model.reward_manager=batch
 - trainer.resume_mode=disable
 - actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
 # Teacher acceleration: batching is on whenever enabled=true (colocated multi-rank
