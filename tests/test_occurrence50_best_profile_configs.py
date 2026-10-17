@@ -9,13 +9,9 @@ from mopd_verl.launch import build_command
 from mopd_verl.settings import load_config
 
 TAXONOMY = Path("configs/token_selection/math_code/taxonomy")
-BEST = TAXONOMY / "mopd_math_code_toploss_m05_c01_code_structure_fixed4_8gpu_6s2t.yaml"
-OCC50_8G = TAXONOMY / "mopd_math_code_toploss_m05_c01_code_structure_occ50_fixed4_8gpu_6s2t.yaml"
-OCC50_3S1T = TAXONOMY / "mopd_math_code_toploss_m05_c01_code_structure_occ50_fixed4_3student_1teacher.yaml"
-NAME_8G = "q1p7b8g-mc-tl-m05c01-cstruct-occ50-f4-6s2t-b528-s60"
-NAME_3S1T = "q1p7b3s1t-mc-tl-m05c01-cstruct-occ50-f4-b528-s60"
-
-
+BEST = TAXONOMY / "mopd_math_code_toploss_m05_c01_code_structure_fixed4_8gpu_8c.yaml"
+OCC50_8G = TAXONOMY / "mopd_math_code_toploss_m05_c01_code_structure_occ50_fixed4_8gpu_8c.yaml"
+NAME_8G = "q1p7b8g-mc-tl-m05c01-cstruct-occ50-f4-8c-b528-s60"
 def _changed_keys(reference: dict, candidate: dict) -> dict:
     return {
         section: {key for key in reference[section] if reference[section][key] != candidate[section][key]}
@@ -37,17 +33,16 @@ def _assert_naming(config: dict, name: str) -> None:
     assert config["trainer"]["default_local_dir"] == f"checkpoints/MOPD/{name}"
 
 
-def test_8gpu_variant_raises_the_occurrence_gate_and_lowers_vllm_memory() -> None:
+def test_8gpu_variant_raises_the_occurrence_gate() -> None:
     best, occ = asdict(load_config(BEST)), asdict(load_config(OCC50_8G))
     assert _changed_keys(best, occ) == {
         "runtime": {"wandb_run_id"},
-        "rollout": {"gpu_memory_utilization"},
         "audit": {"control_token_online_min_mean_occurrences_per_step", "output_dir"},
         "paper_eval": {"output_dir"},
         "huggingface_checkpoint": {"path_prefix"},
         "trainer": {"experiment_name", "default_local_dir"},
     }
-    assert best["rollout"]["gpu_memory_utilization"] == 0.75
+    assert best["rollout"]["gpu_memory_utilization"] == 0.6
     assert occ["rollout"]["gpu_memory_utilization"] == 0.6
     assert best["audit"]["control_token_online_min_mean_occurrences_per_step"] == 20.0
     assert occ["audit"]["control_token_online_min_mean_occurrences_per_step"] == 50.0
@@ -74,28 +69,3 @@ def test_pools_selector_and_training_match_the_best_profile() -> None:
     assert f"trainer.experiment_name={NAME_8G}" in command
 
 
-def test_3s1t_variant_changes_only_topology_and_names() -> None:
-    occ8, occ3 = asdict(load_config(OCC50_8G)), asdict(load_config(OCC50_3S1T))
-    assert _changed_keys(occ8, occ3) == {
-        "runtime": {"wandb_run_id", "slurm_allocation_gpus", "cuda_visible_devices"},
-        "worker_placement": {"actor_rollout", "ref_policy"},
-        "extra_overrides": None,
-        "audit": {"output_dir"},
-        "paper_eval": {"output_dir"},
-        "huggingface_checkpoint": {"path_prefix"},
-        "trainer": {"experiment_name", "default_local_dir", "n_gpus_per_node"},
-    }
-    assert occ3["audit"]["control_token_online_min_mean_occurrences_per_step"] == 50.0
-    _assert_naming(occ3, NAME_3S1T)
-    config = load_config(OCC50_3S1T)
-    placement = config.worker_placement
-    assert placement.separate_ref_policy is True
-    assert placement.actor_rollout.n_gpus_per_node == 3
-    assert placement.ref_policy.n_gpus_per_node == 1
-    assert config.trainer.n_gpus_per_node == 3
-    assert config.runtime.cuda_visible_devices == "0,1,2,4"
-    assert "actor_rollout_ref.ref.fsdp_config.fsdp_size=1" in config.extra_overrides
-    assert 528 % 3 == 0
-    command = build_command(config)
-    assert "+mopd_audit.control_token_online_min_mean_occurrences_per_step=50.0" in command
-    assert f"trainer.experiment_name={NAME_3S1T}" in command

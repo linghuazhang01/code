@@ -1,8 +1,10 @@
 # Math-only online token-selector configs
 
+> 2026-10-17: dedicated-teacher configs were removed (colocated-only rule, OPD/CLAUDE.md). Files named below that no longer exist are listed in `analysis/config-cleanup-20261017/delete_list.txt` and can be restored with `git checkout 9b61fd9 -- <path>`.
+
 ## V3 Top-Loss + Top-P 7.5% + Fixed4 (8 GPUs)
 
-[Top-Loss Fixed4 config](v3/top32kl_next_step_expanded_pruned_v3_unified_topp0p075_i1_w1_fixed4_8gpu_6a2t_b258.yaml)
+[Top-Loss Fixed4 config](v3/top32kl_next_step_expanded_pruned_v3_unified_topp0p075_i1_w1_fixed4_8gpu_8c_b256.yaml)
 uses the existing `top_loss` selector and the ExpandedPruned-V3 Math pool:
 115 unified token IDs (85 Control + 30 Structure). It retains Top32 reverse-KL,
 the reference reward path and 6-actor/2-teacher topology with batch258.
@@ -24,7 +26,7 @@ Python must be selected through the `PYTHON` environment variable):
 
 ```bash
 bash scripts/run_mopd.sh \
-  configs/token_selection/math/v3/top32kl_next_step_expanded_pruned_v3_unified_topp0p075_i1_w1_fixed4_8gpu_6a2t_b258.yaml \
+  configs/token_selection/math/v3/top32kl_next_step_expanded_pruned_v3_unified_topp0p075_i1_w1_fixed4_8gpu_8c_b256.yaml \
   --slurm --slurm-args "--mem=800G"
 ```
 
@@ -139,10 +141,10 @@ subset in `domain-subsets.csv`: 124 Control and 266 Structure token IDs.
 | next-step, Top-32 KL, 5-GPU 4A+1T benchmark-aligned | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 20% valid-token occurrence coverage; no adaptive neighbors | `taxonomy/top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_5gpu_4a1t_b256.yaml` |
 | next-step, Top-32 KL, 6-GPU dual-teacher | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 10% valid-token occurrence coverage | `taxonomy/top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_6gpu_4a2t_b256.yaml` |
 | next-step, Top-32 KL, 7-GPU dual-teacher | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 10% valid-token occurrence coverage | `taxonomy/top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_7gpu_5a2t_b255.yaml` |
-| next-step, Top-32 KL, 8-GPU dual-teacher Avg@4 | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 10% valid-token occurrence coverage | `taxonomy/top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_8gpu_6a2t_b258.yaml` |
+| next-step, Top-32 KL, 8-GPU dual-teacher Avg@4 | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 10% valid-token occurrence coverage | `taxonomy/top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_8gpu_8c_b256.yaml` |
 | next-step, Top-32 KL, 6-GPU dual-teacher | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 20% valid-token occurrence coverage | `taxonomy/top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_6gpu_4a2t_b256.yaml` |
 | next-step, Top-32 KL, 7-GPU dual-teacher | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 20% valid-token occurrence coverage | `taxonomy/top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_7gpu_5a2t_b255.yaml` |
-| next-step, Top-32 KL, 8-GPU dual-teacher | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 20% valid-token occurrence coverage | `taxonomy/top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_8gpu_6a2t_b258.yaml` |
+| next-step, Top-32 KL, 8-GPU dual-teacher | FullTaxonomy split | 124 Control + 266 Structure | i1 / w1 / 20% valid-token occurrence coverage | `taxonomy/top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_8gpu_8c_b256.yaml` |
 | next-window | Robust190 | 66 | i6 / w6 / K30 | `a_next_window_robust190_i6_w6_k30_4gpu_b255.yaml` |
 | next-window | Control-44 | 40 | i7 / w7 / K8 | `a_next_window_control44_i7_w7_k8_4gpu_b255.yaml` |
 | next-window | FullTaxonomy split | 124 Control + 266 Structure | i6 / w6 / K32 per type (64 total) | `taxonomy/a_next_window_full_taxonomy_split_i6_w6_k32_per_type_4gpu_b255.yaml` |
@@ -316,7 +318,7 @@ to 1 for all existing profiles and is checkpointed to reject resume mismatches.
 | 5 (4 + 1) | 256 | [5-GPU config](taxonomy/top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_lossratio_alpha1p75_5gpu_4a1t_b256.yaml) |
 | 6 (4 + 2) | 256 | [6-GPU config](taxonomy/top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_lossratio_alpha1p75_6gpu_4a2t_b256.yaml) |
 | 7 (5 + 2) | 255 | [7-GPU config](taxonomy/top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_lossratio_alpha1p75_7gpu_5a2t_b255.yaml) |
-| 8 (6 + 2) | 258 | [8-GPU config](taxonomy/top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_lossratio_alpha1p75_8gpu_6a2t_b258.yaml) |
+| 8 (6 + 2) | 258 | [8-GPU config](taxonomy/top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_lossratio_alpha1p75_8gpu_8c_b256.yaml) |
 
 Use 100G host memory per allocated GPU when submitting. Resource profiles
 retain 70 training steps; calibration to applied step 60 does not shorten training.
@@ -333,9 +335,9 @@ Additional FullTaxonomy examples:
 ```bash
 GPU_IDS=0,1,2,3,4,5 bash start.sh --local --config configs/token_selection/math/taxonomy/top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_6gpu_4a2t_b256.yaml
 GPU_IDS=0,1,2,3,4,5,6 bash start.sh --local --config configs/token_selection/math/taxonomy/top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_7gpu_5a2t_b255.yaml
-GPU_IDS=0,1,2,3,4,5,6,7 bash start.sh --local --config configs/token_selection/math/taxonomy/top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_8gpu_6a2t_b258.yaml
+GPU_IDS=0,1,2,3,4,5,6,7 bash start.sh --local --config configs/token_selection/math/taxonomy/top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_8gpu_8c_b256.yaml
 
 GPU_IDS=0,1,2,3,4,5 bash start.sh --local --config configs/token_selection/math/taxonomy/top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_6gpu_4a2t_b256.yaml
 GPU_IDS=0,1,2,3,4,5,6 bash start.sh --local --config configs/token_selection/math/taxonomy/top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_7gpu_5a2t_b255.yaml
-GPU_IDS=0,1,2,3,4,5,6,7 bash start.sh --local --config configs/token_selection/math/taxonomy/top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_8gpu_6a2t_b258.yaml
+GPU_IDS=0,1,2,3,4,5,6,7 bash start.sh --local --config configs/token_selection/math/taxonomy/top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_8gpu_8c_b256.yaml
 ```

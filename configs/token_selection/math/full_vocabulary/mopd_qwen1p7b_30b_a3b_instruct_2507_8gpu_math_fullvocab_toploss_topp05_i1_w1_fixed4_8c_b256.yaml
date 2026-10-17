@@ -1,0 +1,84 @@
+# 2026-10-15 author request: 8-GPU colocated (actor, vLLM rollout and FSDP-8 teacher share all 8 GPUs); teacher batching, fused statistics, compact ids and batched reward on.
+# Eight-GPU Math-only full-tokenizer-vocabulary ablation.
+# Topology: six Student actor/rollout workers plus two FSDP-sharded Teacher
+# workers. The step-t Top-Loss Top-P=5% selection applies from step t+1.
+extends: ../taxonomy/_common.yaml
+
+runtime:
+  slurm_allocation_gpus: 8
+  wandb_run_id: q1p7b-math-fullvocab-tl-p05-i1w1-w4-8g8c-b256-s70
+  wandb_resume: never
+
+data:
+  # 258 is the nearest global batch to 256 that is divisible by six actors.
+  train_batch_size: 256
+
+actor:
+  ppo_mini_batch_size: 256
+
+worker_placement:
+  separate_ref_policy: false
+  actor_rollout: {n_gpus_per_node: 8, nnodes: 1}
+  ref_policy: {n_gpus_per_node: null, nnodes: null, process_on_nodes: null}
+
+extra_overrides:
+- custom_reward_function.path=mopd_verl/mixed_reward.py
+- custom_reward_function.name=compute_score_batched
+- reward_model.reward_manager=batch
+- trainer.resume_mode=disable
+- actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+- actor_rollout_ref.ref.fsdp_config.fsdp_size=8
+audit:
+  domains: [math]
+  loss_variance_signal: opd_loss_token
+  control_token_loss_weighting_enabled: true
+  control_token_loss_weight: 4.0
+  control_token_ids: []
+  domain_control_token_ids: {}
+  control_token_candidate_ids: []
+  domain_control_token_candidate_ids: {}
+  domain_control_token_candidate_groups: {}
+  control_token_online_candidate_scope: full_vocabulary
+  # null means infer len(tokenizer); model embeddings must cover that range.
+  control_token_online_candidate_vocab_size: null
+  control_token_normalize_per_domain: true
+  control_token_online_selection_enabled: true
+  control_token_online_audit_interval_steps: 1
+  control_token_online_window_steps: 1
+  control_token_online_min_mean_occurrences_per_step: 20.0
+  control_token_online_strict_occurrence_gate: true
+  control_token_online_top_k: 30
+  control_token_online_top_k_per_group: null
+  control_token_online_budget_mode: top_p
+  control_token_online_top_p: 0.05
+  control_token_online_top_p_by_domain: {}
+  control_token_online_selection_mode: top_loss
+  control_token_online_selection_mode_by_domain: {}
+  control_token_online_weight_mode: fixed
+  control_token_online_weight_mode_by_domain: {}
+  output_dir: audit/q1p7b-math-fullvocab-tl-p05-i1w1-w4-8g8c-b256-s70
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-fullvocab-tl-p05-i1w1-w4-8g8c-b256-s70
+
+huggingface_checkpoint:
+  enabled: true
+  steps: [55, 60, 65]
+  repo_id: icemoon28/opd-checkpoints
+  private: false
+  path_prefix: checkpoints/math/q1p7b-math-fullvocab-tl-p05-i1w1-w4-8g8c-b256-s70
+  token_env_var: HF_TOKEN
+
+trainer:
+  experiment_name: q1p7b-math-fullvocab-tl-p05-i1w1-w4-8g8c-b256-s70
+  n_gpus_per_node: 8
+  total_training_steps: 65
+  default_local_dir: checkpoints/MOPD/q1p7b-math-fullvocab-tl-p05-i1w1-w4-8g8c-b256-s70
+# 2026-10-15 speed/robustness update: fused teacher statistics, compact Top-K ids,
+# batched reward grader (spawn pool, 120 s hard timeout; timed-out samples score 0).
+teacher_performance:
+  fused_statistics: true
+  compact_topk_ids: true
+  enabled: true
+rollout:
+  gpu_memory_utilization: 0.6

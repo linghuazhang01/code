@@ -110,8 +110,7 @@ def test_profile_contract(gpus: int, tmp_path: Path) -> None:
     assert f"actor_rollout_ref.ref.fsdp_config.fsdp_size={gpus}" in config.extra_overrides
     assert config.teacher_performance.enabled is True
     assert config.data.train_batch_size % gpus == 0
-    # The 4-GPU server run shares GPU 0 with another process, so it reserves less vLLM memory.
-    assert config.rollout.gpu_memory_utilization == (0.6 if gpus == 4 else 0.75)
+    assert config.rollout.gpu_memory_utilization == 0.6
     assert config.teacher_performance.fused_statistics is (gpus == 4)
     assert config.teacher_performance.compact_topk_ids is (gpus == 4)
 
@@ -121,7 +120,7 @@ def test_profile_contract(gpus: int, tmp_path: Path) -> None:
 
 
 def test_math_pool_is_the_best_runs_math_pool() -> None:
-    best = load_config(CONFIGS / "mopd_math_code_toploss_m05_c01_code_structure_fixed4_8gpu_6s2t.yaml")
+    best = load_config(CONFIGS / "mopd_math_code_toploss_m05_c01_code_structure_fixed4_8gpu_8c.yaml")
     expected = set(best.audit.domain_control_token_candidate_ids["math"])
     math, _ = _pools(load_config(_path(4)))
     assert math == expected and len(expected) == 390

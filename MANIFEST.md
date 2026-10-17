@@ -19,22 +19,22 @@
 | 2026-08-26 22:51 | /experiment-plan | configs/baselines/math/opd_5gpu_b256.yaml | implementation | Math-only opd 5-GPU batch-256 config |
 | 2026-08-26 22:51 | /experiment-plan | configs/baselines/math/opd_6gpu_b255.yaml | implementation | Math-only opd 6-GPU batch-255 config |
 | 2026-08-26 22:51 | /experiment-plan | configs/baselines/math/opd_7gpu_b258.yaml | implementation | Math-only opd 7-GPU batch-258 config |
-| 2026-08-26 22:51 | /experiment-plan | configs/baselines/math/opd_8gpu_b259.yaml | implementation | Math-only opd 8-GPU batch-259 config |
+| 2026-08-26 22:51 | /experiment-plan | configs/baselines/math/opd_8gpu_b256.yaml | implementation | Math-only opd 8-GPU batch-259 config |
 | 2026-08-26 22:51 | /experiment-plan | configs/baselines/math/fire_opd_4gpu_b255.yaml | implementation | Math-only fire_opd 4-GPU batch-255 config |
 | 2026-08-26 22:51 | /experiment-plan | configs/baselines/math/fire_opd_5gpu_b256.yaml | implementation | Math-only fire_opd 5-GPU batch-256 config |
 | 2026-08-26 22:51 | /experiment-plan | configs/baselines/math/fire_opd_6gpu_b255.yaml | implementation | Math-only fire_opd 6-GPU batch-255 config |
 | 2026-08-26 22:51 | /experiment-plan | configs/baselines/math/fire_opd_7gpu_b258.yaml | implementation | Math-only fire_opd 7-GPU batch-258 config |
-| 2026-08-26 22:51 | /experiment-plan | configs/baselines/math/fire_opd_8gpu_b259.yaml | implementation | Math-only fire_opd 8-GPU batch-259 config |
+| 2026-08-26 22:51 | /experiment-plan | configs/baselines/math/fire_opd_8gpu_b256.yaml | implementation | Math-only fire_opd 8-GPU batch-259 config |
 | 2026-08-26 22:51 | /experiment-plan | configs/baselines/math/tip_topk32_4gpu_b255.yaml | implementation | Math-only tip_topk32 4-GPU batch-255 config |
 | 2026-08-26 22:51 | /experiment-plan | configs/baselines/math/tip_topk32_5gpu_b256.yaml | implementation | Math-only tip_topk32 5-GPU batch-256 config |
 | 2026-08-26 22:51 | /experiment-plan | configs/baselines/math/tip_topk32_6gpu_b255.yaml | implementation | Math-only tip_topk32 6-GPU batch-255 config |
 | 2026-08-26 22:51 | /experiment-plan | configs/baselines/math/tip_topk32_7gpu_b258.yaml | implementation | Math-only tip_topk32 7-GPU batch-258 config |
-| 2026-08-26 22:51 | /experiment-plan | configs/baselines/math/tip_topk32_8gpu_b259.yaml | implementation | Math-only tip_topk32 8-GPU batch-259 config |
+| 2026-08-26 22:51 | /experiment-plan | configs/baselines/math/tip_topk32_8gpu_b256.yaml | implementation | Math-only tip_topk32 8-GPU batch-259 config |
 | 2026-08-26 22:51 | /experiment-plan | configs/baselines/math/eopd_4gpu_b255.yaml | implementation | Math-only eopd 4-GPU batch-255 config |
 | 2026-08-26 22:51 | /experiment-plan | configs/baselines/math/eopd_5gpu_b256.yaml | implementation | Math-only eopd 5-GPU batch-256 config |
 | 2026-08-26 22:51 | /experiment-plan | configs/baselines/math/eopd_6gpu_b255.yaml | implementation | Math-only eopd 6-GPU batch-255 config |
 | 2026-08-26 22:51 | /experiment-plan | configs/baselines/math/eopd_7gpu_b258.yaml | implementation | Math-only eopd 7-GPU batch-258 config |
-| 2026-08-26 22:51 | /experiment-plan | configs/baselines/math/eopd_8gpu_b259.yaml | implementation | Math-only eopd 8-GPU batch-259 config |
+| 2026-08-26 22:51 | /experiment-plan | configs/baselines/math/eopd_8gpu_b256.yaml | implementation | Math-only eopd 8-GPU batch-259 config |
 | 2026-08-26 22:51 | /experiment-plan | tests/test_math_baseline_configs.py | implementation | 20 个 Math baseline configs 的资源、数据、方法与唯一性回归测试 |
 | 2026-08-31 02:32 | /experiment-plan | refine-logs/EXPERIMENT_PLAN_20260831_023212.md | implementation | Small VR 与 Surface domaincand pool 的公平 ablation 计划 |
 | 2026-08-31 02:32 | /experiment-plan | refine-logs/EXPERIMENT_PLAN.md | implementation | latest copy |
@@ -92,7 +92,7 @@
 
 
 ## 2026-09-07 Final V3 Top-Loss Fixed4 (supersedes added selectors)
-- Config: `configs/token_selection/math/top32kl_next_step_expanded_pruned_v3_unified_topp0p075_i1_w1_fixed4_8gpu_6a2t_b258.yaml`
+- Config: `configs/token_selection/math/top32kl_next_step_expanded_pruned_v3_unified_topp0p075_i1_w1_fixed4_8gpu_8c_b256.yaml`
 - Verification/prompt: `plan/v3-toploss-fixed4-20260907/`; 50 tests passed.
 - Removed uncommitted ratio/lottery helper/tests/configs; production source restored to HEAD29ad9e6.
 

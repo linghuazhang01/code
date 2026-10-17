@@ -9,7 +9,7 @@ Usage:
   ./slurm.sh <config[::profile]> [--dry-run|--check-only]
 
 Examples:
-  ./slurm.sh code/configs/mopd_qwen1p7b_30b_a3b_instruct_2507_6gpu_math_code_science_topk32_baseline_525.yaml
+  ./slurm.sh code/configs/qwen4b_suite/math/opd_3gpu_3c.yaml
   ./slurm.sh configs/mopd_formal_audit_all_2gpu.yaml
   ./slurm.sh test_grad_configs/mopd_grad_reliability_qwen0p6b_8b_matrix.yaml::aw2_fsdp2_audit_on
 

@@ -26,8 +26,8 @@ def test_invalid_tuning_fails_before_launch(values: dict) -> None:
 
 
 def test_teacher_settings_reach_ref_without_changing_actor() -> None:
-    config = load_config("configs/token_selection/math/v3/"
-        "top32kl_next_step_expanded_pruned_v3_unified_topp0p05_i1_w1_lossratio_5gpu_4a1t_b256_r20260907.yaml")
+    config = load_config("configs/token_selection/math/full_vocabulary/"
+        "mopd_qwen1p7b_30b_a3b_instruct_2507_4gpu_math_fullvocab_toploss_topp05_fixed4_b256_colocated_s60.yaml")
     overrides = build_overrides(config)
     assert "actor_rollout_ref.rollout.enforce_eager=False" in overrides
     assert "actor_rollout_ref.rollout.max_num_seqs=64" in overrides

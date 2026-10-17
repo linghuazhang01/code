@@ -189,4 +189,4 @@ trainer:
   total_training_steps: 60
   default_local_dir: checkpoints/MOPD/q1p7b-8g-mcs-code-structonly-toploss-topp05-fixed4-b528-s60-8c
 rollout:
-  gpu_memory_utilization: 0.75
+  gpu_memory_utilization: 0.6

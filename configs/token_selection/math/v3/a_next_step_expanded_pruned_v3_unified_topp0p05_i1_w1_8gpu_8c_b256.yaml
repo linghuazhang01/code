@@ -1,0 +1,56 @@
+# 2026-10-15 author request: 8-GPU colocated (actor, vLLM rollout and FSDP-8 teacher share all 8 GPUs); teacher batching, fused statistics, compact ids and batched reward on.
+# Eight-GPU Top-P=0.05 overlay for the ExpandedPruned-V3 Math next-step selector.
+# The selector ranks the unified 115-token candidate pool by Metric A, then
+# keeps the smallest prefix covering at least 5% of valid-token occurrences.
+extends: a_next_step_expanded_pruned_v3_unified_i1_w1_k25_8gpu_8c_b256.yaml
+
+audit:
+  output_dir: audit/q1p7b-math-a-ns-v3-u-topp0p05-i1w1-8gpu-8c-b256
+  control_token_online_budget_mode: top_p
+  control_token_online_top_p: 0.05
+  control_token_online_top_k_per_group: null
+
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-a-ns-v3-u-topp0p05-i1w1-8gpu-8c-b256
+
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-a-ns-v3-u-topp0p05-i1w1-8gpu-8c-b256
+
+trainer:
+  experiment_name: q1p7b-math-a-ns-v3-u-topp0p05-i1w1-8gpu-8c-b256
+  default_local_dir: checkpoints/MOPD/q1p7b-math-a-ns-v3-u-topp0p05-i1w1-8gpu-8c-b256
+
+  n_gpus_per_node: 8
+runtime:
+  wandb_run_id: q1p7b-math-a-ns-v3-u-topp0p05-i1w1-8gpu-8c-b256
+# 2026-10-15 speed/robustness update: fused teacher statistics, compact Top-K ids,
+# batched reward grader (spawn pool, 120 s hard timeout; timed-out samples score 0).
+  slurm_allocation_gpus: 8
+extra_overrides:
+- custom_reward_function.path=mopd_verl/mixed_reward.py
+- custom_reward_function.name=compute_score_batched
+- reward_model.reward_manager=batch
+- +custom_reward_function.reward_kwargs.max_workers=32
+- +custom_reward_function.reward_kwargs.batch_timeout_seconds=120.0
+- trainer.resume_mode=disable
+- actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+- actor_rollout_ref.ref.fsdp_config.fsdp_size=8
+teacher_performance:
+  fused_statistics: true
+  compact_topk_ids: true
+  enabled: true
+data:
+  train_batch_size: 256
+actor:
+  ppo_mini_batch_size: 256
+rollout:
+  gpu_memory_utilization: 0.6
+worker_placement:
+  separate_ref_policy: false
+  actor_rollout:
+    n_gpus_per_node: 8
+    nnodes: 1
+  ref_policy:
+    n_gpus_per_node: null
+    nnodes: null
+    process_on_nodes: null

@@ -14,13 +14,11 @@ from mopd_verl.domain_gradient.control_selection_scoring import (
 from mopd_verl.domain_gradient.control_selection_types import SelectedControlToken
 from mopd_verl.domain_gradient.current_step_selection import select_current_step
 from mopd_verl.domain_gradient.occurrence import Position
-from mopd_verl.launch import build_command
 from mopd_verl.settings import load_config
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIGS = ROOT / "configs/token_selection/math_code/taxonomy"
-BASE = CONFIGS / "mopd_math_code_toploss_m05_c01_math_control_code_progvocab_fixed4_3student_1teacher.yaml"
-ALL = CONFIGS / "mopd_math_code_toploss_all_math_control_code_progvocab_fixed4_3student_1teacher.yaml"
+BASE = CONFIGS / "mopd_math_code_toploss_m05_c01_math_control_code_progvocab_fixed4_8gpu_8c.yaml"
 
 
 def _ranked(n: int) -> tuple[SelectedControlToken, ...]:
@@ -72,22 +70,6 @@ def test_current_step_fraction_one_selects_every_gated_candidate() -> None:
         2, False, unit="token_id", head_modes={"math": "top_loss"}, tail_mode="bottom_loss",
     )
     assert gated.head == {"math": frozenset({(300,), (302,)})}
-
-
-def test_all_config_extends_base_and_only_changes_budget_and_names() -> None:
-    base = load_config(BASE)
-    cfg = load_config(ALL)
-    assert base.audit.control_token_online_budget_mode == "top_p"
-    assert cfg.audit.control_token_online_budget_mode == "all"
-    assert cfg.audit.domain_control_token_candidate_ids == base.audit.domain_control_token_candidate_ids
-    assert cfg.audit.control_token_loss_weight == base.audit.control_token_loss_weight
-    assert cfg.audit.control_token_online_selection_timing == base.audit.control_token_online_selection_timing
-    assert cfg.audit.control_token_online_min_mean_occurrences_per_step == (
-        base.audit.control_token_online_min_mean_occurrences_per_step
-    )
-    assert cfg.trainer.experiment_name == "q1p7b3s1t-mc-tl-all-mctrl-cprog-f4-b528-s60"
-    command = build_command(cfg)
-    assert "+mopd_audit.control_token_online_budget_mode=all" in command
 
 
 def test_unknown_budget_mode_is_rejected(tmp_path: Path) -> None:

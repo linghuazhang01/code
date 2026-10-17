@@ -92,7 +92,7 @@ rollout:
   tensor_model_parallel_size: 1
   name: vllm
   mode: sync
-  gpu_memory_utilization: 0.75
+  gpu_memory_utilization: 0.6
   enforce_eager: false
   enable_chunked_prefill: false
   n: 1

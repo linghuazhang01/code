@@ -602,7 +602,7 @@ W&B最新batch summary字段写入后未能独立读回；当前有效设置以f
 ## 2026-09-07 18:41：按用户要求撤除ratio排序，回到原Top-Loss
 
 - 用户明确只按平均loss排序。撤除新增top_loss_ratio helper/校验/排序接线和2专项tests，5个生产文件经diff核对还原到HEAD29ad9e6；当前生产源码无未提交diff。lottery也已撤除。
-- 最终config：`configs/token_selection/math/top32kl_next_step_expanded_pruned_v3_unified_topp0p075_i1_w1_fixed4_8gpu_6a2t_b258.yaml`；run=`q1p7b-math-top32kl-v3-topp075-w4-8g6a2t-b258`。V3115候选、top_loss、TopP0.075、Fixed4（raw4/1后原domain归一化）、i1w1/>20、6a2t/b258及性能参数保留。
+- 最终config：`configs/token_selection/math/top32kl_next_step_expanded_pruned_v3_unified_topp0p075_i1_w1_fixed4_8gpu_8c_b256.yaml`；run=`q1p7b-math-top32kl-v3-topp075-w4-8g6a2t-b258`。V3115候选、top_loss、TopP0.075、Fixed4（raw4/1后原domain归一化）、i1w1/>20、6a2t/b258及性能参数保留。
 - 精确V3 ID/hash与启动参数核验通过，50项原selector/V3回归通过，git diff检查通过。文档已替换错误方案；旧plan标记superseded；HF补传prompt继续保留，未上传/启动GPU/commit/push。
 
 

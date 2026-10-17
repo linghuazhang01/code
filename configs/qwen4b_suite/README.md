@@ -33,16 +33,15 @@ extend `math_code/sapd_{topology}.yaml` and change only
 `control_token_online_selection_timing: current_step` plus
 `control_token_online_selection_unit: occurrence` (S9, one candidate position at a time,
 budget filled exactly) or `token_id` (S9-ID, whole IDs), and the run names
-`q4b-mc-{sapdpos|sapdcsid}-{3g3c|4g3s1t|8g6s2t}-b528-s42`. Both run one extra
+`q4b-mc-{sapdpos|sapdcsid}-{3g3c|4g3s1t|8g8c}-b528-s42`. Both run one extra
 no-grad student prepass per step. Contract test: `tests/test_current_step_position_budget.py`.
 
 ## Topologies
 
 | Suffix | GPUs | Layout | Math batch | Math+Code batch | ref FSDP | vLLM mem |
 |---|---:|---|---:|---:|---:|---:|
-| `3gpu_3c` | 3 | actor + rollout + teacher colocated on all three GPUs | 255 = 3 x 85 | 528 = 3 x 176 | 3 | 0.40 |
-| `4gpu_3s1t` | 4 | 3 actor/rollout + 1 dedicated teacher (paper Math-only / 3s1t) | 255 = 3 x 85 | 528 = 3 x 176 | 1 | 0.60 |
-| `8gpu_6s2t` | 8 | 6 actor/rollout + 2 dedicated teacher ranks (paper Math+Code) | 258 = 6 x 43 | 528 = 6 x 88 | 2 | 0.60 |
+| `3gpu_3c` | 3 | actor + rollout + teacher colocated on all three GPUs | 255 = 3 x 85 | 528 = 3 x 176 | 3 | 0.60 |
+| `8gpu_8c` | 8 | actor + rollout + FSDP-8 teacher colocated on all eight GPUs (formerly `8gpu_6s2t`) | 256 = 8 x 32 | 528 = 8 x 66 | 8 | 0.60 |
 
 Notes on the budget:
 
@@ -67,20 +66,20 @@ Notes on the budget:
 
 ```bash
 # resolve and print the command without starting anything
-bash scripts/run_mopd.sh configs/qwen4b_suite/math/sapd_4gpu_3s1t.yaml --dry-run
+bash scripts/run_mopd.sh configs/qwen4b_suite/math/sapd_3gpu_3c.yaml --dry-run
 ```
 
 ```bash
 # local launch on an allocated set of GPUs
-GPU_IDS=0,1,2,4 bash start.sh --local --config configs/qwen4b_suite/math_code/sapd_4gpu_3s1t.yaml
+GPU_IDS=0,1,2 bash start.sh --local --config configs/qwen4b_suite/math_code/sapd_3gpu_3c.yaml
 ```
 
 ```bash
 # Slurm
-bash scripts/run_mopd.sh configs/qwen4b_suite/math_code/opd_8gpu_6s2t.yaml --slurm --slurm-args "--mem=800G"
+bash scripts/run_mopd.sh configs/qwen4b_suite/math_code/opd_8gpu_8c.yaml --slurm --slurm-args "--mem=800G"
 ```
 
-Run names follow `q4b-{math|mc}-{method}-{3g3c|4g3s1t|8g6s2t}-b{batch}-s42`
+Run names follow `q4b-{math|mc}-{method}-{3g3c|4g3s1t|8g8c}-b{batch}-s42`
 and are unique across audit, checkpoint, HF and W&B paths. All 42 files resolve
 with `mopd_verl.config_profiles.load_raw_config`; the resolved SAPD/EOPD/ExOPD
 files differ from their 1.7B counterparts only in student path, batch (Math+Code),
@@ -92,4 +91,10 @@ At the author's request every `*_8gpu_6s2t.yaml` here now runs colocated on eigh
 
 ## 2026-10-17 Math+Code OPD with per-token logging
 
-`math_code/opd_toklog_{3gpu_3c,4gpu_3s1t,8gpu_6s2t}.yaml` extend the plain `opd_*` files of the same topology and only add the per-token audit block (token gap / entropy / logp vectors, response records, per-response loss) and `-toklog-` run names `q4b-mc-opd-toklog-{3g3c,4g3s1t,8g8c}-b528-s42`. Training is identical to the plain run. The 1.7B counterparts at batch 528 are in `../qwen1p7b_suite/math_code/`.
+`math_code/opd_toklog_{3gpu_3c,8gpu_8c}.yaml` extend the plain `opd_*` files of the same topology and only add the per-token audit block (token gap / entropy / logp vectors, response records, per-response loss) and `-toklog-` run names `q4b-mc-opd-toklog-{3g3c,4g3s1t,8g8c}-b528-s42`. Training is identical to the plain run. The 1.7B counterparts at batch 528 are in `../qwen1p7b_suite/math_code/`.
+
+## 2026-10-17 File names and vLLM memory
+
+Every former `*_8gpu_6s2t.yaml` is now `*_8gpu_8c.yaml`, so the name matches the colocated layout set on 2026-10-15; contents, run names and paths are unchanged. `rollout.gpu_memory_utilization` is 0.60 in every file of this suite (`3gpu_3c` was 0.40).
+
+The `4gpu_3s1t` files (3 actor GPUs + 1 dedicated teacher) were removed the same day under the colocated-only rule; see `analysis/config-cleanup-20261017/`. Run names that mention `4g3s1t` above refer to runs trained before.

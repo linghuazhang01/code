@@ -1,5 +1,7 @@
 # Math-only OPD baselines (4-8 GPUs, global batch approximately 256)
 
+> 2026-10-17: dedicated-teacher configs were removed (colocated-only rule, OPD/CLAUDE.md). Only the colocated `*_8gpu_b256.yaml` files remain here; files named below that no longer exist are listed in `analysis/config-cleanup-20261017/delete_list.txt` and can be restored with `git checkout 9b61fd9 -- <path>`.
+
 These configs compare four full-matrix baselines at two student scales, plus a
 targeted four-GPU ExOPD baseline, using the same Math data,
 Qwen3-30B-A3B-Instruct-2507 teacher, optimizer, rollout, evaluation protocol,
@@ -54,15 +56,15 @@ teacher/student topology; scaling its cached full-vocabulary logits by about
 ```bash
 # Validate the Qwen3-1.7B variant.
 bash scripts/run_mopd.sh \
-  configs/baselines/math/opd_5gpu_b256.yaml --dry-run
+  configs/baselines/math/opd_8gpu_b256.yaml --dry-run
 
 # Validate the matching Qwen3-4B variant.
 bash scripts/run_mopd.sh \
-  configs/baselines/math/qwen4b/opd_5gpu_b256.yaml --dry-run
+  configs/baselines/math/qwen4b/opd_8gpu_b256.yaml --dry-run
 
 # Submit one Qwen3-4B run through Slurm.
 bash scripts/run_mopd.sh \
-  configs/baselines/math/qwen4b/fire_opd_8gpu_b259.yaml --slurm
+  configs/baselines/math/qwen4b/fire_opd_8gpu_b256.yaml --slurm
 ```
 
 All 41 user-facing configs follow `{method}_{gpu_count}gpu_b{batch}.yaml`

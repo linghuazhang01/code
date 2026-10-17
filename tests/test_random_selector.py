@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,7 +13,6 @@ import yaml
 import test_domain_gradient_optimization_contracts as contracts
 from test_loss_ratio_alpha import _meta
 from mopd_verl.audit_io import step_jsonl_dir
-from mopd_verl.domain_gradient.config import DomainGradientConfig
 from mopd_verl.domain_gradient.control_selection_scoring import random_selection_rank
 from mopd_verl.domain_gradient.control_top_loss import (
     OnlineControlSelectionState,
@@ -24,31 +22,12 @@ from mopd_verl.domain_gradient.control_top_loss import (
 from mopd_verl.domain_gradient.control_top_loss_runtime import (
     global_candidate_loss_statistics_with_valid_counts as aggregate,
 )
-from mopd_verl.launch import build_command
 from mopd_verl.settings import load_config
-from mopd_verl.verl_audit import MOPDAuditLogger
 
 
 ROOT = Path(__file__).resolve().parents[1]
 TAXONOMY = ROOT / "configs/token_selection/math/taxonomy"
-CONFIG = (
-    TAXONOMY
-    / "random_next_step_full_taxonomy_unified_topp0p05_i1_w1_fixed4_5gpu_4a1t_b256.yaml"
-)
 BASE = TAXONOMY / "top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_5gpu_b256.yaml"
-CONFIG_4GPU = (
-    TAXONOMY
-    / "random_next_step_full_taxonomy_unified_topp0p05_i1_w1_fixed4_4gpu_3a1t_b255.yaml"
-)
-BASE_4GPU = (
-    TAXONOMY
-    / "top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_4gpu_3a1t_b255_r20260911.yaml"
-)
-CONFIG_FULL_VOCAB = (
-    ROOT
-    / "configs/token_selection/math/full_vocabulary"
-    / "mopd_qwen1p7b_30b_a3b_instruct_2507_4gpu_math_fullvocab_random_topp05_fixed4_3a1t_b255.yaml"
-)
 MODE = "random"
 # Eight eligible IDs of 30 occurrences each plus one ID below the >20 gate.
 IDS = tuple(range(100, 108))
@@ -230,102 +209,21 @@ def test_random_order_covers_every_observed_id_under_full_vocabulary_scope() -> 
         assert outcome.domain_results[0].eligible_token_count == 2
 
 
-def test_full_vocabulary_config_only_drops_the_candidate_pool() -> None:
-    pool, full = load_config(CONFIG_4GPU), load_config(CONFIG_FULL_VOCAB)
-    run = full.runtime.wandb_run_id
-    assert run != pool.runtime.wandb_run_id and len(run) <= 64
-    expected = asdict(pool)
-    expected["audit"].update(
-        control_token_online_candidate_scope="full_vocabulary",
-        domain_control_token_candidate_groups={},
-        output_dir=f"audit/{run}",
-    )
-    expected["runtime"]["wandb_run_id"] = run
-    expected["paper_eval"]["output_dir"] = f"eval_outputs/paper_suite/{run}"
-    expected["huggingface_checkpoint"]["path_prefix"] = f"checkpoints/math/{run}"
-    expected["trainer"].update(
-        experiment_name=run, default_local_dir=f"checkpoints/MOPD/{run}"
-    )
-    assert asdict(full) == expected
-    assert full.trainer.save_freq == 1 and full.trainer.max_actor_ckpt_to_keep == 2
-    assert full.audit.control_token_online_selection_mode == MODE
-    assert full.audit.control_token_online_candidate_vocab_size is None
-    assert not full.audit.control_token_candidate_ids
-    assert not full.audit.domain_control_token_candidate_ids
-    command = build_command(full)
-    assert "+mopd_audit.control_token_online_candidate_scope=full_vocabulary" in command
-    assert "+mopd_audit.control_token_online_selection_mode=random" in command
-    assert "trainer.total_training_steps=65" in command
-
-
 def test_random_rejects_current_step_timing(tmp_path: Path) -> None:
     path = tmp_path / "invalid.yaml"
     path.write_text(
         yaml.safe_dump(
             {
-                "extends": str(CONFIG),
-                "audit": {"control_token_online_selection_timing": "current_step"},
+                "extends": str(BASE),
+                "audit": {
+                    "control_token_online_selection_mode": MODE,
+                    "control_token_online_selection_timing": "current_step",
+                },
             }
         )
     )
     with pytest.raises(ValueError, match="current-step"):
         load_config(path)
-
-
-@pytest.mark.parametrize(
-    "config_path,base_path,batch,gpus,save_freq,kept",
-    [(CONFIG, BASE, 256, 5, 1, 4), (CONFIG_4GPU, BASE_4GPU, 255, 4, 1, 2)],
-)
-def test_ablation_config_only_changes_selector_and_identities(
-    config_path: Path,
-    base_path: Path,
-    batch: int,
-    gpus: int,
-    save_freq: int,
-    kept: int,
-    tmp_path: Path,
-) -> None:
-    base, cfg = load_config(base_path), load_config(config_path)
-    run = cfg.runtime.wandb_run_id
-    assert run != base.runtime.wandb_run_id and len(run) <= 64
-    expected = asdict(base)
-    expected["audit"].update(
-        control_token_online_selection_mode=MODE, output_dir=f"audit/{run}"
-    )
-    expected["runtime"]["wandb_run_id"] = run
-    expected["paper_eval"]["output_dir"] = f"eval_outputs/paper_suite/{run}"
-    expected["huggingface_checkpoint"]["path_prefix"] = f"checkpoints/math/{run}"
-    expected["trainer"].update(
-        experiment_name=run,
-        default_local_dir=f"checkpoints/MOPD/{run}",
-        save_freq=save_freq,
-        max_actor_ckpt_to_keep=kept,
-    )
-    assert asdict(cfg) == expected
-    assert cfg.audit.control_token_online_budget_mode == "top_p"
-    assert cfg.audit.control_token_online_top_p == 0.05
-    assert cfg.audit.control_token_online_weight_mode == "fixed"
-    assert cfg.audit.control_token_loss_weight == 4
-    assert cfg.audit.control_token_normalize_per_domain
-    assert cfg.audit.control_token_online_selection_timing == "next_step"
-    assert cfg.data.train_batch_size == cfg.actor.ppo_mini_batch_size == batch
-    assert cfg.runtime.slurm_allocation_gpus == gpus
-    assert cfg.worker_placement.actor_rollout.n_gpus_per_node == gpus - 1
-    assert cfg.worker_placement.ref_policy.n_gpus_per_node == 1
-    assert cfg.trainer.total_training_steps <= 65
-    assert not cfg.huggingface_checkpoint.private
-    command = build_command(cfg)
-    overrides = [a for a in command if a.startswith("+mopd_audit.")]
-    audit_cfg = {
-        key.removeprefix("+mopd_audit."): yaml.safe_load(value)
-        for key, value in (a.split("=", 1) for a in overrides)
-    }
-    audit_cfg["output_dir"] = str(tmp_path)
-    logger = MOPDAuditLogger({"mopd_audit": audit_cfg})
-    meta = logger.full_gradient_meta("train", 1)["mopd_full_gradient"]
-    assert (
-        DomainGradientConfig.from_meta(meta).control_token_online_selection_mode == MODE
-    )
 
 
 def test_random_audit_applies_fixed4_next_step_and_survives_resume(

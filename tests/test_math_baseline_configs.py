@@ -14,11 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = ROOT / "configs" / "baselines" / "math"
 QWEN4B_CONFIG_DIR = CONFIG_DIR / "qwen4b"
 GPU_PROFILES = {
-    4: (3, 255),
-    5: (4, 256),
-    6: (5, 255),
-    7: (6, 258),
-    8: (7, 259),
+    8: (8, 256),
 }
 METHODS = ("opd", "fire_opd", "tip_topk32", "eopd")
 MODEL_VARIANTS = {
@@ -35,7 +31,7 @@ LEGACY_MATH_CONFIGS = (
     "mopd_qwen4b_30b_a3b_instruct_2507_6gpu_math.yaml",
     "mopd_qwen4b_30b_a3b_instruct_2507_8gpu_math.yaml",
 )
-TARGETED_MATH_CONFIGS = ("exopd_4gpu_b255.yaml",)
+TARGETED_MATH_CONFIGS: tuple[str, ...] = ()
 SCALE_SPECIFIC_CONFIG_FIELDS = {
     "audit.output_dir",
     "huggingface_checkpoint.path_prefix",
@@ -143,10 +139,11 @@ def test_math_baseline_resource_and_data_contract(
     ]
 
     assert config.runtime.slurm_allocation_gpus == gpu_count
-    assert config.worker_placement.separate_ref_policy
-    assert config.worker_placement.actor_rollout.n_gpus_per_node == actor_gpus
-    assert config.worker_placement.ref_policy.n_gpus_per_node == 1
+    # Teacher and student share every GPU (colocated layout).
+    assert not config.worker_placement.separate_ref_policy
+    assert config.worker_placement.actor_rollout.n_gpus_per_node == actor_gpus == gpu_count
     assert config.trainer.n_gpus_per_node == actor_gpus
+    assert f"actor_rollout_ref.ref.fsdp_config.fsdp_size={gpu_count}" in config.extra_overrides
     assert config.rollout.tensor_model_parallel_size == 1
     assert config.actor.fsdp_size == 1
 
@@ -212,32 +209,6 @@ def test_math_baseline_method_contracts(
     assert eopd.actor.eopd_forward_kl_weight == 1.0
     assert eopd.actor.eopd_topk_k == 16
     assert eopd.rollout_correction.rollout_is is None
-
-
-def test_math_exopd_four_gpu_contract() -> None:
-    config = load_config(CONFIG_DIR / "exopd_4gpu_b255.yaml")
-    command = format_command(build_command(config))
-
-    assert config.data.domain_train_files == {"math": [MATH_TRAIN_FILE]}
-    assert config.data.train_batch_size == 255
-    assert config.actor.ppo_mini_batch_size == 255
-    assert config.runtime.slurm_allocation_gpus == 4
-    assert config.worker_placement.separate_ref_policy
-    assert config.worker_placement.actor_rollout.n_gpus_per_node == 3
-    assert config.worker_placement.ref_policy.n_gpus_per_node == 1
-    assert config.trainer.n_gpus_per_node == 3
-    assert config.rollout.tensor_model_parallel_size == 1
-    assert config.model.gopd_reference_path == "../mopd/models/Qwen3-1.7B"
-    assert config.actor.distill_loss_builder == "exopd"
-    assert config.actor.distill_mode == "chosen_token_policy_gradient"
-    assert config.actor.lambda_vals == 1.25
-    assert not config.actor.topk_distill_enabled
-    assert config.huggingface_checkpoint.steps == HF_CHECKPOINT_STEPS
-    assert config.huggingface_checkpoint.path_prefix.endswith(
-        "qwen1p7b-30b-math-exopd-lambda1p25-4gpu-b255"
-    )
-    assert "policy_loss.distill_loss_builder=exopd" in command
-    assert "policy_loss.lambda_vals=1.25" in command
 
 
 @pytest.mark.parametrize("method", METHODS)

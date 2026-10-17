@@ -62,4 +62,4 @@ extra_overrides:
 - actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
 - actor_rollout_ref.ref.fsdp_config.fsdp_size=8
 rollout:
-  gpu_memory_utilization: 0.75
+  gpu_memory_utilization: 0.6

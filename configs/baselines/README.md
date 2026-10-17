@@ -132,7 +132,7 @@ python -m mopd_verl.launch \
 ## 2026-10-15 speed/robustness update (all 8-GPU profiles)
 
 Every 8-GPU launchable config under `configs/` (baselines, canonical, Math-only
-`*_8gpu_b259`, Math+Code `*_8gpu_6s2t`, token-selection 8-GPU profiles) now sets
+`*_8gpu_b256`, Math+Code `*_8gpu_8c`, token-selection 8-GPU profiles) now sets
 `teacher_performance.fused_statistics: true`, `teacher_performance.compact_topk_ids: true`
 and routes rewards through `custom_reward_function.name=compute_score_batched` +
 `reward_model.reward_manager=batch` (spawn-pool grader with a 120 s hard timeout;
@@ -144,4 +144,4 @@ the largest single speed-up.
 
 ## 2026-10-15 8-GPU colocated (author request)
 
-Every 8-GPU profile that used a dedicated teacher (6 student + 2 teacher, or 7 + 1 for the Math-only `*_8gpu_b259.yaml`) now runs colocated on all eight GPUs: `worker_placement.separate_ref_policy: false`, actor/rollout on 8 GPUs, teacher FSDP size 8, `trainer.n_gpus_per_node: 8`. Teacher batching (`teacher_performance.enabled`), fused statistics, compact Top-K ids and the batched reward grader stay on. vLLM `gpu_memory_utilization` is 0.75 for Qwen3-1.7B and 0.4 for Qwen3-4B (the colocated profiles that already completed). Batches that do not divide by 8 changed: Math 259 -> 256, Math+Code 516 -> 512; 504 and 528 are unchanged. File names keep their old topology tags; run names (`experiment_name`, `wandb_run_id`, checkpoint/audit/eval/HF paths) now say `8c` and the new batch, so no new run writes into an old run's directory. 4/6/7-GPU profiles that inherit from these files keep their previous values.
+Every 8-GPU profile that used a dedicated teacher (6 student + 2 teacher, or 7 + 1 for the Math-only `*_8gpu_b256.yaml` (formerly `*_8gpu_b259.yaml`)) now runs colocated on all eight GPUs: `worker_placement.separate_ref_policy: false`, actor/rollout on 8 GPUs, teacher FSDP size 8, `trainer.n_gpus_per_node: 8`. Teacher batching (`teacher_performance.enabled`), fused statistics, compact Top-K ids and the batched reward grader stay on. vLLM `gpu_memory_utilization` is 0.75 for Qwen3-1.7B and 0.4 for Qwen3-4B (the colocated profiles that already completed). Batches that do not divide by 8 changed: Math 259 -> 256, Math+Code 516 -> 512; 504 and 528 are unchanged. File names keep their old topology tags; run names (`experiment_name`, `wandb_run_id`, checkpoint/audit/eval/HF paths) now say `8c` and the new batch, so no new run writes into an old run's directory. 4/6/7-GPU profiles that inherit from these files keep their previous values.

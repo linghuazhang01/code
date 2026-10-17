@@ -42,7 +42,7 @@ MATH_CONFIG_FILENAMES = (
     "mopd_qwen1p7b_30b_a3b_instruct_2507_4gpu_math_fullvocab_"
     "toploss_topp05_i1_w1_fixed4_b256_colocated.yaml",
     "mopd_qwen1p7b_30b_a3b_instruct_2507_8gpu_math_fullvocab_"
-    "toploss_topp05_i1_w1_fixed4_6a2t_b258.yaml",
+    "toploss_topp05_i1_w1_fixed4_8c_b256.yaml",
 )
 
 

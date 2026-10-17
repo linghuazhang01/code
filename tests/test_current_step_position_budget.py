@@ -34,11 +34,11 @@ UNITS = {"position": "occurrence", "idunit": "token_id", "sapd_pos": "occurrence
 PROFILES = [
     (TAXONOMY / NEW.format(arm, topo), TAXONOMY / PAPER.format(topo), UNITS[arm])
     for arm in ("position", "idunit")
-    for topo in ("8gpu_6s2t", "4gpu", "3student_1teacher")
+    for topo in ("8gpu_8c", "4gpu")
 ] + [
     (SUITE / f"{arm}_{topo}.yaml", SUITE / f"sapd_{topo}.yaml", UNITS[arm])
     for arm in ("sapd_pos", "sapd_csid")
-    for topo in ("3gpu_3c", "4gpu_3s1t", "8gpu_6s2t")
+    for topo in ("3gpu_3c", "8gpu_8c")
 ]
 SELECTION_ARGS = (
     "+mopd_audit.control_token_online_selection_timing=",

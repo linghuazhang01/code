@@ -53,7 +53,7 @@ HF_REVISION="e5903df7d42e244bf10e790a1213e3a44ed2a6ce"   # 2026-10-11, after the
 # reference suites) | env var of an optional local copy
 MODELS=(
   "exopd_math|checkpoints/math/qwen1p7b-30b-math-exopd-lambda1p25-4gpu-b255/global_step_60/actor/huggingface|1f8cf3726bbbbaade4e8ffcefa24b6d562ebebd6195998de15104f4991b802ce|EXOPD_MATH_DIR"
-  "tip_mc|checkpoints/baselines/math_code/tip_topk32_rho50_8gpu_6s2t_b516/global_step_60|f3a0e14642ae31b0507c50365d4d0816d9bdef1b8477898571d29684fa80f10d|TIP_MC_DIR"
+  "tip_mc|checkpoints/baselines/math_code/tip_topk32_rho50_8gpu_8c_b512/global_step_60|f3a0e14642ae31b0507c50365d4d0816d9bdef1b8477898571d29684fa80f10d|TIP_MC_DIR"
   "eopd_mc|checkpoints/baselines/math_code/qwen1p7b-30b-math-code-eopd-native-4gpu-colocate-b516-s42/global_step_60|1f7b3213e9944bfa4b0d308241fd16a4d0e344c2b64ceb2bfc68e74dbb6fd1da|EOPD_MC_DIR"
 )
 declare -A JOB_MODEL=([math4:exopd]=exopd_math [mc8:tip]=tip_mc [mc8:eopd]=eopd_mc)

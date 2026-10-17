@@ -99,20 +99,6 @@ CASES = (
 
 TAXONOMY_TOP_P_CASES = (
     TaxonomyTopPCase(
-        "top32kl_next_step_full_taxonomy_split_topp0p01_i1_w1_5gpu_3a2t_b258.yaml",
-        0.01,
-        5,
-        3,
-        258,
-    ),
-    TaxonomyTopPCase(
-        "top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_5gpu_3a2t_b258.yaml",
-        0.1,
-        5,
-        3,
-        258,
-    ),
-    TaxonomyTopPCase(
         "top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_6gpu_4a2t_b256.yaml",
         0.1,
         6,
@@ -120,14 +106,7 @@ TAXONOMY_TOP_P_CASES = (
         256,
     ),
     TaxonomyTopPCase(
-        "top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_7gpu_5a2t_b255.yaml",
-        0.1,
-        7,
-        5,
-        255,
-    ),
-    TaxonomyTopPCase(
-        "top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_8gpu_6a2t_b258.yaml",
+        "top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_8gpu_8c_b256.yaml",
         0.1,
         8,
         6,
@@ -141,14 +120,7 @@ TAXONOMY_TOP_P_CASES = (
         256,
     ),
     TaxonomyTopPCase(
-        "top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_7gpu_5a2t_b255.yaml",
-        0.2,
-        7,
-        5,
-        255,
-    ),
-    TaxonomyTopPCase(
-        "top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_8gpu_6a2t_b258.yaml",
+        "top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_8gpu_8c_b256.yaml",
         0.2,
         8,
         6,
@@ -268,22 +240,6 @@ def test_math_token_selector_supports_top_p_budget(tmp_path: Path) -> None:
     ),
     (
         (
-            "a_next_step_full_taxonomy_split_i3_w1_k21_per_type_4gpu_b255.yaml",
-            3,
-            1,
-            42,
-            21,
-            "top_logp_diff",
-        ),
-        (
-            "a_next_window_full_taxonomy_split_i6_w6_k32_per_type_4gpu_b255.yaml",
-            6,
-            6,
-            64,
-            32,
-            "top_logp_diff",
-        ),
-        (
             "top32kl_next_step_full_taxonomy_split_i1_w1_k21_per_type_4gpu_b255.yaml",
             1,
             1,
@@ -358,78 +314,9 @@ def test_math_full_taxonomy_top_p_five_gpu_contract() -> None:
     ("filename", "top_p"),
     (
         (
-            "top32kl_next_step_full_taxonomy_split_topp0p075_i1_w1_"
-            "5gpu_4a1t_b256.yaml",
-            0.075,
-        ),
-        (
-            "top32kl_next_step_full_taxonomy_split_topp0p15_i1_w1_"
-            "5gpu_4a1t_b256.yaml",
-            0.15,
-        ),
-        (
-            "top32kl_next_step_full_taxonomy_split_topp0p2_i1_w1_"
-            "5gpu_4a1t_b256.yaml",
-            0.2,
-        ),
-    ),
-)
-def test_math_full_taxonomy_top_p_single_teacher_benchmark_contract(
-    filename: str,
-    top_p: float,
-) -> None:
-    config = load_config(_config_path(filename))
-    command = format_command(build_command(config))
-    audit = config.audit
-    run_id = config.runtime.wandb_run_id
-
-    assert config.runtime.slurm_allocation_gpus == 5
-    assert config.data.train_batch_size == 256
-    assert config.actor.ppo_mini_batch_size == 256
-    assert config.worker_placement.separate_ref_policy
-    assert config.worker_placement.actor_rollout.n_gpus_per_node == 4
-    assert config.worker_placement.ref_policy.n_gpus_per_node == 1
-    assert config.trainer.n_gpus_per_node == 4
-    assert config.data.val_files == MATH_VALIDATION_FILES
-    assert config.rollout.val_n == 1
-    assert config.rollout.val_do_sample is False
-    assert config.rollout.val_temperature == 0.0
-    assert config.paper_eval.datasets == [
-        "aime24",
-        "aime25",
-        "hmmt25_feb",
-        "hmmt25_nov",
-    ]
-    assert audit.control_token_online_budget_mode == "top_p"
-    assert audit.control_token_online_top_p == top_p
-    assert audit.control_token_online_top_k_per_group is None
-    assert not audit.control_token_adaptive_neighborhood_enabled
-    assert audit.control_token_loss_weight == 4.0
-    assert audit.control_token_normalize_per_domain
-    assert audit.output_dir == f"audit/{run_id}"
-    assert config.paper_eval.output_dir == f"eval_outputs/paper_suite/{run_id}"
-    assert config.huggingface_checkpoint.path_prefix == f"checkpoints/math/{run_id}"
-    assert config.trainer.experiment_name == run_id
-    assert config.trainer.default_local_dir == f"checkpoints/MOPD/{run_id}"
-    assert f"+mopd_audit.control_token_online_top_p={top_p}" in command
-    assert (
-        "+mopd_audit.control_token_adaptive_neighborhood_enabled=false"
-        in command
-    )
-
-
-@pytest.mark.parametrize(
-    ("filename", "top_p"),
-    (
-        (
             "top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_"
             "lossratio_5gpu_4a1t_b256.yaml",
             0.05,
-        ),
-        (
-            "top32kl_next_step_full_taxonomy_split_topp0p075_i1_w1_"
-            "lossratio_5gpu_4a1t_b256.yaml",
-            0.075,
         ),
     ),
 )
@@ -458,72 +345,6 @@ def test_math_full_taxonomy_loss_ratio_profile_contract(
         "+mopd_audit.control_token_online_weight_mode=loss_ratio" in command
     )
     assert "+mopd_audit.control_token_loss_weight=4.0" in command
-
-
-def test_math_full_taxonomy_top_p_adaptive_neighbor_contract() -> None:
-    config = load_config(
-        _config_path(
-            "top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_"
-            "adaptive_pl_gt1p0_w4_5gpu_b256.yaml"
-        )
-    )
-    command = format_command(build_command(config))
-    audit = config.audit
-
-    assert audit.control_token_online_budget_mode == "top_p"
-    assert audit.control_token_online_top_p == 0.05
-    assert audit.control_token_online_audit_interval_steps == 1
-    assert audit.control_token_online_window_steps == 1
-    assert audit.control_token_adaptive_neighborhood_enabled
-    assert audit.control_token_adaptive_neighborhood_max_distance == 8
-    assert audit.control_token_adaptive_neighborhood_relative_loss_threshold == 1.0
-    assert audit.control_token_adaptive_neighborhood_strict_threshold
-    assert audit.control_token_loss_weight == 4.0
-    assert audit.control_token_normalize_per_domain
-    assert (
-        "+mopd_audit.control_token_adaptive_neighborhood_strict_threshold=true"
-        in command
-    )
-
-
-def test_math_full_taxonomy_top_p_ten_percent_adaptive_neighbor_contract() -> None:
-    config = load_config(
-        _config_path(
-            "top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_"
-            "adaptive_pl_gt1p0_w4_5gpu_3a2t_b258.yaml"
-        )
-    )
-    command = format_command(build_command(config))
-    audit = config.audit
-    run_id = config.runtime.wandb_run_id
-
-    assert config.runtime.slurm_allocation_gpus == 5
-    assert config.data.train_batch_size == 258
-    assert config.actor.ppo_mini_batch_size == 258
-    assert config.worker_placement.actor_rollout.n_gpus_per_node == 3
-    assert config.worker_placement.ref_policy.n_gpus_per_node == 2
-    assert config.rollout.val_n == 4
-    assert audit.control_token_online_budget_mode == "top_p"
-    assert audit.control_token_online_top_p == 0.1
-    assert audit.control_token_online_audit_interval_steps == 1
-    assert audit.control_token_online_window_steps == 1
-    assert audit.control_token_adaptive_neighborhood_enabled
-    assert audit.control_token_adaptive_neighborhood_max_distance == 8
-    assert audit.control_token_adaptive_neighborhood_relative_loss_threshold == 1.0
-    assert audit.control_token_adaptive_neighborhood_strict_threshold
-    assert audit.control_token_loss_weight == 4.0
-    assert audit.control_token_normalize_per_domain
-    assert run_id.endswith("-avg4")
-    assert audit.output_dir == f"audit/{run_id}"
-    assert config.paper_eval.output_dir == f"eval_outputs/paper_suite/{run_id}"
-    assert config.huggingface_checkpoint.path_prefix == f"checkpoints/math/{run_id}"
-    assert config.trainer.experiment_name == run_id
-    assert config.trainer.default_local_dir == f"checkpoints/MOPD/{run_id}"
-    assert "+mopd_audit.control_token_online_top_p=0.1" in command
-    assert (
-        "+mopd_audit.control_token_adaptive_neighborhood_strict_threshold=true"
-        in command
-    )
 
 
 @pytest.mark.parametrize(
@@ -576,94 +397,11 @@ def test_math_full_taxonomy_top_p_dual_teacher_contract(
     assert "+mopd_audit.control_token_online_top_k_per_group=null" in command
 
 
-def test_math_full_taxonomy_top_p_resume15_contract() -> None:
-    config = load_config(
-        _config_path(
-            "top32kl_next_step_full_taxonomy_split_topp0p01_i1_w1_5gpu_3a2t_b258_resume15.yaml"
-        )
-    )
-    command = format_command(build_command(config))
-
-    assert config.runtime.slurm_allocation_gpus == 5
-    assert (
-        config.runtime.wandb_run_id
-        == "q1p7b-math-tax-topp0p01-5gpu-3a2t-b258-r15"
-    )
-    assert config.runtime.wandb_resume == "must"
-    assert config.data.train_batch_size == 258
-    assert config.worker_placement.actor_rollout.n_gpus_per_node == 3
-    assert config.worker_placement.ref_policy.n_gpus_per_node == 2
-    assert config.rollout.val_n == 4
-    assert config.rollout.val_do_sample is True
-    assert config.rollout.val_temperature == 1.0
-    assert config.rollout.val_top_p == 1.0
-    assert "trainer.resume_mode=disable" not in command
-    assert "custom_reward_function.path=mopd_verl/mixed_reward.py" in command
-    assert "custom_reward_function.name=compute_score_batched" in command
-    assert "reward_model.reward_manager=batch" in command
-    assert "+custom_reward_function.reward_kwargs.max_workers=32" in command
-    assert (
-        "+custom_reward_function.reward_kwargs.batch_timeout_seconds=120.0"
-        in command
-    )
-    assert "actor_rollout_ref.rollout.val_kwargs.n=4" in command
-    assert "actor_rollout_ref.rollout.val_kwargs.do_sample=True" in command
-    assert "actor_rollout_ref.rollout.val_kwargs.temperature=1.0" in command
-    assert "trainer.resume_mode=resume_path" in command
-    assert (
-        "trainer.resume_from_path=checkpoints/MOPD/"
-        "q1p7b-math-top32kl-ns-taxonomy-topp0p01-i1w1-5gpu-3a2t-b258/"
-        "global_step_15"
-        in command
-    )
-    assert "actor_rollout_ref.ref.fsdp_config.fsdp_size=2" in command
-    assert (
-        "trainer.default_local_dir=checkpoints/MOPD/"
-        "q1p7b-math-top32kl-ns-taxonomy-topp0p01-i1w1-5gpu-3a2t-b258-"
-        "resume15"
-        in command
-    )
-
-
-def test_math_full_taxonomy_top_p_0p075_resume55_contract() -> None:
-    config = load_config(
-        _config_path(
-            "top32kl_next_step_full_taxonomy_split_topp0p075_i1_w1_5gpu_4a1t_b256_resume55.yaml"
-        )
-    )
-    command = format_command(build_command(config))
-
-    run_id = (
-        "q1p7b-math-top32kl-ns-taxonomy-topp0p075-i1w1-5gpu-4a1t-b256"
-    )
-    assert config.runtime.slurm_allocation_gpus == 5
-    assert config.runtime.wandb_run_id == run_id
-    assert config.runtime.wandb_resume == "must"
-    assert config.trainer.experiment_name == run_id
-    assert config.trainer.default_local_dir == f"checkpoints/MOPD/{run_id}"
-    assert "trainer.resume_mode=disable" not in command
-    assert "trainer.resume_mode=resume_path" in command
-    assert (
-        f"trainer.resume_from_path=checkpoints/MOPD/{run_id}/global_step_55"
-        in command
-    )
-    assert (
-        "actor_rollout_ref.actor.checkpoint.save_contents="
-        "[model,optimizer,extra,hf_model]"
-        in command
-    )
-
-
 @pytest.mark.parametrize(
     ("filename", "total_gpus", "actor_gpus"),
     (
         (
-            "top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_5gpu_3a2t_b258.yaml",
-            5,
-            3,
-        ),
-        (
-            "top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_8gpu_6a2t_b258.yaml",
+            "top32kl_next_step_full_taxonomy_split_topp0p1_i1_w1_8gpu_8c_b256.yaml",
             8,
             6,
         ),

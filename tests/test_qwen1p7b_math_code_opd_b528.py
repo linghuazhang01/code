@@ -21,8 +21,7 @@ SUITE_4B = CONFIGS / "qwen4b_suite/math_code"
 # (1.7B file, 4B toklog file, 4B plain file, GPUs, actor GPUs)
 LAYOUTS = [
     ("opd_toklog_3gpu_3c.yaml", "opd_toklog_3gpu_3c.yaml", "opd_3gpu_3c.yaml", 3, 3),
-    ("opd_toklog_4gpu_3s1t.yaml", "opd_toklog_4gpu_3s1t.yaml", "opd_4gpu_3s1t.yaml", 4, 3),
-    ("opd_toklog_8gpu_8c.yaml", "opd_toklog_8gpu_6s2t.yaml", "opd_8gpu_6s2t.yaml", 8, 8),
+    ("opd_toklog_8gpu_8c.yaml", "opd_toklog_8gpu_8c.yaml", "opd_8gpu_8c.yaml", 8, 8),
 ]
 IDENTITY_KEYS = (
     "audit.output_dir",

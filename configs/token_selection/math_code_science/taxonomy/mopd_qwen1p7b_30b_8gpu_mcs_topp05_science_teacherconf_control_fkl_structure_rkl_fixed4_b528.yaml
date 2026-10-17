@@ -99,4 +99,4 @@ teacher_performance:
   fused_statistics: true
   compact_topk_ids: true
 rollout:
-  gpu_memory_utilization: 0.75
+  gpu_memory_utilization: 0.6

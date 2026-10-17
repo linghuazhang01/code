@@ -9,7 +9,7 @@ data:
 actor:
   ppo_mini_batch_size: 255
 rollout:
-  gpu_memory_utilization: 0.4
+  gpu_memory_utilization: 0.6
 worker_placement:
   separate_ref_policy: false
   actor_rollout:

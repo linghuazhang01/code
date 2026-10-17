@@ -23,13 +23,9 @@ PROFILES = {
         "mopd_math_code_toploss_m05_c01_code_structure_fixed4_4gpu.yaml",
         4, None, 4, "q1p7b4g-mc-tl-m05c01-mctrl-cprog-f4-b528-s60",
     ),
-    "8gpu_6s2t": (
-        "mopd_math_code_toploss_m05_c01_code_structure_fixed4_8gpu_6s2t.yaml",
+    "8gpu_8c": (
+        "mopd_math_code_toploss_m05_c01_code_structure_fixed4_8gpu_8c.yaml",
         6, 2, 8, "q1p7b4g-mc-tl-m05c01-mctrl-cprog-8g6s2t-b528-s60",
-    ),
-    "3student_1teacher": (
-        "mopd_math_code_toploss_m05_c01_code_structure_disc33_fixed4_3student_1teacher.yaml",
-        3, 1, 4, "q1p7b3s1t-mc-tl-m05c01-mctrl-cprog-f4-b528-s60",
     ),
 }
 MATH_SIZE = 124

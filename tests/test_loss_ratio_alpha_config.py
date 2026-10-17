@@ -83,36 +83,3 @@ def test_alpha_matches_frozen_reference_through_applied_step_60() -> None:
         4.635492271571985
     )
     assert max([ALPHA * weight for weight in weights]) > 5.0
-
-
-@pytest.mark.parametrize("gpus,actors,batch", [(6, 4, 256), (7, 5, 255), (8, 6, 258)])
-def test_scaled_resource_overlays_change_only_topology_and_identities(
-    gpus: int, actors: int, batch: int
-) -> None:
-    base = load_config(CONFIG_DIR / SCALED)
-    name = (
-        "top32kl_next_step_full_taxonomy_split_topp0p05_i1_w1_"
-        f"lossratio_alpha1p75_{gpus}gpu_{actors}a2t_b{batch}.yaml"
-    )
-    config = load_config(CONFIG_DIR / name)
-    run = f"q1p7b-math-top32kl-topp05-lossratio-a1p75-{gpus}g{actors}a2t-b{batch}"
-    expected = asdict(base)
-    expected["runtime"].update(slurm_allocation_gpus=gpus, wandb_run_id=run)
-    expected["data"]["train_batch_size"] = batch
-    expected["actor"]["ppo_mini_batch_size"] = batch
-    expected["worker_placement"]["actor_rollout"]["n_gpus_per_node"] = actors
-    expected["worker_placement"]["ref_policy"]["n_gpus_per_node"] = 2
-    expected["trainer"].update(
-        n_gpus_per_node=actors,
-        experiment_name=run,
-        default_local_dir=f"checkpoints/MOPD/{run}",
-    )
-    expected["audit"]["output_dir"] = f"audit/{run}"
-    expected["paper_eval"]["output_dir"] = f"eval_outputs/paper_suite/{run}"
-    expected["huggingface_checkpoint"]["path_prefix"] = f"checkpoints/math/{run}"
-    expected["extra_overrides"].append("actor_rollout_ref.ref.fsdp_config.fsdp_size=2")
-    assert asdict(config) == expected
-    assert batch % actors == 0 and gpus == actors + 2 and len(run) <= 64
-    command = build_command(config)
-    assert "+mopd_audit.control_token_loss_ratio_alpha=1.75" in command
-    assert command.count("actor_rollout_ref.ref.fsdp_config.fsdp_size=2") == 1

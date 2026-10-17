@@ -484,7 +484,7 @@ taxonomy。它只替换 Code 候选池；Math 候选池 = 当前 best run 的 Ma
 （2026-10-07 改写：10-06 提案原用 394 个 ID 的 2026-10-02 方法论池；该版本已删除，未产出结果。）选词器与第 0.4/0.5 节 V6–V9 完全相同。
 
 **与 best run 的差异不只 Code 池（2026-10-08 更正）。** 以 resolved config 对比 best run
-`mopd_math_code_toploss_m05_c01_code_structure_fixed4_8gpu_6s2t.yaml` 与
+`mopd_math_code_toploss_m05_c01_code_structure_fixed4_8gpu_8c.yaml` 与
 `mopd_math_code_current_step_token_v10lean_toploss_m05_c01_fixed4_4gpu_colocated.yaml`：
 (1) Math 池相同（390，同一 fingerprint）；(2) Code 池 551 → 379：best run 的 551 = Code DomainStructure 全集、0 个 Control，
 V10-lean 为 Control 151 + Structure 151 + taxonomy-Other 77，两者仅共享 151 个 ID（Boundary 6、CodeLex 131、AlgoLex 14），
