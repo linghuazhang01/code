@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -151,13 +152,8 @@ def test_batched_reward_terminates_pool_at_deadline(
     async_result = SimpleNamespace(ready=lambda: False)
     pool = MagicMock()
     pool.apply_async.return_value = async_result
-    context = SimpleNamespace(Pool=lambda **_kwargs: pool)
 
-    monkeypatch.setattr(
-        batched_reward.multiprocessing,
-        "get_context",
-        lambda _method: context,
-    )
+    monkeypatch.setattr(batched_reward, "_create_pool", lambda _processes: pool)
     monotonic_values = iter([0.0, 1.0])
     monkeypatch.setattr(
         batched_reward.time,
@@ -179,3 +175,59 @@ def test_batched_reward_terminates_pool_at_deadline(
     pool.terminate.assert_called_once_with()
     pool.close.assert_not_called()
     pool.join.assert_called_once_with()
+
+
+def test_batched_reward_pool_workers_are_not_daemonic() -> None:
+    from mopd_verl.batched_reward import _NonDaemonSpawnProcess
+
+    process = _NonDaemonSpawnProcess()
+    process.daemon = True  # multiprocessing.Pool requests daemonic workers
+
+    assert process.daemon is False
+
+
+def _worker_start_method() -> str:
+    import multiprocessing
+
+    return multiprocessing.get_start_method()
+
+
+def test_batched_reward_pool_workers_fork_their_child_processes() -> None:
+    from mopd_verl.batched_reward import _create_pool
+
+    pool = _create_pool(1)
+    try:
+        start_method = pool.apply(_worker_start_method)
+    finally:
+        pool.terminate()
+        pool.join()
+
+    assert start_method == "fork"
+
+
+_CODE_TESTS = {"inputs": ["1 2\n", "5 7\n"], "outputs": ["3\n", "12\n"]}
+_CODE_SOLUTIONS = {
+    "correct": "```python\na, b = map(int, input().split())\nprint(a + b)\n```",
+    "wrong": "```python\na, b = map(int, input().split())\nprint(a - b)\n```",
+}
+
+
+def test_batched_reward_scores_code_rollouts_inside_pool_workers() -> None:
+    # Regression: prime_code starts a Manager and a child Process per sample,
+    # which fails inside a daemonic Pool worker and used to score every Code
+    # rollout 0.
+    pytest.importorskip("verl.utils.reward_score.prime_code")
+    from mopd_verl import batched_reward
+
+    result = batched_reward.compute_score_batched(
+        data_sources=["taco", "taco"],
+        solution_strs=[_CODE_SOLUTIONS["correct"], _CODE_SOLUTIONS["wrong"]],
+        ground_truths=[json.dumps(_CODE_TESTS)] * 2,
+        extra_infos=[{}, {}],
+        max_workers=2,
+        batch_timeout_seconds=120.0,
+    )
+
+    assert [item["score"] for item in result] == [1.0, 0.0]
+    assert all(item["reward_timeout"] == 0.0 for item in result)
+    assert all(item["reward_error"] == 0.0 for item in result)

@@ -7,6 +7,8 @@ import multiprocessing
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
+from multiprocessing.context import SpawnContext, SpawnProcess
+from multiprocessing.process import BaseProcess
 from typing import Any
 
 
@@ -16,6 +18,49 @@ _BASE_REWARD = {
     "m2rl_gpqa": 0.0,
     "m2rl_ifbench": 0.0,
 }
+
+
+class _NonDaemonSpawnProcess(SpawnProcess):
+    """Pool worker that is allowed to start child processes.
+
+    ``multiprocessing.Pool`` marks its workers daemonic, and a daemonic process
+    may not have children. The Code graders (``prime_code.check_correctness``)
+    start a ``Manager`` and a limited-time ``Process`` per sample; inside a
+    daemonic worker that raises ``AssertionError``, which the grader swallows
+    and reports as a failed sample, so every Code reward came out 0.
+    """
+
+    @property
+    def daemon(self) -> bool:
+        return BaseProcess.daemon.fget(self)
+
+    @daemon.setter
+    def daemon(self, _value: bool) -> None:
+        BaseProcess.daemon.fset(self, False)
+
+
+class _NonDaemonSpawnContext(SpawnContext):
+    Process = _NonDaemonSpawnProcess
+
+
+def _use_fork_for_child_processes() -> None:
+    """Make processes started by the graders fork from this warm worker.
+
+    A worker started from the ``spawn`` context reports ``spawn`` as its default
+    start method. Each Code sample would then run its ``Manager`` and test
+    process in a fresh interpreter that re-imports verl (about 2 s each on the
+    server), which under 32 concurrent workers exceeds prime_code's 6 s limit
+    and scores correct programs 0.
+    """
+
+    multiprocessing.set_start_method("fork", force=True)
+
+
+def _create_pool(processes: int) -> Any:
+    return _NonDaemonSpawnContext().Pool(
+        processes=processes,
+        initializer=_use_fork_for_child_processes,
+    )
 
 
 @dataclass(frozen=True)
@@ -126,8 +171,7 @@ def compute_score_batched(
     if not tasks:
         return []
 
-    context = multiprocessing.get_context("spawn")
-    pool = context.Pool(processes=min(max_workers, len(tasks)))
+    pool = _create_pool(min(max_workers, len(tasks)))
     pending = {
         index: pool.apply_async(_score_task, (task,))
         for index, task in enumerate(tasks)
