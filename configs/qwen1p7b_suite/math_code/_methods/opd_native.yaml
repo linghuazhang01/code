@@ -1,0 +1,11 @@
+# OPD Native = chosen-token OPD policy gradient (Thinking Machines / G-OPD lambda=1), no filter or weights.
+# Copied from ../../../qwen4b_suite/math_code/_methods/opd_native.yaml (only the parent path is the 1.7B suite's).
+extends: ../_common.yaml
+actor:
+  distill_loss_builder: policy_gradient
+  distill_mode: chosen_token_policy_gradient
+  token_baseline_method: none
+  topk_distill_enabled: false
+  loss_agg_mode: token-mean
+audit:
+  loss_variance_signal: policy_gradient_distillation_signal

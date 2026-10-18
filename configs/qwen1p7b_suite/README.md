@@ -27,6 +27,21 @@ its 4B toklog counterpart except for the student path and the run/output names
 (unified on 2026-10-17; it was 0.40 / 0.75 / 0.75). HF upload goes to
 `checkpoints/baselines/math_code/<run>` in `icemoon28/opd-checkpoints`.
 
+## Native OPD ("OPD naive") with per-token audit (2026-10-18)
+
+Chosen-token policy-gradient OPD (`_methods/opd_native.yaml`: `policy_gradient` / `chosen_token_policy_gradient`,
+no Top-32, no weighting or selection) on the same Math+Code mixture, teacher, 60 steps, seed 42 and audit block.
+Batch follows the colocated rule in `OPD/CLAUDE.md` (3 GPUs 255; 4 and 8 GPUs 256), not 528.
+
+| File | GPUs | Layout | Batch | vLLM mem | Run name |
+|---|---:|---|---|---:|---|
+| `math_code/opd_native_toklog_3gpu_3c_b255.yaml` | 3 | actor + rollout + FSDP-3 teacher colocated | 255 = 3 x 85 | 0.60 | `q1p7b-mc-opdnative-toklog-3g3c-b255-s42` |
+| `math_code/opd_native_toklog_4gpu_4c_b256.yaml` | 4 | actor + rollout + FSDP-4 teacher colocated | 256 = 4 x 64 | 0.60 | `q1p7b-mc-opdnative-toklog-4g4c-b256-s42` |
+| `math_code/opd_native_toklog_8gpu_8c_b256.yaml` | 8 | actor + rollout + FSDP-8 teacher colocated | 256 = 8 x 32 | 0.60 | `q1p7b-mc-opdnative-toklog-8g8c-b256-s42` |
+
+The 4B counterparts are `../qwen4b_suite/math_code/opd_native_{3gpu_3c,8gpu_8c}.yaml` (batch 528, audit on since
+2026-10-18). Contract: `tests/test_qwen1p7b_math_code_native_toklog.py`.
+
 Nothing here has been launched or smoke-tested on GPUs.
 
 ```bash
