@@ -1,0 +1,14 @@
+# ExOPD lambda=1.25: G-OPD extrapolation with the frozen initial Qwen3-4B student as reference.
+extends: ../_common.yaml
+model:
+  gopd_reference_path: ../mopd/models/Qwen3-4B
+actor:
+  only_reverse_kl_advantages: false
+  lambda_vals: 1.25
+  distill_loss_builder: exopd
+  distill_mode: chosen_token_policy_gradient
+  token_baseline_method: none
+  topk_distill_enabled: false
+  loss_agg_mode: token-mean
+audit:
+  loss_variance_signal: extrapolated_policy_gradient_distillation_signal
