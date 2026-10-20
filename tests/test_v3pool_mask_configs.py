@@ -129,6 +129,8 @@ SINGLE = (
      for d in ("math", "code") for arm in ("ignore", "only") for t in ("3gpu_3c_b255",)]
     + [(ROOT / f"configs/qwen4b_suite/{d}/opd_v3pool_{arm}_{t}.yaml", d, arm)
        for d in ("math", "code") for arm in ("ignore", "only") for t in ("3gpu_3c", "8gpu_8c")]
+    + [(ROOT / f"configs/token_selection/{d}/{'taxonomy/' if d == 'math' else ''}native_opd_v3pool_{arm}_toklog_8gpu_8c_b256.yaml", d, arm)
+       for d in ("math", "code") for arm in ("ignore", "only")]
 )
 
 
