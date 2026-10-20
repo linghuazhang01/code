@@ -17,9 +17,12 @@ from mopd_verl.verl_audit import MOPDAuditLogger
 ROOT = Path(__file__).resolve().parents[1]
 TAX = ROOT / "configs/token_selection/math_code/taxonomy"
 Q4B = ROOT / "configs/qwen4b_suite/math_code"
+Q1P7B = ROOT / "configs/qwen1p7b_suite/math_code"
+NATIVE = [Q1P7B / f"opd_native_v3pool_{arm}_toklog_8gpu_8c_b256.yaml" for arm in ("ignore", "only")]
 CONFIGS = (
     [TAX / f"mopd_math_code_v3pool_{arm}_{topo}.yaml" for arm in ("ignore", "only") for topo in ("8gpu_8c", "4gpu", "3gpu_3c")]
     + [Q4B / f"opd_v3pool_{arm}_{topo}.yaml" for arm in ("ignore", "only") for topo in ("8gpu_8c", "3gpu_3c")]
+    + NATIVE
 )
 
 
@@ -77,8 +80,9 @@ def test_invalid_other_weight_combinations_fail(tmp_path: Path, change: dict, me
         load_config(tmp)
 
 
-@pytest.mark.parametrize("arm", ["only", "ignore"])
-def test_training_gradient_mask_applies_pool_weights(tmp_path: Path, arm: str, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("arm,path", [(arm, TAX / f"mopd_math_code_v3pool_{arm}_4gpu.yaml") for arm in ("only", "ignore")]
+                         + [("ignore" if "_ignore_" in p.name else "only", p) for p in NATIVE], ids=lambda x: getattr(x, "name", x))
+def test_training_gradient_mask_applies_pool_weights(tmp_path: Path, arm: str, path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import importlib, sys
     from types import ModuleType
     try:
@@ -97,7 +101,7 @@ def test_training_gradient_mask_applies_pool_weights(tmp_path: Path, arm: str, m
         from mopd_verl.domain_gradient.audit import DomainGradientAudit
     except ModuleNotFoundError as exc:
         pytest.skip(f"training stack unavailable: {exc}")
-    config = load_config(TAX / f"mopd_math_code_v3pool_{arm}_4gpu.yaml")
+    config = load_config(path)
     logger = MOPDAuditLogger({"mopd_audit": {**asdict(config.audit), "output_dir": str(tmp_path)}})
     meta = logger.full_gradient_meta("train", 1)["mopd_full_gradient"]
     actor = SimpleNamespace(actor_module=torch.nn.Linear(1, 1), actor_optimizer=SimpleNamespace(param_groups=[{}]),
