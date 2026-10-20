@@ -1,0 +1,58 @@
+# Qwen3-1.7B code-only native OPD ("OPD naive": chosen-token policy gradient, G-OPD lambda=1) with fixed position weights on the
+# 12-run token list and per-token logging, 8 colocated GPUs (actor, vLLM rollout and FSDP-8 teacher share every GPU), global batch 256.
+# Not launchable by itself: native_opd_list12_{ignore,only}_toklog_8gpu_8c_b256.yaml set the two weights and the run names.
+# Base: native_opd_toklog_3gpu_3c_b255.yaml (the equal-weight naive run q1p7b-code-opdnative-toklog-3g3c-b255). This file changes only the
+# topology (3 -> 8 colocated GPUs, batch 255 -> 256 by the 8-GPU batch rule) and adds the weighting block.
+# Pool = the 12-run token list (analysis-output/token-set-toklog-20261019/README.md section 17; tables/d1_token_list_ids.json,
+# key "shared"): IDs that pass the Rising-fast / Stable-flat rule under both |logp gap| and training loss on all 8 equal-weight
+# runs per rollout domain (1.7B / 4B x single-domain or Math+Code x Top-32 RKL or native OPD; >= 7 of 8 measurable, Rising
+# advantage > 0 in every measurable run, Rising > Stable in every run, mean Stable <= mean Rising / 4, every step >= 20 occurrences).
+# Math 78 IDs (SHA256 of the sorted, comma-joined IDs e7488da3d3babda2a5f6b3c464bf936e70c857ea2a521f8ed6108e88ea31808d), Code 119 IDs (263bc87e2f03850b6bb0c9b187a4b1bc7c2be97253281bf3efc167adbf6a106f).
+# Fixed per-position weights, no online selection, no normalisation: pool positions get control_token_loss_weight, every other
+# valid position gets control_token_other_weight. Weight 0 removes the position's gradient (the training gradient mask gates the
+# student log-prob, so it applies to the chosen-token policy gradient too); Adam makes the overall gradient scale irrelevant.
+# Companion of the v3-pool files (*_v3pool_*): same runs with this pool instead of the v3 pool.
+extends: native_opd_toklog_3gpu_3c_b255.yaml
+runtime:
+  slurm_allocation_gpus: 8
+data:
+  train_batch_size: 256
+actor:
+  ppo_mini_batch_size: 256
+worker_placement:
+  separate_ref_policy: false
+  actor_rollout:
+    n_gpus_per_node: 8
+    nnodes: 1
+trainer:
+  n_gpus_per_node: 8
+ray_kwargs:
+  ray_init:
+    num_cpus: 48
+# Lists replace the parent's list, so the reference FSDP size is restated here.
+extra_overrides:
+- custom_reward_function.path=mopd_verl/mixed_reward.py
+- custom_reward_function.name=compute_score_batched
+- reward_model.reward_manager=batch
+- trainer.resume_mode=disable
+- actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+- actor_rollout_ref.ref.fsdp_config.fsdp_size=8
+audit:
+  control_token_loss_weighting_enabled: true
+  control_token_online_selection_enabled: false
+  control_token_normalize_per_domain: false
+  control_token_phase_gate_enabled: false
+  control_token_span_weighting_enabled: false
+  control_token_speed_weighting_enabled: false
+  control_token_ids: []
+  domain_control_token_ids:
+    code: [
+      2, 258, 264, 323, 350, 362, 369, 374, 382, 421, 438, 458, 474, 504, 508, 518,
+      537, 576, 592, 624, 646, 702, 758, 785, 912, 961, 975, 1083, 1096, 1102, 1140, 1156,
+      1159, 1173, 1186, 1205, 1221, 1372, 1393, 1414, 1416, 1482, 1537, 1629, 1654, 1760, 1887, 1909,
+      1932, 1986, 2014, 2055, 2176, 2436, 2461, 2619, 2679, 2691, 2697, 2822, 3039, 3059, 3271, 3593,
+      3647, 4120, 4230, 4318, 4396, 4416, 4504, 4968, 5005, 5097, 5145, 5443, 5508, 5549, 5980, 6077,
+      6119, 7036, 7039, 7046, 7187, 7379, 8116, 8420, 9008, 9211, 9735, 9892, 10349, 10615, 11329, 11994,
+      13023, 13027, 13383, 14374, 14840, 17364, 20895, 22201, 27745, 27771, 29720, 30813, 31559, 39861, 40325, 49237,
+      53084, 62338, 73594, 84507, 89006, 90351, 151645
+    ]

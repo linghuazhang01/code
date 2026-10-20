@@ -1,0 +1,40 @@
+# Qwen3-1.7B math_code native OPD ("OPD naive": chosen-token policy gradient, G-OPD lambda=1) with fixed position weights on the
+# 12-run token list and per-token logging, 8 colocated GPUs (actor, vLLM rollout and FSDP-8 teacher share every GPU), global batch 256.
+# Not launchable by itself: opd_native_list12_{ignore,only}_toklog_8gpu_8c_b256.yaml set the two weights and the run names.
+# Base: opd_native_toklog_8gpu_8c_b256.yaml (equal-weight naive, per-token audit on); this file only adds the weighting block.
+# Pool = the 12-run token list (analysis-output/token-set-toklog-20261019/README.md section 17; tables/d1_token_list_ids.json,
+# key "shared"): IDs that pass the Rising-fast / Stable-flat rule under both |logp gap| and training loss on all 8 equal-weight
+# runs per rollout domain (1.7B / 4B x single-domain or Math+Code x Top-32 RKL or native OPD; >= 7 of 8 measurable, Rising
+# advantage > 0 in every measurable run, Rising > Stable in every run, mean Stable <= mean Rising / 4, every step >= 20 occurrences).
+# Math 78 IDs (SHA256 of the sorted, comma-joined IDs e7488da3d3babda2a5f6b3c464bf936e70c857ea2a521f8ed6108e88ea31808d), Code 119 IDs (263bc87e2f03850b6bb0c9b187a4b1bc7c2be97253281bf3efc167adbf6a106f).
+# Fixed per-position weights, no online selection, no normalisation: pool positions get control_token_loss_weight, every other
+# valid position gets control_token_other_weight. Weight 0 removes the position's gradient (the training gradient mask gates the
+# student log-prob, so it applies to the chosen-token policy gradient too); Adam makes the overall gradient scale irrelevant.
+# Companion of the v3-pool files (*_v3pool_*): same runs with this pool instead of the v3 pool.
+extends: opd_native_toklog_8gpu_8c_b256.yaml
+audit:
+  control_token_loss_weighting_enabled: true
+  control_token_online_selection_enabled: false
+  control_token_normalize_per_domain: false
+  control_token_phase_gate_enabled: false
+  control_token_span_weighting_enabled: false
+  control_token_speed_weighting_enabled: false
+  control_token_ids: []
+  domain_control_token_ids:
+    math: [
+      32, 72, 264, 279, 304, 323, 330, 362, 369, 374, 382, 389, 432, 498, 537, 576,
+      624, 641, 646, 702, 729, 738, 758, 773, 785, 820, 1096, 1188, 1221, 1249, 1378, 1473,
+      1576, 1896, 1977, 1986, 2055, 2121, 2461, 2477, 2679, 3036, 3593, 3862, 4226, 4416, 4588, 4792,
+      5005, 5297, 5944, 5978, 6172, 7039, 9658, 10253, 11209, 11625, 12209, 12549, 13023, 13394, 15277, 16688,
+      17949, 21453, 21806, 24437, 25521, 31094, 36341, 44364, 44500, 54815, 56204, 67691, 73877, 151645
+    ]
+    code: [
+      2, 258, 264, 323, 350, 362, 369, 374, 382, 421, 438, 458, 474, 504, 508, 518,
+      537, 576, 592, 624, 646, 702, 758, 785, 912, 961, 975, 1083, 1096, 1102, 1140, 1156,
+      1159, 1173, 1186, 1205, 1221, 1372, 1393, 1414, 1416, 1482, 1537, 1629, 1654, 1760, 1887, 1909,
+      1932, 1986, 2014, 2055, 2176, 2436, 2461, 2619, 2679, 2691, 2697, 2822, 3039, 3059, 3271, 3593,
+      3647, 4120, 4230, 4318, 4396, 4416, 4504, 4968, 5005, 5097, 5145, 5443, 5508, 5549, 5980, 6077,
+      6119, 7036, 7039, 7046, 7187, 7379, 8116, 8420, 9008, 9211, 9735, 9892, 10349, 10615, 11329, 11994,
+      13023, 13027, 13383, 14374, 14840, 17364, 20895, 22201, 27745, 27771, 29720, 30813, 31559, 39861, 40325, 49237,
+      53084, 62338, 73594, 84507, 89006, 90351, 151645
+    ]
