@@ -3,8 +3,9 @@
 configs/qwen1p7b_suite/math_code/opd_native_list12_{ignore,only}_toklog_8gpu_8c_b256.yaml
 configs/token_selection/math/taxonomy/native_opd_list12_{ignore,only}_toklog_8gpu_8c_b256.yaml
 configs/token_selection/code/native_opd_list12_{ignore,only}_toklog_8gpu_8c_b256.yaml
-Same layout as the v3-pool files (tests/test_qwen1p7b_{math_code,single_domain}_native_v3pool.py); only the pool differs:
-Math 78 / Code 119 IDs from analysis-output/token-set-toklog-20261019/tables/d1_token_list_ids.json ("shared").
+Each setting's _-prefixed parent adds fixed position weights on the 12-run token list to the equal-weight naive base (the
+single-domain parents also move the 3-GPU base to 8 colocated GPUs at batch 256). Pool: Math 78 / Code 119 IDs from
+analysis-output/token-set-toklog-20261019/tables/d1_token_list_ids.json ("shared").
 """
 
 from __future__ import annotations

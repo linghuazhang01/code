@@ -10,7 +10,8 @@
 # Fixed per-position weights, no online selection, no normalisation: pool positions get control_token_loss_weight, every other
 # valid position gets control_token_other_weight. Weight 0 removes the position's gradient (the training gradient mask gates the
 # student log-prob, so it applies to the chosen-token policy gradient too); Adam makes the overall gradient scale irrelevant.
-# Companion of the v3-pool files (*_v3pool_*): same runs with this pool instead of the v3 pool.
+# Purpose (author 2026-10-20): with Top-32 RKL the v3-pool tokens still close their gap when their positions get weight 0
+# (analysis-output/token-set-toklog-20261019/README.md section 18); these native-OPD runs test ignore / only on the 12-run list.
 extends: opd_native_toklog_8gpu_8c_b256.yaml
 audit:
   control_token_loss_weighting_enabled: true
