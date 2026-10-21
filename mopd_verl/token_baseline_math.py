@@ -104,7 +104,14 @@ def select_positions(
         selected_count = max(1, int(math.floor(retention_ratio * valid_count)))
         selected_count = min(selected_count, valid_count)
         valid_scores = score[row_index].index_select(0, valid_indices).float()
-        if selection_mode == "topk":
+        if selection_mode == "bottomk":
+            # Exact complement of topk at retention 1 - r: drop the positions topk would keep.
+            if retention_ratio >= 1.0:
+                selected[row_index, valid_indices] = 1.0
+                continue
+            drop_count = min(valid_count, max(1, int(math.floor(round(1.0 - retention_ratio, 12) * valid_count))))
+            local_indices = torch.argsort(valid_scores, descending=True, stable=True)[drop_count:]
+        elif selection_mode == "topk":
             local_indices = torch.argsort(
                 valid_scores,
                 descending=True,

@@ -120,7 +120,7 @@ class ActorConfig:
     eopd_topk_k: int = 16
     token_baseline_method: str = "none"
     token_baseline_retention_ratio: float = 0.5
-    token_baseline_selection_mode: str = "topk"
+    token_baseline_selection_mode: str = "topk"  # topk (highest scores) | sample | bottomk (complement of topk at 1 - ratio)
     fire_opd_teacher_confidence_alpha: float = 1.0
     fire_opd_student_confusion_beta: float = 1.0
     fire_opd_trajectory_drop_ratio: float = 0.2

@@ -41,7 +41,10 @@ TOKEN_BASELINE_ALIASES = {
 
 TOKEN_SELECTION_TOPK = "topk"
 TOKEN_SELECTION_SAMPLE = "sample"
-TOKEN_SELECTION_MODES = {TOKEN_SELECTION_TOPK, TOKEN_SELECTION_SAMPLE}
+# bottomk keeps the low-score tail: the exact per-response complement of topk at retention 1 - r
+# (retention 0.8 bottomk = every valid position except the ones topk at retention 0.2 would keep).
+TOKEN_SELECTION_BOTTOMK = "bottomk"
+TOKEN_SELECTION_MODES = {TOKEN_SELECTION_TOPK, TOKEN_SELECTION_SAMPLE, TOKEN_SELECTION_BOTTOMK}
 TIP_ENTROPY_CLIP_QUANTILE = 0.98
 
 
