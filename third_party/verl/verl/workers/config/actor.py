@@ -63,6 +63,7 @@ class PolicyLossConfig(BaseConfig):
     token_baseline_method: str = "none"
     token_baseline_retention_ratio: float = 0.5
     token_baseline_selection_mode: str = "topk"
+    token_baseline_normalize_weights: bool = True
     fire_opd_teacher_confidence_alpha: float = 1.0
     fire_opd_student_confusion_beta: float = 1.0
     fire_opd_trajectory_drop_ratio: float = 0.2

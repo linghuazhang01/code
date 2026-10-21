@@ -631,6 +631,8 @@ def build_overrides(config: MOPDConfig) -> list[str]:
         f"{actor.token_baseline_retention_ratio}",
         "actor_rollout_ref.actor.policy_loss.token_baseline_selection_mode="
         f"{actor.token_baseline_selection_mode}",
+        "actor_rollout_ref.actor.policy_loss.token_baseline_normalize_weights="
+        f"{_bool(actor.token_baseline_normalize_weights)}",
         "actor_rollout_ref.actor.policy_loss.fire_opd_teacher_confidence_alpha="
         f"{actor.fire_opd_teacher_confidence_alpha}",
         "actor_rollout_ref.actor.policy_loss.fire_opd_student_confusion_beta="

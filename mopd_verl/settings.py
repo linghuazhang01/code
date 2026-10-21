@@ -121,6 +121,7 @@ class ActorConfig:
     token_baseline_method: str = "none"
     token_baseline_retention_ratio: float = 0.5
     token_baseline_selection_mode: str = "topk"  # topk (highest scores) | sample | bottomk (complement of topk at 1 - ratio)
+    token_baseline_normalize_weights: bool = True  # entropy baseline only: false = weight 1 on selected positions, 0 elsewhere (no per-response mean-one rescale)
     fire_opd_teacher_confidence_alpha: float = 1.0
     fire_opd_student_confusion_beta: float = 1.0
     fire_opd_trajectory_drop_ratio: float = 0.2

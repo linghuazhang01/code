@@ -102,6 +102,9 @@ policy_loss:
   # Position selection operator: topk or sample
   token_baseline_selection_mode: topk
 
+  # Rescale the selected-position weights of the entropy baseline to mean one per response (true); false keeps 1 on selected, 0 elsewhere
+  token_baseline_normalize_weights: true
+
   # FiRe-OPD teacher-confidence multiplier coefficient
   fire_opd_teacher_confidence_alpha: 1.0
 

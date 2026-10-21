@@ -104,6 +104,15 @@ def token_baseline_selection_mode(policy_loss_config: Any) -> str:
     return mode
 
 
+def token_baseline_normalize_weights(policy_loss_config: Any) -> bool:
+    """Whether the entropy baseline rescales its selected weights to mean one per response (default true)."""
+
+    value = cfg_get(policy_loss_config, "token_baseline_normalize_weights", True)
+    if not isinstance(value, bool):
+        raise ValueError(f"token_baseline_normalize_weights must be a bool, got {value!r}.")
+    return value
+
+
 def fire_opd_teacher_confidence_alpha(policy_loss_config: Any) -> float:
     return finite_non_negative(
         cfg_get(
@@ -178,6 +187,11 @@ def validate_token_baseline_config(
     method = token_baseline_method(policy_loss_config)
     token_baseline_retention_ratio(policy_loss_config)
     token_baseline_selection_mode(policy_loss_config)
+    if not token_baseline_normalize_weights(policy_loss_config) and method != TOKEN_BASELINE_ENTROPY:
+        raise ValueError(
+            "token_baseline_normalize_weights=false is only supported for token_baseline_method=entropy; "
+            "TIP-TopK32 and FiRe-OPD define mean-one weights as part of the method."
+        )
     fire_opd_teacher_confidence_alpha(policy_loss_config)
     fire_opd_student_confusion_beta(policy_loss_config)
     fire_opd_trajectory_drop_ratio(policy_loss_config)
@@ -216,7 +230,10 @@ def build_token_baseline_weights(
             retention_ratio=token_baseline_retention_ratio(policy_loss_config),
             selection_mode=token_baseline_selection_mode(policy_loss_config),
         )
-        weights = normalize_per_sequence(selected, mask)
+        if token_baseline_normalize_weights(policy_loss_config):
+            weights = normalize_per_sequence(selected, mask)
+        else:  # weight 1 on every selected position, 0 elsewhere
+            weights = selected * mask
         return TokenBaselineResult(weights, score, selected)
     if method == TOKEN_BASELINE_TIP_TOPK32:
         if divergence is None:

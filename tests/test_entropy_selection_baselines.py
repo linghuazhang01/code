@@ -14,7 +14,7 @@ import torch
 from mopd_verl.launch import build_command
 from mopd_verl.settings import load_config
 from mopd_verl.token_baseline_math import select_positions
-from mopd_verl.token_baselines import build_token_baseline_weights, token_baseline_selection_mode
+from mopd_verl.token_baselines import build_token_baseline_weights, token_baseline_selection_mode, validate_token_baseline_config
 
 from test_qwen1p7b_math_code_native_toklog import IDENTITY_KEYS, PER_TOKEN_AUDIT, _changed
 
@@ -30,7 +30,8 @@ ARMS = {"top20": ("enttop20", 0.2, "topk"), "tail80": ("enttail80", 0.8, "bottom
 CASES = [(s, a) for s in SETTINGS for a in ARMS]
 TOPOLOGY = {"runtime.slurm_allocation_gpus", "data.train_batch_size", "actor.ppo_mini_batch_size", "trainer.n_gpus_per_node",
             "worker_placement.actor_rollout.n_gpus_per_node", "extra_overrides", "ray_kwargs.ray_init.num_cpus"}
-SELECTION = {"actor.token_baseline_method", "actor.token_baseline_retention_ratio", "actor.token_baseline_selection_mode"}
+SELECTION = {"actor.token_baseline_method", "actor.token_baseline_retention_ratio", "actor.token_baseline_selection_mode",
+             "actor.token_baseline_normalize_weights"}
 
 
 def _path(setting: str, arm: str) -> Path:
@@ -67,6 +68,33 @@ def test_entropy_tail_weights_are_mean_one_per_response() -> None:
     torch.testing.assert_close(result.weights[0, 0], torch.tensor(1.25))
 
 
+def test_entropy_weights_without_normalisation_are_zero_one() -> None:
+    entropy = torch.tensor([[0.1, 0.9, 0.7, 0.2, 0.5, 0.3, 0.8, 0.4, 0.6, 0.0]])
+    mask = torch.ones_like(entropy)
+    for ratio, mode, kept in ((0.2, "topk", 2), (0.8, "bottomk", 8)):
+        cfg = {"token_baseline_method": "entropy", "token_baseline_retention_ratio": ratio, "token_baseline_selection_mode": mode,
+               "token_baseline_normalize_weights": False}
+        result = build_token_baseline_weights(student_entropy=entropy, response_mask=mask, policy_loss_config=cfg)
+        assert torch.equal(result.weights, result.selected_mask)
+        assert set(result.weights.unique().tolist()) <= {0.0, 1.0} and int(result.weights.sum()) == kept
+    padded = torch.ones_like(entropy); padded[0, 6:] = 0.0  # padding positions never get weight
+    result = build_token_baseline_weights(student_entropy=entropy, response_mask=padded, policy_loss_config={
+        "token_baseline_method": "entropy", "token_baseline_retention_ratio": 0.8, "token_baseline_selection_mode": "bottomk",
+        "token_baseline_normalize_weights": False})
+    assert float(result.weights[0, 6:].sum()) == 0.0
+
+
+def test_normalisation_stays_on_by_default_and_is_entropy_only() -> None:
+    entropy = torch.tensor([[0.1, 0.9, 0.7, 0.2, 0.5, 0.3, 0.8, 0.4, 0.6, 0.0]])
+    result = build_token_baseline_weights(student_entropy=entropy, response_mask=torch.ones_like(entropy), policy_loss_config={
+        "token_baseline_method": "entropy", "token_baseline_retention_ratio": 0.2, "token_baseline_selection_mode": "topk"})
+    torch.testing.assert_close(result.weights.sum(), torch.tensor(10.0))  # default: mean one per response (x5 on 2 of 10)
+    for method in ("tip_topk32", "fire_opd"):
+        with pytest.raises(ValueError, match="token_baseline_normalize_weights"):
+            validate_token_baseline_config({"token_baseline_method": method, "token_baseline_normalize_weights": False}, uses_topk_distillation=True)
+    validate_token_baseline_config({"token_baseline_method": "entropy", "token_baseline_normalize_weights": False}, uses_topk_distillation=False)
+
+
 def test_selection_mode_validation() -> None:
     assert token_baseline_selection_mode({"token_baseline_selection_mode": "bottomk"}) == "bottomk"
     with pytest.raises(ValueError, match="token_baseline_selection_mode"):
@@ -82,6 +110,7 @@ def test_entropy_baseline_contract(setting: str, arm: str) -> None:
     assert cfg.actor.distill_mode == "chosen_token_policy_gradient"
     assert cfg.actor.topk_distill_enabled is False
     assert (cfg.actor.token_baseline_method, cfg.actor.token_baseline_retention_ratio, cfg.actor.token_baseline_selection_mode) == ("entropy", ratio, mode)
+    assert cfg.actor.token_baseline_normalize_weights is False  # author 2026-10-21: no per-response mean-one rescale
     assert cfg.audit.domains == domains
     assert cfg.audit.control_token_loss_weighting_enabled is False and cfg.audit.control_token_online_selection_enabled is False
     for key in PER_TOKEN_AUDIT:
@@ -101,6 +130,7 @@ def test_entropy_baseline_contract(setting: str, arm: str) -> None:
     assert "actor_rollout_ref.actor.policy_loss.token_baseline_method=entropy" in command
     assert f"actor_rollout_ref.actor.policy_loss.token_baseline_retention_ratio={ratio}" in command
     assert f"actor_rollout_ref.actor.policy_loss.token_baseline_selection_mode={mode}" in command
+    assert "actor_rollout_ref.actor.policy_loss.token_baseline_normalize_weights=False" in command
     assert "data.train_batch_size=256" in command
 
 
