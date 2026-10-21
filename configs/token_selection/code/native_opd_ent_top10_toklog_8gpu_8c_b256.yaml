@@ -1,0 +1,23 @@
+# Qwen3-1.7B code-only native OPD ("OPD naive": chosen-token policy gradient, G-OPD lambda=1) that trains only on the top 10% highest-student-entropy positions of each response.
+# 8 colocated GPUs, global batch 256, seed 42, 60 steps, per-token logging on.
+# Entropy token-selection baseline (author 2026-10-21): train only on the top 10% / only on the bottom 90% of each response's valid
+# positions ranked by student entropy (token_baseline_method entropy; mopd_verl/token_baselines.py). The selection is per response;
+# tail 90% (selection_mode bottomk, retention 0.9) is the exact complement of top 10% (topk, retention 0.1). Weights are renormalised
+# per response to mean one over its valid positions (selected positions x10 for top 10%, x1.11 for tail 90%, others 0) and multiply the
+# native-OPD advantages. Note for analysis: configured_token_loss in the response records is then the weighted loss (0 where unselected).
+extends: _native_opd_toklog_8gpu_8c_b256.yaml
+runtime:
+  wandb_run_id: q1p7b-code-opdnative-enttop10-toklog-8g8c-b256-s42
+actor:
+  token_baseline_method: entropy
+  token_baseline_retention_ratio: 0.1
+  token_baseline_selection_mode: topk
+audit:
+  output_dir: audit/q1p7b-code-opdnative-enttop10-toklog-8g8c-b256-s42
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-code-opdnative-enttop10-toklog-8g8c-b256-s42
+huggingface_checkpoint:
+  path_prefix: checkpoints/code/q1p7b-code-opdnative-enttop10-toklog-8g8c-b256-s42
+trainer:
+  experiment_name: q1p7b-code-opdnative-enttop10-toklog-8g8c-b256-s42
+  default_local_dir: checkpoints/MOPD/q1p7b-code-opdnative-enttop10-toklog-8g8c-b256-s42

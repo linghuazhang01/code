@@ -1,7 +1,7 @@
 """Student-entropy token-selection baselines (top 20% / tail 80%) for Qwen3-1.7B native OPD, and the bottomk selection mode.
 
-configs/qwen1p7b_suite/math_code/opd_native_ent_{top20,tail80}_toklog_8gpu_8c_b256.yaml
-configs/token_selection/{math/taxonomy,code}/native_opd_ent_{top20,tail80}_toklog_8gpu_8c_b256.yaml
+configs/qwen1p7b_suite/math_code/opd_native_ent_{top20,tail80,top10,tail90}_toklog_8gpu_8c_b256.yaml
+configs/token_selection/{math/taxonomy,code}/native_opd_ent_{top20,tail80,top10,tail90}_toklog_8gpu_8c_b256.yaml
 """
 
 from __future__ import annotations
@@ -25,7 +25,8 @@ SETTINGS = {
     "math": (ROOT / "configs/token_selection/math/taxonomy", "native_opd_ent", "native_opd_toklog_3gpu_3c_b255.yaml", ["math"], "math", "math", True),
     "code": (ROOT / "configs/token_selection/code", "native_opd_ent", "native_opd_toklog_3gpu_3c_b255.yaml", ["code"], "code", "code", True),
 }
-ARMS = {"top20": ("enttop20", 0.2, "topk"), "tail80": ("enttail80", 0.8, "bottomk")}
+ARMS = {"top20": ("enttop20", 0.2, "topk"), "tail80": ("enttail80", 0.8, "bottomk"),
+        "top10": ("enttop10", 0.1, "topk"), "tail90": ("enttail90", 0.9, "bottomk")}
 CASES = [(s, a) for s in SETTINGS for a in ARMS]
 TOPOLOGY = {"runtime.slurm_allocation_gpus", "data.train_batch_size", "actor.ppo_mini_batch_size", "trainer.n_gpus_per_node",
             "worker_placement.actor_rollout.n_gpus_per_node", "extra_overrides", "ray_kwargs.ray_init.num_cpus"}
@@ -37,13 +38,14 @@ def _path(setting: str, arm: str) -> Path:
     return directory / f"{prefix}_{arm}_toklog_8gpu_8c_b256.yaml"
 
 
+@pytest.mark.parametrize("top_ratio", [0.2, 0.1])
 @pytest.mark.parametrize("n", list(range(1, 61)) + [127, 1000, 16384])
-def test_bottomk_is_the_exact_complement_of_topk(n: int) -> None:
+def test_bottomk_is_the_exact_complement_of_topk(n: int, top_ratio: float) -> None:
     torch.manual_seed(n)
     score = torch.rand(3, n); score[1, : n // 2] = 0.5  # ties are broken the same way in both modes
     mask = torch.ones(3, n); mask[2, n // 3:] = 0.0
-    top = select_positions(score=score, mask=mask, retention_ratio=0.2, selection_mode="topk")
-    tail = select_positions(score=score, mask=mask, retention_ratio=0.8, selection_mode="bottomk")
+    top = select_positions(score=score, mask=mask, retention_ratio=top_ratio, selection_mode="topk")
+    tail = select_positions(score=score, mask=mask, retention_ratio=1.0 - top_ratio, selection_mode="bottomk")
     assert torch.equal(top + tail, mask)
     assert float((top * tail).sum()) == 0.0
 
@@ -112,4 +114,4 @@ def test_entropy_baseline_differs_from_equal_weight_only_in_topology_selection_a
 
 def test_entropy_baseline_run_names_are_unique() -> None:
     runs = [load_config(_path(s, a)).trainer.experiment_name for s, a in CASES]
-    assert len(set(runs)) == len(runs) == 6
+    assert len(set(runs)) == len(runs) == 12
