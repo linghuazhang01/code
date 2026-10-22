@@ -1,0 +1,26 @@
+# Qwen3-1.7B code-only native OPD ("OPD naive": chosen-token policy gradient, G-OPD lambda=1) that trains only on the bottom 80% (lowest student entropy) positions of each response.
+# 4 colocated GPUs, global batch 256, seed 42, 60 steps, per-token logging on.
+# Entropy token-selection baseline (author 2026-10-21): train only on the top 20% / only on the bottom 80% of each response's valid
+# positions ranked by student entropy (token_baseline_method entropy; mopd_verl/token_baselines.py). The selection is per response;
+# tail 80% (selection_mode bottomk, retention 0.8) is the exact complement of top 20% (topk, retention 0.2). Weights are NOT renormalised (actor.token_baseline_normalize_weights: false, author 2026-10-21):
+# selected positions have weight 1, all others 0, and the weights multiply the
+# native-OPD advantages. Note for analysis: configured_token_loss in the response records is then the weighted loss (0 where unselected).
+extends: _native_opd_toklog_4gpu_4c_b256.yaml
+runtime:
+  wandb_run_id: q1p7b-code-opdnative-enttail80-toklog-4g4c-b256-s42
+actor:
+  token_baseline_method: entropy
+  token_baseline_retention_ratio: 0.8
+  token_baseline_selection_mode: bottomk
+  token_baseline_normalize_weights: false
+audit:
+  # The trainer names the entropy-weighted loss <base>+entropy_token_weighting; the audit rejects any other name.
+  loss_variance_signal: policy_gradient_distillation_signal+entropy_token_weighting
+  output_dir: audit/q1p7b-code-opdnative-enttail80-toklog-4g4c-b256-s42
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-code-opdnative-enttail80-toklog-4g4c-b256-s42
+huggingface_checkpoint:
+  path_prefix: checkpoints/code/q1p7b-code-opdnative-enttail80-toklog-4g4c-b256-s42
+trainer:
+  experiment_name: q1p7b-code-opdnative-enttail80-toklog-4g4c-b256-s42
+  default_local_dir: checkpoints/MOPD/q1p7b-code-opdnative-enttail80-toklog-4g4c-b256-s42

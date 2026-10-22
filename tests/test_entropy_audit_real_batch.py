@@ -36,7 +36,9 @@ from mopd_verl.token_baselines import (
 from mopd_verl.verl_audit import MOPDAuditLogger
 
 ROOT = Path(__file__).resolve().parents[1]
-ENTROPY_CONFIGS = sorted((ROOT / "configs").rglob("*_ent_*_toklog_8gpu_8c_b256.yaml"))
+ENTROPY_CONFIGS = sorted(
+    path for layout in ("8gpu_8c", "4gpu_4c") for path in (ROOT / "configs").rglob(f"*_ent_*_toklog_{layout}_b256.yaml")
+)
 ENTROPY_SIGNAL = "policy_gradient_distillation_signal+entropy_token_weighting"
 OLD_SIGNAL = "policy_gradient_distillation_signal"
 POLICY_LOSS_PREFIX = "actor_rollout_ref.actor.policy_loss."

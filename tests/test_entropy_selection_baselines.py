@@ -1,7 +1,7 @@
 """Student-entropy token-selection baselines (top 20% / tail 80%) for Qwen3-1.7B native OPD, and the bottomk selection mode.
 
-configs/qwen1p7b_suite/math_code/opd_native_ent_{top20,tail80,top10,tail90}_toklog_8gpu_8c_b256.yaml
-configs/token_selection/{math/taxonomy,code}/native_opd_ent_{top20,tail80,top10,tail90}_toklog_8gpu_8c_b256.yaml
+configs/qwen1p7b_suite/math_code/opd_native_ent_{top20,tail80,top10,tail90}_toklog_{8gpu_8c,4gpu_4c}_b256.yaml
+configs/token_selection/{math/taxonomy,code}/native_opd_ent_{top20,tail80,top10,tail90}_toklog_{8gpu_8c,4gpu_4c}_b256.yaml
 """
 
 from __future__ import annotations
@@ -20,23 +20,25 @@ from test_qwen1p7b_math_code_native_toklog import IDENTITY_KEYS, PER_TOKEN_AUDIT
 
 ROOT = Path(__file__).resolve().parents[1]
 SETTINGS = {
-    # setting: (directory, file prefix, equal-weight base, domains, run prefix, HF folder, topology changed vs base)
-    "mc": (ROOT / "configs/qwen1p7b_suite/math_code", "opd_native_ent", "opd_native_toklog_8gpu_8c_b256.yaml", ["math", "code"], "mc", "math_code", False),
+    # setting: (directory, file prefix, equal-weight base ({layout} = file layout), domains, run prefix, HF folder, topology changed vs base)
+    "mc": (ROOT / "configs/qwen1p7b_suite/math_code", "opd_native_ent", "opd_native_toklog_{layout}_b256.yaml", ["math", "code"], "mc", "math_code", False),
     "math": (ROOT / "configs/token_selection/math/taxonomy", "native_opd_ent", "native_opd_toklog_3gpu_3c_b255.yaml", ["math"], "math", "math", True),
     "code": (ROOT / "configs/token_selection/code", "native_opd_ent", "native_opd_toklog_3gpu_3c_b255.yaml", ["code"], "code", "code", True),
 }
 ARMS = {"top20": ("enttop20", 0.2, "topk"), "tail80": ("enttail80", 0.8, "bottomk"),
         "top10": ("enttop10", 0.1, "topk"), "tail90": ("enttail90", 0.9, "bottomk")}
-CASES = [(s, a) for s in SETTINGS for a in ARMS]
+# layout: (run-name tag, GPUs); every layout is colocated, batch 256.
+LAYOUTS = {"8gpu_8c": ("8g8c", 8), "4gpu_4c": ("4g4c", 4)}
+CASES = [(s, a, l) for s in SETTINGS for a in ARMS for l in LAYOUTS]
 TOPOLOGY = {"runtime.slurm_allocation_gpus", "data.train_batch_size", "actor.ppo_mini_batch_size", "trainer.n_gpus_per_node",
             "worker_placement.actor_rollout.n_gpus_per_node", "extra_overrides", "ray_kwargs.ray_init.num_cpus"}
 SELECTION = {"actor.token_baseline_method", "actor.token_baseline_retention_ratio", "actor.token_baseline_selection_mode",
              "actor.token_baseline_normalize_weights", "audit.loss_variance_signal"}
 
 
-def _path(setting: str, arm: str) -> Path:
+def _path(setting: str, arm: str, layout: str) -> Path:
     directory, prefix, *_ = SETTINGS[setting]
-    return directory / f"{prefix}_{arm}_toklog_8gpu_8c_b256.yaml"
+    return directory / f"{prefix}_{arm}_toklog_{layout}_b256.yaml"
 
 
 @pytest.mark.parametrize("top_ratio", [0.2, 0.1])
@@ -101,10 +103,10 @@ def test_selection_mode_validation() -> None:
         token_baseline_selection_mode({"token_baseline_selection_mode": "tail"})
 
 
-@pytest.mark.parametrize("setting,arm", CASES)
-def test_entropy_baseline_contract(setting: str, arm: str) -> None:
-    _, _, _, domains, prefix, hf, _ = SETTINGS[setting]; tag, ratio, mode = ARMS[arm]
-    cfg = load_config(_path(setting, arm))
+@pytest.mark.parametrize("setting,arm,layout", CASES)
+def test_entropy_baseline_contract(setting: str, arm: str, layout: str) -> None:
+    _, _, _, domains, prefix, hf, _ = SETTINGS[setting]; tag, ratio, mode = ARMS[arm]; layout_tag, gpus = LAYOUTS[layout]
+    cfg = load_config(_path(setting, arm, layout))
     assert cfg.model.student_path.endswith("Qwen3-1.7B")
     assert cfg.actor.distill_loss_builder == "policy_gradient"
     assert cfg.actor.distill_mode == "chosen_token_policy_gradient"
@@ -118,13 +120,13 @@ def test_entropy_baseline_contract(setting: str, arm: str) -> None:
     for key in PER_TOKEN_AUDIT:
         assert getattr(cfg.audit, key) is True, key
     assert cfg.worker_placement.separate_ref_policy is False
-    assert cfg.worker_placement.actor_rollout.n_gpus_per_node == cfg.trainer.n_gpus_per_node == cfg.runtime.slurm_allocation_gpus == 8
-    assert "actor_rollout_ref.ref.fsdp_config.fsdp_size=8" in cfg.extra_overrides
+    assert cfg.worker_placement.actor_rollout.n_gpus_per_node == cfg.trainer.n_gpus_per_node == cfg.runtime.slurm_allocation_gpus == gpus
+    assert f"actor_rollout_ref.ref.fsdp_config.fsdp_size={gpus}" in cfg.extra_overrides
     assert cfg.data.train_batch_size == cfg.actor.ppo_mini_batch_size == 256
     assert cfg.rollout.gpu_memory_utilization == 0.6
     assert cfg.trainer.total_training_steps == 60 and cfg.huggingface_checkpoint.steps == (60,)
     run = cfg.trainer.experiment_name
-    assert run == f"q1p7b-{prefix}-opdnative-{tag}-toklog-8g8c-b256-s42"
+    assert run == f"q1p7b-{prefix}-opdnative-{tag}-toklog-{layout_tag}-b256-s42"
     assert cfg.runtime.wandb_run_id == run and len(run) <= 64
     assert cfg.huggingface_checkpoint.path_prefix == f"checkpoints/{hf}/{run}"
     assert cfg.trainer.default_local_dir == f"checkpoints/MOPD/{run}" and cfg.audit.output_dir == f"audit/{run}"
@@ -136,14 +138,14 @@ def test_entropy_baseline_contract(setting: str, arm: str) -> None:
     assert "data.train_batch_size=256" in command
 
 
-@pytest.mark.parametrize("setting,arm", CASES)
-def test_entropy_baseline_differs_from_equal_weight_only_in_topology_selection_and_names(setting: str, arm: str) -> None:
+@pytest.mark.parametrize("setting,arm,layout", CASES)
+def test_entropy_baseline_differs_from_equal_weight_only_in_topology_selection_and_names(setting: str, arm: str, layout: str) -> None:
     directory, _, base, *_, topology_changed = SETTINGS[setting]
     allowed = set(IDENTITY_KEYS) | SELECTION | (TOPOLOGY if topology_changed else set())
-    changed = _changed(_path(setting, arm), directory / base)
+    changed = _changed(_path(setting, arm, layout), directory / base.format(layout=layout))
     assert changed <= allowed, sorted(changed - allowed)
 
 
 def test_entropy_baseline_run_names_are_unique() -> None:
-    runs = [load_config(_path(s, a)).trainer.experiment_name for s, a in CASES]
-    assert len(set(runs)) == len(runs) == 12
+    runs = [load_config(_path(*case)).trainer.experiment_name for case in CASES]
+    assert len(set(runs)) == len(runs) == 24
