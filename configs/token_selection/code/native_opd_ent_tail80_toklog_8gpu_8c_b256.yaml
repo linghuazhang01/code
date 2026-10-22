@@ -14,6 +14,8 @@ actor:
   token_baseline_selection_mode: bottomk
   token_baseline_normalize_weights: false
 audit:
+  # The trainer names the entropy-weighted loss <base>+entropy_token_weighting; the audit rejects any other name.
+  loss_variance_signal: policy_gradient_distillation_signal+entropy_token_weighting
   output_dir: audit/q1p7b-code-opdnative-enttail80-toklog-8g8c-b256-s42
 paper_eval:
   output_dir: eval_outputs/paper_suite/q1p7b-code-opdnative-enttail80-toklog-8g8c-b256-s42

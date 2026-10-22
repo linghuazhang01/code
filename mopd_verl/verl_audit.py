@@ -55,6 +55,7 @@ from mopd_verl.tensorboard_filter import (
     is_direct_audit_metric_key,
 )
 from mopd_verl.tensorboard_tags import domain_metric_category, safe_name
+from mopd_verl.token_baselines import validate_loss_variance_signal
 from mopd_verl.topk_distill import (
     eopd_entropy_threshold,
     select_teacher_log_prob_tensor,
@@ -191,6 +192,18 @@ def _tensor_to_float_list(tensor: Any) -> list[float]:
 
 def _tensor_to_int_list(tensor: Any) -> list[int]:
     return [int(x) for x in tensor.detach().long().cpu().tolist()]
+
+
+def _response_reward_and_correctness(
+    token_scores: Any, response_mask: Any
+) -> tuple[Any, Any]:
+    """Per-response score (token scores summed over the response) and score > 0.
+
+    score > 0 is the training_accuracy criterion.
+    """
+
+    sample_reward = (token_scores * response_mask).sum(dim=-1)
+    return sample_reward, sample_reward.gt(0).detach().float()
 
 
 def _project_jsonl_rows(
@@ -2265,6 +2278,24 @@ class MOPDAuditLogger:
             return {}
 
         started_at = time.perf_counter()
+        error_path = step_jsonl_dir(self.output_dir, step) / "audit_errors.jsonl"
+        error_path.unlink(missing_ok=True)
+        errors: list[dict[str, Any]] = []
+        # training_accuracy only needs the scores, so it is recorded before and
+        # independently of the token-level audit below.
+        try:
+            accuracy_metrics, accuracy_rows = self._compute_training_accuracy(
+                batch, step
+            )
+        except Exception as exc:  # pragma: no cover - logging must not kill training
+            accuracy_metrics = {
+                self._global_tag("audit", "training_accuracy_error"): 1.0
+            }
+            accuracy_rows = []
+            errors.append(
+                {"step": step, "stage": "training_accuracy", "error": repr(exc)}
+            )
+        self._write_jsonl("training_accuracy.jsonl", accuracy_rows)
         try:
             (
                 metrics,
@@ -2277,15 +2308,12 @@ class MOPDAuditLogger:
                 entropy_vocab_rows,
                 response_audit_batch,
             ) = self._compute_training_rows(batch, step, lr)
-        except Exception as exc:  # pragma: no cover - defensive remote logging
-            self._write_jsonl(
-                "audit_errors.jsonl",
-                [{"step": step, "stage": "training", "error": repr(exc)}],
-            )
-            return {self._global_tag("audit", "error"): 1.0}
+        except Exception as exc:
+            errors.append({"step": step, "stage": "training", "error": repr(exc)})
+            self._write_jsonl("audit_errors.jsonl", errors)
+            return {**accuracy_metrics, self._global_tag("audit", "error"): 1.0}
 
-        error_path = step_jsonl_dir(self.output_dir, step) / "audit_errors.jsonl"
-        error_path.unlink(missing_ok=True)
+        metrics.update(accuracy_metrics)
         metrics[self._global_tag("audit", "wall_time_step")] = (
             time.perf_counter() - started_at
         )
@@ -2427,18 +2455,66 @@ class MOPDAuditLogger:
                     compression=self.candidate_occurrence_log_compression,
                 )
             except Exception as exc:  # pragma: no cover - logging must not kill training
-                self._write_jsonl(
-                    "audit_errors.jsonl",
-                    [
-                        {
-                            "step": step,
-                            "stage": "candidate_occurrence_log",
-                            "error": repr(exc),
-                        }
-                    ],
+                errors.append(
+                    {
+                        "step": step,
+                        "stage": "candidate_occurrence_log",
+                        "error": repr(exc),
+                    }
                 )
                 metrics[self._global_tag("audit", "candidate_occurrence_error")] = 1.0
+        self._write_jsonl("audit_errors.jsonl", errors)
         return metrics
+
+    def _compute_training_accuracy(
+        self, batch: Any, step: int
+    ) -> tuple[dict[str, float], list[dict[str, Any]]]:
+        """Per-domain and batch training_accuracy: mean over responses of score > 0."""
+        tensor_batch = batch.batch
+        if "token_level_scores" not in set(tensor_batch.keys()):
+            return {}, []
+        token_scores = tensor_batch["token_level_scores"].detach().float()
+        response_mask = response_mask_from_batch(tensor_batch, token_scores)
+        _, correctness = _response_reward_and_correctness(token_scores, response_mask)
+        correct = _tensor_to_float_list(correctness)
+        labels = extract_teacher_domains(batch.non_tensor_batch, len(correct))
+        groups = [("batch", "all", correct)]
+        for domain in dict.fromkeys(self.domains + sorted(set(labels))):
+            groups.append(
+                (
+                    "domain",
+                    domain,
+                    [value for value, label in zip(correct, labels) if label == domain],
+                )
+            )
+        metrics: dict[str, float] = {}
+        rows: list[dict[str, Any]] = []
+        for scope, domain, values in groups:
+            accuracy = _mean(values)
+            rows.append(
+                {
+                    "step": step,
+                    "scope": scope,
+                    "domain": domain,
+                    "response_count": len(values),
+                    "correct_count": int(sum(values)),
+                    "training_accuracy": accuracy,
+                    "criterion": "response score > 0",
+                    "source": "token_level_scores",
+                }
+            )
+            if accuracy is None:
+                continue
+            if scope == "batch":
+                tag = self._global_tag("reward", "training_accuracy")
+            else:
+                tag = self._domain_tag(
+                    safe_name(domain),
+                    domain_metric_category("training_accuracy"),
+                    "training_accuracy",
+                )
+            metrics[tag] = accuracy
+        return metrics, rows
 
     def log_validation_metrics(
         self, val_metrics: dict[str, Any], step: int
@@ -2565,16 +2641,9 @@ class MOPDAuditLogger:
             configured_token_loss_name = "chosen_token_reverse_kl_fallback"
             configured_token_loss_epoch_reduction = "single_forward"
             configured_token_loss_epoch_count = 1
-        if (
-            self.loss_variance_signal != "opd_loss_token"
-            and configured_token_loss_name != self.loss_variance_signal
-        ):
-            raise ValueError(
-                "Configured loss-variance signal does not match the production "
-                "token loss: expected "
-                f"{self.loss_variance_signal!r}, got "
-                f"{configured_token_loss_name!r}."
-            )
+        validate_loss_variance_signal(
+            self.loss_variance_signal, configured_token_loss_name
+        )
 
         student_entropy = (
             tensor_batch["student_entropy"].detach().float()
@@ -2641,8 +2710,9 @@ class MOPDAuditLogger:
         sample_reward = None
         sample_correctness = None
         if token_scores is not None:
-            sample_reward = (token_scores * response_mask).sum(dim=-1)
-            sample_correctness = sample_reward.gt(0).detach().float()
+            sample_reward, sample_correctness = _response_reward_and_correctness(
+                token_scores, response_mask
+            )
 
         configured_domains = list(dict.fromkeys(self.domains + sorted(set(labels))))
         total_tokens = float(response_mask.sum().item())
@@ -3448,7 +3518,8 @@ class MOPDAuditLogger:
                 "response_p95",
                 "response_clip_ratio",
                 "training_reward_mean",
-                "training_accuracy",
+                # training_accuracy is emitted by _compute_training_accuracy,
+                # which also runs when this token-level audit fails.
                 "teacher_student_gap_mean",
                 "teacher_student_gap_std",
                 "teacher_student_gap_variance",

@@ -66,13 +66,15 @@ from mopd_verl.teacher_prefix import (
     teacher_prefix_sampling_enabled,
 )
 from mopd_verl.token_baselines import (
+    GENERIC_LOSS_VARIANCE_SIGNAL,
+    configured_token_loss_name,
     fire_opd_filter_trajectories,
     fire_opd_trajectory_drop_ratio,
     fire_opd_trajectory_weights,
-    token_baseline_method,
     token_baseline_requires_divergence,
     token_baseline_requires_teacher_entropy,
     uses_fire_opd_baseline,
+    validate_loss_variance_signal,
 )
 from mopd_verl.token_baseline_runtime import (
     build_precomputed_baseline_tensors,
@@ -80,7 +82,6 @@ from mopd_verl.token_baseline_runtime import (
 )
 from mopd_verl.topk_distill import (
     TOPK_SUPPORT_SOURCE_STUDENT,
-    configured_distill_loss_name,
     eopd_topk_k,
     select_teacher_log_prob_tensor,
     teacher_tensor_prefix,
@@ -518,6 +519,22 @@ class RayPPOTrainer:
         # kl loss control currently not suppoorted
         if self.config.algorithm.use_kl_in_reward:
             self.kl_ctrl_in_reward = core_algos.get_kl_controller(self.config.algorithm.kl_ctrl)
+
+        # Preflight before any worker starts: the audit rejects every step whose
+        # loss name differs from mopd_audit.loss_variance_signal, so such a run
+        # would train to the end without any per-token audit output.
+        mopd_audit_config = self.config.get("mopd_audit", {})
+        if bool(mopd_audit_config.get("enabled", False)):
+            validate_loss_variance_signal(
+                str(
+                    mopd_audit_config.get(
+                        "loss_variance_signal", GENERIC_LOSS_VARIANCE_SIGNAL
+                    )
+                ).strip(),
+                configured_token_loss_name(
+                    self.config.actor_rollout_ref.actor.policy_loss
+                ),
+            )
 
         self._create_dataloader(train_dataset, val_dataset, collate_fn, train_sampler)
         self.domain_budget_controller = DynamicDomainBudgetController(
@@ -1941,20 +1958,9 @@ class RayPPOTrainer:
                             self.global_steps
                         )
                     )
-                    configured_loss_name = configured_distill_loss_name(
-                        policy_loss_config
-                    )
-                    configured_token_baseline = token_baseline_method(
-                        policy_loss_config
-                    )
-                    if configured_token_baseline != "none":
-                        configured_loss_name = (
-                            f"{configured_loss_name}+"
-                            f"{configured_token_baseline}_token_weighting"
-                        )
                     batch.meta_info[
                         "mopd_configured_token_loss_name"
-                    ] = configured_loss_name
+                    ] = configured_token_loss_name(policy_loss_config)
                     batch.meta_info[
                         "mopd_configured_token_loss_epoch_reduction"
                     ] = "mean"

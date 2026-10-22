@@ -479,6 +479,7 @@ CORE_AUDIT = {
     "sample_gradient_distributed_world_size",
     "sample_gradient_zero_norm_count",
     "token_gradient_distributed_unsupported",
+    "training_accuracy_error",
     "wall_time_step",
 }
 CORE_GLOBAL_DATA = {"domain_mix_entropy", "total_samples", "total_tokens"}
@@ -655,6 +656,8 @@ def _keep_global(category: str, metric: str, parts: list[str]) -> bool:
         )
     if category == "data":
         return metric in CORE_GLOBAL_DATA
+    if category == "reward":
+        return metric == "training_accuracy"
     if category == "pre_reweight_full_grad_conflict":
         return metric in CORE_CONFLICT
     if category == "loss":

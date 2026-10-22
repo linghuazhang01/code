@@ -17,7 +17,7 @@ from mopd_verl.token_baseline_math import (
     normalize_per_sequence,
     select_positions,
 )
-from mopd_verl.topk_distill import cfg_get
+from mopd_verl.topk_distill import cfg_get, configured_distill_loss_name
 
 
 TOKEN_BASELINE_NONE = "none"
@@ -38,6 +38,8 @@ TOKEN_BASELINE_ALIASES = {
     "fire": TOKEN_BASELINE_FIRE_OPD,
     "fire-opd": TOKEN_BASELINE_FIRE_OPD,
 }
+# audit.loss_variance_signal value that accepts whichever loss the trainer reports.
+GENERIC_LOSS_VARIANCE_SIGNAL = "opd_loss_token"
 
 TOKEN_SELECTION_TOPK = "topk"
 TOKEN_SELECTION_SAMPLE = "sample"
@@ -74,6 +76,43 @@ def token_baseline_method(policy_loss_config: Any) -> str:
             f"{sorted(TOKEN_BASELINE_ALIASES)}, got {method!r}."
         )
     return method
+
+
+def configured_token_loss_name(policy_loss_config: Any) -> str:
+    """Return the per-token loss name the trainer hands to the audit.
+
+    A token baseline reweights the distillation loss, so its name is appended
+    (``<loss>+<method>_token_weighting``). ``audit.loss_variance_signal`` must
+    equal this name unless it is the generic ``opd_loss_token``.
+    """
+
+    name = configured_distill_loss_name(policy_loss_config)
+    method = token_baseline_method(policy_loss_config)
+    if method != TOKEN_BASELINE_NONE:
+        name = f"{name}+{method}_token_weighting"
+    return name
+
+
+def validate_loss_variance_signal(
+    loss_variance_signal: str, token_loss_name: str
+) -> None:
+    """Refuse an audit signal that names a different loss than the trained one.
+
+    Checked at config load and trainer start-up (against
+    ``configured_token_loss_name``) and again on every audited step (against
+    the name the trainer attached to the batch).
+    """
+
+    if (
+        loss_variance_signal != GENERIC_LOSS_VARIANCE_SIGNAL
+        and token_loss_name != loss_variance_signal
+    ):
+        raise ValueError(
+            "Configured loss-variance signal does not match the production "
+            "token loss: expected "
+            f"{loss_variance_signal!r}, got "
+            f"{token_loss_name!r}."
+        )
 
 
 def token_baseline_retention_ratio(policy_loss_config: Any) -> float:

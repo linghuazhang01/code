@@ -31,7 +31,7 @@ CASES = [(s, a) for s in SETTINGS for a in ARMS]
 TOPOLOGY = {"runtime.slurm_allocation_gpus", "data.train_batch_size", "actor.ppo_mini_batch_size", "trainer.n_gpus_per_node",
             "worker_placement.actor_rollout.n_gpus_per_node", "extra_overrides", "ray_kwargs.ray_init.num_cpus"}
 SELECTION = {"actor.token_baseline_method", "actor.token_baseline_retention_ratio", "actor.token_baseline_selection_mode",
-             "actor.token_baseline_normalize_weights"}
+             "actor.token_baseline_normalize_weights", "audit.loss_variance_signal"}
 
 
 def _path(setting: str, arm: str) -> Path:
@@ -112,6 +112,8 @@ def test_entropy_baseline_contract(setting: str, arm: str) -> None:
     assert (cfg.actor.token_baseline_method, cfg.actor.token_baseline_retention_ratio, cfg.actor.token_baseline_selection_mode) == ("entropy", ratio, mode)
     assert cfg.actor.token_baseline_normalize_weights is False  # author 2026-10-21: no per-response mean-one rescale
     assert cfg.audit.domains == domains
+    # The trainer names the weighted loss <base>+entropy_token_weighting; any other signal fails every audit step.
+    assert cfg.audit.loss_variance_signal == "policy_gradient_distillation_signal+entropy_token_weighting"
     assert cfg.audit.control_token_loss_weighting_enabled is False and cfg.audit.control_token_online_selection_enabled is False
     for key in PER_TOKEN_AUDIT:
         assert getattr(cfg.audit, key) is True, key

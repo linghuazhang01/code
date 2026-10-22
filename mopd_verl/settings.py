@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -50,7 +50,9 @@ from mopd_verl.topk_distill import (
 from mopd_verl.token_baselines import (
     TOKEN_BASELINE_FIRE_OPD,
     TOKEN_BASELINE_TIP_TOPK32,
+    configured_token_loss_name,
     token_baseline_method,
+    validate_loss_variance_signal,
     validate_token_baseline_config,
 )
 
@@ -904,6 +906,21 @@ def load_config(path: str | Path) -> MOPDConfig:
         actor,
         uses_topk_distillation=topk_distillation_active,
     )
+    if audit.enabled:
+        # Same name the trainer attaches to every batch; launch.py turns
+        # rollout teacher-prefix sampling on in the policy loss as well.
+        validate_loss_variance_signal(
+            audit.loss_variance_signal,
+            configured_token_loss_name(
+                replace(
+                    actor,
+                    teacher_prefix_enabled=(
+                        actor.teacher_prefix_enabled
+                        or rollout.teacher_prefix_sampling_enabled
+                    ),
+                )
+            ),
+        )
     if token_baseline_method(actor) in {
         TOKEN_BASELINE_TIP_TOPK32,
         TOKEN_BASELINE_FIRE_OPD,
