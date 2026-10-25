@@ -1,0 +1,30 @@
+# Qwen3-1.7B code-only native OPD: old list-12 Only plus observed look-back/check candidates.
+# Add-only: 119 original IDs + 37 new IDs = 156. Fixed ID matching at every valid occurrence, not contextual role annotation.
+# Candidate snapshot: configs/token_selection/list12_role_supplements.json (2026-10-25).
+# Weights, topology, seed, 60-step schedule and per-token audit are inherited unchanged from the old Only run.
+# Pool SHA256 (sorted, comma-joined IDs): 74e49b0ce9022fbd5a2e603521ef50a291fec451ff14382152af7069f245b0a4.
+extends: native_opd_list12_only_toklog_8gpu_8c_b256.yaml
+runtime:
+  wandb_run_id: q1p7b-code-opdnative-l12only-look-toklog-8g8c-b256-s42
+audit:
+  domain_control_token_ids:
+    code: [
+      2, 30, 258, 264, 323, 350, 362, 369, 374, 382, 421, 438, 458, 474, 504, 508,
+      518, 537, 576, 592, 624, 646, 702, 714, 758, 785, 912, 937, 961, 975, 1083, 1096,
+      1102, 1140, 1156, 1159, 1173, 1186, 1205, 1221, 1372, 1393, 1414, 1416, 1482, 1537, 1549, 1629,
+      1654, 1744, 1760, 1779, 1887, 1909, 1932, 1939, 1986, 1988, 1990, 2014, 2028, 2055, 2176, 2308,
+      2436, 2461, 2619, 2679, 2691, 2697, 2704, 2753, 2822, 3039, 3059, 3271, 3520, 3593, 3647, 3783,
+      3983, 4120, 4230, 4248, 4318, 4354, 4396, 4416, 4504, 4518, 4968, 4969, 4977, 5005, 5097, 5145,
+      5267, 5443, 5508, 5549, 5980, 6077, 6119, 6788, 7036, 7039, 7046, 7187, 7196, 7379, 8088, 8116,
+      8365, 8420, 9008, 9211, 9454, 9735, 9892, 10349, 10615, 11209, 11329, 11994, 12090, 13023, 13027, 13295,
+      13383, 13824, 14190, 14374, 14840, 16523, 17364, 20895, 21390, 22201, 27745, 27771, 29720, 30787, 30813, 31559,
+      39861, 40325, 49237, 52592, 53084, 62338, 73594, 84507, 89006, 90351, 92014, 151645
+    ]
+  output_dir: audit/q1p7b-code-opdnative-l12only-look-toklog-8g8c-b256-s42
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-code-opdnative-l12only-look-toklog-8g8c-b256-s42
+huggingface_checkpoint:
+  path_prefix: checkpoints/code/q1p7b-code-opdnative-l12only-look-toklog-8g8c-b256-s42
+trainer:
+  experiment_name: q1p7b-code-opdnative-l12only-look-toklog-8g8c-b256-s42
+  default_local_dir: checkpoints/MOPD/q1p7b-code-opdnative-l12only-look-toklog-8g8c-b256-s42

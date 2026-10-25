@@ -1,0 +1,73 @@
+{
+  "version": "list12-role-supplements-20261025",
+  "tokenizer": "Qwen3",
+  "matching": "fixed_token_id_all_valid_occurrences",
+  "candidate_selection": "Domain-specific rows in the frozen roles CSV with role 2a terminate or 2b look-back and per_1000 >= 0.02 in the equal-weight 1.7B native OPD run.",
+  "limitations": "ID-string heuristic, not occurrence-context annotation or complete semantic inventory. Ambiguous words and question marks remain in the frozen candidate groups. Does not redefine the Control/Structure taxonomy in Token.md.",
+  "id_hash_format": "SHA256 of sorted unique integer IDs joined by commas without spaces",
+  "baseline_source": "analysis/token-set-toklog-20261019/tables/d1_token_list_ids.json, <domain>.shared",
+  "domains": {
+    "math": {
+      "source_csv": "analysis/token-roles-20261025/tables/roles_math.csv",
+      "source_sha256": "584891ed35a4476b47aadcd470c107886157af14432f18ebb5b9cec984974030",
+      "baseline_count": 78,
+      "baseline_sha256": "e7488da3d3babda2a5f6b3c464bf936e70c857ea2a521f8ed6108e88ea31808d",
+      "terminate": [
+        820, 1590, 4226, 11822, 13023, 16688, 19357, 21806, 23949, 31094, 79075, 151645
+      ],
+      "lookback": [
+        30, 714, 1549, 1744, 1779, 1939, 1988, 1990, 2028, 2308, 2704, 2753, 3331,
+        3498, 3520, 3783, 3973, 3983, 4354, 4518, 4969, 4977, 6788, 7196, 7414, 8088,
+        8365, 9454, 10146, 11209, 13295, 13824, 14190, 16523, 19091, 30787, 52592, 92014
+      ],
+      "pools": {
+        "terminate": {
+          "count": 83,
+          "added_count": 5,
+          "sha256": "3925da76ecd41a2e6f7b7418edbf219bf0d9e21c712177ca97be109857529324"
+        },
+        "lookback": {
+          "count": 115,
+          "added_count": 37,
+          "sha256": "0e19a2c89986967d74d7c98ae21d6943ddc367acbc52345ca9f260fe431cf4c0"
+        },
+        "terminate_lookback": {
+          "count": 120,
+          "added_count": 42,
+          "sha256": "9dd7bc9a2160b775dcef8c56a2b43cc2ba358bf5c43301f7d1589c795714b869"
+        }
+      }
+    },
+    "code": {
+      "source_csv": "analysis/token-roles-20261025/tables/roles_code.csv",
+      "source_sha256": "ceb6a373775521310f4066d4a2660df2d2f1fddaeb84ac43fa6c5b007f6db81c",
+      "baseline_count": 119,
+      "baseline_sha256": "263bc87e2f03850b6bb0c9b187a4b1bc7c2be97253281bf3efc167adbf6a106f",
+      "terminate": [
+        820, 1590, 4226, 11822, 13023, 17375, 19357, 21517, 21806, 23949, 31094, 151645
+      ],
+      "lookback": [
+        30, 714, 937, 1549, 1744, 1779, 1939, 1988, 1990, 2028, 2308, 2704, 2753,
+        3520, 3783, 3983, 4248, 4354, 4518, 4969, 4977, 5267, 6788, 7196, 8088, 8365,
+        9454, 11209, 12090, 13295, 13824, 14190, 16523, 21390, 30787, 52592, 92014
+      ],
+      "pools": {
+        "terminate": {
+          "count": 129,
+          "added_count": 10,
+          "sha256": "44611b30675fa1b98e871041b0b8fea6aeafcb438342ce6e4cff3bb92a89bc82"
+        },
+        "lookback": {
+          "count": 156,
+          "added_count": 37,
+          "sha256": "74e49b0ce9022fbd5a2e603521ef50a291fec451ff14382152af7069f245b0a4"
+        },
+        "terminate_lookback": {
+          "count": 166,
+          "added_count": 47,
+          "sha256": "4df4f50995437de4000e515a787a06193bd535d25ebe531e1421da9e0e2096cb"
+        }
+      }
+    }
+  }
+}

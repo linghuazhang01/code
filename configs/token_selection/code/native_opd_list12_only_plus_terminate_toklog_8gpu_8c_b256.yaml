@@ -1,0 +1,29 @@
+# Qwen3-1.7B code-only native OPD: old list-12 Only plus observed terminate/conclude candidates.
+# Add-only: 119 original IDs + 10 new IDs = 129. Fixed ID matching at every valid occurrence, not contextual role annotation.
+# Candidate snapshot: configs/token_selection/list12_role_supplements.json (2026-10-25).
+# Weights, topology, seed, 60-step schedule and per-token audit are inherited unchanged from the old Only run.
+# Pool SHA256 (sorted, comma-joined IDs): 44611b30675fa1b98e871041b0b8fea6aeafcb438342ce6e4cff3bb92a89bc82.
+extends: native_opd_list12_only_toklog_8gpu_8c_b256.yaml
+runtime:
+  wandb_run_id: q1p7b-code-opdnative-l12only-term-toklog-8g8c-b256-s42
+audit:
+  domain_control_token_ids:
+    code: [
+      2, 258, 264, 323, 350, 362, 369, 374, 382, 421, 438, 458, 474, 504, 508, 518,
+      537, 576, 592, 624, 646, 702, 758, 785, 820, 912, 961, 975, 1083, 1096, 1102, 1140,
+      1156, 1159, 1173, 1186, 1205, 1221, 1372, 1393, 1414, 1416, 1482, 1537, 1590, 1629, 1654, 1760,
+      1887, 1909, 1932, 1986, 2014, 2055, 2176, 2436, 2461, 2619, 2679, 2691, 2697, 2822, 3039, 3059,
+      3271, 3593, 3647, 4120, 4226, 4230, 4318, 4396, 4416, 4504, 4968, 5005, 5097, 5145, 5443, 5508,
+      5549, 5980, 6077, 6119, 7036, 7039, 7046, 7187, 7379, 8116, 8420, 9008, 9211, 9735, 9892, 10349,
+      10615, 11329, 11822, 11994, 13023, 13027, 13383, 14374, 14840, 17364, 17375, 19357, 20895, 21517, 21806, 22201,
+      23949, 27745, 27771, 29720, 30813, 31094, 31559, 39861, 40325, 49237, 53084, 62338, 73594, 84507, 89006, 90351,
+      151645
+    ]
+  output_dir: audit/q1p7b-code-opdnative-l12only-term-toklog-8g8c-b256-s42
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-code-opdnative-l12only-term-toklog-8g8c-b256-s42
+huggingface_checkpoint:
+  path_prefix: checkpoints/code/q1p7b-code-opdnative-l12only-term-toklog-8g8c-b256-s42
+trainer:
+  experiment_name: q1p7b-code-opdnative-l12only-term-toklog-8g8c-b256-s42
+  default_local_dir: checkpoints/MOPD/q1p7b-code-opdnative-l12only-term-toklog-8g8c-b256-s42

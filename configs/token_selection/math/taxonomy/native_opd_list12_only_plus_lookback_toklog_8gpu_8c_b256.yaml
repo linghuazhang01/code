@@ -1,0 +1,28 @@
+# Qwen3-1.7B math-only native OPD: old list-12 Only plus observed look-back/check candidates.
+# Add-only: 78 original IDs + 37 new IDs = 115. Fixed ID matching at every valid occurrence, not contextual role annotation.
+# Candidate snapshot: configs/token_selection/list12_role_supplements.json (2026-10-25).
+# Weights, topology, seed, 60-step schedule and per-token audit are inherited unchanged from the old Only run.
+# Pool SHA256 (sorted, comma-joined IDs): 0e19a2c89986967d74d7c98ae21d6943ddc367acbc52345ca9f260fe431cf4c0.
+extends: native_opd_list12_only_toklog_8gpu_8c_b256.yaml
+runtime:
+  wandb_run_id: q1p7b-math-opdnative-l12only-look-toklog-8g8c-b256-s42
+audit:
+  domain_control_token_ids:
+    math: [
+      30, 32, 72, 264, 279, 304, 323, 330, 362, 369, 374, 382, 389, 432, 498, 537,
+      576, 624, 641, 646, 702, 714, 729, 738, 758, 773, 785, 820, 1096, 1188, 1221, 1249,
+      1378, 1473, 1549, 1576, 1744, 1779, 1896, 1939, 1977, 1986, 1988, 1990, 2028, 2055, 2121, 2308,
+      2461, 2477, 2679, 2704, 2753, 3036, 3331, 3498, 3520, 3593, 3783, 3862, 3973, 3983, 4226, 4354,
+      4416, 4518, 4588, 4792, 4969, 4977, 5005, 5297, 5944, 5978, 6172, 6788, 7039, 7196, 7414, 8088,
+      8365, 9454, 9658, 10146, 10253, 11209, 11625, 12209, 12549, 13023, 13295, 13394, 13824, 14190, 15277, 16523,
+      16688, 17949, 19091, 21453, 21806, 24437, 25521, 30787, 31094, 36341, 44364, 44500, 52592, 54815, 56204, 67691,
+      73877, 92014, 151645
+    ]
+  output_dir: audit/q1p7b-math-opdnative-l12only-look-toklog-8g8c-b256-s42
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-opdnative-l12only-look-toklog-8g8c-b256-s42
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-opdnative-l12only-look-toklog-8g8c-b256-s42
+trainer:
+  experiment_name: q1p7b-math-opdnative-l12only-look-toklog-8g8c-b256-s42
+  default_local_dir: checkpoints/MOPD/q1p7b-math-opdnative-l12only-look-toklog-8g8c-b256-s42
