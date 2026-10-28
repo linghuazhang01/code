@@ -1,0 +1,9 @@
+# Example plan for deploy/remote/run_pipeline.sh (bash deploy/bootstrap.sh run deploy/plans/example.tsv).
+# step     argument 1                                           argument 2   [hydra overrides for train]
+# Train one Code-only 1.7B baseline on four colocated GPUs (the config uploads step 60 to HF when it enables huggingface_checkpoint):
+# train    configs/baselines/code/<config>.yaml                  0,1,2,3
+# Evaluate two HF checkpoints, three seeds, one queue per GPU sharing the list:
+eval       math4:q1p7b_math_termlook:42,code4:q1p7b_code_termlook:42,math4:q1p7b_math_termlook:1042,code4:q1p7b_code_termlook:1042,math4:q1p7b_math_termlook:2042,code4:q1p7b_code_termlook:2042   0,1
+wait-eval
+# Upload finished suites to RESULTS_REPO (needs HF_TOKEN on the target and upload_route=direct):
+upload     *_termlook_*

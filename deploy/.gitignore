@@ -1,0 +1,5 @@
+# Machine-specific settings (hosts, users, proxies) stay local.
+/target.env
+/network.env
+/.tunnel.pid
+/.tunnel.log

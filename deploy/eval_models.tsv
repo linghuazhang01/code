@@ -1,0 +1,33 @@
+# name<TAB>checkpoint: a path inside icemoon28/opd-checkpoints (downloaded and sha256-checked) or an absolute local path
+# Names follow the Burgundy A100 queue (run_eval_jobs_a100_v9.sh, 2026-10-28) so suite tags stay comparable.
+q4b_opdnative	checkpoints/qwen4b/math/q4b-math-opdnative-toklog-3g3c-b255-s42/global_step_60
+q1p7b_code_opdnative	checkpoints/code/q1p7b-code-opdnative-toklog-3g3c-b255/global_step_60
+q1p7b_math_opd_toklog	checkpoints/math/q1p7b-math-top32kl-opd-toklog-3g3c-b255/global_step_60
+q4b_math_fireopd	checkpoints/qwen4b/math/q4b-math-fireopd-4g4c-b256-s42/global_step_60
+q4b_mc_opdnative	checkpoints/math_code/q4b-mc-opdnative-8g8c-b528-s42-20261018/global_step_60
+q4b_mc_opd	checkpoints/math_code/q4b-mc-opd-audit-8g8c-20261017-040055/global_step_60
+q4b_mc_tip	checkpoints/math_code/q4b-mc-tiptopk32-toklog-20261016-143323/global_step_60
+q1p7b_code_opd	checkpoints/code/q1p7b-code-top32kl-opd-toklog-3g3c-b255/global_step_60
+q4b_code_opd	checkpoints/qwen4b/code/q4b-code-opd-toklog-3g3c-b255-s42/global_step_60
+q4b_code_opdnative	checkpoints/qwen4b/code/q4b-code-opdnative-toklog-3g3c-b255-s42/global_step_60
+q1p7b_math_opdnative	checkpoints/math/q1p7b-math-opdnative-toklog-3g3c-b255/global_step_60
+q1p7b_math_enttop20	checkpoints/math/q1p7b-math-opdnative-enttop20-toklog-8g8c-b256-s42-20261021/global_step_60
+q1p7b_math_enttail80	checkpoints/math/q1p7b-math-opdnative-enttail80-toklog-8g8c-b256-s42-20261021/global_step_60
+q4b_mc_eopd	checkpoints/math_code/q4b-mc-eopd-8g8c-b528-s42-20261018/global_step_60
+q4b_code_tip	checkpoints/code/q4b-tip-topk32-code-8c-b256-s42-20261019/global_step_60
+q4b_code_eopd	checkpoints/code/q4b-eopd-code-8c-b256-s42-20261019/global_step_60
+q4b_code_exopd	checkpoints/code/q4b-exopd-code-8c-b256-s42-20261019/global_step_60
+q1p7b_math_termlook	checkpoints/math/q1p7b-math-opdnative-l12only-termlook-toklog-8g8c-b256-s42/global_step_60
+q1p7b_code_termlook	checkpoints/code/q1p7b-code-opdnative-l12only-termlook-toklog-8g8c-b256-s42/global_step_60
+q1p7b_code_tip	checkpoints/code/qwen1p7b-30b-code-tip-topk32-rho50-4gpu-4c-b256-s42/global_step_60
+q1p7b_code_eopd	checkpoints/code/qwen1p7b-30b-code-eopd-native-4gpu-4c-b256-s42/global_step_60
+q1p7b_mc_opdnative	checkpoints/baselines/math_code/q1p7b-mc-opdnative-toklog-4g4c-b256-s42/global_step_60
+q1p7b_code_enttop20	checkpoints/code/q1p7b-code-opdnative-enttop20-toklog-8g8c-b256-s42-20261021/global_step_60
+q1p7b_code_enttail80	checkpoints/code/q1p7b-code-opdnative-enttail80-toklog-8g8c-b256-s42-20261021/global_step_60
+q1p7b_code_l12ign	checkpoints/code/q1p7b-code-opdnative-l12ign-toklog-8g8c-b256-s42-20261020/global_step_60
+q1p7b_code_l12only	checkpoints/code/q1p7b-code-opdnative-l12only-toklog-8g8c-b256-s42-20261020/global_step_60
+q1p7b_math_l12ign	checkpoints/math/q1p7b-math-opdnative-l12ign-toklog-8g8c-b256-s42-20261020/global_step_60
+q1p7b_math_l12only	checkpoints/math/q1p7b-math-opdnative-l12only-toklog-8g8c-b256-s42-20261020/global_step_60
+q1p7b_mc_v3ign	checkpoints/math_code/q1p7b-mc-opdv3ign-toklog-20261016-143323/global_step_60
+q1p7b_mc_v3only	checkpoints/math_code/q1p7b-mc-opdv3only-8c-20261015-123124/global_step_60
+q1p7b_mc_v3ign_early	checkpoints/mopd/q1p7b-mc-opdv3ign-20261015-021939/global_step_60
