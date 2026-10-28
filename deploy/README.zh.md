@@ -67,6 +67,32 @@ source <REMOTE_ROOT>/activate.sh
 
 所有东西都在 `REMOTE_ROOT` 下：`code/`、`miniforge3/`、`models/`、`eval_models/`、`eval_outputs/`、`logs/`、`state/`。`REMOTE_ROOT` 必须是新目录或空目录（代码同步用 `rsync --delete`，脚本会拒绝写进已有内容的目录）。每个阶段完成后写 `state/<阶段>.done`，中断后重跑会跳过已完成的阶段（`FORCE=1` 重做）。
 
+## 容器：只装环境 / 只下数据和模型（`deploy/container/`）
+
+适用于不能 SSH 进去、镜像固定、要在启动脚本或 `docker build` 里自己装环境的平台。两个脚本互相独立，都在代码目录里运行，重复运行会跳过已完成的部分，不读 `target.env` / `network.env`。
+
+| 脚本 | 做什么 |
+|---|---|
+| `deploy/container/install_env.sh` | 只装环境：Miniforge（核对 SHA-256）→ `mopd-verl`（`environment.yml` + `env.lock.txt`，torch 2.6.0 / vLLM 0.8.5.post1 / transformers 4.51.3）→ 版本检查 → 写 `<prefix>/opd_env.sh`。不需要 GPU，可以放进 `docker build`；`--verify <GPU>` 在有 GPU 时做 CUDA + 多卡 NCCL 检查 |
+| `deploy/container/download_data_models.sh` | 只下数据和模型，全部放进 `--dir`：训练 parquet（DeepMath level-6 + Eurus code）、学生和老师模型（逐文件核对大小和 SHA-256）。再在 `<代码上一级>/mopd/` 下建链接，让配置里的 `../mopd/models/...`、`../mopd/code/data/...` 能找到；代码目录本身不改 |
+
+```bash
+# 1. 环境。启动时安装就放持久盘，每次挂到同一路径（conda 环境不能换路径），之后启动会跳过安装；docker build 里加 --clean
+bash deploy/container/install_env.sh --prefix /mnt/disk/miniforge3 --verify 0,1,2,3   # 没有 GPU 时去掉 --verify
+source /mnt/disk/miniforge3/opd_env.sh            # PATH、PYTHON、PYTHONPATH
+# 2. 数据和模型，下到指定目录
+bash deploy/container/download_data_models.sh --dir /mnt/disk/opd_data
+#   --students "Qwen/Qwen3-1.7B Qwen/Qwen3-4B"（默认）  --teacher Qwen/Qwen3-30B-A3B-Instruct-2507（默认，"" = 不下）
+#   --no-data / --no-models：只做其中一样
+# 3. 训练
+GPU_IDS=0,1,2,3 bash start.sh -c configs/<config>.yaml --local
+```
+
+- 空间（Hub 上的大小）：训练数据 1.7 GB，Qwen3-1.7B 4.1 GB，Qwen3-4B 8.1 GB，Qwen3-30B-A3B-Instruct-2507 61.1 GB；环境另算。
+- 网络：两个脚本都认 `HTTPS_PROXY` / `HTTP_PROXY`。没有代理时，环境脚本用 `GITHUB_PROXY`（前缀式，如 `https://ghfast.top`）、`PIP_MIRROR`、`CONDA_MIRROR`；下载脚本用 `HF_ENDPOINT=https://hf-mirror.com`。镜像只能下载，不能上传。
+- 镜像里要有 `bash`、`curl`、`git`；只支持 Linux x86_64、非 Blackwell GPU、支持 CUDA 12.4 的驱动。
+- 不包括：评测数据和官方打分环境（G-OPD、LiveCodeBench、EvalPlus）、密钥、上传。
+
 ## 安装阶段
 
 | 阶段 | 内容 | 属于 |
