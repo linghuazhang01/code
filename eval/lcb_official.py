@@ -113,7 +113,7 @@ def _load_gopd_runtime(gopd_dir: Path) -> SimpleNamespace:
     )
 
 
-def _gopd_args(release: str, *, num_process_evaluate: int = 64, timeout: int = 6) -> Any:
+def _gopd_args(release: str, *, num_process_evaluate: int = int(__import__("os").environ.get("MOPD_LCB_PROCS", "64")), timeout: int = 6) -> Any:
     return SimpleNamespace(
         scenario=None,
         release_version=release,
