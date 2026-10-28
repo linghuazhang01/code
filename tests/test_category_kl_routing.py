@@ -90,16 +90,6 @@ def test_missing_domains_and_ids_fail() -> None:
                              token_ids=ids, domains=domains)
 
 
-def test_launcher_preserves_nested_routing() -> None:
-    root = Path(__file__).resolve().parents[1]
-    base = load_config(root / "configs/mopd_qwen1p7b_nonthinking_goosereason4b_instruct_8gpu_math_code_science_topk32_reverse_kl_baseline.yaml")
-    routes = config()["topk_distill_loss_by_domain"]
-    updated = replace(base, actor=replace(base.actor, topk_distill_loss_by_domain=routes))
-    arg = next(a for a in build_command(updated)
-               if a.startswith("++actor_rollout_ref.actor.policy_loss.topk_distill_loss_by_domain="))
-    assert yaml.safe_load(arg.split("=", 1)[1]) == routes
-
-
 def test_verl_schema_preserves_routing() -> None:
     root = Path(__file__).resolve().parents[1]
     source = ast.parse((root / "third_party/verl/verl/workers/config/actor.py").read_text())

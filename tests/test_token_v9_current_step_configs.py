@@ -87,8 +87,8 @@ def test_profile_contract(gpus: int, tmp_path: Path) -> None:
     assert not (math | code) & (DROPPED_IDS | BOLD_IDS)
     assert set(CODE_KEYWORDS.values()) <= code
 
-    assert config.data.train_batch_size == 528
-    assert config.actor.ppo_mini_batch_size == 528
+    assert config.data.train_batch_size == (255 if config.trainer.n_gpus_per_node == 3 else 512)
+    assert config.actor.ppo_mini_batch_size == (255 if config.trainer.n_gpus_per_node == 3 else 512)
     assert config.trainer.total_training_steps == 60 <= 65
     assert config.huggingface_checkpoint.private is False
     assert config.huggingface_checkpoint.steps == (60,)
@@ -112,7 +112,7 @@ def test_pools_identical_across_topologies_and_namespaces_unique() -> None:
     for gpus in GPUS:
         config = load_config(_path(gpus))
         run_id = config.runtime.wandb_run_id
-        assert run_id == f"q1p7b{gpus}g-mc-v9-ctl-current-m05c01-f4-b528-s60"
+        assert run_id == f"q1p7b{gpus}g-mc-v9-ctl-current-m05c01-f4-b{255 if gpus == 3 else 512}-s60"
         values = (
             config.audit.output_dir,
             config.paper_eval.output_dir,

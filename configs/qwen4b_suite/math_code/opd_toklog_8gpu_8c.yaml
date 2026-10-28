@@ -2,7 +2,7 @@
 # (File name avoids '_token', which .gitignore excludes.)
 extends: opd_8gpu_8c.yaml
 runtime:
-  wandb_run_id: q4b-mc-opd-toklog-8g8c-b528-s42
+  wandb_run_id: q4b-mc-opd-toklog-8g8c-b512-s42
 audit:
   # Per-token logging (user 2026-10-17): same switches as the toklog runs (opd_toklog_* / uniform_top32kl_toklog_*)
   # and the v3-pool configs. Logging only: no switch here changes the loss or the gradients.
@@ -25,13 +25,13 @@ audit:
   response_level_compression: gzip
   # Per-response sample ID, OPD loss, reward and correctness (loss_variance_sample.jsonl).
   log_sample_level: true
-  output_dir: audit/q4b-mc-opd-toklog-8g8c-b528-s42
+  output_dir: audit/q4b-mc-opd-toklog-8g8c-b512-s42
 paper_eval:
-  output_dir: eval_outputs/paper_suite/q4b-mc-opd-toklog-8g8c-b528-s42
+  output_dir: eval_outputs/paper_suite/q4b-mc-opd-toklog-8g8c-b512-s42
 huggingface_checkpoint:
-  path_prefix: checkpoints/qwen4b/math_code/q4b-mc-opd-toklog-8g8c-b528-s42
+  path_prefix: checkpoints/qwen4b/math_code/q4b-mc-opd-toklog-8g8c-b512-s42
   steps: [60]
 trainer:
   total_training_steps: 60
-  experiment_name: q4b-mc-opd-toklog-8g8c-b528-s42
-  default_local_dir: checkpoints/MOPD/q4b-mc-opd-toklog-8g8c-b528-s42
+  experiment_name: q4b-mc-opd-toklog-8g8c-b512-s42
+  default_local_dir: checkpoints/MOPD/q4b-mc-opd-toklog-8g8c-b512-s42

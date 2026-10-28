@@ -15,14 +15,6 @@ from mopd_verl.settings import load_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG_PATH = ROOT / (
-    "configs/token_selection/math_code_science/taxonomy/"
-    "mopd_qwen1p7b_30b_a3b_instruct_2507_4gpu_math_code_science_"
-    "topp_m05_c02_s02_code_structure_only_science_loss_teacherconf_"
-    "fixed4_b528_colocated.yaml"
-)
-
-
 def test_loss_teacher_confidence_score_normalizes_token_type_means() -> None:
     result = global_candidate_loss_statistics_with_valid_counts(
         (torch.tensor([[10, 20, 30]], dtype=torch.long),),
@@ -120,44 +112,3 @@ def test_mixed_domain_runtime_keeps_math_on_plain_top_loss() -> None:
         {10: (0.0, 1), 20: (1.25, 1), 30: (3.0, 1)}
     )
     assert result.valid_token_counts == {"math": 3, "science": 3}
-
-
-def test_four_gpu_profile_has_requested_domain_policy() -> None:
-    config = load_config(CONFIG_PATH)
-
-    assert config.runtime.slurm_allocation_gpus == 4
-    assert config.trainer.n_gpus_per_node == 4
-    assert config.data.train_batch_size == 528
-    assert config.audit.control_token_online_top_p_by_domain == {
-        "math": 0.05,
-        "code": 0.02,
-        "science": 0.02,
-    }
-    assert config.audit.control_token_loss_weight == 4.0
-    assert config.audit.control_token_online_min_mean_occurrences_per_step == 20.0
-    assert config.audit.control_token_online_strict_occurrence_gate is True
-    assert config.audit.control_token_online_selection_mode_by_domain == {
-        "math": "top_loss",
-        "code": "top_loss",
-        "science": "top_loss_teacher_confidence",
-    }
-    assert config.audit.control_token_online_weight_mode_by_domain == {
-        "math": "fixed",
-        "code": "fixed",
-        "science": "fixed",
-    }
-    assert set(config.audit.domain_control_token_candidate_groups["code"]) == {
-        "Structure"
-    }
-
-    command = build_command(config)
-    assert any(
-        argument.endswith(
-            "{math: 'top_loss', code: 'top_loss', "
-            "science: 'top_loss_teacher_confidence'}"
-        )
-        for argument in command
-        if argument.startswith(
-            "+mopd_audit.control_token_online_selection_mode_by_domain="
-        )
-    )

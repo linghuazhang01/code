@@ -40,15 +40,15 @@ no-grad student prepass per step. Contract test: `tests/test_current_step_positi
 
 | Suffix | GPUs | Layout | Math batch | Math+Code batch | ref FSDP | vLLM mem |
 |---|---:|---|---:|---:|---:|---:|
-| `3gpu_3c` | 3 | actor + rollout + teacher colocated on all three GPUs | 255 = 3 x 85 | 528 = 3 x 176 | 3 | 0.60 |
-| `8gpu_8c` | 8 | actor + rollout + FSDP-8 teacher colocated on all eight GPUs (formerly `8gpu_6s2t`) | 256 = 8 x 32 | 528 = 8 x 66 | 8 | 0.60 |
+| `3gpu_3c` | 3 | actor + rollout + teacher colocated on all three GPUs | 255 = 3 x 85 | 255 = 3 x 85 | 3 | 0.60 |
+| `8gpu_8c` | 8 | actor + rollout + FSDP-8 teacher colocated on all eight GPUs (formerly `8gpu_6s2t`) | 256 = 8 x 32 | 512 = 8 x 64 | 8 | 0.60 |
 
 Notes on the budget:
 
 - Math-only batches follow `configs/baselines/math` (nearest integer to 256
   divisible by the actor count); 60 steps, HF checkpoint at 60.
-- Math+Code uses 528 for all three layouts (the batch of the 1.7B SAPD
-  3s1t and 8g6s2t runs; the 1.7B `baselines/math_code` suite used 516). 60
+- Math+Code uses 512 on 8 GPUs and 255 on 3 GPUs (512 is not divisible by 3; same
+  rule as the 1.7B `baselines/math_code` suite). 60
   steps, HF checkpoint at step 60. `multi_teacher_distill: true` as in the
   SAPD runs; all domain teacher paths alias the same 30B checkpoint.
 - vLLM `gpu_memory_utilization` is lowered to 0.5 / 0.6 because the 4B student
@@ -87,11 +87,11 @@ memory fraction, names, and defaults made explicit.
 
 ## 2026-10-15 8-GPU files are colocated
 
-At the author's request every `*_8gpu_6s2t.yaml` here now runs colocated on eight GPUs (actor, vLLM rollout and the FSDP-8 teacher share all GPUs; vLLM memory 0.4 as in `3gpu_3c`). Math and Code batches changed from 258 to 256 (divisible by 8); Math+Code stays 528. File names keep `6s2t`; run names and paths use `8g8c`.
+At the author's request every `*_8gpu_6s2t.yaml` here now runs colocated on eight GPUs (actor, vLLM rollout and the FSDP-8 teacher share all GPUs; vLLM memory 0.4 as in `3gpu_3c`). Math and Code batches changed from 258 to 256 (divisible by 8); Math+Code was 528 and is now 512 (255 on 3 GPUs, 2026-10-18). File names keep `6s2t`; run names and paths use `8g8c`.
 
 ## 2026-10-17 Math+Code OPD with per-token logging
 
-`math_code/opd_toklog_{3gpu_3c,8gpu_8c}.yaml` extend the plain `opd_*` files of the same topology and only add the per-token audit block (token gap / entropy / logp vectors, response records, per-response loss) and `-toklog-` run names `q4b-mc-opd-toklog-{3g3c,4g3s1t,8g8c}-b528-s42`. Training is identical to the plain run. The 1.7B counterparts at batch 528 are in `../qwen1p7b_suite/math_code/`.
+`math_code/opd_toklog_{3gpu_3c,8gpu_8c}.yaml` extend the plain `opd_*` files of the same topology and only add the per-token audit block (token gap / entropy / logp vectors, response records, per-response loss) and `-toklog-` run names `q4b-mc-opd-toklog-{3g3c-b255,8g8c-b512}-s42`. Training is identical to the plain run. The 1.7B counterparts (512 / 255) are in `../qwen1p7b_suite/math_code/`.
 
 ## 2026-10-17 File names and vLLM memory
 

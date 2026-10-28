@@ -1,5 +1,9 @@
-# v3 pools, Math+Code, three colocated GPUs; everything else as _mopd_math_code_v3pool_fixed_4gpu.yaml (batch 528 = 3 x 176).
+# v3 pools, Math+Code, three colocated GPUs; everything else as _mopd_math_code_v3pool_fixed_4gpu.yaml (batch 255 = 3 x 85).
 extends: _mopd_math_code_v3pool_fixed_4gpu.yaml
+data:
+  train_batch_size: 255
+actor:
+  ppo_mini_batch_size: 255
 runtime:
   slurm_allocation_gpus: 3
 rollout:

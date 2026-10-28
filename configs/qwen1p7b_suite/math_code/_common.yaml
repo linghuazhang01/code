@@ -1,9 +1,9 @@
-# Shared Qwen3-1.7B student budget for the math_code setting at global batch 528. Not launchable by itself:
+# Shared Qwen3-1.7B student budget for the math_code setting at global batch 512 (255 for the 3-GPU files). Not launchable by itself:
 # every user-facing file in this directory extends a method fragment and sets one topology.
 # Teacher: Qwen3-30B-A3B-Instruct-2507 (shared across domains). Same protocol as
 # configs/qwen4b_suite/math_code (copied from its _common.yaml; only the student path differs) and as
-# the 1.7B SAPD Math+Code runs: global batch 528, multi_teacher_distill true, 60 steps.
-# configs/baselines/math_code uses 516 / 512 and multi_teacher_distill false.
+# the 1.7B SAPD Math+Code runs: global batch 512 (255 on 3 GPUs), multi_teacher_distill true, 60 steps.
+# configs/baselines/math_code uses 512 and multi_teacher_distill false.
 runtime:
   python_bin: python3
   verl_module: verl.trainer.main_ppo
@@ -32,7 +32,7 @@ data:
   - ../mopd/code/data/eval_data/math/HMMT25Nov/test.parquet
   - ../mopd/code/data/eval_data/code/HumanEvalPlus/test.parquet
   - ../mopd/code/data/eval_data/code/MBPPPlus/test.parquet
-  train_batch_size: 528
+  train_batch_size: 512
   val_batch_size: 1024
   max_prompt_length: 2048
   max_response_length: 16384
@@ -78,7 +78,7 @@ actor:
   topk_distill_logprob_chunk_size: 16
   topk_distill_logprob_mode: sparse
   teacher_prefix_enabled: false
-  ppo_mini_batch_size: 528
+  ppo_mini_batch_size: 512
   ppo_micro_batch_size_per_gpu: 1
   ppo_epochs: 1
   use_dynamic_bsz: false

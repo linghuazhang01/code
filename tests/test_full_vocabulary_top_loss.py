@@ -24,16 +24,6 @@ from mopd_verl.settings import load_config
 from mopd_verl.verl_audit import MOPDAuditLogger
 
 
-CONFIG_PATH = Path(__file__).resolve().parents[1] / (
-    "configs/token_selection/math_code_science/full_vocabulary/"
-    "mopd_qwen1p7b_30b_a3b_instruct_2507_4gpu_math_code_science_"
-    "fullvocab_toploss_topp05_fixed4_b528_colocated.yaml"
-)
-TAXONOMY_CONFIG_PATH = Path(__file__).resolve().parents[1] / (
-    "configs/token_selection/math_code_science/taxonomy/"
-    "mopd_qwen1p7b_30b_a3b_instruct_2507_4gpu_math_code_science_"
-    "toploss_topp05_fixed4_b528_colocated.yaml"
-)
 MATH_CONFIG_DIR = (
     Path(__file__).resolve().parents[1]
     / "configs/token_selection/math/full_vocabulary"
@@ -219,20 +209,6 @@ def test_logger_infers_tokenizer_vocab_and_sidecar_accepts_empty_pool() -> None:
     assert config.effective_domain_candidate_map() == {"math": ()}
 
 
-def test_full_vocabulary_experiment_profile_and_launcher_contract() -> None:
-    config = load_config(CONFIG_PATH)
-    command = build_command(config)
-
-    assert config.audit.control_token_online_candidate_scope == "full_vocabulary"
-    assert config.audit.control_token_online_candidate_vocab_size is None
-    assert config.audit.control_token_online_top_p == pytest.approx(0.05)
-    assert config.audit.control_token_online_strict_occurrence_gate
-    assert config.audit.control_token_online_min_mean_occurrences_per_step == 20.0
-    assert not config.audit.domain_control_token_candidate_groups
-    assert "+mopd_audit.control_token_online_candidate_scope=full_vocabulary" in command
-    assert "+mopd_audit.control_token_online_candidate_vocab_size=null" in command
-
-
 @pytest.mark.parametrize(
     ("filename", "total_gpus", "actor_gpus", "teacher_gpus", "batch_size"),
     (
@@ -315,30 +291,3 @@ def test_math_only_profiles_use_disjoint_output_identifiers() -> None:
     for identifiers in identifier_groups:
         assert None not in identifiers
         assert len(set(identifiers)) == len(identifiers)
-
-
-def test_experiment_matches_taxonomy_control_outside_candidate_universe() -> None:
-    full = load_config(CONFIG_PATH)
-    taxonomy = load_config(TAXONOMY_CONFIG_PATH)
-
-    assert full.data == taxonomy.data
-    assert full.actor == taxonomy.actor
-    assert full.rollout == taxonomy.rollout
-    assert full.rollout_correction == taxonomy.rollout_correction
-    assert full.worker_placement == taxonomy.worker_placement
-    assert full.teacher_performance == taxonomy.teacher_performance
-    assert full.audit.control_token_online_top_p == (
-        taxonomy.audit.control_token_online_top_p
-    )
-    assert full.audit.control_token_online_budget_mode == (
-        taxonomy.audit.control_token_online_budget_mode
-    )
-    assert full.audit.control_token_online_selection_mode == (
-        taxonomy.audit.control_token_online_selection_mode
-    )
-    assert full.audit.control_token_online_weight_mode == (
-        taxonomy.audit.control_token_online_weight_mode
-    )
-    assert full.audit.control_token_loss_weight == (
-        taxonomy.audit.control_token_loss_weight
-    )

@@ -4,15 +4,15 @@
 # timing/unit and the run names differ.
 extends: sapd_3gpu_3c.yaml
 runtime:
-  wandb_run_id: q4b-mc-sapdpos-3g3c-b528-s42
+  wandb_run_id: q4b-mc-sapdpos-3g3c-b255-s42
 audit:
   control_token_online_selection_timing: current_step
   control_token_online_selection_unit: occurrence
-  output_dir: audit/q4b-mc-sapdpos-3g3c-b528-s42
+  output_dir: audit/q4b-mc-sapdpos-3g3c-b255-s42
 paper_eval:
-  output_dir: eval_outputs/paper_suite/q4b-mc-sapdpos-3g3c-b528-s42
+  output_dir: eval_outputs/paper_suite/q4b-mc-sapdpos-3g3c-b255-s42
 huggingface_checkpoint:
-  path_prefix: checkpoints/qwen4b/math_code/q4b-mc-sapdpos-3g3c-b528-s42
+  path_prefix: checkpoints/qwen4b/math_code/q4b-mc-sapdpos-3g3c-b255-s42
 trainer:
-  experiment_name: q4b-mc-sapdpos-3g3c-b528-s42
-  default_local_dir: checkpoints/MOPD/q4b-mc-sapdpos-3g3c-b528-s42
+  experiment_name: q4b-mc-sapdpos-3g3c-b255-s42
+  default_local_dir: checkpoints/MOPD/q4b-mc-sapdpos-3g3c-b255-s42

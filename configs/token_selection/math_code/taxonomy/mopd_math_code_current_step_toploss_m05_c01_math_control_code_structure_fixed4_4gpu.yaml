@@ -2,7 +2,7 @@
 extends: mopd_math_code_toploss_m05_c01_code_structure_fixed4_4gpu.yaml
 
 runtime:
-  wandb_run_id: q1p7b4g-mc-tl-m05c01-mctrl-cstruct-current-f4-b528-s60
+  wandb_run_id: q1p7b4g-mc-tl-m05c01-mctrl-cstruct-current-f4-b512-s60
   wandb_resume: never
 
 audit:
@@ -18,14 +18,14 @@ audit:
       11284, 11683, 12209, 12549, 12824, 13023, 13394, 15277, 15484, 16085, 17949, 19357, 21806, 22043, 22477, 23322,
       25156, 27653, 28996, 30787, 31040, 38770, 41968, 44500, 54815, 67691, 73877, 92014
     ]
-  output_dir: audit/q1p7b4g-mc-tl-m05c01-mctrl-cstruct-current-f4-b528-s60
+  output_dir: audit/q1p7b4g-mc-tl-m05c01-mctrl-cstruct-current-f4-b512-s60
 
 paper_eval:
-  output_dir: eval_outputs/paper_suite/q1p7b4g-mc-tl-m05c01-mctrl-cstruct-current-f4-b528-s60
+  output_dir: eval_outputs/paper_suite/q1p7b4g-mc-tl-m05c01-mctrl-cstruct-current-f4-b512-s60
 
 huggingface_checkpoint:
-  path_prefix: checkpoints/mopd/q1p7b4g-mc-tl-m05c01-mctrl-cstruct-current-f4-b528-s60
+  path_prefix: checkpoints/mopd/q1p7b4g-mc-tl-m05c01-mctrl-cstruct-current-f4-b512-s60
 
 trainer:
-  experiment_name: q1p7b4g-mc-tl-m05c01-mctrl-cstruct-current-f4-b528-s60
-  default_local_dir: checkpoints/MOPD/q1p7b4g-mc-tl-m05c01-mctrl-cstruct-current-f4-b528-s60
+  experiment_name: q1p7b4g-mc-tl-m05c01-mctrl-cstruct-current-f4-b512-s60
+  default_local_dir: checkpoints/MOPD/q1p7b4g-mc-tl-m05c01-mctrl-cstruct-current-f4-b512-s60

@@ -1,6 +1,6 @@
 # Two-domain Math+Code MOPD training profile.
 # Method: TopLoss online selector + Fixed4 selected-token weighting with per-domain mean-one normalization.
-# Four colocated GPUs, batch 528, seed 42, 60 training steps, vLLM utilization 0.75.
+# Four colocated GPUs, batch 512, seed 42, 60 training steps, vLLM utilization 0.75.
 # Both domains use the full Control+Structure candidate union.
 
 runtime:
@@ -8,7 +8,7 @@ runtime:
   verl_module: verl.trainer.main_ppo
   wandb_mode: online
   wandb_entity: lz101-rice-university
-  wandb_run_id: q1p7b4g-mc-tl-f4-b528-s60
+  wandb_run_id: q1p7b4g-mc-tl-f4-b512-s60
   wandb_resume: never
   env_file: .env.local
   used_model: no_api
@@ -32,7 +32,7 @@ data:
   - ../mopd/code/data/eval_data/math/HMMT25Nov/test.parquet
   - ../mopd/code/data/eval_data/code/HumanEvalPlus/test.parquet
   - ../mopd/code/data/eval_data/code/MBPPPlus/test.parquet
-  train_batch_size: 528
+  train_batch_size: 512
   val_batch_size: 1024
   max_prompt_length: 2048
   max_response_length: 16384
@@ -72,7 +72,7 @@ actor:
   topk_distill_loss_weight: 1.0
   topk_distill_logprob_chunk_size: 16
   topk_distill_logprob_mode: sparse
-  ppo_mini_batch_size: 528
+  ppo_mini_batch_size: 512
   ppo_micro_batch_size_per_gpu: 1
   ppo_epochs: 1
   use_dynamic_bsz: false
@@ -222,11 +222,11 @@ audit:
     code: 0.01
   control_token_online_selection_mode: top_loss
   control_token_online_weight_mode: fixed
-  output_dir: audit/q1p7b4g-mc-tl-f4-b528-s60
+  output_dir: audit/q1p7b4g-mc-tl-f4-b512-s60
 
 paper_eval:
   enabled: false
-  output_dir: eval_outputs/paper_suite/q1p7b4g-mc-tl-f4-b528-s60
+  output_dir: eval_outputs/paper_suite/q1p7b4g-mc-tl-f4-b512-s60
   datasets: [aime24, aime25, hmmt25_feb, hmmt25_nov, humaneval_plus, mbpp_plus, lcb]
 
 huggingface_checkpoint:
@@ -235,11 +235,11 @@ huggingface_checkpoint:
   repo_id: icemoon28/opd-checkpoints
   private: false
   token_env_var: HF_TOKEN
-  path_prefix: checkpoints/mopd/q1p7b4g-mc-tl-f4-b528-s60
+  path_prefix: checkpoints/mopd/q1p7b4g-mc-tl-f4-b512-s60
 
 trainer:
   project_name: MOPD
-  experiment_name: q1p7b4g-mc-tl-f4-b528-s60
+  experiment_name: q1p7b4g-mc-tl-f4-b512-s60
   seed: 42
   logger: '["console","tensorboard","wandb"]'
   n_gpus_per_node: 4
@@ -248,7 +248,7 @@ trainer:
   test_freq: -1
   total_epochs: 3
   total_training_steps: 60
-  default_local_dir: checkpoints/MOPD/q1p7b4g-mc-tl-f4-b528-s60
+  default_local_dir: checkpoints/MOPD/q1p7b4g-mc-tl-f4-b512-s60
   critic_warmup: 0
   val_before_train: false
   log_val_generations: 10

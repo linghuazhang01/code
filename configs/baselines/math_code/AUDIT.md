@@ -4,7 +4,7 @@
 
 ## 结论
 
-未发现本次配置的阻塞问题。全部 12 个入口通过 typed config 加载与 launcher `--dry-run`。逐字段对照 canonical `configs/baselines/opd_baselines.yaml` 的 actor 设置，除明确统一为 516 的 PPO mini batch 外均保持一致。
+未发现本次配置的阻塞问题。全部 12 个入口通过 typed config 加载与 launcher `--dry-run`。逐字段对照 canonical `configs/baselines/opd_baselines.yaml` 的 actor 设置，除明确统一为 512 的 PPO mini batch 外均保持一致。
 
 核对了 Math/Code 域集合、等权采样、batch 整除、GPU placement、teacher FSDP=4/2、vLLM=0.75、Step60、输出目录唯一性。前一轮独立 reviewer 已确认当前 teacher 实现支持 dedicated multi-rank batching。文件凭据模式检查未发现密钥。
 

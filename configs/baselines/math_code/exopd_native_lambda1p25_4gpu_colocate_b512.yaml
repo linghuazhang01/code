@@ -33,14 +33,14 @@ teacher_performance:
   moe_dispatch: stable_sort
   memory_margin_gib: 12.0
 audit:
-  output_dir: audit/qwen1p7b-30b-math-code-exopd-native-lambda1p25-4gpu-colocate-b516-s42
+  output_dir: audit/qwen1p7b-30b-math-code-exopd-native-lambda1p25-4gpu-colocate-b512-s42
   loss_variance_signal: extrapolated_policy_gradient_distillation_signal
 paper_eval:
-  output_dir: eval_outputs/paper_suite/qwen1p7b-30b-math-code-exopd-native-lambda1p25-4gpu-colocate-b516-s42
+  output_dir: eval_outputs/paper_suite/qwen1p7b-30b-math-code-exopd-native-lambda1p25-4gpu-colocate-b512-s42
 trainer:
   n_gpus_per_node: 4
-  experiment_name: qwen1p7b-30b-math-code-exopd-native-lambda1p25-4gpu-colocate-b516-s42
-  default_local_dir: checkpoints/MOPD/qwen1p7b-30b-math-code-exopd-native-lambda1p25-4gpu-colocate-b516-s42
+  experiment_name: qwen1p7b-30b-math-code-exopd-native-lambda1p25-4gpu-colocate-b512-s42
+  default_local_dir: checkpoints/MOPD/qwen1p7b-30b-math-code-exopd-native-lambda1p25-4gpu-colocate-b512-s42
 ray_kwargs:
   ray_init:
     num_cpus: 24

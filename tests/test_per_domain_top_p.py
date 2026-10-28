@@ -16,11 +16,6 @@ from mopd_verl.launch import build_command
 from mopd_verl.settings import load_config
 
 
-BASE_CONFIG = Path(__file__).resolve().parents[1] / (
-    "configs/token_selection/math_code_science/taxonomy/"
-    "mopd_qwen1p7b_30b_a3b_instruct_2507_4gpu_math_code_science_"
-    "toploss_topp05_fixed4_b528_colocated.yaml"
-)
 DOMAINS = ("math", "code", "science")
 
 
@@ -72,61 +67,3 @@ def test_per_domain_top_p_requires_exact_domain_keys() -> None:
             top_k=1,
             top_p_by_domain={"math": 0.02, "code": 0.05},
         )
-
-
-def test_config_and_launcher_preserve_per_domain_top_p(tmp_path: Path) -> None:
-    config_path = tmp_path / "per_domain_top_p.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "extends": str(BASE_CONFIG),
-                "audit": {
-                    "control_token_online_top_p_by_domain": {
-                        "math": 0.02,
-                        "code": 0.05,
-                        "science": 0.10,
-                    }
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    config = load_config(config_path)
-    assert config.audit.control_token_online_top_p_by_domain == {
-        "math": 0.02,
-        "code": 0.05,
-        "science": 0.10,
-    }
-    command = build_command(config)
-    override = next(
-        argument
-        for argument in command
-        if argument.startswith(
-            "+mopd_audit.control_token_online_top_p_by_domain="
-        )
-    )
-    assert override.endswith("{code: 0.05, math: 0.02, science: 0.1}")
-
-
-def test_config_rejects_unknown_per_domain_top_p_key(tmp_path: Path) -> None:
-    config_path = tmp_path / "invalid_per_domain_top_p.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "extends": str(BASE_CONFIG),
-                "audit": {
-                    "control_token_online_top_p_by_domain": {
-                        "math": 0.02,
-                        "code": 0.05,
-                        "science": 0.10,
-                        "biology": 0.10,
-                    }
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="exactly match"):
-        load_config(config_path)

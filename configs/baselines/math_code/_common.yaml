@@ -1,5 +1,5 @@
 # Shared Math+Code, single-seed, Step-60 budget. Launch a method/layout YAML.
-# Batch 516 is divisible by both 4 and 6 actor workers; exact quotas are 258/domain.
+# Batch 512 is divisible by both 4 and 8 actor workers; exact quotas are 256/domain.
 # Paths retain the existing remote deployment convention; see README.md.
 runtime:
   python_bin: python3
@@ -28,7 +28,7 @@ data:
   - ../mopd/code/data/eval_data/math/HMMT25Nov/test.parquet
   - ../mopd/code/data/eval_data/code/HumanEvalPlus/test.parquet
   - ../mopd/code/data/eval_data/code/MBPPPlus/test.parquet
-  train_batch_size: 516
+  train_batch_size: 512
   val_batch_size: 1024
   max_prompt_length: 2048
   max_response_length: 16384
@@ -74,7 +74,7 @@ actor:
   topk_distill_logprob_chunk_size: 16
   topk_distill_logprob_mode: sparse
   teacher_prefix_enabled: false
-  ppo_mini_batch_size: 516
+  ppo_mini_batch_size: 512
   ppo_micro_batch_size_per_gpu: 1
   ppo_epochs: 1
   use_dynamic_bsz: false

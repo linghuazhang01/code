@@ -1,4 +1,4 @@
-"""Contracts for the Math+Code equal-weight Top-32 OPD toklog configs at global batch 528.
+"""Contracts for the Math+Code equal-weight Top-32 OPD toklog configs at global batch 512 (255 on the 3-GPU layout).
 
 Qwen3-1.7B: configs/qwen1p7b_suite/math_code/opd_toklog_*; Qwen3-4B: configs/qwen4b_suite/math_code/opd_toklog_*.
 Every file logs per-token data (token gap / entropy / logp vectors, response records) on top of the plain OPD run.
@@ -73,12 +73,17 @@ def _assert_per_token_audit(cfg) -> None:
     assert cfg.audit.control_token_online_selection_enabled is False
 
 
+def _batch(actors: int) -> int:
+    # 512 does not divide by 3 actors, so the 3-GPU layout uses 255 (OPD/CLAUDE.md)
+    return 255 if actors == 3 else 512
+
+
 @pytest.mark.parametrize("name,_4b,_plain,gpus,actors", LAYOUTS)
-def test_1p7b_b528_toklog_contract(name: str, _4b: str, _plain: str, gpus: int, actors: int) -> None:
+def test_1p7b_b512_toklog_contract(name: str, _4b: str, _plain: str, gpus: int, actors: int) -> None:
     cfg = load_config(SUITE_1P7B / name)
     assert cfg.model.student_path.endswith("Qwen3-1.7B")
-    assert cfg.data.train_batch_size == cfg.actor.ppo_mini_batch_size == 528
-    assert 528 % actors == 0
+    assert cfg.data.train_batch_size == cfg.actor.ppo_mini_batch_size == _batch(actors)
+    assert _batch(actors) % actors == 0
     assert cfg.worker_placement.actor_rollout.n_gpus_per_node == actors
     assert cfg.runtime.slurm_allocation_gpus == gpus
     assert cfg.actor.distill_mode == "topk_renormalized_reverse_kl"
@@ -90,20 +95,20 @@ def test_1p7b_b528_toklog_contract(name: str, _4b: str, _plain: str, gpus: int, 
     assert cfg.trainer.total_training_steps == 60
     assert cfg.huggingface_checkpoint.steps == (60,)
     run = cfg.trainer.experiment_name
-    assert run.startswith("q1p7b-mc-opd-toklog-") and run.endswith("-b528-s42")
+    assert run.startswith("q1p7b-mc-opd-toklog-") and run.endswith(f"-b{_batch(actors)}-s42")
     assert cfg.runtime.wandb_run_id == run and len(run) <= 64
     assert cfg.huggingface_checkpoint.path_prefix == f"checkpoints/baselines/math_code/{run}"
     assert cfg.trainer.default_local_dir == f"checkpoints/MOPD/{run}"
     assert cfg.audit.output_dir == f"audit/{run}"
     command = build_command(cfg)
-    assert "data.train_batch_size=528" in command
+    assert f"data.train_batch_size={_batch(actors)}" in command
     assert "trainer.total_training_steps=60" in command
     assert "+mopd_audit.token_gap_vocab_vector_enabled=true" in command
     assert "+mopd_audit.log_sample_level=true" in command
 
 
 @pytest.mark.parametrize("name,name_4b,_plain,gpus,actors", LAYOUTS)
-def test_1p7b_b528_differs_from_4b_toklog_only_in_student_identities_and_memory(
+def test_1p7b_b512_differs_from_4b_toklog_only_in_student_identities_and_memory(
     name: str, name_4b: str, _plain: str, gpus: int, actors: int
 ) -> None:
     changed = _changed(SUITE_1P7B / name, SUITE_4B / name_4b)
@@ -113,16 +118,16 @@ def test_1p7b_b528_differs_from_4b_toklog_only_in_student_identities_and_memory(
 
 
 @pytest.mark.parametrize("_1p7b,name_4b,plain,gpus,actors", LAYOUTS)
-def test_4b_math_code_toklog_only_adds_logging_to_the_plain_528_run(
+def test_4b_math_code_toklog_only_adds_logging_to_the_plain_run(
     _1p7b: str, name_4b: str, plain: str, gpus: int, actors: int
 ) -> None:
     cfg = load_config(SUITE_4B / name_4b)
     assert cfg.model.student_path.endswith("Qwen3-4B")
-    assert cfg.data.train_batch_size == cfg.actor.ppo_mini_batch_size == 528
+    assert cfg.data.train_batch_size == cfg.actor.ppo_mini_batch_size == _batch(actors)
     assert cfg.trainer.total_training_steps == 60 and cfg.huggingface_checkpoint.steps == (60,)
     _assert_per_token_audit(cfg)
     run = cfg.trainer.experiment_name
-    assert run.startswith("q4b-mc-opd-toklog-") and run.endswith("-b528-s42")
+    assert run.startswith("q4b-mc-opd-toklog-") and run.endswith(f"-b{_batch(actors)}-s42")
     assert cfg.runtime.wandb_run_id == run and len(run) <= 64
     changed = _changed(SUITE_4B / name_4b, SUITE_4B / plain)
     audit_keys = {key for key in changed if key.startswith("audit.")}
@@ -131,7 +136,7 @@ def test_4b_math_code_toklog_only_adds_logging_to_the_plain_528_run(
     assert "audit.loss_variance_signal" not in changed
 
 
-def test_b528_run_names_are_unique() -> None:
+def test_b512_run_names_are_unique() -> None:
     runs = []
     for name, name_4b, plain, _gpus, _actors in LAYOUTS:
         runs.append(load_config(SUITE_1P7B / name).trainer.experiment_name)

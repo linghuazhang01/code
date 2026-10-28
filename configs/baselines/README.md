@@ -1,5 +1,7 @@
 # OPD Baseline Configs
 
+> **2026-10-18:** the Math+Code+Science configs described in this file (`opd_baselines.yaml`, `canonical/`, `qwen1p7b_30b_*`, `qwen4b_30b_*`) were removed. The baselines that remain are in `math/` and `math_code/` (see their READMEs). The text below is kept as history of the removed set.
+
 The source-of-truth launch interface is `canonical/`: one baseline corresponds
 to one directly launchable YAML file. For example:
 
@@ -67,7 +69,7 @@ a backward-compatible alias.
 These are method-native, project-adapted baselines: scoring, selection, loss,
 reduction, and update semantics follow the named methods, while model, data,
 batch size, learning rate, and training steps follow this project's experiment
-design. The canonical matrix uses batch 504, learning rate `5e-6`, and 200
+design. The canonical matrix uses batch 512, learning rate `5e-6`, and 200
 steps. Its three domain teacher paths alias the same 30B checkpoint, so it is a
 multi-domain single-teacher setup.
 
@@ -90,21 +92,20 @@ matrix and launch commands.
 The following profiles provide a matched three-way comparison for the
 Qwen3-1.7B student and Qwen3-30B-A3B-Instruct-2507 teacher:
 
-- `qwen1p7b_30b_opd_native_4gpu_b528_colocated.yaml`
-- `qwen1p7b_30b_eopd_native_4gpu_b528_colocated.yaml`
-- `qwen1p7b_30b_fire_opd_native_4gpu_b528_colocated.yaml`
+- `qwen1p7b_30b_opd_native_4gpu_b512_colocated.yaml`
+- `qwen1p7b_30b_eopd_native_4gpu_b512_colocated.yaml`
+- `qwen1p7b_30b_fire_opd_native_4gpu_b512_colocated.yaml`
 
 All three use four actor/rollout workers and initialize the teacher as a
 four-rank FSDP reference model on those same workers (`separate_ref_policy:
-false`). The global batch is `528 = 4 * 132`, a nearby batch divisible by four
-for the existing `525` profile. The EOPD profile also disables rollout IS, as
+false`). The global batch is `512 = 4 * 128`. The EOPD profile also disables rollout IS, as
 required by the native EOPD contract.
 
 Launch one profile with:
 
 ```bash
 python -m mopd_verl.launch \
-  --config configs/baselines/qwen1p7b_30b_eopd_native_4gpu_b528_colocated.yaml
+  --config configs/baselines/qwen1p7b_30b_eopd_native_4gpu_b512_colocated.yaml
 ```
 
 ## Eight-GPU 6+2 native suite
@@ -112,12 +113,11 @@ python -m mopd_verl.launch \
 The following profiles provide the same three-way comparison with six
 actor/student GPUs and two dedicated ref/teacher GPUs:
 
-- `qwen1p7b_30b_opd_native_8gpu_b528.yaml`
-- `qwen1p7b_30b_eopd_native_8gpu_b528.yaml`
-- `qwen1p7b_30b_fire_opd_native_8gpu_b528.yaml`
+- `qwen1p7b_30b_opd_native_8gpu_b512.yaml`
+- `qwen1p7b_30b_eopd_native_8gpu_b512.yaml`
+- `qwen1p7b_30b_fire_opd_native_8gpu_b512.yaml`
 
-All three use global batch `528 = 6 * 88`, a nearby batch divisible by six for
-the requested `525` profile. The dedicated two-GPU teacher uses
+All three use global batch `512`. The dedicated two-GPU teacher uses
 `teacher_performance.topk_logprob_chunk_size: 1024`, `max_micro_batch_size: 32`,
 and `max_tokens: 57344`. EOPD disables rollout IS as required by its native
 objective contract.
@@ -126,7 +126,7 @@ Launch one profile with:
 
 ```bash
 python -m mopd_verl.launch \
-  --config configs/baselines/qwen1p7b_30b_opd_native_8gpu_b528.yaml
+  --config configs/baselines/qwen1p7b_30b_opd_native_8gpu_b512.yaml
 ```
 
 ## 2026-10-15 speed/robustness update (all 8-GPU profiles)
@@ -144,4 +144,4 @@ the largest single speed-up.
 
 ## 2026-10-15 8-GPU colocated (author request)
 
-Every 8-GPU profile that used a dedicated teacher (6 student + 2 teacher, or 7 + 1 for the Math-only `*_8gpu_b256.yaml` (formerly `*_8gpu_b259.yaml`)) now runs colocated on all eight GPUs: `worker_placement.separate_ref_policy: false`, actor/rollout on 8 GPUs, teacher FSDP size 8, `trainer.n_gpus_per_node: 8`. Teacher batching (`teacher_performance.enabled`), fused statistics, compact Top-K ids and the batched reward grader stay on. vLLM `gpu_memory_utilization` is 0.75 for Qwen3-1.7B and 0.4 for Qwen3-4B (the colocated profiles that already completed). Batches that do not divide by 8 changed: Math 259 -> 256, Math+Code 516 -> 512; 504 and 528 are unchanged. File names keep their old topology tags; run names (`experiment_name`, `wandb_run_id`, checkpoint/audit/eval/HF paths) now say `8c` and the new batch, so no new run writes into an old run's directory. 4/6/7-GPU profiles that inherit from these files keep their previous values.
+Every 8-GPU profile that used a dedicated teacher (6 student + 2 teacher, or 7 + 1 for the Math-only `*_8gpu_b256.yaml` (formerly `*_8gpu_b259.yaml`)) now runs colocated on all eight GPUs: `worker_placement.separate_ref_policy: false`, actor/rollout on 8 GPUs, teacher FSDP size 8, `trainer.n_gpus_per_node: 8`. Teacher batching (`teacher_performance.enabled`), fused statistics, compact Top-K ids and the batched reward grader stay on. vLLM `gpu_memory_utilization` is 0.75 for Qwen3-1.7B and 0.4 for Qwen3-4B (the colocated profiles that already completed). Batches that do not divide by 8 changed: Math 259 -> 256, Math+Code 516 -> 512; 504 and 528 were set to 512 on 2026-10-18 (255 on 3 GPUs). File names keep their old topology tags; run names (`experiment_name`, `wandb_run_id`, checkpoint/audit/eval/HF paths) now say `8c` and the new batch, so no new run writes into an old run's directory. 4/6/7-GPU profiles that inherit from these files keep their previous values.

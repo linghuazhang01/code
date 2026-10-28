@@ -77,8 +77,8 @@ def test_config_matrix_is_launchable(
         f"m05_c{code_top_p}_fixed{weight}_{gpu_count}gpu_colocated.yaml"
     )
     config = load_config(path)
-    assert config.data.train_batch_size == 528
-    assert config.actor.ppo_mini_batch_size == 528
+    assert config.data.train_batch_size == (255 if config.trainer.n_gpus_per_node == 3 else 512)
+    assert config.actor.ppo_mini_batch_size == (255 if config.trainer.n_gpus_per_node == 3 else 512)
     assert config.data.domain_sampling_weights == {"math": 1, "code": 1}
     assert not config.worker_placement.separate_ref_policy
     assert config.worker_placement.actor_rollout.n_gpus_per_node == gpu_count
@@ -149,8 +149,7 @@ def test_all_public_profiles_have_unique_namespaces() -> None:
         gpu_count = config.trainer.n_gpus_per_node
         assert config.rollout.tensor_model_parallel_size == 1
         assert config.actor.fsdp_size == 1
-        assert 528 % gpu_count == 0
-        assert 264 % gpu_count == 0
+        assert config.data.train_batch_size % gpu_count == 0
         assert config.runtime.wandb_resume == "never"
         assert "trainer.resume_mode=disable" in build_command(config)
 

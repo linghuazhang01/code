@@ -18,13 +18,29 @@ import test_domain_gradient_optimization_contracts as contracts
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OVERLAY = ROOT / "configs/token_selection/math_code_science/taxonomy/mopd_qwen1p7b_30b_4gpu_m05_c01_s01_cs_occurrence_rkl32_fixed4_b528_colocated.yaml"
+TAXONOMY = ROOT / "configs/token_selection/math_code/taxonomy"
+OVERLAY = TAXONOMY / "mopd_math_code_current_step_toploss_m05_c01_math_control_code_progvocab_position_fixed4_4gpu.yaml"
+BASE = TAXONOMY / "mopd_math_code_toploss_m05_c01_math_control_code_progvocab_fixed4_4gpu.yaml"
 
 
 def config() -> DomainGradientConfig:
     loaded = load_config(OVERLAY)
     logger = MOPDAuditLogger({"mopd_audit": asdict(loaded.audit)})
-    return DomainGradientConfig.from_meta(logger.full_gradient_meta("train", 1)["mopd_full_gradient"])
+    base = DomainGradientConfig.from_meta(logger.full_gradient_meta("train", 1)["mopd_full_gradient"])
+    # The kept Math+Code profile has no Science domain; these selector tests exercise a three-domain
+    # batch under the next-step occurrence selector, so use next-step timing and add a Science entry
+    # (Math pool, top-loss/fixed like the other domains, top-p 1%).
+    ids = dict(base.domain_control_token_candidate_ids)
+    return replace(
+        base,
+        control_token_online_selection_timing="next_step",
+        domains=(*base.domains, "science"),
+        domain_control_token_candidate_ids=(*base.domain_control_token_candidate_ids, ("science", ids["math"])),
+        control_token_online_top_p_by_domain=(*base.control_token_online_top_p_by_domain, ("science", 0.01)),
+        control_token_online_selection_mode_by_domain=(*base.control_token_online_selection_mode_by_domain, ("science", "top_loss")),
+        control_token_online_weight_mode_by_domain=(*base.control_token_online_weight_mode_by_domain, ("science", "fixed")),
+        versioned_cs_selection_mode_by_domain=(*base.versioned_cs_selection_mode_by_domain, ("science", "position_fixed")),
+    )
 
 
 def test_propagation_overlay_and_default() -> None:
@@ -33,7 +49,7 @@ def test_propagation_overlay_and_default() -> None:
     assert config().control_token_online_selection_unit == "occurrence"
     command = build_command(loaded)
     assert "+mopd_audit.control_token_online_selection_unit=occurrence" in command
-    base = load_config(OVERLAY.with_name(OVERLAY.name.replace("occurrence", "toploss")))
+    base = load_config(BASE)
     assert base.audit.control_token_online_selection_unit == "token_id"
     assert loaded.runtime.wandb_run_id != base.runtime.wandb_run_id
     assert loaded.trainer.default_local_dir != base.trainer.default_local_dir

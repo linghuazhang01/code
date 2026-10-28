@@ -1,7 +1,7 @@
 # Qwen3-4B math_code / OPD that ignores every v3-pool position (weight 0); all other valid positions weight 1.
 extends: _v3pool_fixed_3gpu_3c.yaml
 runtime:
-  wandb_run_id: q4b-mc-opdv3ign-3g3c-b528-s42
+  wandb_run_id: q4b-mc-opdv3ign-3g3c-b255-s42
 audit:
   # Per-token logging (user 2026-10-16): same switches as the toklog runs (opd_toklog_* / uniform_top32kl_toklog_*).
   # Logging only, no effect on loss or gradients; the gap/logp/entropy vectors cover every valid response token,
@@ -26,11 +26,11 @@ audit:
   log_sample_level: true
   control_token_loss_weight: 0.0
   control_token_other_weight: 1.0
-  output_dir: audit/q4b-mc-opdv3ign-3g3c-b528-s42
+  output_dir: audit/q4b-mc-opdv3ign-3g3c-b255-s42
 paper_eval:
-  output_dir: eval_outputs/paper_suite/q4b-mc-opdv3ign-3g3c-b528-s42
+  output_dir: eval_outputs/paper_suite/q4b-mc-opdv3ign-3g3c-b255-s42
 huggingface_checkpoint:
-  path_prefix: checkpoints/qwen4b/math_code/q4b-mc-opdv3ign-3g3c-b528-s42
+  path_prefix: checkpoints/qwen4b/math_code/q4b-mc-opdv3ign-3g3c-b255-s42
 trainer:
-  experiment_name: q4b-mc-opdv3ign-3g3c-b528-s42
-  default_local_dir: checkpoints/MOPD/q4b-mc-opdv3ign-3g3c-b528-s42
+  experiment_name: q4b-mc-opdv3ign-3g3c-b255-s42
+  default_local_dir: checkpoints/MOPD/q4b-mc-opdv3ign-3g3c-b255-s42

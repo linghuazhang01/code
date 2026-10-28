@@ -214,7 +214,7 @@ def test_active_next_step_example_is_isolated_and_launchable(tmp_path: Path) -> 
         identities = [getter(cfg) for cfg in [original, *configs]]
         assert len(identities) == len(set(identities))
     for config in configs:
-        assert config.data.train_batch_size == config.actor.ppo_mini_batch_size == 528
+        assert config.data.train_batch_size == config.actor.ppo_mini_batch_size == 512
         assert config.worker_placement.actor_rollout.n_gpus_per_node == 4
         assert config.trainer.n_gpus_per_node == 4
         assert 0 < config.trainer.total_training_steps <= 65

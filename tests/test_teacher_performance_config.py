@@ -57,8 +57,8 @@ def test_chunk_opt_out_reaches_ref_without_changing_other_overrides() -> None:
     assert config.teacher_performance.enabled
     original = build_overrides(config)
     assert "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1" in original
-    assert "actor_rollout_ref.actor.ppo_mini_batch_size=528" in original
-    assert "data.train_batch_size=528" in original
+    assert "actor_rollout_ref.actor.ppo_mini_batch_size=512" in original
+    assert "data.train_batch_size=512" in original
     assert "trainer.total_training_steps=60" in original
     disabled = replace(config, teacher_performance=replace(
         config.teacher_performance, topk_logprob_chunk_enabled=False,

@@ -14,24 +14,24 @@
 extends: mopd_math_code_toploss_m05_c01_math_control_code_progvocab_fixed4_8gpu_8c.yaml
 
 runtime:
-  wandb_run_id: q1p7b4g-mc-tl-m05c01-mctrl-cprog-current-pos-8g8c-b528-s60
+  wandb_run_id: q1p7b4g-mc-tl-m05c01-mctrl-cprog-current-pos-8g8c-b512-s60
   wandb_resume: never
 
   slurm_allocation_gpus: 8
 audit:
   control_token_online_selection_timing: current_step
   control_token_online_selection_unit: occurrence
-  output_dir: audit/q1p7b4g-mc-tl-m05c01-mctrl-cprog-current-pos-8g8c-b528-s60
+  output_dir: audit/q1p7b4g-mc-tl-m05c01-mctrl-cprog-current-pos-8g8c-b512-s60
 
 paper_eval:
-  output_dir: eval_outputs/paper_suite/q1p7b4g-mc-tl-m05c01-mctrl-cprog-current-pos-8g8c-b528-s60
+  output_dir: eval_outputs/paper_suite/q1p7b4g-mc-tl-m05c01-mctrl-cprog-current-pos-8g8c-b512-s60
 
 huggingface_checkpoint:
-  path_prefix: checkpoints/mopd/q1p7b4g-mc-tl-m05c01-mctrl-cprog-current-pos-8g8c-b528-s60
+  path_prefix: checkpoints/mopd/q1p7b4g-mc-tl-m05c01-mctrl-cprog-current-pos-8g8c-b512-s60
 
 trainer:
-  experiment_name: q1p7b4g-mc-tl-m05c01-mctrl-cprog-current-pos-8g8c-b528-s60
-  default_local_dir: checkpoints/MOPD/q1p7b4g-mc-tl-m05c01-mctrl-cprog-current-pos-8g8c-b528-s60
+  experiment_name: q1p7b4g-mc-tl-m05c01-mctrl-cprog-current-pos-8g8c-b512-s60
+  default_local_dir: checkpoints/MOPD/q1p7b4g-mc-tl-m05c01-mctrl-cprog-current-pos-8g8c-b512-s60
 # 2026-10-15 speed/robustness update: fused teacher statistics, compact Top-K ids,
 # batched reward grader (spawn pool, 120 s hard timeout; timed-out samples score 0).
   n_gpus_per_node: 8

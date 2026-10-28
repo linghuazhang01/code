@@ -8,6 +8,6 @@ extra_overrides:
 - custom_reward_function.path=mopd_verl/mixed_reward.py
 - custom_reward_function.name=compute_score
 - trainer.resume_mode=resume_path
-- trainer.resume_from_path=checkpoints/MOPD/q1p7b4g-mc-tl-m05c01-mctrl-cstruct-current-f4-b528-s60-g0124/global_step_15
+- trainer.resume_from_path=checkpoints/MOPD/q1p7b4g-mc-tl-m05c01-mctrl-cstruct-current-f4-b512-s60-g0124/global_step_15
 - trainer.del_local_ckpt_after_load=False
 - actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]

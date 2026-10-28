@@ -184,7 +184,7 @@ def test_profile_differs_from_reference_only_in_timing_unit_and_names(
     ids = audit.domain_control_token_candidate_ids
     assert _pool_sha256(set(ids["math"])) == MATH_POOL_SHA256 and len(ids["math"]) == 124
     assert _pool_sha256(set(ids["code"])) == CODE_POOL_SHA256 and len(ids["code"]) == 163
-    assert config.actor.ppo_mini_batch_size == config.data.train_batch_size == 528
+    assert config.actor.ppo_mini_batch_size == config.data.train_batch_size == (255 if config.trainer.n_gpus_per_node == 3 else 512)
 
     def strip(command: list[str], run: str) -> list[str]:
         return [

@@ -1,5 +1,9 @@
 # 3-GPU colocated student/teacher topology for Token V7 (current-step).
 extends: _mopd_math_code_current_step_token_v7_fixed4.yaml
+data:
+  train_batch_size: 255
+actor:
+  ppo_mini_batch_size: 255
 
 runtime:
   slurm_allocation_gpus: 3

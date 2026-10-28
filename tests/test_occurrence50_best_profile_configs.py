@@ -11,7 +11,7 @@ from mopd_verl.settings import load_config
 TAXONOMY = Path("configs/token_selection/math_code/taxonomy")
 BEST = TAXONOMY / "mopd_math_code_toploss_m05_c01_code_structure_fixed4_8gpu_8c.yaml"
 OCC50_8G = TAXONOMY / "mopd_math_code_toploss_m05_c01_code_structure_occ50_fixed4_8gpu_8c.yaml"
-NAME_8G = "q1p7b8g-mc-tl-m05c01-cstruct-occ50-f4-8c-b528-s60"
+NAME_8G = "q1p7b8g-mc-tl-m05c01-cstruct-occ50-f4-8c-b512-s60"
 def _changed_keys(reference: dict, candidate: dict) -> dict:
     return {
         section: {key for key in reference[section] if reference[section][key] != candidate[section][key]}
@@ -60,7 +60,7 @@ def test_pools_selector_and_training_match_the_best_profile() -> None:
     assert occ.audit.control_token_online_selection_mode == "top_loss"
     assert occ.audit.control_token_online_selection_timing == "next_step"
     assert occ.audit.control_token_loss_weight == 4.0 and occ.audit.control_token_normalize_per_domain
-    assert occ.data.train_batch_size == occ.actor.ppo_mini_batch_size == 528
+    assert occ.data.train_batch_size == occ.actor.ppo_mini_batch_size == 512
     assert occ.trainer.total_training_steps == 60
     assert occ.teacher_performance.enabled is True
     command = build_command(occ)

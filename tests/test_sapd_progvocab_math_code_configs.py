@@ -21,11 +21,11 @@ PREFIX = "mopd_math_code_toploss_m05_c01_math_control_code_progvocab_fixed4_"
 PROFILES = {
     "4gpu": (
         "mopd_math_code_toploss_m05_c01_code_structure_fixed4_4gpu.yaml",
-        4, None, 4, "q1p7b4g-mc-tl-m05c01-mctrl-cprog-f4-b528-s60",
+        4, None, 4, "q1p7b4g-mc-tl-m05c01-mctrl-cprog-f4-b512-s60",
     ),
     "8gpu_8c": (
         "mopd_math_code_toploss_m05_c01_code_structure_fixed4_8gpu_8c.yaml",
-        6, 2, 8, "q1p7b4g-mc-tl-m05c01-mctrl-cprog-8g6s2t-b528-s60",
+        6, 2, 8, "q1p7b4g-mc-tl-m05c01-mctrl-cprog-8g6s2t-b512-s60",
     ),
 }
 MATH_SIZE = 124
@@ -95,8 +95,8 @@ def test_profile_contract(name: str, tmp_path: Path) -> None:
     assert code <= STRUCTURE_TOKEN_IDS and not code & CONTROL_TOKEN_IDS
     assert 369 not in code  # " for" is a Control ID, not Code vocabulary
 
-    assert config.data.train_batch_size == 528
-    assert config.actor.ppo_mini_batch_size == 528
+    assert config.data.train_batch_size == 512
+    assert config.actor.ppo_mini_batch_size == 512
     assert config.trainer.total_training_steps == 60
     assert config.huggingface_checkpoint.private is False
     assert config.huggingface_checkpoint.steps == (60,)

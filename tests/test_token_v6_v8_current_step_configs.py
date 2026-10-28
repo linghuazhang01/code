@@ -116,8 +116,8 @@ def test_profile_contract(version: int, run: str, gpus: int, structure_only: boo
     else:
         assert not code & CODE_CONTROL_23
 
-    assert config.data.train_batch_size == 528
-    assert config.actor.ppo_mini_batch_size == 528
+    assert config.data.train_batch_size == (255 if config.trainer.n_gpus_per_node == 3 else 512)
+    assert config.actor.ppo_mini_batch_size == (255 if config.trainer.n_gpus_per_node == 3 else 512)
     assert config.trainer.total_training_steps == 60 <= 65
     assert config.huggingface_checkpoint.private is False
     assert config.huggingface_checkpoint.steps == (60,)

@@ -4,8 +4,8 @@
 
 ## 固定训练预算
 
-- global train batch = PPO mini batch = **516**。516 是最接近 512、同时能被 4 和 6 整除的 batch，避免不同布局改变训练预算。
-- Math : Code = 1 : 1，每步精确分配 258 / 258 条；rollout `n=1`，每步一次 optimizer update。
+- global train batch = PPO mini batch = **512**，能被 4 和 8 整除，不同布局的训练预算相同。
+- Math : Code = 1 : 1，每步精确分配 256 / 256 条；rollout `n=1`，每步一次 optimizer update。
 - 单 seed=42；训练 60 steps，总计 30,960 个 prompt draws，两个领域各 15,480（有放回抽样，不等于 unique examples）。
 - learning rate=5e-6，prompt 上限 2,048，response 上限 16,384，TP=1，micro batch/GPU=1，actor FSDP size=1，开启参数与优化器 offload。
 - vLLM `gpu_memory_utilization=0.6`，`max_num_seqs=64`，`max_num_batched_tokens=32768`。
@@ -16,12 +16,12 @@
 
 | 方法 | 四卡共置 | 八卡 6 student + 2 teacher |
 |---|---|---|
-| OPD Top-K32 Uniform | `topk32_uniform_4gpu_colocate_b516.yaml` | `topk32_uniform_8gpu_8c_b512.yaml` |
-| OPD Native | `opd_native_4gpu_colocate_b516.yaml` | `opd_native_8gpu_8c_b512.yaml` |
-| EOPD Native | `eopd_native_4gpu_colocate_b516.yaml` | `eopd_native_8gpu_8c_b512.yaml` |
-| ExOPD, λ=1.25 | `exopd_native_lambda1p25_4gpu_colocate_b516.yaml` | `exopd_native_lambda1p25_8gpu_8c_b512.yaml` |
-| TIP Top-K32, ρ=0.5 | `tip_topk32_rho50_4gpu_colocate_b516.yaml` | `tip_topk32_rho50_8gpu_8c_b512.yaml` |
-| FiRE-OPD Native | `fire_opd_native_4gpu_colocate_b516.yaml` | `fire_opd_native_8gpu_8c_b512.yaml` |
+| OPD Top-K32 Uniform | `topk32_uniform_4gpu_colocate_b512.yaml` | `topk32_uniform_8gpu_8c_b512.yaml` |
+| OPD Native | `opd_native_4gpu_colocate_b512.yaml` | `opd_native_8gpu_8c_b512.yaml` |
+| EOPD Native | `eopd_native_4gpu_colocate_b512.yaml` | `eopd_native_8gpu_8c_b512.yaml` |
+| ExOPD, λ=1.25 | `exopd_native_lambda1p25_4gpu_colocate_b512.yaml` | `exopd_native_lambda1p25_8gpu_8c_b512.yaml` |
+| TIP Top-K32, ρ=0.5 | `tip_topk32_rho50_4gpu_colocate_b512.yaml` | `tip_topk32_rho50_8gpu_8c_b512.yaml` |
+| FiRE-OPD Native | `fire_opd_native_4gpu_colocate_b512.yaml` | `fire_opd_native_8gpu_8c_b512.yaml` |
 
 OPD Top-K32 使用 teacher support 上的 renormalized reverse KL，无 tail bucket。OPD Native 使用 sampled chosen-token policy-gradient objective。
 
@@ -50,7 +50,7 @@ EOPD Native 沿用 canonical profile：entropy threshold=0.8、forward KL weight
 在远端 `code/` 目录使用项目标准入口。四卡示例（仅在对应物理 GPU 已获分配时执行）：
 
 ```bash
-GPU_IDS=0,1,2,3 bash start.sh --local --config configs/baselines/math_code/topk32_uniform_4gpu_colocate_b516.yaml
+GPU_IDS=0,1,2,3 bash start.sh --local --config configs/baselines/math_code/topk32_uniform_4gpu_colocate_b512.yaml
 ```
 
 八卡示例（需要已分配的完整八卡，不能占用他人 GPU）：
@@ -86,6 +86,6 @@ the largest single speed-up.
 
 六个 `*_8gpu_8c_b512.yaml`（原 `*_8gpu_6s2t_b516.yaml`）现在是八卡共置：actor、vLLM rollout 与 FSDP-8 teacher 共用全部八张卡（`separate_ref_policy: false`，`trainer.n_gpus_per_node: 8`，`fsdp_size=8`），teacher batching、fused statistics、compact Top-K ids 和 batched reward 都开着。516 不能被 8 整除，global batch = PPO mini batch 改为 **512**（Math / Code 各 256）。文件名已于 2026-10-17 改为 `8gpu_8c_b512`（原 `6s2t_b516`），与运行名、输出路径的 `8gpu-8c-b512` 一致。上文"固定训练预算"和"布局评估"描述的是改动前的 6+2 布局。
 
-## 2026-10-17 batch-528 OPD set
+## 2026-10-17 OPD set with per-token logging
 
-A Qwen3-1.7B Math+Code equal-weight Top-32 OPD set at global batch 528 with per-token logging (3 / 4 / 8 GPUs, `multi_teacher_distill: true`, the batch of the 1.7B SAPD runs) lives in `configs/qwen1p7b_suite/math_code/`; see its README. The files in this directory keep 516 / 512.
+A Qwen3-1.7B Math+Code equal-weight Top-32 OPD set at global batch 512 (255 on 3 GPUs) with per-token logging (3 / 4 / 8 GPUs, `multi_teacher_distill: true`) lives in `configs/qwen1p7b_suite/math_code/`; see its README. The files in this directory use 512.

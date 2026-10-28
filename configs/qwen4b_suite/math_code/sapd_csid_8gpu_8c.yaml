@@ -5,19 +5,19 @@
 # timing/unit and the run names differ.
 extends: sapd_8gpu_8c.yaml
 runtime:
-  wandb_run_id: q4b-mc-sapdcsid-8g8c-b528-s42
+  wandb_run_id: q4b-mc-sapdcsid-8g8c-b512-s42
   slurm_allocation_gpus: 8
 audit:
   control_token_online_selection_timing: current_step
   control_token_online_selection_unit: token_id
-  output_dir: audit/q4b-mc-sapdcsid-8g8c-b528-s42
+  output_dir: audit/q4b-mc-sapdcsid-8g8c-b512-s42
 paper_eval:
-  output_dir: eval_outputs/paper_suite/q4b-mc-sapdcsid-8g8c-b528-s42
+  output_dir: eval_outputs/paper_suite/q4b-mc-sapdcsid-8g8c-b512-s42
 huggingface_checkpoint:
-  path_prefix: checkpoints/qwen4b/math_code/q4b-mc-sapdcsid-8g8c-b528-s42
+  path_prefix: checkpoints/qwen4b/math_code/q4b-mc-sapdcsid-8g8c-b512-s42
 trainer:
-  experiment_name: q4b-mc-sapdcsid-8g8c-b528-s42
-  default_local_dir: checkpoints/MOPD/q4b-mc-sapdcsid-8g8c-b528-s42
+  experiment_name: q4b-mc-sapdcsid-8g8c-b512-s42
+  default_local_dir: checkpoints/MOPD/q4b-mc-sapdcsid-8g8c-b512-s42
   n_gpus_per_node: 8
 rollout:
   gpu_memory_utilization: 0.6
