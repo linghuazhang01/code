@@ -1,0 +1,61 @@
+# 2026-10-19 author request (4-GPU twin of the 8-GPU file, for the qiushuang server that sees GPUs 0-3): Code-only 4-GPU colocated (actor, vLLM rollout and FSDP-4 teacher share all 4 GPUs); teacher batching, fused statistics, compact ids and batched reward on.
+# Code-only twin of ../math_code/exopd_native_lambda1p25_4gpu_colocate_b512.yaml: same method block, batch 256 = 4 x 64. See README.md.
+extends: _common.yaml
+# wandb_run_id is fixed so a resume (runtime.wandb_resume must, written by plan/.../run_queue.sh) finds the same W&B run.
+# 2026-10-20: the first run (id = experiment name, steps 1-45) lost both step-44/45 optimizer files in a server hang; this is the restart from step 0 with a new id.
+runtime:
+  slurm_allocation_gpus: 4
+  wandb_run_id: qwen1p7b-30b-code-exopd-native-lambda1p25-4gpu-4c-b256-s42-r2
+  wandb_resume: allow
+actor:
+  only_reverse_kl_advantages: false
+  lambda_vals: 1.25
+  distill_loss_builder: exopd
+  distill_mode: chosen_token_policy_gradient
+  topk_distill_enabled: false
+  ppo_mini_batch_size: 256
+model:
+  gopd_reference_path: ../mopd/models/Qwen3-1.7B
+worker_placement:
+  separate_ref_policy: false
+  actor_rollout:
+    n_gpus_per_node: 4
+    nnodes: 1
+  ref_policy:
+    n_gpus_per_node: null
+    nnodes: null
+    process_on_nodes: null
+extra_overrides:
+- custom_reward_function.path=mopd_verl/mixed_reward.py
+- custom_reward_function.name=compute_score_batched
+- reward_model.reward_manager=batch
+- trainer.resume_mode=disable
+- actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+- actor_rollout_ref.ref.fsdp_config.fsdp_size=4
+teacher_performance:
+  enabled: true
+  topk_logprob_chunk_size: 1024
+  max_micro_batch_size: 32
+  max_tokens: 57344
+  moe_dispatch: stable_sort
+  memory_margin_gib: 12.0
+  fused_statistics: true
+  compact_topk_ids: true
+audit:
+  output_dir: audit/qwen1p7b-30b-code-exopd-native-lambda1p25-4gpu-4c-b256-s42
+  loss_variance_signal: extrapolated_policy_gradient_distillation_signal
+paper_eval:
+  output_dir: eval_outputs/paper_suite/qwen1p7b-30b-code-exopd-native-lambda1p25-4gpu-4c-b256-s42
+huggingface_checkpoint:
+  path_prefix: checkpoints/code/qwen1p7b-30b-code-exopd-native-lambda1p25-4gpu-4c-b256-s42
+trainer:
+  n_gpus_per_node: 4
+  experiment_name: qwen1p7b-30b-code-exopd-native-lambda1p25-4gpu-4c-b256-s42
+  default_local_dir: checkpoints/MOPD/qwen1p7b-30b-code-exopd-native-lambda1p25-4gpu-4c-b256-s42
+ray_kwargs:
+  ray_init:
+    num_cpus: 32
+data:
+  train_batch_size: 256
+rollout:
+  gpu_memory_utilization: 0.6

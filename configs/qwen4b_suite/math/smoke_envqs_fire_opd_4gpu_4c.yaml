@@ -1,0 +1,16 @@
+# 2026-10-17 compatibility smoke for qiushuang's env (torch 2.6.0 / vLLM 0.8.5.post1): fire_opd_4gpu_4c.yaml for 2 steps,
+# W&B offline, no Hugging Face upload, separate run names and output directories. Not a result run.
+extends: fire_opd_4gpu_4c.yaml
+runtime:
+  wandb_mode: offline
+  wandb_run_id: q4b-math-fireopd-4g4c-b256-s42-smoke-envqs
+huggingface_checkpoint:
+  enabled: false
+audit:
+  output_dir: audit/q4b-math-fireopd-4g4c-b256-s42-smoke-envqs
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q4b-math-fireopd-4g4c-b256-s42-smoke-envqs
+trainer:
+  total_training_steps: 2
+  experiment_name: q4b-math-fireopd-4g4c-b256-s42-smoke-envqs
+  default_local_dir: checkpoints/MOPD/q4b-math-fireopd-4g4c-b256-s42-smoke-envqs
