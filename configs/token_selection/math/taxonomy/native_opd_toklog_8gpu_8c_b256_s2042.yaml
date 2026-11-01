@@ -1,0 +1,19 @@
+# Qwen3-1.7B math-only native OPD ("OPD naive"), equal weight, 8 colocated GPUs, global batch 256, seed 2042, 60 steps, per-token logging on.
+# Same-topology reference for the 8g8c ignore / only runs and, across seeds 42 / 1042 / 2042, the training-seed noise floor (author 2026-11-01).
+extends: _native_opd_toklog_8gpu_8c_b256.yaml
+runtime:
+  wandb_run_id: q1p7b-math-opdnative-toklog-8g8c-b256-s2042
+data:
+  seed: 2042
+rollout:
+  seed: 2042
+audit:
+  output_dir: audit/q1p7b-math-opdnative-toklog-8g8c-b256-s2042
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-opdnative-toklog-8g8c-b256-s2042
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-opdnative-toklog-8g8c-b256-s2042
+trainer:
+  seed: 2042
+  experiment_name: q1p7b-math-opdnative-toklog-8g8c-b256-s2042
+  default_local_dir: checkpoints/MOPD/q1p7b-math-opdnative-toklog-8g8c-b256-s2042

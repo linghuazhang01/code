@@ -1,0 +1,16 @@
+# Frequency-matched control for the Qwen3-1.7B math-only native OPD list-12 ignore / only runs (author 2026-11-01), 8 colocated GPUs,
+# global batch 256. Not launchable by itself: native_opd_list12_matched_{ignore,only}_toklog_8gpu_8c_b256.yaml set the two weights and the run names.
+# Only the pool differs from _native_opd_list12_toklog_8gpu_8c_b256.yaml. It keeps the 8 list-12 termination IDs (EOS and conclusion words),
+# so both pools carry the same stopping signal, and replaces the other 70 IDs with IDs within a factor 1.25 of their frequency in the
+# equal-weight run M17-native. Candidates exclude every ID selected on either model size, the terminate / look-back candidates and special tokens.
+# One draw, seed 20261101: analysis-output/token-importance-controls-20261101/build_matched.py. Math 78 IDs (SHA256 of the sorted, comma-joined IDs 8d39e9364b12052253b66d3485a1dcf51975a4eeab408a6bf8f2ef0a44f2fe0e).
+extends: _native_opd_list12_toklog_8gpu_8c_b256.yaml
+audit:
+  domain_control_token_ids:
+    math: [
+      12, 14, 15, 25, 47, 83, 87, 89, 90, 92, 198, 258, 259, 275, 302, 308,
+      333, 342, 366, 387, 393, 423, 425, 434, 488, 575, 633, 730, 830, 912, 983, 1103,
+      1155, 1186, 1414, 1521, 1588, 1874, 2412, 2504, 3747, 3793, 3838, 4083, 4226, 4260, 5234, 5675,
+      6238, 6785, 6863, 7130, 7332, 8687, 9198, 11035, 11248, 11882, 12776, 13023, 14312, 15442, 16688, 21806,
+      25521, 27236, 31094, 31767, 33508, 43389, 45167, 47822, 50061, 57817, 73877, 74326, 97219, 151645
+    ]
