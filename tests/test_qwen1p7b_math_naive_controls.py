@@ -4,12 +4,13 @@ configs/token_selection/math/taxonomy/native_opd_toklog_8gpu_8c_b256{,_s1042,_s2
 ignore / only runs, three training seeds.
 configs/token_selection/math/taxonomy/native_opd_list12_matched_{ignore,only}_toklog_8gpu_8c_b256.yaml: same weights as the
 list-12 runs on a frequency-matched pool that keeps the 8 list-12 termination IDs
-(analysis-output/token-importance-controls-20261101/build_matched.py).
+(scripts/build_list12_matched_pool.py, provenance in configs/token_selection/list12_matched_pool_math.json).
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -20,7 +21,8 @@ from mopd_verl.settings import load_config
 from test_qwen1p7b_math_code_native_toklog import IDENTITY_KEYS, PER_TOKEN_AUDIT, _changed
 from test_qwen1p7b_native_list12_pool import SHA, TOPOLOGY
 
-DIRECTORY = Path(__file__).resolve().parents[1] / "configs/token_selection/math/taxonomy"
+ROOT = Path(__file__).resolve().parents[1]
+DIRECTORY = ROOT / "configs/token_selection/math/taxonomy"
 MATCHED_SHA = "8d39e9364b12052253b66d3485a1dcf51975a4eeab408a6bf8f2ef0a44f2fe0e"
 TERMINATION = {4226, 13023, 16688, 21806, 25521, 31094, 73877, 151645}
 SEEDS = [(42, ""), (1042, "_s1042"), (2042, "_s2042")]
@@ -105,6 +107,13 @@ def test_matched_differs_from_list12_only_in_pool_and_names(arm: str) -> None:
     allowed = set(IDENTITY_KEYS) | {"audit.domain_control_token_ids.math"}
     changed = _changed(_matched(arm), DIRECTORY / f"native_opd_list12_{arm}_toklog_8gpu_8c_b256.yaml")
     assert changed <= allowed, sorted(changed - allowed)
+
+
+@pytest.mark.parametrize("arm", [arm for arm, *_ in ARMS])
+def test_matched_pool_equals_provenance(arm: str) -> None:
+    provenance = json.loads((ROOT / "configs/token_selection/list12_matched_pool_math.json").read_text())
+    assert provenance["pool"] == _pool(_matched(arm)) and provenance["pool_sha256"] == MATCHED_SHA
+    assert set(provenance["termination_ids"]) == TERMINATION and provenance["list12_sha256"] == SHA["math"]
 
 
 def test_control_run_names_are_unique() -> None:

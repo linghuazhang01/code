@@ -3,7 +3,7 @@
 # Only the pool differs from _native_opd_list12_toklog_8gpu_8c_b256.yaml. It keeps the 8 list-12 termination IDs (EOS and conclusion words),
 # so both pools carry the same stopping signal, and replaces the other 70 IDs with IDs within a factor 1.25 of their frequency in the
 # equal-weight run M17-native. Candidates exclude every ID selected on either model size, the terminate / look-back candidates and special tokens.
-# One draw, seed 20261101: analysis-output/token-importance-controls-20261101/build_matched.py. Math 78 IDs (SHA256 of the sorted, comma-joined IDs 8d39e9364b12052253b66d3485a1dcf51975a4eeab408a6bf8f2ef0a44f2fe0e).
+# One draw, seed 20261101: scripts/build_list12_matched_pool.py, provenance in configs/token_selection/list12_matched_pool_math.json. Math 78 IDs (SHA256 of the sorted, comma-joined IDs 8d39e9364b12052253b66d3485a1dcf51975a4eeab408a6bf8f2ef0a44f2fe0e).
 extends: _native_opd_list12_toklog_8gpu_8c_b256.yaml
 audit:
   domain_control_token_ids:
