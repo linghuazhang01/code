@@ -1,0 +1,13 @@
+# Qwen3-1.7B math-only native OPD ("OPD naive") with fixed position weights on one of the seven classes and per-token logging, 8 colocated GPUs,
+# global batch 256. Not launchable by itself: native_opd_{l12,full}_<class>_{ignore,only}_toklog_8gpu_8c_b256.yaml set the pool, the two weights and the run names.
+# Same weighting as the list-12 ignore / only runs: fixed per-position weights, no online selection, no normalisation.
+# Written by scripts/build_list12_class_configs.py. Same-topology equal-weight reference: ../taxonomy/native_opd_toklog_8gpu_8c_b256.yaml.
+extends: ../taxonomy/_native_opd_toklog_8gpu_8c_b256.yaml
+audit:
+  control_token_loss_weighting_enabled: true
+  control_token_online_selection_enabled: false
+  control_token_normalize_per_domain: false
+  control_token_phase_gate_enabled: false
+  control_token_span_weighting_enabled: false
+  control_token_speed_weighting_enabled: false
+  control_token_ids: []

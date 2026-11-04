@@ -1,0 +1,18 @@
+# Qwen3-1.7B math-only native OPD that ignores every position of the list-12 class 版面 (6 IDs, 1.79% of positions) with weight 0; all other valid positions keep weight 1.
+# 8 colocated GPUs, global batch 256, seed 42, 60 steps, per-token logging on. Pool record: ../../list12_classes.json (scripts/build_list12_class_configs.py).
+extends: _native_opd_l12class_toklog_8gpu_8c_b256.yaml
+runtime:
+  wandb_run_id: q1p7b-math-opdnative-l12-layout-ign-toklog-8g8c-b256-s42
+audit:
+  domain_control_token_ids:
+    math: [330, 382, 624, 1188, 3593, 24437]
+  control_token_loss_weight: 0.0
+  control_token_other_weight: 1.0
+  output_dir: audit/q1p7b-math-opdnative-l12-layout-ign-toklog-8g8c-b256-s42
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-opdnative-l12-layout-ign-toklog-8g8c-b256-s42
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-opdnative-l12-layout-ign-toklog-8g8c-b256-s42
+trainer:
+  experiment_name: q1p7b-math-opdnative-l12-layout-ign-toklog-8g8c-b256-s42
+  default_local_dir: checkpoints/MOPD/q1p7b-math-opdnative-l12-layout-ign-toklog-8g8c-b256-s42

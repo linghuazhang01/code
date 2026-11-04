@@ -1,0 +1,24 @@
+# Qwen3-1.7B code-only native OPD that ignores every position of the full set of class 版面 (131 IDs passing the list-12 occurrence gate, 25.87% of positions) with weight 0; all other valid positions keep weight 1.
+# 8 colocated GPUs, global batch 256, seed 42, 60 steps, per-token logging on. Pool record: ../../list12_classes.json (scripts/build_list12_class_configs.py).
+extends: _native_opd_l12class_toklog_8gpu_8c_b256.yaml
+runtime:
+  wandb_run_id: q1p7b-code-opdnative-full-layout-ign-toklog-8g8c-b256-s42
+audit:
+  domain_control_token_ids:
+    code: [0, 1, 6, 7, 8, 9, 11, 12, 13, 25, 58, 60, 63, 198, 220, 256, 257, 262, 271, 286, 310, 320, 330, 334, 340,
+      345, 353, 364, 368, 382, 394, 445, 481, 492, 496, 497, 503, 508, 510, 516, 532, 568, 593, 624, 664, 692, 698, 701,
+      741, 863, 921, 936, 982, 999, 1005, 1019, 1066, 1112, 1125, 1138, 1171, 1188, 1210, 1248, 1305, 1447, 1457, 1565,
+      1648, 1789, 1837, 1959, 2303, 2398, 2467, 2503, 2533, 2546, 2572, 2822, 3070, 3447, 3593, 3646, 3932, 3989, 4080,
+      4167, 4292, 4318, 4390, 4427, 5053, 5130, 5563, 6256, 7213, 7252, 7609, 7731, 7808, 8945, 9604, 9957, 10055,
+      10293, 10343, 10907, 11436, 12145, 12367, 13874, 14599, 17826, 18639, 19324, 21082, 27771, 28587, 28654, 32295,
+      32881, 44622, 46186, 48651, 49237, 60353, 62338, 84507, 95518, 97219]
+  control_token_loss_weight: 0.0
+  control_token_other_weight: 1.0
+  output_dir: audit/q1p7b-code-opdnative-full-layout-ign-toklog-8g8c-b256-s42
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-code-opdnative-full-layout-ign-toklog-8g8c-b256-s42
+huggingface_checkpoint:
+  path_prefix: checkpoints/code/q1p7b-code-opdnative-full-layout-ign-toklog-8g8c-b256-s42
+trainer:
+  experiment_name: q1p7b-code-opdnative-full-layout-ign-toklog-8g8c-b256-s42
+  default_local_dir: checkpoints/MOPD/q1p7b-code-opdnative-full-layout-ign-toklog-8g8c-b256-s42

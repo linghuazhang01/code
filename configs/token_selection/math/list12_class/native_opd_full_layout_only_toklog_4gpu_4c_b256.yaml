@@ -1,0 +1,21 @@
+# Qwen3-1.7B math-only native OPD that learns only positions of the full set of class 版面 (73 IDs passing the list-12 occurrence gate, 17.75% of positions) with weight 1; all other valid positions get weight 0.
+# 4 colocated GPUs, global batch 256, seed 42, 60 steps, per-token logging on. Pool record: ../../list12_classes.json (scripts/build_list12_class_configs.py).
+extends: _native_opd_l12class_toklog_4gpu_4c_b256.yaml
+runtime:
+  wandb_run_id: q1p7b-math-opdnative-full-layout-only-toklog-4g4c-b256-s42
+audit:
+  domain_control_token_ids:
+    math: [0, 1, 6, 7, 8, 9, 11, 12, 13, 25, 26, 58, 60, 198, 220, 256, 271, 320, 330, 334, 340, 345, 353, 382, 481,
+      508, 510, 532, 549, 568, 593, 624, 692, 701, 715, 863, 921, 1188, 1326, 1447, 1648, 1959, 2219, 2303, 2376, 2467,
+      2572, 3070, 3518, 3554, 3593, 4080, 4292, 4605, 7252, 7360, 7731, 10055, 10293, 10569, 11248, 24437, 25046, 27275,
+      32295, 41295, 56177, 58336, 66426, 84500, 90155, 95518, 97219]
+  control_token_loss_weight: 1.0
+  control_token_other_weight: 0.0
+  output_dir: audit/q1p7b-math-opdnative-full-layout-only-toklog-4g4c-b256-s42
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-opdnative-full-layout-only-toklog-4g4c-b256-s42
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-opdnative-full-layout-only-toklog-4g4c-b256-s42
+trainer:
+  experiment_name: q1p7b-math-opdnative-full-layout-only-toklog-4g4c-b256-s42
+  default_local_dir: checkpoints/MOPD/q1p7b-math-opdnative-full-layout-only-toklog-4g4c-b256-s42

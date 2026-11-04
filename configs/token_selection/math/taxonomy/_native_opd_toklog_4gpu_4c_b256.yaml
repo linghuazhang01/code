@@ -1,5 +1,5 @@
 # Qwen3-1.7B math-only native OPD ("OPD naive") with per-token logging, equal weight, 4 colocated GPUs (actor, vLLM rollout and FSDP-4
-# teacher share every GPU), global batch 256. Not launchable by itself: the entropy-selection files
+# teacher share every GPU), global batch 256. Not launchable by itself: the equal-weight leaf native_opd_toklog_4gpu_4c_b256.yaml, the list12_class/ parent and the entropy-selection files
 # native_opd_ent_{top20,tail80,top10,tail90}_toklog_4gpu_4c_b256.yaml extend it. Base: native_opd_toklog_3gpu_3c_b255.yaml (the
 # equal-weight naive run q1p7b-math-opdnative-toklog-3g3c-b255); this file changes only the topology (3 -> 4 colocated GPUs,
 # batch 255 -> 256 by the 4-GPU batch rule).

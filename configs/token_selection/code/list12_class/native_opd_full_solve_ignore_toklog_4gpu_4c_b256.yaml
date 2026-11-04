@@ -1,0 +1,24 @@
+# Qwen3-1.7B code-only native OPD that ignores every position of the full set of class 解题结构 (109 IDs passing the list-12 occurrence gate, 3.42% of positions) with weight 0; all other valid positions keep weight 1.
+# 4 colocated GPUs, global batch 256, seed 42, 60 steps, per-token logging on. Pool record: ../../list12_classes.json (scripts/build_list12_class_configs.py).
+extends: _native_opd_l12class_toklog_4gpu_4c_b256.yaml
+runtime:
+  wandb_run_id: q1p7b-code-opdnative-full-solve-ign-toklog-4g4c-b256-s42
+audit:
+  domain_control_token_ids:
+    code: [2, 333, 421, 641, 758, 979, 990, 1077, 1184, 1205, 1249, 1366, 1401, 1416, 1490, 1592, 1654, 1667, 1714,
+      1752, 1896, 2014, 2411, 2461, 2505, 2661, 2679, 2691, 2908, 2987, 3055, 3060, 3119, 3197, 3270, 3425, 3735, 3796,
+      3880, 4120, 4230, 4457, 4460, 4504, 4522, 4636, 4968, 5048, 5097, 5145, 5185, 5309, 5443, 5486, 5512, 5549, 5571,
+      5795, 5937, 5978, 6025, 6771, 6979, 7036, 7379, 7854, 8116, 8253, 8282, 8603, 9008, 9258, 9658, 9680, 9735, 10061,
+      10349, 10354, 10783, 11047, 11538, 11778, 12564, 12831, 13383, 14374, 14561, 14822, 15967, 18214, 18804, 19813,
+      20017, 21930, 22043, 22079, 22201, 22603, 27706, 27745, 39861, 40325, 45451, 46024, 53084, 54340, 70971, 78064,
+      89006]
+  control_token_loss_weight: 0.0
+  control_token_other_weight: 1.0
+  output_dir: audit/q1p7b-code-opdnative-full-solve-ign-toklog-4g4c-b256-s42
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-code-opdnative-full-solve-ign-toklog-4g4c-b256-s42
+huggingface_checkpoint:
+  path_prefix: checkpoints/code/q1p7b-code-opdnative-full-solve-ign-toklog-4g4c-b256-s42
+trainer:
+  experiment_name: q1p7b-code-opdnative-full-solve-ign-toklog-4g4c-b256-s42
+  default_local_dir: checkpoints/MOPD/q1p7b-code-opdnative-full-solve-ign-toklog-4g4c-b256-s42

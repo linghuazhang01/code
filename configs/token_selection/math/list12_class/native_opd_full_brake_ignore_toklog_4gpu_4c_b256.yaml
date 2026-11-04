@@ -1,0 +1,21 @@
+# Qwen3-1.7B math-only native OPD that ignores every position of the full set of class 推理阻力 (65 IDs passing the list-12 occurrence gate, 2.64% of positions) with weight 0; all other valid positions keep weight 1.
+# 4 colocated GPUs, global batch 256, seed 42, 60 steps, per-token logging on. Pool record: ../../list12_classes.json (scripts/build_list12_class_configs.py).
+extends: _native_opd_l12class_toklog_4gpu_4c_b256.yaml
+runtime:
+  wandb_run_id: q1p7b-math-opdnative-full-brake-ign-toklog-4g4c-b256-s42
+audit:
+  domain_control_token_ids:
+    math: [30, 537, 714, 830, 902, 1035, 1128, 1231, 1246, 1273, 1410, 1513, 1549, 1744, 1779, 1866, 1921, 1939, 1988,
+      1990, 2058, 2152, 2160, 2308, 2578, 2623, 2697, 2704, 2753, 2806, 3171, 3498, 3520, 3555, 3783, 3838, 3872, 3973,
+      3983, 4157, 4354, 4363, 4396, 4518, 4969, 4977, 5485, 6713, 6788, 7196, 8088, 8365, 9454, 9834, 11209, 11997,
+      13824, 14190, 14312, 15516, 16585, 19091, 49759, 52592, 92014]
+  control_token_loss_weight: 0.0
+  control_token_other_weight: 1.0
+  output_dir: audit/q1p7b-math-opdnative-full-brake-ign-toklog-4g4c-b256-s42
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-math-opdnative-full-brake-ign-toklog-4g4c-b256-s42
+huggingface_checkpoint:
+  path_prefix: checkpoints/math/q1p7b-math-opdnative-full-brake-ign-toklog-4g4c-b256-s42
+trainer:
+  experiment_name: q1p7b-math-opdnative-full-brake-ign-toklog-4g4c-b256-s42
+  default_local_dir: checkpoints/MOPD/q1p7b-math-opdnative-full-brake-ign-toklog-4g4c-b256-s42

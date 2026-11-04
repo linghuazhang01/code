@@ -1,0 +1,24 @@
+# Qwen3-1.7B code-only native OPD that learns only positions of the full set of class 虚词 (133 IDs passing the list-12 occurrence gate, 21.57% of positions) with weight 1; all other valid positions get weight 0.
+# 4 colocated GPUs, global batch 256, seed 42, 60 steps, per-token logging on. Pool record: ../../list12_classes.json (scripts/build_list12_class_configs.py).
+extends: _native_opd_l12class_toklog_4gpu_4c_b256.yaml
+runtime:
+  wandb_run_id: q1p7b-code-opdnative-full-func-only-toklog-4g4c-b256-s42
+audit:
+  domain_control_token_ids:
+    code: [32, 64, 263, 264, 266, 269, 279, 285, 300, 304, 311, 315, 323, 362, 369, 374, 387, 389, 419, 429, 432, 437,
+      438, 448, 454, 458, 476, 498, 504, 518, 525, 541, 553, 566, 572, 576, 582, 601, 614, 646, 653, 678, 686, 700, 702,
+      705, 752, 785, 803, 807, 817, 862, 879, 892, 894, 896, 911, 916, 983, 1008, 1012, 1039, 1045, 1052, 1075, 1084,
+      1091, 1101, 1105, 1119, 1172, 1181, 1212, 1265, 1283, 1380, 1429, 1449, 1493, 1495, 1496, 1499, 1526, 1558, 1573,
+      1588, 1602, 1657, 1660, 1741, 1753, 1782, 1817, 1846, 1852, 1948, 1958, 1969, 2009, 2041, 2163, 2176, 2238, 2337,
+      2421, 2441, 2477, 2619, 2686, 2878, 3080, 3156, 3243, 3403, 3562, 3767, 3941, 4197, 4221, 4566, 4803, 4814, 4854,
+      6280, 8206, 8278, 8886, 9547, 10694, 14319, 16788, 23085, 24063]
+  control_token_loss_weight: 1.0
+  control_token_other_weight: 0.0
+  output_dir: audit/q1p7b-code-opdnative-full-func-only-toklog-4g4c-b256-s42
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-code-opdnative-full-func-only-toklog-4g4c-b256-s42
+huggingface_checkpoint:
+  path_prefix: checkpoints/code/q1p7b-code-opdnative-full-func-only-toklog-4g4c-b256-s42
+trainer:
+  experiment_name: q1p7b-code-opdnative-full-func-only-toklog-4g4c-b256-s42
+  default_local_dir: checkpoints/MOPD/q1p7b-code-opdnative-full-func-only-toklog-4g4c-b256-s42

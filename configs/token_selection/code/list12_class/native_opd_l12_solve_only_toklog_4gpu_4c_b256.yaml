@@ -1,0 +1,19 @@
+# Qwen3-1.7B code-only native OPD that learns only positions of the list-12 class 解题结构 (32 IDs, 1.54% of positions) with weight 1; all other valid positions get weight 0.
+# 4 colocated GPUs, global batch 256, seed 42, 60 steps, per-token logging on. Pool record: ../../list12_classes.json (scripts/build_list12_class_configs.py).
+extends: _native_opd_l12class_toklog_4gpu_4c_b256.yaml
+runtime:
+  wandb_run_id: q1p7b-code-opdnative-l12-solve-only-toklog-4g4c-b256-s42
+audit:
+  domain_control_token_ids:
+    code: [2, 421, 758, 1205, 1416, 1654, 2014, 2461, 2679, 2691, 4120, 4230, 4504, 4968, 5097, 5145, 5443, 5549, 7036,
+      7379, 8116, 9008, 9735, 10349, 13383, 14374, 22201, 27745, 39861, 40325, 53084, 89006]
+  control_token_loss_weight: 1.0
+  control_token_other_weight: 0.0
+  output_dir: audit/q1p7b-code-opdnative-l12-solve-only-toklog-4g4c-b256-s42
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-code-opdnative-l12-solve-only-toklog-4g4c-b256-s42
+huggingface_checkpoint:
+  path_prefix: checkpoints/code/q1p7b-code-opdnative-l12-solve-only-toklog-4g4c-b256-s42
+trainer:
+  experiment_name: q1p7b-code-opdnative-l12-solve-only-toklog-4g4c-b256-s42
+  default_local_dir: checkpoints/MOPD/q1p7b-code-opdnative-l12-solve-only-toklog-4g4c-b256-s42
