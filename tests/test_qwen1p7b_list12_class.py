@@ -7,6 +7,8 @@ Same weighting as the list-12 ignore / only runs; only the pool and, at 4 GPUs, 
 Equal-weight references at the same topology: {math/taxonomy,code}/native_opd_toklog_{4gpu_4c,8gpu_8c}_b256.yaml.
 Extra leaves (author 2026-11-06): code/list12_class/native_opd_full_{push,brake}_ignore_toklog_3gpu_3c_b255.yaml, 3 colocated GPUs, batch 255,
 vLLM memory 0.8, W&B offline; reference code/native_opd_toklog_3gpu_3c_b255.yaml.
+Their 2-GPU reruns from step 0 (author 2026-11-06): native_opd_full_{push,brake}_ignore_toklog_2gpu_2c_b256.yaml, 2 colocated GPUs,
+batch 256, vLLM memory 0.6, W&B offline, parent ../_native_opd_toklog_2gpu_2c_b256.yaml (no 2-GPU equal-weight run).
 """
 
 from __future__ import annotations
@@ -170,3 +172,21 @@ def test_code_3gpu_full_ignore(cls: str) -> None:
     assert changed <= allowed, sorted(changed - allowed)
     changed = _changed(path, _path("code", "full", cls, "ignore", "4gpu_4c"))
     assert changed <= set(IDENTITY_KEYS) | TOPOLOGY | {"rollout.gpu_memory_utilization", "runtime.wandb_mode"}, sorted(changed - set(IDENTITY_KEYS) - TOPOLOGY)
+
+
+@pytest.mark.parametrize("cls", ["push", "brake"])
+def test_code_2gpu_full_ignore(cls: str) -> None:
+    path = SELECTION / "code/list12_class" / f"native_opd_full_{cls}_ignore_toklog_2gpu_2c_b256.yaml"
+    cfg = load_config(path)
+    run = f"q1p7b-code-opdnative-full-{cls}-ign-toklog-2g2c-b256-s42"
+    assert cfg.trainer.experiment_name == cfg.runtime.wandb_run_id == run and len(run) <= 64
+    assert cfg.huggingface_checkpoint.path_prefix == f"checkpoints/code/{run}" and cfg.audit.output_dir == f"audit/{run}"
+    assert cfg.worker_placement.actor_rollout.n_gpus_per_node == cfg.trainer.n_gpus_per_node == cfg.runtime.slurm_allocation_gpus == 2
+    assert "actor_rollout_ref.ref.fsdp_config.fsdp_size=2" in cfg.extra_overrides and cfg.worker_placement.separate_ref_policy is False
+    assert cfg.data.train_batch_size == cfg.actor.ppo_mini_batch_size == 256
+    assert cfg.rollout.gpu_memory_utilization == 0.6 and cfg.runtime.wandb_mode == "offline"
+    assert cfg.trainer.total_training_steps == 60 and cfg.trainer.save_freq == 1 and cfg.huggingface_checkpoint.steps == (60,)
+    assert (cfg.audit.control_token_loss_weight, cfg.audit.control_token_other_weight) == (0.0, 1.0)
+    assert cfg.audit.domain_control_token_ids == {"code": RECORD["code"]["full_classes"][cls]["ids"]}
+    changed = _changed(path, _path("code", "full", cls, "ignore", "4gpu_4c"))
+    assert changed <= set(IDENTITY_KEYS) | TOPOLOGY | {"runtime.wandb_mode"}, sorted(changed - set(IDENTITY_KEYS) - TOPOLOGY)

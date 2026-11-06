@@ -1,0 +1,16 @@
+# Qwen3-1.7B code-only native OPD ("OPD naive") with fixed position weights on one of the seven classes and per-token logging, 2 colocated GPUs,
+# global batch 256. Not launchable by itself: native_opd_{l12,full}_<class>_{ignore,only}_toklog_2gpu_2c_b256.yaml set the pool, the two weights and the run names.
+# Same weighting as the list-12 ignore / only runs: fixed per-position weights, no online selection, no normalisation.
+# Written by scripts/build_list12_class_configs.py. Same-topology equal-weight reference: none at 2 GPUs (closest: ../native_opd_toklog_3gpu_3c_b255.yaml).
+# W&B offline: api.wandb.ai answers 403 from the H200 server (2026-11-06); sync later with `wandb sync`.
+extends: ../_native_opd_toklog_2gpu_2c_b256.yaml
+runtime:
+  wandb_mode: offline
+audit:
+  control_token_loss_weighting_enabled: true
+  control_token_online_selection_enabled: false
+  control_token_normalize_per_domain: false
+  control_token_phase_gate_enabled: false
+  control_token_span_weighting_enabled: false
+  control_token_speed_weighting_enabled: false
+  control_token_ids: []

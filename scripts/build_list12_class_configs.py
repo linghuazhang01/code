@@ -23,8 +23,11 @@ TOPOLOGIES = {"4gpu_4c": (4, "4g4c"), "8gpu_8c": (8, "8g8c")}
 # run q1p7b-code-opdnative-toklog-3g3c-b255, on H200 cards shared with other jobs. vLLM memory 0.8 (the author's exception to the 0.6 rule): vLLM 0.8.5
 # counts other processes' memory against total x gpu_memory_utilization, so 0.4 left no KV cache on a card with 58 GB in use; 0.8 caps the card at ~115 GB.
 # W&B offline there: api.wandb.ai answers every request from the H200 server with 403 (2026-11-06); sync the runs later with `wandb sync`.
+# The 3-GPU push run was stopped at step 9 (11-06 18:50); author 11-06: rerun both from step 0 on 2 colocated GPUs, batch 256 (255 does not split
+# over 2 GPUs), with GPUs 0 and 2 reserved for it, so vLLM stays at 0.6 (None = inherit). Parent: ../_native_opd_toklog_2gpu_2c_b256.yaml.
 # (domain, topology): (GPUs, run tag, batch, vLLM memory, W&B mode, [(pool set, class, arm)])
-EXTRA = {("code", "3gpu_3c"): (3, "3g3c", 255, 0.8, "offline", [("full", "push", "ignore"), ("full", "brake", "ignore")])}
+EXTRA = {("code", "3gpu_3c"): (3, "3g3c", 255, 0.8, "offline", [("full", "push", "ignore"), ("full", "brake", "ignore")]),
+         ("code", "2gpu_2c"): (2, "2g2c", 256, None, "offline", [("full", "push", "ignore"), ("full", "brake", "ignore")])}
 # pool set: sentence naming one pool
 SETS = {"l12": "the list-12 class {cls} ({n} IDs, {pos}% of positions)",
         "full": "the full set of class {cls} ({n} IDs passing the list-12 occurrence gate, {pos}% of positions)"}
@@ -40,11 +43,14 @@ def sha(ids):
 def parent(dom, topo, gpus, batch=256, vllm=None, wandb=None):
     # the 3-GPU equal-weight leaf has no "_" parent; extending the leaf is safe because every leaf restates the run names
     base = f"_native_opd_toklog_{topo}_b{batch}.yaml" if batch == 256 else f"native_opd_toklog_{topo}_b{batch}.yaml"
+    ref = f"{DOMAINS[dom]}/native_opd_toklog_{topo}_b{batch}.yaml"
+    if topo == "2gpu_2c":
+        ref = f"none at 2 GPUs (closest: {DOMAINS[dom]}/native_opd_toklog_3gpu_3c_b255.yaml)"
     return "\n".join([
         f"# Qwen3-1.7B {dom}-only native OPD (\"OPD naive\") with fixed position weights on one of the seven classes and per-token logging, {gpus} colocated GPUs,",
         f"# global batch {batch}. Not launchable by itself: native_opd_{{l12,full}}_<class>_{{ignore,only}}_toklog_{topo}_b{batch}.yaml set the pool, the two weights and the run names.",
         "# Same weighting as the list-12 ignore / only runs: fixed per-position weights, no online selection, no normalisation.",
-        f"# Written by scripts/build_list12_class_configs.py. Same-topology equal-weight reference: {DOMAINS[dom]}/native_opd_toklog_{topo}_b{batch}.yaml.",
+        f"# Written by scripts/build_list12_class_configs.py. Same-topology equal-weight reference: {ref}.",
         *([f"# vLLM memory {vllm} instead of 0.6: author 2026-11-06, H200 cards shared with other jobs; vLLM 0.8.5 caps the whole card (other processes included)",
             "# at total x gpu_memory_utilization. The equal-weight reference ran at 0.6 on idle cards."] if vllm else []),
         *([f"# W&B {wandb}: api.wandb.ai answers 403 from the H200 server (2026-11-06); sync later with `wandb sync`."] if wandb else []),
