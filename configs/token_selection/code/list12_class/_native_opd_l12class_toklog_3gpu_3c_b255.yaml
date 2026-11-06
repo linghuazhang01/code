@@ -1,0 +1,16 @@
+# Qwen3-1.7B code-only native OPD ("OPD naive") with fixed position weights on one of the seven classes and per-token logging, 3 colocated GPUs,
+# global batch 255. Not launchable by itself: native_opd_{l12,full}_<class>_{ignore,only}_toklog_3gpu_3c_b255.yaml set the pool, the two weights and the run names.
+# Same weighting as the list-12 ignore / only runs: fixed per-position weights, no online selection, no normalisation.
+# Written by scripts/build_list12_class_configs.py. Same-topology equal-weight reference: ../native_opd_toklog_3gpu_3c_b255.yaml.
+# vLLM memory 0.4 instead of 0.6: author 2026-11-06, to share H200 cards with other jobs; the equal-weight reference ran at 0.6.
+extends: ../native_opd_toklog_3gpu_3c_b255.yaml
+rollout:
+  gpu_memory_utilization: 0.4
+audit:
+  control_token_loss_weighting_enabled: true
+  control_token_online_selection_enabled: false
+  control_token_normalize_per_domain: false
+  control_token_phase_gate_enabled: false
+  control_token_span_weighting_enabled: false
+  control_token_speed_weighting_enabled: false
+  control_token_ids: []

@@ -5,6 +5,8 @@ Classes: 推理推力 / 推理阻力 / 结果结构 / 解题结构 / 虚词 / �
 scripts/build_list12_class_configs.py). l12 = the list-12 IDs of a class; full = every ID of the class passing the list-12 occurrence gate.
 Same weighting as the list-12 ignore / only runs; only the pool and, at 4 GPUs, the topology differ.
 Equal-weight references at the same topology: {math/taxonomy,code}/native_opd_toklog_{4gpu_4c,8gpu_8c}_b256.yaml.
+Extra leaves (author 2026-11-06): code/list12_class/native_opd_full_{push,brake}_ignore_toklog_3gpu_3c_b255.yaml, 3 colocated GPUs, batch 255,
+vLLM memory 0.4; reference code/native_opd_toklog_3gpu_3c_b255.yaml.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ from mopd_verl.launch import build_command
 from mopd_verl.settings import load_config
 
 from test_qwen1p7b_math_code_native_toklog import IDENTITY_KEYS, PER_TOKEN_AUDIT, _changed
-from test_qwen1p7b_native_list12_pool import SHA, SIZE, TOPOLOGY
+from test_qwen1p7b_native_list12_pool import SHA, SIZE, TOPOLOGY, WEIGHTING
 
 ROOT = Path(__file__).resolve().parents[1]
 SELECTION = ROOT / "configs/token_selection"
@@ -147,3 +149,24 @@ def test_equal_weight_reference(dom: str, topo: str, gpus: int, short: str) -> N
 def test_run_names_are_unique() -> None:
     runs = [load_config(_path(dom, pool, cls, arm, topo)).trainer.experiment_name for dom, pool, cls, arm, _, _, _, topo, _, _ in CASES]
     assert len(set(runs)) == len(runs) == 112
+
+
+@pytest.mark.parametrize("cls", ["push", "brake"])
+def test_code_3gpu_full_ignore(cls: str) -> None:
+    path = SELECTION / "code/list12_class" / f"native_opd_full_{cls}_ignore_toklog_3gpu_3c_b255.yaml"
+    cfg = load_config(path)
+    run = f"q1p7b-code-opdnative-full-{cls}-ign-toklog-3g3c-b255-s42"
+    assert cfg.trainer.experiment_name == cfg.runtime.wandb_run_id == run and len(run) <= 64
+    assert cfg.huggingface_checkpoint.path_prefix == f"checkpoints/code/{run}" and cfg.audit.output_dir == f"audit/{run}"
+    assert cfg.worker_placement.actor_rollout.n_gpus_per_node == cfg.trainer.n_gpus_per_node == cfg.runtime.slurm_allocation_gpus == 3
+    assert "actor_rollout_ref.ref.fsdp_config.fsdp_size=3" in cfg.extra_overrides and cfg.worker_placement.separate_ref_policy is False
+    assert cfg.data.train_batch_size == cfg.actor.ppo_mini_batch_size == 255
+    assert cfg.rollout.gpu_memory_utilization == 0.4
+    assert cfg.trainer.total_training_steps == 60 and cfg.trainer.save_freq == 1 and cfg.huggingface_checkpoint.steps == (60,)
+    assert (cfg.audit.control_token_loss_weight, cfg.audit.control_token_other_weight) == (0.0, 1.0)
+    assert cfg.audit.domain_control_token_ids == {"code": RECORD["code"]["full_classes"][cls]["ids"]}
+    allowed = set(IDENTITY_KEYS) | WEIGHTING | {"audit.control_token_online_selection_enabled", "rollout.gpu_memory_utilization"}
+    changed = _changed(path, BASE["code"] / "native_opd_toklog_3gpu_3c_b255.yaml")
+    assert changed <= allowed, sorted(changed - allowed)
+    changed = _changed(path, _path("code", "full", cls, "ignore", "4gpu_4c"))
+    assert changed <= set(IDENTITY_KEYS) | TOPOLOGY | {"rollout.gpu_memory_utilization"}, sorted(changed - set(IDENTITY_KEYS) - TOPOLOGY)

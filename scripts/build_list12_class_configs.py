@@ -5,8 +5,8 @@ l12 pools: analysis-output/list12-partition-20261101/tables/classes.json, the li
 full pools: analysis-output/seven-class-fullset-20261104/tables/classes.json, every ID of each class that passes the list-12 occurrence gate
 (M = 20, measurable in Rising in >= 7 of 8 runs and in both phases in >= 6 of 8) without the speed rule; each contains the l12 pool.
 ignore = pool weight 0, others 1; only = pool weight 1, others 0; no normalisation, as in the list-12 ignore / only runs.
-Topologies 4gpu_4c and 8gpu_8c, global batch 256, seed 42. Needs the analysis directory behind analysis-output.
-Writes configs/token_selection/list12_classes.json and configs/token_selection/{math,code}/list12_class/ (two parents and 56 leaves per domain)."""
+Topologies 4gpu_4c and 8gpu_8c, global batch 256, seed 42, plus the EXTRA leaves below. Needs the analysis directory behind analysis-output.
+Writes configs/token_selection/list12_classes.json and configs/token_selection/{math,code}/list12_class/ (two parents and 56 leaves per domain, plus EXTRA)."""
 import hashlib, json, textwrap
 from pathlib import Path
 import pandas as pd
@@ -19,6 +19,10 @@ CLASSES = {"push": "推理推力", "brake": "推理阻力", "result": "结果结
 # domain: (folder of the equal-weight topology parents, seen from list12_class/)
 DOMAINS = {"math": "../taxonomy", "code": ".."}
 TOPOLOGIES = {"4gpu_4c": (4, "4g4c"), "8gpu_8c": (8, "8g8c")}
+# Leaves outside the grid (author 2026-11-06): Code full 推理推力 / 推理阻力 ignore on 3 colocated GPUs, batch 255, next to the 3-GPU equal-weight
+# run q1p7b-code-opdnative-toklog-3g3c-b255, with vLLM memory 0.4 (the author's exception to the 0.6 rule) to share H200 cards with other jobs.
+# (domain, topology): (GPUs, run tag, batch, vLLM memory, [(pool set, class, arm)])
+EXTRA = {("code", "3gpu_3c"): (3, "3g3c", 255, 0.4, [("full", "push", "ignore"), ("full", "brake", "ignore")])}
 # pool set: sentence naming one pool
 SETS = {"l12": "the list-12 class {cls} ({n} IDs, {pos}% of positions)",
         "full": "the full set of class {cls} ({n} IDs passing the list-12 occurrence gate, {pos}% of positions)"}
@@ -31,22 +35,25 @@ def sha(ids):
     return hashlib.sha256(",".join(map(str, sorted(ids))).encode()).hexdigest()
 
 
-def parent(dom, topo, gpus):
+def parent(dom, topo, gpus, batch=256, vllm=None):
+    # the 3-GPU equal-weight leaf has no "_" parent; extending the leaf is safe because every leaf restates the run names
+    base = f"_native_opd_toklog_{topo}_b{batch}.yaml" if batch == 256 else f"native_opd_toklog_{topo}_b{batch}.yaml"
     return "\n".join([
         f"# Qwen3-1.7B {dom}-only native OPD (\"OPD naive\") with fixed position weights on one of the seven classes and per-token logging, {gpus} colocated GPUs,",
-        f"# global batch 256. Not launchable by itself: native_opd_{{l12,full}}_<class>_{{ignore,only}}_toklog_{topo}_b256.yaml set the pool, the two weights and the run names.",
+        f"# global batch {batch}. Not launchable by itself: native_opd_{{l12,full}}_<class>_{{ignore,only}}_toklog_{topo}_b{batch}.yaml set the pool, the two weights and the run names.",
         "# Same weighting as the list-12 ignore / only runs: fixed per-position weights, no online selection, no normalisation.",
-        f"# Written by scripts/build_list12_class_configs.py. Same-topology equal-weight reference: {DOMAINS[dom]}/native_opd_toklog_{topo}_b256.yaml.",
-        f"extends: {DOMAINS[dom]}/_native_opd_toklog_{topo}_b256.yaml", "audit:", "  control_token_loss_weighting_enabled: true",
+        f"# Written by scripts/build_list12_class_configs.py. Same-topology equal-weight reference: {DOMAINS[dom]}/native_opd_toklog_{topo}_b{batch}.yaml.",
+        *([f"# vLLM memory {vllm} instead of 0.6: author 2026-11-06, to share H200 cards with other jobs; the equal-weight reference ran at 0.6."] if vllm else []),
+        f"extends: {DOMAINS[dom]}/{base}", *(["rollout:", f"  gpu_memory_utilization: {vllm}"] if vllm else []), "audit:", "  control_token_loss_weighting_enabled: true",
         "  control_token_online_selection_enabled: false", "  control_token_normalize_per_domain: false", "  control_token_phase_gate_enabled: false",
         "  control_token_span_weighting_enabled: false", "  control_token_speed_weighting_enabled: false", "  control_token_ids: []", ""])
 
 
-def leaf(dom, topo, gpus, run, sentence, ids, pool_w, other_w):
+def leaf(dom, topo, gpus, run, sentence, ids, pool_w, other_w, batch=256):
     return "\n".join([
         f"# Qwen3-1.7B {dom}-only native OPD that {sentence}.",
-        f"# {gpus} colocated GPUs, global batch 256, seed 42, 60 steps, per-token logging on. Pool record: ../../list12_classes.json (scripts/build_list12_class_configs.py).",
-        f"extends: _native_opd_l12class_toklog_{topo}_b256.yaml", "runtime:", f"  wandb_run_id: {run}", "audit:", "  domain_control_token_ids:",
+        f"# {gpus} colocated GPUs, global batch {batch}, seed 42, 60 steps, per-token logging on. Pool record: ../../list12_classes.json (scripts/build_list12_class_configs.py).",
+        f"extends: _native_opd_l12class_toklog_{topo}_b{batch}.yaml", "runtime:", f"  wandb_run_id: {run}", "audit:", "  domain_control_token_ids:",
         textwrap.fill(", ".join(map(str, ids)), 120, initial_indent=f"    {dom}: [", subsequent_indent="      ") + "]",
         f"  control_token_loss_weight: {pool_w}", f"  control_token_other_weight: {other_w}", f"  output_dir: audit/{run}",
         "paper_eval:", f"  output_dir: eval_outputs/paper_suite/{run}", "huggingface_checkpoint:", f"  path_prefix: checkpoints/{dom}/{run}",
@@ -81,6 +88,16 @@ def main():
                         run = f"q1p7b-{dom}-opdnative-{name}-{k}-{tag}-toklog-{short}-b256-s42"
                         (out / f"native_opd_{name}_{k}_{arm}_toklog_{topo}_b256.yaml").write_text(
                             leaf(dom, topo, gpus, run, sentence.format(pool=desc), c["ids"], pool_w, other_w))
+        for (edom, topo), (gpus, short, batch, vllm, leaves) in EXTRA.items():
+            if edom != dom:
+                continue
+            (out / f"_native_opd_l12class_toklog_{topo}_b{batch}.yaml").write_text(parent(dom, topo, gpus, batch, vllm))
+            for name, k, arm in leaves:
+                c = record["domains"][dom]["classes" if name == "l12" else "full_classes"][k]
+                tag, pool_w, other_w, sentence = ARMS[arm]
+                run = f"q1p7b-{dom}-opdnative-{name}-{k}-{tag}-toklog-{short}-b{batch}-s42"
+                (out / f"native_opd_{name}_{k}_{arm}_toklog_{topo}_b{batch}.yaml").write_text(leaf(
+                    dom, topo, gpus, run, sentence.format(pool=SETS[name].format(cls=c["cls"], n=c["n_ids"], pos=c["pos_pct"])), c["ids"], pool_w, other_w, batch))
         print(dom, len(list(out.glob("native_opd_*.yaml"))), "leaves")
     (SELECTION / "list12_classes.json").write_text(json.dumps(record, ensure_ascii=False, indent=1) + "\n")
 
