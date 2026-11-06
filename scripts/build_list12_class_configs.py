@@ -20,9 +20,10 @@ CLASSES = {"push": "推理推力", "brake": "推理阻力", "result": "结果结
 DOMAINS = {"math": "../taxonomy", "code": ".."}
 TOPOLOGIES = {"4gpu_4c": (4, "4g4c"), "8gpu_8c": (8, "8g8c")}
 # Leaves outside the grid (author 2026-11-06): Code full 推理推力 / 推理阻力 ignore on 3 colocated GPUs, batch 255, next to the 3-GPU equal-weight
-# run q1p7b-code-opdnative-toklog-3g3c-b255, with vLLM memory 0.4 (the author's exception to the 0.6 rule) to share H200 cards with other jobs.
+# run q1p7b-code-opdnative-toklog-3g3c-b255, on H200 cards shared with other jobs. vLLM memory 0.8 (the author's exception to the 0.6 rule): vLLM 0.8.5
+# counts other processes' memory against total x gpu_memory_utilization, so 0.4 left no KV cache on a card with 58 GB in use; 0.8 caps the card at ~115 GB.
 # (domain, topology): (GPUs, run tag, batch, vLLM memory, [(pool set, class, arm)])
-EXTRA = {("code", "3gpu_3c"): (3, "3g3c", 255, 0.4, [("full", "push", "ignore"), ("full", "brake", "ignore")])}
+EXTRA = {("code", "3gpu_3c"): (3, "3g3c", 255, 0.8, [("full", "push", "ignore"), ("full", "brake", "ignore")])}
 # pool set: sentence naming one pool
 SETS = {"l12": "the list-12 class {cls} ({n} IDs, {pos}% of positions)",
         "full": "the full set of class {cls} ({n} IDs passing the list-12 occurrence gate, {pos}% of positions)"}
@@ -43,7 +44,8 @@ def parent(dom, topo, gpus, batch=256, vllm=None):
         f"# global batch {batch}. Not launchable by itself: native_opd_{{l12,full}}_<class>_{{ignore,only}}_toklog_{topo}_b{batch}.yaml set the pool, the two weights and the run names.",
         "# Same weighting as the list-12 ignore / only runs: fixed per-position weights, no online selection, no normalisation.",
         f"# Written by scripts/build_list12_class_configs.py. Same-topology equal-weight reference: {DOMAINS[dom]}/native_opd_toklog_{topo}_b{batch}.yaml.",
-        *([f"# vLLM memory {vllm} instead of 0.6: author 2026-11-06, to share H200 cards with other jobs; the equal-weight reference ran at 0.6."] if vllm else []),
+        *([f"# vLLM memory {vllm} instead of 0.6: author 2026-11-06, H200 cards shared with other jobs; vLLM 0.8.5 caps the whole card (other processes included)",
+            "# at total x gpu_memory_utilization. The equal-weight reference ran at 0.6 on idle cards."] if vllm else []),
         f"extends: {DOMAINS[dom]}/{base}", *(["rollout:", f"  gpu_memory_utilization: {vllm}"] if vllm else []), "audit:", "  control_token_loss_weighting_enabled: true",
         "  control_token_online_selection_enabled: false", "  control_token_normalize_per_domain: false", "  control_token_phase_gate_enabled: false",
         "  control_token_span_weighting_enabled: false", "  control_token_speed_weighting_enabled: false", "  control_token_ids: []", ""])
