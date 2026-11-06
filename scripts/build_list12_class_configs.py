@@ -22,8 +22,9 @@ TOPOLOGIES = {"4gpu_4c": (4, "4g4c"), "8gpu_8c": (8, "8g8c")}
 # Leaves outside the grid (author 2026-11-06): Code full 推理推力 / 推理阻力 ignore on 3 colocated GPUs, batch 255, next to the 3-GPU equal-weight
 # run q1p7b-code-opdnative-toklog-3g3c-b255, on H200 cards shared with other jobs. vLLM memory 0.8 (the author's exception to the 0.6 rule): vLLM 0.8.5
 # counts other processes' memory against total x gpu_memory_utilization, so 0.4 left no KV cache on a card with 58 GB in use; 0.8 caps the card at ~115 GB.
-# (domain, topology): (GPUs, run tag, batch, vLLM memory, [(pool set, class, arm)])
-EXTRA = {("code", "3gpu_3c"): (3, "3g3c", 255, 0.8, [("full", "push", "ignore"), ("full", "brake", "ignore")])}
+# W&B offline there: api.wandb.ai answers every request from the H200 server with 403 (2026-11-06); sync the runs later with `wandb sync`.
+# (domain, topology): (GPUs, run tag, batch, vLLM memory, W&B mode, [(pool set, class, arm)])
+EXTRA = {("code", "3gpu_3c"): (3, "3g3c", 255, 0.8, "offline", [("full", "push", "ignore"), ("full", "brake", "ignore")])}
 # pool set: sentence naming one pool
 SETS = {"l12": "the list-12 class {cls} ({n} IDs, {pos}% of positions)",
         "full": "the full set of class {cls} ({n} IDs passing the list-12 occurrence gate, {pos}% of positions)"}
@@ -36,7 +37,7 @@ def sha(ids):
     return hashlib.sha256(",".join(map(str, sorted(ids))).encode()).hexdigest()
 
 
-def parent(dom, topo, gpus, batch=256, vllm=None):
+def parent(dom, topo, gpus, batch=256, vllm=None, wandb=None):
     # the 3-GPU equal-weight leaf has no "_" parent; extending the leaf is safe because every leaf restates the run names
     base = f"_native_opd_toklog_{topo}_b{batch}.yaml" if batch == 256 else f"native_opd_toklog_{topo}_b{batch}.yaml"
     return "\n".join([
@@ -46,7 +47,9 @@ def parent(dom, topo, gpus, batch=256, vllm=None):
         f"# Written by scripts/build_list12_class_configs.py. Same-topology equal-weight reference: {DOMAINS[dom]}/native_opd_toklog_{topo}_b{batch}.yaml.",
         *([f"# vLLM memory {vllm} instead of 0.6: author 2026-11-06, H200 cards shared with other jobs; vLLM 0.8.5 caps the whole card (other processes included)",
             "# at total x gpu_memory_utilization. The equal-weight reference ran at 0.6 on idle cards."] if vllm else []),
-        f"extends: {DOMAINS[dom]}/{base}", *(["rollout:", f"  gpu_memory_utilization: {vllm}"] if vllm else []), "audit:", "  control_token_loss_weighting_enabled: true",
+        *([f"# W&B {wandb}: api.wandb.ai answers 403 from the H200 server (2026-11-06); sync later with `wandb sync`."] if wandb else []),
+        f"extends: {DOMAINS[dom]}/{base}", *(["runtime:", f"  wandb_mode: {wandb}"] if wandb else []),
+        *(["rollout:", f"  gpu_memory_utilization: {vllm}"] if vllm else []), "audit:", "  control_token_loss_weighting_enabled: true",
         "  control_token_online_selection_enabled: false", "  control_token_normalize_per_domain: false", "  control_token_phase_gate_enabled: false",
         "  control_token_span_weighting_enabled: false", "  control_token_speed_weighting_enabled: false", "  control_token_ids: []", ""])
 
@@ -90,10 +93,10 @@ def main():
                         run = f"q1p7b-{dom}-opdnative-{name}-{k}-{tag}-toklog-{short}-b256-s42"
                         (out / f"native_opd_{name}_{k}_{arm}_toklog_{topo}_b256.yaml").write_text(
                             leaf(dom, topo, gpus, run, sentence.format(pool=desc), c["ids"], pool_w, other_w))
-        for (edom, topo), (gpus, short, batch, vllm, leaves) in EXTRA.items():
+        for (edom, topo), (gpus, short, batch, vllm, wandb, leaves) in EXTRA.items():
             if edom != dom:
                 continue
-            (out / f"_native_opd_l12class_toklog_{topo}_b{batch}.yaml").write_text(parent(dom, topo, gpus, batch, vllm))
+            (out / f"_native_opd_l12class_toklog_{topo}_b{batch}.yaml").write_text(parent(dom, topo, gpus, batch, vllm, wandb))
             for name, k, arm in leaves:
                 c = record["domains"][dom]["classes" if name == "l12" else "full_classes"][k]
                 tag, pool_w, other_w, sentence = ARMS[arm]

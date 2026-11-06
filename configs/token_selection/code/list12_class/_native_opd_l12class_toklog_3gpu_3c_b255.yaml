@@ -4,7 +4,10 @@
 # Written by scripts/build_list12_class_configs.py. Same-topology equal-weight reference: ../native_opd_toklog_3gpu_3c_b255.yaml.
 # vLLM memory 0.8 instead of 0.6: author 2026-11-06, H200 cards shared with other jobs; vLLM 0.8.5 caps the whole card (other processes included)
 # at total x gpu_memory_utilization. The equal-weight reference ran at 0.6 on idle cards.
+# W&B offline: api.wandb.ai answers 403 from the H200 server (2026-11-06); sync later with `wandb sync`.
 extends: ../native_opd_toklog_3gpu_3c_b255.yaml
+runtime:
+  wandb_mode: offline
 rollout:
   gpu_memory_utilization: 0.8
 audit:
