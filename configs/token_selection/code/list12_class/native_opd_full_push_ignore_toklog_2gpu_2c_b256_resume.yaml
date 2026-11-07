@@ -1,0 +1,14 @@
+# Resume of native_opd_full_push_ignore_toklog_2gpu_2c_b256.yaml (same run, same directories). The run stopped on 2026-11-07 10:10 at step 56 with
+# "No space left on device" (H200 root disk full) after saving global_step_55; author 11-07: free space and continue. resume_mode=auto loads the
+# latest checkpoint in trainer.default_local_dir. Written by hand, not by scripts/build_list12_class_configs.py.
+extends: native_opd_full_push_ignore_toklog_2gpu_2c_b256.yaml
+runtime:
+  wandb_resume: allow
+# Lists replace the parent's list: the parent's overrides with resume_mode auto instead of disable.
+extra_overrides:
+- custom_reward_function.path=mopd_verl/mixed_reward.py
+- custom_reward_function.name=compute_score_batched
+- reward_model.reward_manager=batch
+- trainer.resume_mode=auto
+- actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+- actor_rollout_ref.ref.fsdp_config.fsdp_size=2

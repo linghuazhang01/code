@@ -190,3 +190,12 @@ def test_code_2gpu_full_ignore(cls: str) -> None:
     assert cfg.audit.domain_control_token_ids == {"code": RECORD["code"]["full_classes"][cls]["ids"]}
     changed = _changed(path, _path("code", "full", cls, "ignore", "4gpu_4c"))
     assert changed <= set(IDENTITY_KEYS) | TOPOLOGY | {"runtime.wandb_mode"}, sorted(changed - set(IDENTITY_KEYS) - TOPOLOGY)
+
+
+def test_code_2gpu_push_resume() -> None:
+    path = SELECTION / "code/list12_class/native_opd_full_push_ignore_toklog_2gpu_2c_b256_resume.yaml"
+    base = SELECTION / "code/list12_class/native_opd_full_push_ignore_toklog_2gpu_2c_b256.yaml"
+    cfg = load_config(path)
+    assert "trainer.resume_mode=auto" in cfg.extra_overrides and "trainer.resume_mode=disable" not in cfg.extra_overrides
+    assert [o for o in cfg.extra_overrides if "resume_mode" not in o] == [o for o in load_config(base).extra_overrides if "resume_mode" not in o]
+    assert _changed(path, base) <= {"extra_overrides", "runtime.wandb_resume"}
