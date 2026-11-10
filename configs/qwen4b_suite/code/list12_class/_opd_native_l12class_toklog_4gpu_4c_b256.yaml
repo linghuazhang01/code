@@ -1,0 +1,13 @@
+# Qwen3-4B code-only native OPD ("OPD naive") with fixed position weights on one token class and per-token logging, 4 colocated GPUs,
+# global batch 256. Not launchable by itself: opd_native_{l12,full}_<class>_ignore_toklog_4gpu_4c_b256.yaml set the pool, the two weights and the run names.
+# Same weighting as the 1.7B class ignore runs: fixed per-position weights, no online selection, no normalisation.
+# Written by scripts/build_q4b_list12_class_configs.py. Equal-weight reference: ../opd_native_toklog_3gpu_3c.yaml (q4b-code-opdnative-toklog-3g3c-b255-s42).
+extends: ../_opd_native_toklog_4gpu_4c_b256.yaml
+audit:
+  control_token_loss_weighting_enabled: true
+  control_token_online_selection_enabled: false
+  control_token_normalize_per_domain: false
+  control_token_phase_gate_enabled: false
+  control_token_span_weighting_enabled: false
+  control_token_speed_weighting_enabled: false
+  control_token_ids: []

@@ -1,0 +1,20 @@
+# Qwen3-4B code-only native OPD that ignores every position of the full set of class 推理阻力 (54 IDs passing the list-12 occurrence gate, 3.14% of positions) with weight 0; all other valid positions keep weight 1.
+# 2 colocated GPUs, global batch 256, seed 42, 60 steps, per-token logging on. Pool record: ../../../token_selection/list12_classes.json.
+extends: _opd_native_l12class_toklog_2gpu_2c_b256.yaml
+runtime:
+  wandb_run_id: q4b-code-opdnative-full-brake-ign-toklog-2g2c-b256-s42
+audit:
+  domain_control_token_ids:
+    code: [30, 537, 714, 902, 1035, 1128, 1231, 1246, 1410, 1513, 1549, 1744, 1779, 1891, 1921, 1939, 1988, 2058, 2152,
+      2308, 2578, 2585, 2704, 2753, 2806, 3171, 3602, 3650, 3973, 3983, 4157, 4248, 4354, 4396, 4518, 7952, 8088, 8318,
+      9454, 9834, 11209, 11997, 12090, 12341, 12440, 13295, 13824, 14190, 14312, 16585, 19928, 30787, 39970, 52592]
+  control_token_loss_weight: 0.0
+  control_token_other_weight: 1.0
+  output_dir: audit/q4b-code-opdnative-full-brake-ign-toklog-2g2c-b256-s42
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q4b-code-opdnative-full-brake-ign-toklog-2g2c-b256-s42
+huggingface_checkpoint:
+  path_prefix: checkpoints/qwen4b/code/q4b-code-opdnative-full-brake-ign-toklog-2g2c-b256-s42
+trainer:
+  experiment_name: q4b-code-opdnative-full-brake-ign-toklog-2g2c-b256-s42
+  default_local_dir: checkpoints/MOPD/q4b-code-opdnative-full-brake-ign-toklog-2g2c-b256-s42

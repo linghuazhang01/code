@@ -1,0 +1,30 @@
+# Qwen3-4B code-only native OPD ("OPD naive") with per-token logging, equal weight, 2 colocated GPUs (actor, vLLM rollout and FSDP-2
+# teacher share both GPUs), global batch 256. Not launchable by itself: list12_class/_opd_native_l12class_toklog_2gpu_2c_b256.yaml extends it
+# (author 2026-11-10: 4B class ignore runs, two at a time on 4 GPUs). Base: opd_native_toklog_3gpu_3c.yaml (the equal-weight naive run
+# q4b-code-opdnative-toklog-3g3c-b255-s42); this file changes only the topology (3 -> 2 colocated GPUs, batch 255 -> 256, since 255 does
+# not split over 2 GPUs). No 2-GPU 4B run has been trained before. Written by scripts/build_q4b_list12_class_configs.py.
+extends: opd_native_toklog_3gpu_3c.yaml
+runtime:
+  slurm_allocation_gpus: 2
+data:
+  train_batch_size: 256
+actor:
+  ppo_mini_batch_size: 256
+worker_placement:
+  separate_ref_policy: false
+  actor_rollout:
+    n_gpus_per_node: 2
+    nnodes: 1
+trainer:
+  n_gpus_per_node: 2
+ray_kwargs:
+  ray_init:
+    num_cpus: 16
+# Lists replace the parent's list, so the reference FSDP size is restated here.
+extra_overrides:
+- custom_reward_function.path=mopd_verl/mixed_reward.py
+- custom_reward_function.name=compute_score_batched
+- reward_model.reward_manager=batch
+- trainer.resume_mode=disable
+- actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+- actor_rollout_ref.ref.fsdp_config.fsdp_size=2

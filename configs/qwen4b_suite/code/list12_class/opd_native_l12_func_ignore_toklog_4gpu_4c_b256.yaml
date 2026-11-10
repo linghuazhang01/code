@@ -1,0 +1,18 @@
+# Qwen3-4B code-only native OPD that ignores every position of the list-12 class 虚词 (15 IDs, 7.47% of positions) with weight 0; all other valid positions keep weight 1.
+# 4 colocated GPUs, global batch 256, seed 42, 60 steps, per-token logging on. Pool record: ../../../token_selection/list12_classes.json.
+extends: _opd_native_l12class_toklog_4gpu_4c_b256.yaml
+runtime:
+  wandb_run_id: q4b-code-opdnative-l12-func-ign-toklog-4g4c-b256-s42
+audit:
+  domain_control_token_ids:
+    code: [264, 323, 362, 369, 374, 438, 458, 504, 518, 576, 646, 702, 785, 2176, 2619]
+  control_token_loss_weight: 0.0
+  control_token_other_weight: 1.0
+  output_dir: audit/q4b-code-opdnative-l12-func-ign-toklog-4g4c-b256-s42
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q4b-code-opdnative-l12-func-ign-toklog-4g4c-b256-s42
+huggingface_checkpoint:
+  path_prefix: checkpoints/qwen4b/code/q4b-code-opdnative-l12-func-ign-toklog-4g4c-b256-s42
+trainer:
+  experiment_name: q4b-code-opdnative-l12-func-ign-toklog-4g4c-b256-s42
+  default_local_dir: checkpoints/MOPD/q4b-code-opdnative-l12-func-ign-toklog-4g4c-b256-s42

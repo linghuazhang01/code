@@ -1,0 +1,20 @@
+# Qwen3-4B math-only native OPD that ignores every position of the full set of class 推理推力 (41 IDs passing the list-12 occurrence gate, 1.71% of positions) with weight 0; all other valid positions keep weight 1.
+# 4 colocated GPUs, global batch 256, seed 42, 60 steps, per-token logging on. Pool record: ../../../token_selection/list12_classes.json.
+extends: _opd_native_l12class_toklog_4gpu_4c_b256.yaml
+runtime:
+  wandb_run_id: q4b-math-opdnative-full-push-ign-toklog-4g4c-b256-s42
+audit:
+  domain_control_token_ids:
+    math: [704, 773, 1083, 1096, 1221, 1431, 1576, 1986, 2055, 2121, 2474, 2938, 3036, 3363, 4416, 4792, 5005, 6696,
+      7039, 8704, 9044, 9211, 11017, 11284, 11397, 12209, 12549, 13230, 13394, 15277, 16085, 17949, 19491, 23945, 26243,
+      31094, 33508, 44500, 54815, 58703, 67691]
+  control_token_loss_weight: 0.0
+  control_token_other_weight: 1.0
+  output_dir: audit/q4b-math-opdnative-full-push-ign-toklog-4g4c-b256-s42
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q4b-math-opdnative-full-push-ign-toklog-4g4c-b256-s42
+huggingface_checkpoint:
+  path_prefix: checkpoints/qwen4b/math/q4b-math-opdnative-full-push-ign-toklog-4g4c-b256-s42
+trainer:
+  experiment_name: q4b-math-opdnative-full-push-ign-toklog-4g4c-b256-s42
+  default_local_dir: checkpoints/MOPD/q4b-math-opdnative-full-push-ign-toklog-4g4c-b256-s42
