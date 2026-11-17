@@ -1,0 +1,41 @@
+# Qwen3-1.7B code-only equal-weight Top-32 RKL OPD with per-token logging, 8 colocated GPUs (actor, vLLM rollout and
+# FSDP-8 teacher share every GPU), global batch 256, seed 42, 60 steps. Same-topology reference for
+# top32kl_result_brake_fixed4_toklog_8gpu_8c_b256.yaml (R1, 2026-11-17). Base: uniform_top32kl_toklog_3gpu_3c_b255.yaml (the equal-weight run
+# q1p7b-code-top32kl-opd-toklog-3g3c-b255); this file changes only the topology (3 -> 8 colocated GPUs, batch
+# 255 -> 256 by the 8-GPU batch rule, FSDP size, Ray CPUs) and the run names.
+# Written by scripts/build_top32kl_result_brake_configs.py; do not edit by hand.
+extends: uniform_top32kl_toklog_3gpu_3c_b255.yaml
+runtime:
+  slurm_allocation_gpus: 8
+  wandb_run_id: q1p7b-code-top32kl-opd-toklog-8g8c-b256-s42
+  wandb_resume: never
+data:
+  train_batch_size: 256
+actor:
+  ppo_mini_batch_size: 256
+worker_placement:
+  separate_ref_policy: false
+  actor_rollout:
+    n_gpus_per_node: 8
+    nnodes: 1
+ray_kwargs:
+  ray_init:
+    num_cpus: 48
+# Lists replace the parent's list, so the reference FSDP size is restated here.
+extra_overrides:
+- custom_reward_function.path=mopd_verl/mixed_reward.py
+- custom_reward_function.name=compute_score_batched
+- reward_model.reward_manager=batch
+- trainer.resume_mode=disable
+- actor_rollout_ref.actor.checkpoint.save_contents=[model,optimizer,extra,hf_model]
+- actor_rollout_ref.ref.fsdp_config.fsdp_size=8
+audit:
+  output_dir: audit/q1p7b-code-top32kl-opd-toklog-8g8c-b256-s42
+paper_eval:
+  output_dir: eval_outputs/paper_suite/q1p7b-code-top32kl-opd-toklog-8g8c-b256-s42
+huggingface_checkpoint:
+  path_prefix: checkpoints/code/q1p7b-code-top32kl-opd-toklog-8g8c-b256-s42
+trainer:
+  n_gpus_per_node: 8
+  experiment_name: q1p7b-code-top32kl-opd-toklog-8g8c-b256-s42
+  default_local_dir: checkpoints/MOPD/q1p7b-code-top32kl-opd-toklog-8g8c-b256-s42
