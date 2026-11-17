@@ -38,7 +38,7 @@ CHANGED_AUDIT = {
 
 def _pool(domain: str) -> set[int]:
     full = RECORD["domains"][domain]["full_classes"]
-    return set(full["result"]["ids"]) | set(full["brake"]["ids"])
+    return (set(full["result"]["ids"]) - {25521}) | set(full["brake"]["ids"])
 
 
 @pytest.mark.parametrize("domain", sorted(LEAVES))
@@ -54,6 +54,8 @@ def test_pool_and_weights(domain: str) -> None:
     assert len(ids) == len(set(ids))
     assert set(ids) == _pool(domain)
     assert 151645 in ids  # <|im_end|> is in 结果结构
+    assert 25521 not in ids  # byte fragment of " ✅", removed by the author 2026-11-17
+    assert len(ids) == {"math": 75, "code": 77}[domain]
 
 
 @pytest.mark.parametrize("domain", sorted(LEAVES))

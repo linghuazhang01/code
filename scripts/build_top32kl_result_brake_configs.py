@@ -25,13 +25,17 @@ TARGETS = {
 }
 STEM = "top32kl_result_brake_fixed4_toklog_3gpu_3c_b255"
 PARENT = "uniform_top32kl_toklog_3gpu_3c_b255.yaml"
+# Author 2026-11-17: drop 25521 ("Ġâľ" = b" \xe2\x9c", the first two bytes of " ✅"; its third byte is ID 227,
+# same frequency) from 结果结构 in both domains. A byte fragment, not a word.
+EXCLUDE = {25521}
 
 
 def pool(domain: str) -> tuple[list[int], dict]:
     full = json.loads(RECORD.read_text())["domains"][domain]["full_classes"]
-    ids = sorted(set(full["result"]["ids"]) | set(full["brake"]["ids"]))
+    result = set(full["result"]["ids"]) - EXCLUDE
+    ids = sorted(result | set(full["brake"]["ids"]))
     meta = {
-        "n_result": full["result"]["n_ids"],
+        "n_result": len(result),
         "n_brake": full["brake"]["n_ids"],
         "pos_pct": round(full["result"]["pos_pct"] + full["brake"]["pos_pct"], 2),
         "sha256": hashlib.sha256(json.dumps(ids).encode()).hexdigest(),
@@ -55,9 +59,10 @@ def render(domain: str) -> str:
     ids, meta = pool(domain)
     run = f"q1p7b-{domain}-top32kl-resbrake-fixed4-toklog-3g3c-b255-s42"
     return f"""# Qwen3-1.7B {domain}-only equal-weight Top-32 RKL OPD with 结果结构 ∪ 推理阻力 up-weighted ×4 (R1, 2026-11-17).
-# Pool = full 结果结构 ({meta['n_result']} IDs) ∪ full 推理阻力 ({meta['n_brake']} IDs) = {len(ids)} IDs, {meta['pos_pct']}% of positions in the
-# equal-weight runs; same full sets as native_opd_full_{{result,brake}}_* (list12_classes.json, sha256 of the sorted
-# union {meta['sha256'][:16]}). Trigger = the sampled token's ID is in the pool; pool positions get weight 4, others 1,
+# Pool = full 结果结构 without ID 25521 (first bytes of " ✅"; {meta['n_result']} IDs) ∪ full 推理阻力 ({meta['n_brake']} IDs) = {len(ids)} IDs,
+# ~{meta['pos_pct']}% of positions in the equal-weight runs; same full sets as native_opd_full_{{result,brake}}_*
+# (list12_classes.json) minus 25521, sha256 of the sorted pool {meta['sha256'][:16]}.
+# Trigger = the sampled token's ID is in the pool; pool positions get weight 4, others 1,
 # then weights are divided by their mean over valid {domain} positions (mean one, SAPD Fixed4 path). Everything else is
 # the matched reference {PARENT}.
 # Written by scripts/build_top32kl_result_brake_configs.py; do not edit by hand.

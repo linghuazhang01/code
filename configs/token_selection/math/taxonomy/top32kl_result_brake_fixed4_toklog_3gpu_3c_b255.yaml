@@ -1,7 +1,8 @@
 # Qwen3-1.7B math-only equal-weight Top-32 RKL OPD with 结果结构 ∪ 推理阻力 up-weighted ×4 (R1, 2026-11-17).
-# Pool = full 结果结构 (11 IDs) ∪ full 推理阻力 (65 IDs) = 76 IDs, 2.97% of positions in the
-# equal-weight runs; same full sets as native_opd_full_{result,brake}_* (list12_classes.json, sha256 of the sorted
-# union 5e938dbb8ae37707). Trigger = the sampled token's ID is in the pool; pool positions get weight 4, others 1,
+# Pool = full 结果结构 without ID 25521 (first bytes of " ✅"; 10 IDs) ∪ full 推理阻力 (65 IDs) = 75 IDs,
+# ~2.97% of positions in the equal-weight runs; same full sets as native_opd_full_{result,brake}_*
+# (list12_classes.json) minus 25521, sha256 of the sorted pool d691fdfe05473a12.
+# Trigger = the sampled token's ID is in the pool; pool positions get weight 4, others 1,
 # then weights are divided by their mean over valid math positions (mean one, SAPD Fixed4 path). Everything else is
 # the matched reference uniform_top32kl_toklog_3gpu_3c_b255.yaml.
 # Written by scripts/build_top32kl_result_brake_configs.py; do not edit by hand.
@@ -21,8 +22,8 @@ audit:
     math: [30, 537, 714, 820, 830, 902, 1035, 1128, 1231, 1246, 1273, 1410, 1513, 1549, 1590, 1744, 1779, 1866, 1921, 1939,
       1988, 1990, 2058, 2152, 2160, 2308, 2578, 2623, 2697, 2704, 2753, 2806, 3171, 3498, 3520, 3555, 3783, 3838,
       3872, 3973, 3983, 4157, 4226, 4354, 4363, 4396, 4518, 4969, 4977, 5485, 6713, 6788, 7196, 8088, 8365, 9454,
-      9834, 11209, 11997, 13023, 13824, 14190, 14312, 15516, 16585, 16688, 19091, 21806, 25521, 44364, 49759, 52592,
-      73877, 79075, 92014, 151645]
+      9834, 11209, 11997, 13023, 13824, 14190, 14312, 15516, 16585, 16688, 19091, 21806, 44364, 49759, 52592, 73877,
+      79075, 92014, 151645]
   control_token_loss_weight: 4.0
   control_token_other_weight: 1.0
   output_dir: audit/q1p7b-math-top32kl-resbrake-fixed4-toklog-3g3c-b255-s42
